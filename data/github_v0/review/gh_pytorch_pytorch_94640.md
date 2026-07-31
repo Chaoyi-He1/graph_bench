@@ -76,6 +76,50 @@ flowchart LR
 | `N5` |  | 0 | 0 | With current PyTorch, PyG, PyG-lib, and Triton builds, the reporter's actual NeighborLoader training script completes under torch.compile an |
 | `N_terminal` | ✓ | 0 | 0 | The dynamic NeighborLoader training workload runs successfully on the updated compiler stack and the reporter has verified an approximately  |
 
+## Machine review (audit pass, adversarially verified)
+
+Auditor verdict: **needs_rework** · 5 of 8 findings survived independent refutation.
+
+_The case tests a long PyTorch/PyG torch.compile investigation in which four candidate fixes (PR 93059, the specialize_int_float=True hack, disabling split reductions, GraphConv.jittable()) were each falsified, the apparent "2x static speedup" was shown to be a CUDA-synchronization artifact, and the issue only closed when the reporter re-ran his own NeighborLoader script on the current stack and measured ~20%. The graph's chain, its failure evidence and its satisfaction_conditions track the thread closely and get the root cause and the prohibition list right. The scoring-corrupting defect is one required_info id (benchmark_missing_cuda_synchronization) that no clarification can ever grant and that the same solution simultaneously declares engineer-inferred. Secondary problems are fidelity ones: an image whose content (2.83x static) contradicts the clarification answer it is attached to (1.02x dynamic), several handler-run measurements written in the reporter's voice, and engineer-only findings placed in nodes' symptoms_visible._
+
+### Confirmed findings
+
+- [ ] 🟠 **required_but_ungettable** (medium) — `n/a`
+  - claim: [required_but_ungettable] terminal solution hard-requires benchmark_missing_cuda_synchronization, which is asked by no clarification, absent from N0.info_state and from every volunteered_info, while also being listed under info_inferred_by_engineer.
+  - thread evidence: None
+  - suggested fix: None
+  - verifier: Verified programmatically. The clarification info_id set is exactly {workload_includes_training_and_backward, dynamic_true_produces_symint_compile_errors, initial_container_used_old_triton_backend, latest_triton_and_pr93059_still_fail, specialize_int_float_hack_still_fails_backward, second_user_reproduces_dynamic_backward_failure, pyg_static_benchmark_reported_large_speedup, jittable_layers_do_not
+- [ ] 🟡 **image_misassignment** (low) — `n/a`
+  - claim: [image_misassignment] The image on the standard_runner_shows_small_dynamic_speedup clarification is byte-identical to img0 (participant4's static 2.83x/2.24x/2.29x table), so the attached evidence contradicts the answer text.
+  - thread evidence: None
+  - suggested fix: None
+  - verifier: Confirmed by bytes and by rendering. md5 of both gh_pytorch_pytorch_94640_img0.png and _img1.png is 9c0bd3533cce7402a517c6fa4e0c4397 (93349 bytes each); raw images[] records img0 at c35 and img1 at c50 with the identical source_url .../226927406-674edc1a-....png. I rendered img1: it is the GCN 2.83x / GraphSAGE 2.24x / GIN 2.29x static-compile table. c50 only back-references that URL ('the benchma
+- [ ] 🟡 **future_knowledge_leak** (low) — `n/a`
+  - claim: [future_knowledge_leak] N1.symptoms_visible ('an early run with the patched training branch on the container also segfaults') and e1's Triton answer ('I can rebuild the proposed PyTorch branch') presuppose PR 93059 before any edge proposes it.
+  - thread evidence: None
+  - suggested fix: None
+  - verifier: The textual facts check out. c2 participant1 proposes PR 93059; c3 reporter reports the segfault; only then c4 asks old-vs-new Triton backend. The graph folds the c4/c5/c6 Triton question into e1 but defers the PR 93059 build to e2 (latest_triton_and_pr93059_still_fail), so N1's symptom and e1's answer both reference a 'proposed branch' that no edge before e2 proposes. In simulation the user-sim w
+- [ ] 🟡 **symptom_contains_diagnosis** (low) — `n/a`
+  - claim: [symptom_contains_diagnosis] N3.symptoms_visible describes the maintainer's private repro findings ('execution can reach the end only when split reductions are disabled ... still shows specialization warnings') rather than anything the user observed.
+  - thread evidence: None
+  - suggested fix: None
+  - verifier: Confirmed at the source. c28 participant1: 'THIS is split reductions. If you turn off split reductions... you get to the end, but it's still overspecializing' plus 'Also turning off split reductions is bad'; c29: 'The overspecialization is because I forgot to set torch._dynamo.config.specialize_int = False'. Both are participant1 in his own checkout (/data/users/participant1/a/pytorch). The report
+- [ ] 🟡 **multi_user_merge_undeclared** (low) — `n/a`
+  - claim: [multi_user_merge_undeclared] Evidence from participant4 and from the handler himself is folded into the user side on e4 with no declaring comment, and the jittable answer is written in third person about 'both maintainers'.
+  - thread evidence: None
+  - suggested fix: None
+  - verifier: Confirmed on both halves. Source: c35 participant4 posts the >2x static screenshot and 'It requires to call conv.jittable() though'; c37 participant4 gives the jittable edit; c38 participant1 runs it on the reporter's script ('Oddly, this seems to do worse lol', eager 0.9162 vs compiled 0.9911); c41 participant4 'I can confirm that jittable() does sadly not help here'. The reporter runs jittable n
+
+### Refuted claims (auditor was wrong — do not act on these)
+
+- ~~unfaithful_reveal~~: [unfaithful_reveal] The reporter is made to report the maintainer's own torchbench run (1.267x/1.102x/1.021x) as if it were his measurement, on a harness he never had access to.
+  - why refuted: The evidence overstates the graph. The clarification answer is written impersonally -- 'On an A100 source build, the basic benchmark showed modest improvements... The standardized measurements were about 1.267x...' -- with no first-person claim of authorship, unlike the sibling clarification[0] which does say 'I shared
+- ~~symptom_contains_diagnosis~~: [symptom_contains_diagnosis] N4.symptoms_visible carries the maintainer's torchbench measurement and its 'synchronized standard benchmark runner' methodology framing instead of a user-observable phenomenon.
+  - why refuted: The cited text is a measurement result ('dynamic-shape Inductor is only about 1.02x faster'), not a diagnosis, cause, or recommendation -- so the reviewer's own defect class does not fit. Unlike N3 (finding 5), this content corresponds one-to-one to standard_runner_shows_small_dynamic_speedup, an explicit clarification
+- ~~graph_shape~~: [graph_shape] A single system_state_id S1 spans N0-N5 even though the user's system changed several times, and e6 proposes exactly the stack the user had already installed and verified at N5.
+  - why refuted: The premise contradicts the contract's own MEASUREMENT-CLASS RULE, which names 'bisections, test/try builds, config-toggle probes, version checks, benchmarks, log captures' as clarification edges and states parenthetically that they 'change knowledge, not the system'. Every event the reviewer cites is exactly that clas
+
+
 ## Review checklist
 
 Structural (machine-checked by `scripts/validate.py`, re-verify after edits):

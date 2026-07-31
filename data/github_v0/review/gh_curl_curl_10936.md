@@ -76,6 +76,38 @@ flowchart LR
 | `N5` |  | 0 | 0 | With stream user data cleared before submitting RST_STREAM, a setup that normally produced six or seven crashes had none over 16 hours. The  |
 | `N_terminal` | ✓ | 0 | 0 | The verified stream-user-data cleanup and callback checks are merged as commit 35380273b9311cf0741e386284310fa7ca4d005e and ship with curl 8 |
 
+## Machine review (audit pass, adversarially verified)
+
+Auditor verdict: **needs_rework** · 3 of 5 findings survived independent refutation.
+
+_The case tests a long, cold-trail HTTP/2 use-after-free hunt: two maintainer 'just upgrade' resolutions that field testing falsified, then a lifecycle trace showing nghttp2 closing a stream long after the easy handle was freed, then a patch trial that confirmed clearing the nghttp2 stream user data before RST_STREAM. The graph's skeleton is faithful — both blind paths are real, the patch trials are correctly modeled as clarifications, and the multi-user merge is declared. The main defect is that one clarification answer on e4 puts the maintainer's key insight ('the stream's user-data pointer is not cleared first') into the user's mouth, leaking the fix that the terminal solution is supposed to require the agent to derive; a second answer on e2 gives the reporter reproducibility he explicitly denied having at that point in the thread. A release-version gate in required_elements and a diagnosis-flavored terminal symptom are lesser issues._
+
+### Confirmed findings
+
+- [ ] 🟠 **future_knowledge_leak** (medium) — `n/a`
+  - claim: [future_knowledge_leak / high] at graph.edges[3] (e4_N3_x__N4).clarifications[3] — info_id rst_submission_leaves_stream_user_data_reachable, field user_answer_in_this_oncall: The user answer hands the agent the actual fix — that curl fails to clear the nghttp2 stream user-data pointer before RST_STREAM — which in the thread was the maintainer's hypothesis, not anything the user side ever said.
+  - thread evidence: None
+  - suggested fix: None
+  - verifier: Thread check confirms the attribution. The user-side deep analysis is c37 (participant6): http2_data_done -> nghttp2_submit_rst_stream -> item marked cancelled -> '15 minutes later' nghttp2 gets the cancelled outbound item, does NOT skip it, opens the stream, then must close it and calls on_stream_close on the easy handle 'closed 15 minutes ago'; c37 ends 'I currently feel it's nghttp2's problem f
+- [ ] 🟡 **logistics_gate** (low) — `n/a`
+  - claim: [logistics_gate / medium] at graph.edges[5] (e6_N5__N_terminal).solution.required_elements_for_full_match[5] ('states_fix_release_is_curl_8_6_0') and satisfaction_conditions[5]: full match and satisfaction require release/packaging facts rather than the diagnostic-to-fix chain.
+  - thread evidence: None
+  - suggested fix: None
+  - verifier: Confirmed at the source: the only place these facts exist is the epilogue, c48 (participant8 asking 'is this merged in version 8.5.0?'), c49 (reporter: 'No ... you need to cherry pick commit 35380273... I would assume this will be part of 8.6.0 release, but it is completely up to @participant1 to steer the release train'), and c50 (participant1: 'Scheduled to ship on January 31, 2024'). The techni
+- [ ] 🟡 **symptom_contains_diagnosis** (low) — `n/a`
+  - claim: [symptom_contains_diagnosis / low] at graph.nodes.N_terminal.symptoms_visible[0]: the terminal node's symptoms_visible reports the merge, the commit hash and the release vehicle rather than an observable phenomenon in the user's words.
+  - thread evidence: None
+  - suggested fix: None
+  - verifier: Confirmed against both the contract and the thread. symptoms_visible must be ONLY observable phenomena in the user's words, and N_terminal.symptoms_visible[0] opens with 'The verified stream-user-data cleanup and callback checks are merged as commit 35380273b9311cf0741e386284310fa7ca4d005e and ship with curl 8.6.0' — a maintainer statement (merge intent c46, release schedule c50) that names the fi
+
+### Refuted claims (auditor was wrong — do not act on these)
+
+- ~~future_knowledge_leak~~: [future_knowledge_leak / medium] at graph.edges[1] (e2_N1_x__N2).clarifications[1] — info_id internal_test_can_trigger_crash_and_capture_logging: at the N1_x->N2 position (8.2.1 failure, Aug 2023) the reporter states an 
+  - why refuted: The reviewer's chronology is right (c15, 2023-08-18: 'Sadly I have not been able to trigger this behavior through testing'; the reproducibility improvement is c30, 2023-12-19, after the 8.5.0 crash in c28), but the defect class does not hold and the placement is a legitimate compression, not a leak. Nothing in the move
+- ~~graph_shape~~: [graph_shape / low] at graph.edges[2] (e3_N2__N3_x) vs graph.edges[3] (e4_N3_x__N4).clarifications[0] — weak_connection_timeout_then_easy_handle_cleanup: the clarification order is inverted relative to the thread, since 
+  - why refuted: The quoted chronology is accurate (c22 participant6 2023-12-15 weak connection / curl_multi_info_read / client closes easy handle / nghttp2 closes the same handler later; c23 participant3 same day 'this seems related to #12356 which was fixed in curl 8.5.0'), but a task graph is an answer key, not a transcript: edge or
+
+
 ## Review checklist
 
 Structural (machine-checked by `scripts/validate.py`, re-verify after edits):

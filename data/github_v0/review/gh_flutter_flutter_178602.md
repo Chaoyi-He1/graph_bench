@@ -83,6 +83,24 @@ flowchart LR
 | `N6` |  | 0 | 0 | The reporter can archive and upload successfully after flutter clean followed by flutter build ios --config-only without a simulator run, an |
 | `N_terminal` | ✓ | 0 | 0 | Archives built with the corrected Flutter tooling validate and upload successfully; the reporter also confirms the clean config-only sequenc |
 
+## Machine review (audit pass, adversarially verified)
+
+Auditor verdict: **minor_issues** · 0 of 4 findings survived independent refutation.
+
+_The case tests whether an agent can drive a Flutter iOS App Store validation failure (\"LC_ENCRYPTION_INFO ... missing or invalid\") past two brush-off fixes, reproduce the simulator-framework contamination, and then recognize that a SECOND, unrelated regression produces the identical message. The graph is substantially faithful: both blind paths are genuinely falsified, the two-regression split matches the maintainer's own c71 summary, and every user-executed probe is correctly modeled as a clarification edge. The defects are fidelity and scoring-precision issues rather than answer-key inversions: one clarification answer leaks the \"native-assets\" framing into the reporter's mouth before the thread discovered it, the terminal solution gates full match on release/channel bookkeeping, the blind Run Script edge is worded broadly enough to swallow the different Run Script workaround that actually worked, and the second regression's Mach-O mechanism is asserted more firmly than the thread supports._
+
+### Refuted claims (auditor was wrong — do not act on these)
+
+- ~~future_knowledge_leak~~: [future_knowledge_leak / medium] at edges[e3_N2_x__N3].clarifications[project_uses_sqflite_sqlcipher_and_sqlite_native_assets].user_answer_in_this_oncall — The reporter's answer already names "the native-assets path" as 
+  - why refuted: The quoted evidence does not support "crux mechanism". The crux is participant5's c19 finding that xcode_backend.dart's _embedNativeAssets copies the ENTIRE build/native_assets/ios directory into Runner.app/Frameworks, plus participant4's c15 simulator-build reproduction. Neither appears in this answer; both are encode
+- ~~logistics_gate~~: [logistics_gate / medium] at edges[e7_N6__terminal].solution.required_elements_for_full_match["provides_correct_channel_or_release_status"] / approach_keywords["main_channel","stable_3_38_6"] / satisfaction_conditions[5]
+  - why refuted: Mislabeled as logistics. The user's only actionable remedy for the non-native-assets regression is "be on a Flutter build that contains the fix" — the fix is not something the reporter can apply to their own code, so channel/version IS the fix delivery, not scheduling trivia. The thread proves this is load-bearing rath
+- ~~blind_path_mislabeled~~: [blind_path_mislabeled / medium] at edges[e1_N0__N1_x].solution.approach_keywords / required_elements_for_full_match — the graph's only "Xcode Run Script phase" approach is the falsified one, with keywords generic enough
+  - why refuted: The label itself is correct and the contract mandates it: the legacy Run Script was genuinely tried and failed twice (c2 reporter "Also tried this .../issues/7888#issuecomment-679021146, but didn't help"; c6 participant2 "Adding 'Run Script Phase' from StackOverflow page - not helped"), so e1 IS supposed to be is_known
+- ~~wrong_root_cause~~: [wrong_root_cause / low] at satisfaction_conditions[1] / info id aot_app_framework_missing_valid_lc_encryption_info — the second regression's mechanism is stated as established fact although only one user's LLM-assisted 
+  - why refuted: The graph does not present this as user-reported fact: e5's comment says explicitly "The missing or invalid LC_ENCRYPTION_INFO in the generated App.framework is retained as an engineer-inferred finding", and the terminal solution lists aot_app_framework_missing_valid_lc_encryption_info under info_inferred_by_engineer —
+
+
 ## Review checklist
 
 Structural (machine-checked by `scripts/validate.py`, re-verify after edits):

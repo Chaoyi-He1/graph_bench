@@ -75,6 +75,39 @@ flowchart LR
 | `N5` |  | 0 | 0 | After rebuilding current Hyper and curl master with Hyper HTTP/2 disabled, the three transfers complete in about one second instead of over  |
 | `N_terminal` | ✓ | 0 | 0 | Curl master uses HTTP/1.1 for the Hyper backend, and the reporter's three-URL test now completes in about one second without the previous 30 |
 
+## Machine review (audit pass, adversarially verified)
+
+Auditor verdict: **needs_rework** · 2 of 7 findings survived independent refutation.
+
+_The case tests whether an agent can drive a Hyper-backend HTTP/2 slowness report from "three URLs take a minute" to the real defect — curl's Hyper integration creating a hyper_clientconn per request, re-sending the HTTP/2 connection preface and provoking GOAWAY-driven 30-second retries — and then to the accepted temporary mitigation of disabling HTTP/2 for Hyper. The graph is substantially faithful: the diagnostic chain, the one blind path (PR 11344), the root cause, and the measurement-class modelling all match the thread. The defects are concentrated in the last two steps, where the graph inverts the thread's proposal→verification order and puts the mitigation itself into the reporter's spoken symptoms at N5 and N_terminal, handing the agent part of the answer key. A secondary problem is that satisfaction_conditions requires grounding in "no replacement connection in the trace" (c17), which the accepted GOAWAY-retry mechanism (c23/c35) contradicts._
+
+### Confirmed findings
+
+- [ ] 🔴 **unfaithful_reveal** (high) — `graph.nodes.N5.symptoms_visible[0] (arrived at via edge e5_N4__N5)`
+  - claim: N5's spoken symptoms put the accepted mitigation into the reporter's mouth ("with Hyper HTTP/2 disabled"), so the simulated user hands the agent the answer key on arrival at N5 instead of the agent having to propose it.
+  - thread evidence: c44 (reporter) says only: "After getting the latest Hyper + curl from `git master` and rebuilding everything, the speed has improved very much." — he never mentions HTTP/2 being disabled. It is participant7 in c45 who supplies that knowledge: "I'm not very surprised that the Hyper backend is still slightly slower ... because the hyper backend is now using HTTP/1.1." The simulator speaks node.symptoms_visible verbatim (src/graph_bench/user_simulator/responder.py: `parts = list(node.symptoms_visible)`), so this reveal reaches the agent, and it directly satisfies e6's required element `disables_http2_for_hyper_as_verified_temporary_fix`.
+  - suggested fix: Rewrite N5 in the reporter's actual voice/knowledge: "After rebuilding the latest Hyper and curl git master, the three transfers now take about 1.1 s instead of over a minute; a later rebuild is only about 20% slower than the Windows-bundled curl." Keep the 'HTTP/2 disabled' attribution only in e6's info_inferred_by_engineer / solution text.
+  - verifier: CONFIRMED on both the thread and the code. Thread: c44 (reporter) says only 'After getting the latest Hyper + curl from git master and rebuilding everything, the speed has improved very much' plus new timings; he never mentions HTTP/2 being disabled, and in c46 he is still asking 'Has this been done?' about the rewrite — i.e. he did not know the mechanism. The 'now using HTTP/1.1' attribution is p
+- [ ] 🟡 **symptom_contains_diagnosis** (low) — `graph.nodes.N_terminal.symptoms_visible[0]`
+  - claim: The terminal node's symptoms_visible opens with an explanation of the fix mechanism ("Curl master uses HTTP/1.1 for the Hyper backend") rather than an observation by the reporter.
+  - thread evidence: That statement is participant7's engineering explanation in c45 ("because the hyper backend is now using HTTP/1.1"), not the reporter's. The reporter's own terminal observation is c46: "Just rebuilt everything and now it's only 20% slower than the Win-10 bundled curl" with timings 0:00:00,803 (Windows curl) vs 0:00:00,974 (master).
+  - suggested fix: Reduce to observation: "The three-URL test now completes in about one second, about 20% slower than the Windows-bundled curl, with no 30-second gaps and no missing response."
+  - verifier: CONFIRMED as a wording violation, but the reviewer's severity is inflated. The clause is participant7's engineering explanation in c45 ('because the hyper backend is now using HTTP/1.1'); the reporter's own terminal observation is c46 ('only 20% slower than the Win-10 bundled curl', 0:00:00,803 vs 0:00:00,974). The contract says symptoms_visible carries only observable phenomena in the user's word
+
+### Refuted claims (auditor was wrong — do not act on these)
+
+- ~~future_knowledge_leak~~: The verification measurement is placed BEFORE the solution edge that proposes the mitigation, and its question patterns name the fix, so obtaining e6's mandatory L3 evidence requires the fix to already have been disclose
+  - why refuted: REFUTED as a distinct defect. The contract's MEASUREMENT-CLASS RULE explicitly covers this shape: handler-initiated try-builds and config-toggle probes are clarification edges 'even when the probed toggle doubles as a workaround', so probe (e5) -> verified state (N5) -> formal mitigation (e6) is the sanctioned encoding
+- ~~wrong_root_cause~~: satisfaction_conditions[1] requires grounding in "no replacement connection appears in the trace", which contradicts the root cause the same key demands (GOAWAY -> delayed retry / dropped request), so a correct agent can
+  - why refuted: REFUTED. The quotes are accurate but they describe different time windows and do not actually contradict. c17 (participant1) is about what happens DURING the ~30 s pause — the pause is not an SSL timeout followed by a silent reconnect, 'the trace shows no new connection ... a curl will not silently do a new connection 
+- ~~unfaithful_reveal~~: The e5 verification answer claims the same three transfers were re-measured, but the reporter had to switch endpoints because the upstream API changed, so the comparison is not apples-to-apples.
+  - why refuted: REFUTED. c44 does change the URL form (api.adsb.lol/api/0/route/... -> vrs-standing-data.adsb.lol/routes/SA/SAS4133.json), but the same three flight routes (SAS4133, BBD6810, THY19Y) and the same three-URL .bat benchmark are used, and the reporter himself makes precisely the comparison the graph records: 'Much better; 
+- ~~unfaithful_reveal~~: The Linux-reproduction answer on e1 imports timing detail that only appears three months later in the thread, after the PR-11344 blind path that this edge precedes.
+  - why refuted: REFUTED. The positional observation is factually right (c1 on 2023-05-29 is the bare 'Reproduces for me as well on Linux'; the quantified 1-2 s vs ~1 min is c9, 2023-08-29, after c7/c8), but the imported detail carries no future knowledge: N0's own volunteered info already contains `hyper_three_url_transfer_takes_over_
+- ~~level_mismatch~~: `http11_fast_while_hyper_http2_slow` is declared L3_specific on the clarification but required as an L2 item by the final solution, so the same omission is scored two different ways depending on which label is authoritat
+  - why refuted: REFUTED — the premise that two labels compete for authority is wrong. recorder/tiers.py:classify_tier reads only `call.missing_required_info`, which compute_solution_call (responder.py) builds exclusively from `solution.required_info`; the clarification's `level` never enters tiering. In oncall_graph/models.py:42 Clari
+
+
 ## Review checklist
 
 Structural (machine-checked by `scripts/validate.py`, re-verify after edits):

@@ -75,6 +75,33 @@ flowchart LR
 | `N5` |  | 0 | 0 | Runs using a fresh ReadIndex request ID for every retry did not reproduce the violation: the initial fixed runs passed, additional copies of |
 | `N_terminal` | ✓ | 2 | 0 | The unique-request-ID mitigation is merged on main, cherry-picked to the supported 3.4, 3.5, and 3.6 release branches, and covered by a chan |
 
+## Machine review (audit pass, adversarially verified)
+
+Auditor verdict: **minor_issues** · 2 of 4 findings survived independent refutation.
+
+_The case is a long Antithesis-driven investigation of a linearizability violation in etcd: a stale ReadIndex is returned after a leader stall, ultimately traced to etcd's linearizableReadLoop reusing the same ReadIndex request ID (RequestCtx) across retries, interacting badly with raft's readOnly map/queue. The graph is substantially faithful on the load-bearing points: the single blind path (e3, the select/leadership-race guess) is genuinely falsified in the thread (c19 "First blind guess", c23 "celebration was too early... the last one got a reproduction on branch with the fix", c26 "it was early bad guess"); the root cause and the merged mitigation (PR #21399, fresh request ID per retry) match c31/c35/c48; the fix-validation runs are correctly modeled as clarification (measurement) edges rather than solutions. Remaining issues are fidelity-level: a release/backport element baked into required_elements_for_full_match, a missing alternative explanation for the headline rev-3-vs-155 symptom that the thread actually established, a small ordering leak in e5, and one loosely-matched image._
+
+### Confirmed findings
+
+- [ ] 🟡 **future_knowledge_leak** (low) — `n/a`
+  - claim: [future_knowledge_leak / low] e5 clarifications[0].user_answer_in_this_oncall and N5.symptoms_visible already state the fix was merged and validated post-merge, although merging is what the following edge e6 proposes.
+  - thread evidence: None
+  - suggested fix: None
+  - verifier: Independently confirmed against the thread and the graph. e5's answer reads 'The initial fixed runs reported 0 of 4 reproductions. After merging, the periodic main-branch run was repeated in three additional copies and all passed. By March 4, CI had recorded five consecutive passes since March 2', and N5.symptoms_visible repeats 'additional copies of the periodic run passed, and CI recorded five c
+- [ ] 🟡 **image_misassignment** (low) — `n/a`
+  - claim: [image_misassignment / low] img4 attached to e2's fault-type clarification does not depict the injected faults; it is the Antithesis 'Map' view showing the ~880 failed-linearization examples branching off one history.
+  - thread evidence: None
+  - suggested fix: None
+  - verifier: Verified on all three legs. Provenance: the raw thread's images manifest maps gh_etcd-io_etcd_20418_img4.png to where='c24' (source f6bb08b2-...), so it is indeed the single image in participant2's c24. Comment structure: c24 first answers the fault question in text (pause = docker pause ~2s then unpause; slowed partition; jammed clog; throttle = docker update --cpu-quota ~50%), and only afterward
+
+### Refuted claims (auditor was wrong — do not act on these)
+
+- ~~logistics_gate~~: [logistics_gate / medium] e6 required_elements_for_full_match[3] 'backports_to_supported_3_4_3_5_3_6_branches' plus approach_keywords 'merge_pr_21399'/'backport_3_4_3_5_3_6'/'changelog' and satisfaction_conditions[2] for
+  - why refuted: Two of the three parts of the claim do not hold. (a) The PR number is NOT a hard gate: 'merge_pr_21399' appears only in approach_keywords and concrete_example; required_elements_for_full_match contains no PR number, and satisfaction_conditions[2] says only 'with merge and backports to supported v3.4, v3.5, and v3.6 bra
+- ~~wrong_root_cause~~: [wrong_root_cause / medium] e6 required_info.L1 'same_value_observed_at_revisions_3_and_155' makes the opening rev-3-vs-155 discrepancy evidence for the ReadIndex-reuse fix, and the graph never records c30's snapshot-res
+  - why refuted: The quoted evidence is real: c30 (participant3, 2026-02-27) analyses the ORIGINAL July run and shows T2 'received and saved database snapshot ... incoming-snapshot-index:204' then T4 'after restored, it's current-rev:1 - it looks like related to this one - issues/20271 ... That's why we saw that Revision is 3 instead o
+
+
 ## Review checklist
 
 Structural (machine-checked by `scripts/validate.py`, re-verify after edits):

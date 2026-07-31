@@ -81,6 +81,48 @@ flowchart LR
 | `N6` |  | 0 | 0 | The reporter can load and use the previously failing large model successfully with Ollama 0.3.14-rc0. |
 | `N_terminal` | ✓ | 0 | 0 | The AMD large-model regression is fixed in the 0.3.14 release line, and the reporter has verified the fix with 0.3.14-rc0. |
 
+## Machine review (audit pass, adversarially verified)
+
+Auditor verdict: **needs_rework** · 5 of 7 findings survived independent refutation.
+
+_The case tests whether an agent resists the "your model just doesn't fit in 24 GB VRAM" reading and instead isolates an Ollama regression between 0.3.6 and 0.3.7 on AMD/ROCm, after two workarounds (OLLAMA_GPU_OVERHEAD and swapping to the official bundled-ROCm build) are falsified. The evidence chain (logs, ROCm package list, parallel-load finding, 0.3.6 downgrade at 100% GPU, official-build retest, 0.3.6-vs-0.3.7 confirmation, 0.3.14-rc0 verification) is faithfully transcribed and both blind paths are genuinely falsified in the thread — no blind_path_mislabeled. The graph fails on two scoring-relevant points: it hardens the maintainer's explicit *suspicion* about commit 0b03b9c into a required root cause, and it inverts the fix/verification order so the terminal solution is only reachable after the user has already verified the fix._
+
+### Confirmed findings
+
+- [ ] 🟠 **wrong_root_cause** (medium) — `n/a`
+  - claim: The graph requires the agent to attribute the regression to the reintroduced AMD compile-flag commit and calls it something 'the maintainer isolated', but the thread only ever floats that commit as an unverified guess and never states what actually fixed 0.3.14.
+  - thread evidence: None
+  - suggested fix: None
+  - verifier: Confirmed against the source. c43 is explicitly hedged twice ('it MAY be this commit', 'MAYBE we need to back that out') and ends in a question ('Does anyone have confirmation the regression was in v0.3.7?'). c44 confirms only the version boundary ('ollama 3.6 works, 3.7 segfaults'), not the commit. c46 (same maintainer, later) still says 'There might be multiple issues lurking in here... I haven'
+- [ ] 🟠 **terminal_semantics** (medium) — `n/a`
+  - claim: The fix is proposed only AFTER the user has already installed and verified it: e6 makes 'test 0.3.14-rc0 containing the fix' a clarification the agent must ask before e7, and e7's own required_info includes reporter_verified_0_3_14_rc0_works.
+  - thread evidence: None
+  - suggested fix: None
+  - verifier: The circularity is real and verifiable in the graph: e7 is the solution that proposes the 0.3.14 fix, and its required_info.L3 lists reporter_verified_0_3_14_rc0_works, whose only gettable source is e6 -- the edge immediately upstream. The proposal's precondition is its own outcome. Thread order is the reverse of the graph's: c53 (maintainer) announces the fix first, c56 (reporter) verifies afterw
+- [ ] 🟠 **measurement_class_violation** (medium) — `n/a`
+  - claim: e4 (try the official build with bundled ROCm) is a handler-initiated try-build measurement but is modeled as solution_only flagged as a blind path.
+  - thread evidence: None
+  - suggested fix: None
+  - verifier: The e4 half is confirmed and lands squarely on the contract's explicit list. c22: 'can you try using our official build with our bundled ROCm? If that fixes it, then we can shift this issue over to the archlinux maintainers of the package. If it still fails, then we know it's something else.' -- the stated purpose is discrimination between causes, i.e. a try-build probe, which the MEASUREMENT-CLAS
+- [ ] 🟡 **future_knowledge_leak** (low) — `n/a`
+  - claim: N5.symptoms_visible says the models segfault on '0.3.7 and later builds before the fix', revealing that a fix exists at a graph position where the thread has only an untested hypothesis.
+  - thread evidence: None
+  - suggested fix: None
+  - verifier: The wording is in the file as quoted, and at the corresponding thread point (c43/c44) no fix exists -- c46, later than c43, still has the maintainer saying 'I haven't managed to reproduce so far'; the first statement of a fix is c53, downstream of N5. So the phrase is a genuine forward reference. But I downgrade the severity: the leak is three words of framing inside a symptom string, it names no 
+- [ ] 🟡 **symptom_contains_diagnosis** (low) — `n/a`
+  - claim: N_terminal.symptoms_visible states a conclusion ('The AMD large-model regression is fixed in the 0.3.14 release line') rather than an observable phenomenon in the user's words.
+  - thread evidence: None
+  - suggested fix: None
+  - verifier: Confirmed but minor. The contract says symptoms_visible must be observable phenomena in the user's words only; 'The AMD large-model regression is fixed in the 0.3.14 release line' is a release-level conclusion the reporter never states -- c56 is only 'Ollama 0.3.14-rc0 works great! Thanks @participant2 !', and the release-line claim belongs to the maintainer (c53), not the user. The second clause 
+
+### Refuted claims (auditor was wrong — do not act on these)
+
+- ~~fabricated_blind_path~~: The e2 blind path bundles 'lower num_gpu / reduce GPU layers' with the OLLAMA_GPU_OVERHEAD attempt, but only the overhead route was falsified, so an agent proposing num_gpu is marked falsified on evidence that does not e
+  - why refuted: REFUTED as a defect. An edge is ONE assistant turn, and the actual turn (c5, participant2) proposed exactly this pair as one memory-prediction remedy: 'you can set num_gpu to a smaller value (try 40, 39, ...) or use the new env-var OLLAMA_GPU_OVERHEAD to reserve some VRAM so our algorithm calculates less layers to load
+- ~~logistics_gate~~: e7 is framed as a maintainer release action and satisfaction_conditions[4] demands the agent acknowledge the thread may contain additional AMD crash causes -- meta-knowledge the single simulated user side never surfaces.
+  - why refuted: REFUTED on both halves. (a) The intent is faithful to the actual handler turn: the handler in this thread IS the ollama maintainer, and c53 literally says 'the main issue should be resolved in 0.3.14 when we release that in the coming days' -- 'ship the fix in the 0.3.14 release line' is that turn, not an invented logi
+
+
 ## Review checklist
 
 Structural (machine-checked by `scripts/validate.py`, re-verify after edits):

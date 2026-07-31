@@ -81,6 +81,33 @@ flowchart LR
 | `N6` |  | 0 | 0 | On affected older processors, Flutter 3.19.5 with Dart 3.3.3 creates and builds projects successfully. Users confirm that Windows and web ru |
 | `N_terminal` | ✓ | 0 | 0 | The Dart CPU-instruction restriction fix is available in Flutter 3.19.5 stable with Dart 3.3.3, and affected users can build and run Flutter |
 
+## Machine review (audit pass, adversarially verified)
+
+Auditor verdict: **needs_rework** · 2 of 4 findings survived independent refutation.
+
+_The case tests whether an agent can drive a Windows Flutter build failure (exit 3221225501 / -1073741795) past two generic dead ends to a Dart VM JIT bug: on old x86-64 CPUs without SSE4.1 the JIT still emitted roundsd, fixed in Dart 3.3.3 / Flutter 3.19.5. The graph's skeleton is faithful — blind paths, bisect, floor.dart/--target-unknown-cpu/--trace-cpuid chain, root cause and verification all map cleanly onto c0-c86. The problem is leakage: the early hardware clarification already states the CPUs lack SSE4.1 (a fact only measured three months later at c57/c60/c61), and the floor-test answer already names the roundsd/SSE4.1 instruction in the user's voice (only surfaced at c70, after the fix was in review). Those two reveals shortcut the exact inference the required_elements ask the agent to make, so the graph needs rework before it can score reliably._
+
+### Confirmed findings
+
+- [ ] 🟠 **future_knowledge_leak** (medium) — `n/a`
+  - claim: [future_knowledge_leak / high] e3 clarification answer for old_x64_cpus_without_sse41_are_affected states the affected CPUs 'do not provide SSE4.1', a fact only established ~3 months later by the --trace-cpuid measurement.
+  - thread evidence: None
+  - suggested fix: None
+  - verifier: Independently confirmed against the thread. In the window e3 claims to cover (c3-c13, c33) the user side only names CPU models: c3 'AMD Phenom(tm) II X4 965 ... Could this be a hardware compatibility issue?', c12 'AMD Athlon(tm) II X4 635', c13 'Intel Core 2 Quad Q6600', c33 'AMD Phenom II X6', and c30 (2024-01-23) goes no further than 'The only thing we have identified so far in common ... is the
+- [ ] 🟡 **symptom_contains_diagnosis** (low) — `n/a`
+  - claim: [symptom_contains_diagnosis / low] N_terminal.symptoms_visible[0] opens with a statement about the fix ('The Dart CPU-instruction restriction fix is available in Flutter 3.19.5 stable with Dart 3.3.3') rather than an observable phenomenon in the user's words.
+  - thread evidence: None
+  - suggested fix: None
+  - verifier: Confirmed against both graph and thread. The contract is explicit that symptoms_visible carries ONLY observable phenomena in the user's words and never a diagnosis, cause, or recommendation. 'The Dart CPU-instruction restriction fix is available in Flutter 3.19.5 stable with Dart 3.3.3' names the causal mechanism (CPU-instruction restriction) and is a release/fix statement, not something the user 
+
+### Refuted claims (auditor was wrong — do not act on these)
+
+- ~~unfaithful_reveal~~: [unfaithful_reveal / medium] e5 clarification dart_floor_test_crashes_in_roundsd_path answer says 'debugging identifies the SSE4.1 roundsd instruction', which users never said at that point and which is above the simulat
+  - why refuted: Both halves of the reviewer's rationale fail on the source. (a) The clarification e5 models is participant10's c47 request, which explicitly asked for BOTH the crash output AND the disassembly: 'dart --disassemble floor.dart 2> disasm.txt'. participant7 complied in c50, attaching disasm.txt and disasm-unknown-cpu.txt. 
+- ~~graph_shape~~: [graph_shape / low] e7 hard-requires the outcome of its own recommendation (flutter_3195_dart_333_verified_on_old_cpus, windows_build_and_ceil_sample_verified_working) via required_info.L3, and N6 keeps system_state_id S
+  - why refuted: Neither sub-claim is a contract violation. (a) Gettability is satisfied by construction: both ids are clarification info_ids on e6, and e6 is exactly the kind of handler-initiated probe the MEASUREMENT-CLASS rule says must be a clarification edge — 'test/try builds, version checks' — 'even when the probed toggle double
+
+
 ## Review checklist
 
 Structural (machine-checked by `scripts/validate.py`, re-verify after edits):

@@ -69,6 +69,31 @@ flowchart LR
 | `N3` |  | 0 | 0 | With the latest Mocha, the original tests run successfully on Node.js 22.18 without `--no-experimental-strip-types`. |
 | `N_terminal` | ✓ | 0 | 0 | The project uses the updated Mocha release, and its CI tests pass on Node.js 22.18 without disabling experimental type stripping. |
 
+## Machine review (audit pass, adversarially verified)
+
+Auditor verdict: **minor_issues** · 2 of 3 findings survived independent refutation.
+
+_The case tests whether an agent can move from a vague "Node 22.18 broke our CI, --no-experimental-strip-types fixes it" report to the reporter-specific cause (Mocha 10's module-loading fallback under newly-default type stripping) and the verified fix (upgrade Mocha), without settling for the opt-out flag or for reverting the suspected Node PR. The graph is largely faithful: the opening body, the __dirname/no-`type`-field/Node-24 clarifications, the Mocha 10 discovery, the folded minimal repro, the falsified PR-58657 revert, and the reporter's own confirmation that upgrading Mocha removes the need for the flag all map to real comments (c3, c9, c11–c12, c15, c19, c30). Two fidelity issues remain: the aftermath node N2_x is a dead end with no way back to the canonical path, and satisfaction condition 1 hard-asserts the ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX/error-code mechanism as the *reporter's* root cause even though the thread's own expert warned that repro was "probably significantly different" from what the reporter was seeing._
+
+### Confirmed findings
+
+- [ ] 🟠 **graph_shape** (medium) — `graph.nodes.N2_x (no outgoing edges; only inbound e3_N2__N2_x)`
+  - claim: The blind-path aftermath node N2_x has no outgoing edge at all, so an agent that proposes the (plausible, thread-recorded) PR-58657 revert is stranded in a state from which the terminal is unreachable, even though the real thread continued investigating from exactly that point.
+  - thread evidence: c30 (participant6): "Tried reverting https://github.com/nodejs/node/pull/58657 and the issue persists. I think the issue falls on the fact that we added the 'module-typescript' and 'commonjs-typescript' format to loaders." — the thread moves forward after the failed revert; and the reporter's own resolution (c19, "Upgrading to latest mocha does fix the initial problem") remained available. 10 of the 12 sibling graphs in data/github_v0/graphs wire their *_x aftermath nodes forward (e.g. gh_moby_moby_49498 N2_x -> e3_N2_x__N3).
+  - suggested fix: Add a recovery edge N2_x -> N3 carrying the same clarification as e4 ("upgrade from Mocha 10 to the latest Mocha and rerun without the flag"), so the falsified revert costs a turn but does not make the case unwinnable.
+  - verifier: Confirmed independently, and the framework code makes it worse than the reviewer argued. (a) Graph fact: N2_x is the target of e3_N2__N2_x and appears in no edge's `from`. (b) Runtime fact: I checked whether the framework repairs absorbing decoys automatically. src/graph_bench/oncall_graph/rollbacks.py exists precisely for this ("decoy destinations absorbing: an agent that matched one blind soluti
+- [ ] 🟠 **wrong_root_cause** (medium) — `satisfaction_conditions[0] and edges[e5_N3__N_terminal].solution.required_elements_for_full_match["explains_changed_typescript_error_and_fallback_behavior"]`
+  - claim: The graph states the ERR_UNKNOWN_FILE_EXTENSION -> ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX / missed-retry mechanism as "the reporter-specific root cause", but the thread established that mechanism only for another participant's repro and explicitly cautioned that the reporter's case is probably different; the reporter's observed failure (`__dirname` undefined) is consistent with type stripping making import() of the .ts file *succeed* as ESM so Mocha 10 never fell back to require(), not with an unhandled error code.
+  - thread evidence: c15 (participant8) derives the ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX analysis explicitly from "the repro of @participant4" ("because it's using the `import readFile = promises.readFile` syntax"); c16 (same author): "I think the repro from @participant4 is probably significantly different from what @participant3 or @reporter are seeing." The reporter's only stated symptom is c3: "What I saw was that suddenly `__dirname` was not defined." The only reporter-verified fact is c19: "I found that we also use mocha 10 ... Upgrading to latest mocha does fix the initial problem."
+  - suggested fix: Soften condition 1 to require the Mocha-10-loader-order cause (Mocha 10 import()s the .ts file first; under type stripping that path is now taken instead of falling back to require(), so the registered TypeScript hook never runs and the file executes as ESM — hence no `__dirname`), and mark the specific error-code detail as the mechanism established on the folded minimal repro rather than as a mandatory required element.
+  - verifier: Confirmed, and the reviewer's quotes are accurate. c15 (participant8) scopes the error-code analysis to participant4's repro ("the repro of @participant4 comes down to this ... because it's using the `import readFile = promises.readFile` syntax"), and c16 by the same author says "I think the repro from @participant4 is probably significantly different from what @participant3 or @reporter are seein
+
+### Refuted claims (auditor was wrong — do not act on these)
+
+- ~~unfaithful_reveal~~: The revert of PR 58657 was built and tested by a Node core maintainer against the tsx reproduction, not by the reporter against their Mocha 10 project, yet its outcome is placed on the user side as an observed symptom in
+  - why refuted: The factual premise checks out (c30 is participant6, a Node maintainer, on Aug 11, in the middle of the tsx investigation of c26; the reporter's own resolution was already confirmed Aug 7 in c19, and the reporter never built Node), but it is not a defect under the contract. Every solution edge's aftermath must be repor
+
+
 ## Review checklist
 
 Structural (machine-checked by `scripts/validate.py`, re-verify after edits):

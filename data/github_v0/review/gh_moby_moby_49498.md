@@ -76,6 +76,38 @@ flowchart LR
 | `N5` |  | 0 | 0 | Affected users report that Docker 28.0.1 restores the container networking that was broken by 28.0.0, without their earlier manual iptables  |
 | `N_terminal` | ✓ | 0 | 0 | Docker 28.0.1 is available and affected users confirm that container networking works again after upgrading. |
 
+## Machine review (audit pass, adversarially verified)
+
+Auditor verdict: **needs_rework** · 3 of 5 findings survived independent refutation.
+
+_The case tests whether an agent can move a Docker-28 "containers can't reach Tailscale" report off the reporter's DNS theory, through a falsified iptables rule-relocation attempt, to the interaction between Docker 28.0.0's reorganized FORWARD rules and Tailscale's stateful-filtering ts-forward DROP rule. The early graph (N0→N1→N2_x→N3→N4) is a faithful and well-built rendering of comments c0-c39: the ts-forward relocation blind path is genuinely falsified in the thread, and the stateful-filtering toggle is correctly modeled as a measurement rather than a solution. The tail (N4→N5→terminal) is where it breaks: the released 28.0.1 fix is handed to the simulated user as a clarification answer before the solution edge proposes it, and the graph asserts that 28.0.1 resolved the Tailscale case — something the thread never establishes for any Tailscale user, and which the maintainer explicitly doubted._
+
+### Confirmed findings
+
+- [ ] 🟠 **circular_prerequisite_on_solution_content** (medium) — `n/a`
+  - claim: [future_knowledge_leak / high] at edges[4] e5_N4__N5, clarification info_id "docker2801_verified_restores_affected_networking" (and edges[5] e6_N5__N_terminal.solution.required_info.L3, same id) — the graph's final answer (upgrade to Docker 28.0.1) is delivered to the agent as a clarification answer on e5, and is then made a hard prerequisite (required_info L3) for the very solution edge that proposes it, so the user pre-verifies the fix before the agent may recommend it.
+  - thread evidence: None
+  - suggested fix: None
+  - verifier: The thread order is confirmed as the reviewer states and is the exact inverse of the graph. c49 (participant1): "28.0.1 is likely to fix the issues ... I'd recommend waiting for it"; c50 announces packaging and closes the issue as completed. Only afterwards, unsolicited and post-close, do c51/c52/c53 confirm. Nowhere does anyone ask a reporter to install 28.0.1 as a diagnostic. The graph's e5 ques
+- [ ] 🟡 **unverified_fix_mandated_for_full_match** (low) — `n/a`
+  - claim: [wrong_root_cause / medium] at satisfaction_conditions[3] ("Must recommend Docker 28.0.1 as the shipped fix...") and edges[5] e6_N5__N_terminal.solution.required_elements_for_full_match["recommends_upgrade_to_docker_28_0_1"] — the graph mandates 28.0.1 as the resolution of the Tailscale failure and demotes the actually-verified fix to a mere interim workaround, but the thread never establishes that 28.0.1 fixes the stateful-filtering case and the maintainer explicitly doubted it would.
+  - thread evidence: None
+  - suggested fix: None
+  - verifier: Two of the three sub-claims verify. c33 is quoted accurately: "I'm not sure a simple rearrangement of the moby 28.0 rules will fix this one (as it should for some of the other issues here)", and c50 is only a belief ("I believe all the issues here will be addressed by some combination of #49518 and #49538") with no Tailscale-side confirmation anywhere after it. So requiring recommends_upgrade_to_d
+- [ ] 🟡 **user_perceives_resolved_mismatch** (low) — `n/a`
+  - claim: [terminal_semantics / low] at nodes.N4.user_perceives_resolved (false) — N4 marks the user as not perceiving resolution, but in the thread both Tailscale reporters explicitly declare themselves fixed at exactly this point.
+  - thread evidence: None
+  - suggested fix: None
+  - verifier: Confirmed against the thread and against the graph's own text. c36 (participant2): "i disabled it, upgrade to docker 28 and all running fine"; c39 (reporter): "Can comfirm, upgraded to 28 and is all running fine. Thank you." N4's own symptoms_visible says "the affected systems can upgrade to Docker 28 and container communication works again" and e4's user_answer says "everything works. The origina
+
+### Refuted claims (auditor was wrong — do not act on these)
+
+- ~~unfaithful_reveal~~: [unfaithful_reveal / medium] at edges[4] e5_N4__N5.clarifications[0].user_answer_in_this_oncall and nodes.N5.symptoms_visible — the simulated (Tailscale) user is made to report a 28.0.1 verification that no Tailscale-aff
+  - why refuted: The factual half is right (c51 = swag/rocky9 internal routing, c52 = Oracle Cloud VPS, c53 = "I haven't even downgraded or touched the iptables"; reporter and participant2 never report on 28.0.1), but it does not support the defect. The contract folds multi-user threads into ONE simulated user side and requires only th
+- ~~symptom_contains_diagnosis~~: [symptom_contains_diagnosis / low] at nodes.N3.symptoms_visible[0] — N3's symptom text carries diagnostic framing and configuration state rather than user-observable phenomena.
+  - why refuted: The contract bars a diagnosis, cause, or recommendation in symptoms_visible; N3 contains none. Its three clauses are all observations: "Docker 28 still cannot route container traffic to Tailscale" (the user's own complaint), "the iptables counters increase along the affected forwarding path" (literally what the c13/c14
+
+
 ## Review checklist
 
 Structural (machine-checked by `scripts/validate.py`, re-verify after edits):

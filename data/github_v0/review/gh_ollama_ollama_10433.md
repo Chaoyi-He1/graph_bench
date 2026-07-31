@@ -88,6 +88,40 @@ flowchart LR
 | `N7` |  | 0 | 0 | With `OLLAMA_DEBUG=1`, Ollama 0.7.0 again leaves two or three runner processes while only one model is listed, and the retained process PIDs |
 | `N_terminal` | ✓ | 1 | 0 | After upgrading to Ollama 0.7.1, the reporter observes no extra hidden runners for about two days and later confirms that the problem has no |
 
+## Machine review (audit pass, adversarially verified)
+
+Auditor verdict: **needs_rework** · 3 of 6 findings survived independent refutation.
+
+_The case is a long evidence-gathering thread: retained `ollama runner` children under a live `ollama serve` while `ollama ps` is empty, narrowed across four Ollama releases to a scheduler race during very early runner startup (c42), fixed in v0.7.1 (c55) and verified by the reporter (c56, c57). The graph's spine is faithful — clarification chain order, the version-test-as-measurement modelling, root cause, and the verification requirement all match the thread, and images are hooked to the right turns. The main defect is that the solution hard-requires `leaked_runner_occurs_during_very_early_startup`, an id the graph itself declares engineer-inferred and that no clarification ever grants, so a correct agent can be scored down for information it cannot obtain. Secondary issues: a release-number gate in required_elements, two user answers that speak in the maintainer's voice, and no blind edge for the thread's one explicitly falsified hypothesis._
+
+### Confirmed findings
+
+- [ ] 🟠 **required_but_ungettable** (medium) — `n/a`
+  - claim: [required_but_ungettable / high] at graph.edges[e8_N7__N_terminal].solution.required_info.L2 -> "leaked_runner_occurs_during_very_early_startup": The solution hard-requires an info_id that no clarification asks for, that is not in N0's info_state and is not volunteered anywhere — and that the graph simultaneously lists in info_inferred_by_engineer, so it is engineer inference being scored as gettable evidence.
+  - thread evidence: None
+  - suggested fix: None
+  - verifier: Independently confirmed by enumeration over the graph: the 13 clarification info_ids are [debug_logs_capture_exact_retained_runner_pids, detector_confirms_runner_count_exceeds_active_model_count, expired_event_positive_refcount_repeats_over_one_million_times, logs_show_health_check_then_overlapping_load_and_unload, multiple_model_families_show_same_behavior, nginx_reverse_proxy_and_preloaded_model
+- [ ] 🟠 **logistics_gate** (medium) — `n/a`
+  - claim: [logistics_gate / medium] at graph.edges[e8_N7__N_terminal].solution.required_elements_for_full_match -> "names_ollama_071_as_fixed_release" (also solution.intent "release the fix in Ollama 0.7.1" and approach_keywords "ollama_071"): Full match is gated on naming a specific future release number, which is packaging/release-schedule knowledge from the maintainer's roadmap rather than part of the diagnostic-to-fix chain.
+  - thread evidence: None
+  - suggested fix: None
+  - verifier: Confirmed against both the thread and the repo's own catalog. In the thread the version number is produced purely by release scheduling: c43 reporter 'when you will release the fix?', c44 participant3 'the next release should be out within a few days', c54 reporter 'will the fix be a part of v0.7.1 or v0.7.2?', c55 participant3 'The fix will be in v0.7.1'. Nothing technical in the thread determine
+- [ ] 🟡 **unfaithful_reveal** (low) — `n/a`
+  - claim: [unfaithful_reveal / low] at graph.edges[e7_N6__N7].clarifications[0].user_answer_in_this_oncall: The user answer narrates the handler's own reply — "The maintainer confirmed the capture was sufficient and said debug logging could be disabled" — which the simulated user cannot know before the agent says it.
+  - thread evidence: None
+  - suggested fix: None
+  - verifier: Confirmed verbatim on both sides. The graph's answer ends '...The maintainer confirmed the capture was sufficient and said debug logging could be disabled.' In the thread, that content is exclusively c52 (participant3): 'Yes, the PIDs are in there - go ahead and remove debug logging while I analyze the log.' The reporter's own turn c51 says only 'next try. Tell me then if it's ok, cause I will dis
+
+### Refuted claims (auditor was wrong — do not act on these)
+
+- ~~unfaithful_reveal~~: [unfaithful_reveal / medium] at graph.edges[e5_N4__N5].clarifications[0].user_answer_in_this_oncall: The user answer has the reporter state that "The offending older PID did not appear in the scheduler log at all" — a de
+  - why refuted: The factual premise is right (the sentence traces to c39, participant3, not to c38), but the conclusion that this is a defect does not follow under the contract. The edge's own question_patterns include 'Does the retained runner PID appear in the 0.6.8 scheduler logs?' — that is a handler-initiated, user-executable mea
+- ~~graph_shape~~: [graph_shape / medium] at graph.edges (no edge has solution.is_known_blind_path=true): The thread's one clearly falsified explanation — the initial brush-off that the runners are orphans from a killed/crashed server — is
+  - why refuted: The quotes are accurate (c0 participant1 'most likely explanation is that the server was killed or crashed, orphaning the runners'; c8/c9 ps output with ppid 2268027 = the live /usr/local/bin/ollama serve; c15 the load/unload re-explanation; c17/c19 the gemma3 red herring), but c0 is a hypothesis plus a request for log
+- ~~future_knowledge_leak~~: [future_knowledge_leak / low] at title: The task title ("Ollama 0.6.6 leaves runner processes and VRAM allocated after models disappear from ollama ps") states the runner-process finding, which is knowledge acquired late
+  - why refuted: The observation about provenance is correct (upstream title is 'Ollama 0.6.6 memory leak with different models'; 'runner processes' is first named by participant1 in c0 and demonstrated by the reporter in c8/c9), but it does not constitute a leak under this contract. The contract constrains the body only ('The Task's b
+
+
 ## Review checklist
 
 Structural (machine-checked by `scripts/validate.py`, re-verify after edits):

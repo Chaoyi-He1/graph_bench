@@ -88,6 +88,41 @@ flowchart LR
 | `N6` |  | 0 | 0 | With camera_android_camerax 0.6.14, affected real phones and tablets display the live preview in the expected orientation while the device o |
 | `N_terminal` | ✓ | 0 | 0 | The runtime-aware preview rotation fix is available in camera_android_camerax 0.6.14 and affected users have verified correct previews on re |
 
+## Machine review (audit pass, adversarially verified)
+
+Auditor verdict: **needs_rework** · 5 of 5 findings survived independent refutation.
+
+_The case tests a long Flutter camera_android_camerax preview-rotation regression whose real answer is two interacting plugin defects (the preview Texture was never rebuilt on orientation-stream updates, and API level was used as a proxy for SurfaceProducer.handlesCropAndRotation), released in 0.6.14. The graph's spine is faithful: the duplicate-closure and the fixed RotatedBox workaround are correctly marked as falsified, the 0.6.9 and 0.6.14 package probes are correctly modeled as clarifications, and the satisfaction conditions match participant5's own root-cause post (c161) almost verbatim. The problems are leaks rather than wrong answers: node N5 hands the agent root cause #1 (and carries both engineer-only inference ids in its info_state) before the final solution edge, and the Task body pre-reveals a fact that edge e2 is supposed to grant as a clarification. One clarification answer also puts the maintainer's own repro, from a point later in the thread, into the user's mouth._
+
+### Confirmed findings
+
+- [ ] 🔴 **future_knowledge_leak** (high) — `n/a`
+  - claim: N5.symptoms_visible[1] ("During debugging, the calculated orientation changes while the displayed preview can remain at its previous angle.") states root cause #1 and is the maintainer's post-hoc diagnosis, not any user's observation.
+  - thread evidence: None
+  - suggested fix: None
+  - verifier: Confirmed against the thread. The calculated-vs-displayed split appears ONLY in c161 (participant5, 2025-02-12, the fix announcement): 'by only returning a Texture and not a widget with the ability to update the state ... the preview actually would not re-render when an update to the device orientation is received. This caused confusion because we were seeing the right rotation calculation ... but
+- [ ] 🟠 **future_knowledge_leak** (medium) — `n/a`
+  - claim: The three ids e8 declares as info_inferred_by_engineer (preview_widget_not_rebuilt_on_orientation_stream_updates, api_level_is_unreliable_proxy_for_surface_crop_rotation_handling, surfaceproducer_handles_crop_and_rotation_must_select_preview_path) are also placed in the user-side info_state of N5/N6/N_terminal.
+  - thread evidence: None
+  - suggested fix: None
+  - verifier: Verified in the graph: the three ids sit at N5.info_state[15..17] and recur in N6 and N_terminal, while e8.info_inferred_by_engineer lists exactly the same three -- a self-contradiction (surfaced to the user AND engineer-only inference). They also have no provenance: a scan of every edge shows none of the three is a clarification info_id anywhere, and N5.volunteered_info / N6.volunteered_info are 
+- [ ] 🟠 **future_knowledge_leak** (medium) — `n/a`
+  - claim: The Task body sentence 'I see the problem with the regular Skia renderer and also when trying Impeller.' is knowledge the reporter produced only after the duplicate closure, and it hands over the info_id renderer_toggle_does_not_remove_rotation that e2 grants as an L2 clarification.
+  - thread evidence: None
+  - suggested fix: None
+  - verifier: Confirmed by reading the full GitHub body: it contains pubspec/pubspec.lock, repro steps, expected/actual, code sample, flutter doctor, and the 0.6.7+2 override note -- the strings 'Skia' and 'Impeller' do not occur anywhere in it. The claim first appears at c2 (reporter, 2024-08-28T12:27), written in reply to c1's 'This seems similar to #149294 ... Will close as duplicate for now': 'this issue is
+- [ ] 🟡 **unfaithful_reveal** (low) — `n/a`
+  - claim: e3's orientation_at_camera_start_changes_failure answer includes the Pixel 5 '180 degrees in one direction and 90 in the other' detail, which is the maintainer's own reproduction dated after the 0.6.9 probe the graph places at e4.
+  - thread evidence: None
+  - suggested fix: None
+  - verifier: Partially confirmed, and weaker than reported. The exact quantification is indeed handler voice and post-0.6.9: c79 (participant5, 2024-10-16) 'I actually see a rotation that's off by 180 degrees when the app is started while the device is in landscape left and 90 degrees (counter clockwise) when ... landscape right', two weeks after 0.6.9 landed at c63 (2024-10-02); the user at c78 (participant25
+- [ ] 🟡 **image_misassignment** (low) — `n/a`
+  - claim: N4_x.symptom_images (img11, img12) are the workaround proposer's 'Before FIX / After FIX' pair, whose second image shows a correctly oriented preview rather than the post-attempt failure state the node describes.
+  - thread evidence: None
+  - suggested fix: None
+  - verifier: Confirmed factually. raw.images maps img11 and img12 to c140 (participant49), whose markdown table is captioned '| Before FIX | After FIX |' around RotatedBox(quarterTurns: 1) + AspectRatio. I opened both files: img11 shows a sideways/rotated 'Take Photo' preview, img12 shows an upright, correctly oriented desk/laptop preview. The falsification is text-only (c142 'this works except when the device
+
+
 ## Review checklist
 
 Structural (machine-checked by `scripts/validate.py`, re-verify after edits):

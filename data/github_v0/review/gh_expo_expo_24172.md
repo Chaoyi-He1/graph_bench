@@ -81,6 +81,50 @@ flowchart LR
 | `N5` |  | 0 | 0 | Dependency inspection shows expo-image-manipulator 11.3.0 keeping expo-image-loader 4.3.0 in affected local builds; another affected user re |
 | `N_terminal` | ✓ | 0 | 0 | Fresh Android builds containing expo-image-loader 4.4.0 through aligned expo-image-picker and expo-image-manipulator versions successfully r |
 
+## Machine review (audit pass, adversarially verified)
+
+Auditor verdict: **needs_rework** · 5 of 8 findings survived independent refutation.
+
+_The case tests whether an agent resists the misleading `content://` IllegalArgumentException and instead chases stale native expo-image-loader code — both from a local build's Gradle cache and from expo-image-manipulator 11.3.0 pinning image-loader 4.3.0 — and the graph gets that spine, the single falsified whatwg-fetch blind path, and the measurement-class classification right. The main problems are scoring-relevant rather than structural: full match requires naming the Glide permission/SecurityException chain, which only ever appeared in the Expo engineer's private log analysis (c20-c21, c69) and which no clarification in the graph can surface; the Task body leaks the Android 12/13 distribution that the graph simultaneously charges as an L1 clarification; and the content-URI semantics clarification is answered in the engineer's voice by a reporter who twice says he has no idea what a content URI is. The blind aftermath node N1_x is also absorbing, unlike every other blind path in this dataset. None of these invert the answer key, but the Glide requirement would dock a correct agent, so a rework pass is warranted._
+
+### Confirmed findings
+
+- [ ] 🟠 **future_knowledge_leak** (medium) — `n/a`
+  - claim: [future_knowledge_leak / medium] The task body already states the Android-12/13 distribution and the Android 9 test device, which in the thread only appear after the handler asked; the same fact is an L1 clarification on e2 and an L1 required_info of the final solution.
+  - thread evidence: None
+  - suggested fix: None
+  - verifier: Confirmed against both files. The real opening body says only 'I don't have Android. I have no idea what is an uri with content://' plus the stack trace, package version and env block -- no Android version distribution anywhere. The distribution first appears in c8, and only after participant2 asks in c7 'Devices, OS versions etc?': 'I have an iPhone (personal) and an Android 9.1 for testing... As
+- [ ] 🟠 **unfaithful_reveal** (medium) — `n/a`
+  - claim: [unfaithful_reveal / medium] e3.clarifications[3] (all_photo_picker_results_are_content_uris) makes the simulated user explain Android photo-picker URI semantics -- knowledge the reporter demonstrably did not have and which was stated by the Expo engineer.
+  - thread evidence: None
+  - suggested fix: None
+  - verifier: Confirmed verbatim. The user_answer is 'The Android photo picker normally returns all selected photos as content URIs. expo-image-picker is expected to convert them to accessible file URIs.' That is participant2's line in c54: 'All photos that come back from the photo picker come as content Uris. We convert them to file Uri so they can be accessed.' The reporter's actual epistemic state is the opp
+- [ ] 🟡 **unfaithful_reveal** (low) — `n/a`
+  - claim: [unfaithful_reveal / low] The second half of e3.clarifications[2] user_answer ('the Expo developer can download the same images and display them successfully with the test app on the same device profile') reports the handler's own experiment back to the handler as user-supplied information.
+  - thread evidence: None
+  - suggested fix: None
+  - verifier: Confirmed. The 'Expo test app works' half is participant2's own observation, not the reporter's: c58 'following your steps does not reproduce on the same device for me. I can pick the image and display it without issue'; c63 'I can download several images from that site and none are causing any problems on the exact same device. I can see the issue only when running your apk'. The reporter's contr
+- [ ] 🟡 **multi_user_merge_undeclared** (low) — `n/a`
+  - claim: [multi_user_merge_undeclared / low] Second- and third-party reports are folded into the single simulated user on e2 and e4 with no declaring comment; only e6 declares the merge.
+  - thread evidence: None
+  - suggested fix: None
+  - verifier: Confirmed. e6's comment ends 'Multi-user evidence is folded into one simulated user side'; e2's comment ('Thread c7-c17 and c36-c42: device reports, promise behavior, and production history...') and e4's ('Thread c26-c31 and c36-c44: testing the released picker update was a measurement...') carry no such declaration, yet both answers speak for other participants. e4: 'Other users also reported it 
+- [ ] 🟡 **cosmetic_text_corruption** (low) — `n/a`
+  - claim: [cosmetic_text_corruption / low] The API name is corrupted by the pseudonymizer to 'launchImageLibraryAparticipant99' in title, N0.symptoms_visible[0], and e2 clarifications[1] question_patterns/user_answer.
+  - thread evidence: None
+  - suggested fix: None
+  - verifier: Independently confirmed by grep: the graph contains 'launchImageLibraryAparticipant99' exactly 4 times and zero clean occurrences, while the raw thread contains 'launchImageLibraryAsync' 12 times (issue body, c13, c28, c31, c36, c55, c74, c78-adjacent). The scrubber substring-replaced the 'sync' inside 'Async' with a participant token -- a global-substitution bug, since 'participant99' also appear
+
+### Refuted claims (auditor was wrong — do not act on these)
+
+- ~~required_but_ungettable~~: [required_but_ungettable / high] e7 required_elements_for_full_match[0] 'identifies_glide_permission_failure_and_stale_image_loader_as_root_cause' (and satisfaction_conditions[0]) demands the Glide permission chain, whic
+  - why refuted: The contract says engineer-only inference belongs in info_inferred_by_engineer, NOT in hard required_info -- and that is exactly where the graph puts it: e7.info_inferred_by_engineer = ['local_build_contained_stale_native_image_loader_code','misleading_content_uri_exception_followed_glide_security_exception'], while re
+- ~~graph_shape~~: [graph_shape / medium] N1_x is an absorbing aftermath node with no outgoing edge, so the whatwg-fetch blind path can only be escaped via an auto-generated rollback, unlike 12 of 14 github_v0 graphs.
+  - why refuted: The structural fact is correct -- N1_x has no authored out-edge (edges are e1 N0->N1_x, e2 N0->N1, e3 N1->N2, e4 N2->N3, e5, e6, e7) -- but it is a supported encoding, not a defect. src/graph_bench/oncall_graph/rollbacks.py exists precisely for this: 'Auto-generate rollback edges out of blind/decoy destinations... With
+- ~~graph_shape~~: [graph_shape / low] The clarification chain does not follow the thread's order: the emulator reproduction (N2) precedes the expo-image-picker 14.5.0 retest (N3), and the yarn-why / image-manipulator discovery is deferred
+  - why refuted: The chronology the reviewer reconstructs is accurate (devices c7-c17 Aug 30 -> 14.5.0 retest c26-c36 Sep 5-6 -> yarn why c43-c45 Sep 6 18:24 -> emulator repro c53-c66 Sep 6 evening -> EAS c69-c72 Sep 7 -> manipulator confirmation c74-c77 Sep 9), and the graph does reorder. But the contract is explicit that 'a task grap
+
+
 ## Review checklist
 
 Structural (machine-checked by `scripts/validate.py`, re-verify after edits):

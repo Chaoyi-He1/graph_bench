@@ -68,6 +68,60 @@ Semantic (the defect catalog — check each against the source thread):
 """
 
 
+FINDINGS_PATH = REPO / 'data' / 'REVIEW_FINDINGS.json'
+_SEV_MARK = {'high': '🔴', 'medium': '🟠', 'low': '🟡'}
+_FINDINGS: dict = {}
+
+
+def _findings_section(slug: str) -> list[str]:
+    """Render the machine-review findings for one case, if any exist."""
+    if not FINDINGS_PATH.exists():
+        return []
+    data = json.loads(FINDINGS_PATH.read_text()).get(slug)
+    if not data:
+        return []
+    lines = [
+        '',
+        '## Machine review (audit pass, adversarially verified)',
+        '',
+        f'Auditor verdict: **{data["reviewer_verdict"]}** · '
+        f'{data["n_confirmed"]} of {data["n_raised"]} findings survived '
+        f'independent refutation.',
+        '',
+        f'_{data["summary"]}_',
+        '',
+    ]
+    if data['confirmed_findings']:
+        lines += ['### Confirmed findings', '']
+        order = {'high': 0, 'medium': 1, 'low': 2}
+        for f in sorted(
+            data['confirmed_findings'],
+            key=lambda x: order.get(x.get('severity'), 3),
+        ):
+            sev = f.get('severity', '?')
+            lines += [
+                f'- [ ] {_SEV_MARK.get(sev, "⚪")} **{f.get("defect_class")}** '
+                f'({sev}) — `{f.get("location", "n/a")}`',
+                f'  - claim: {f.get("claim")}',
+                f'  - thread evidence: {f.get("thread_evidence")}',
+                f'  - suggested fix: {f.get("suggested_fix")}',
+                f'  - verifier: {f.get("verifier_reasoning", "")[:400]}',
+            ]
+        lines.append('')
+    if data['refuted_claims']:
+        lines += [
+            '### Refuted claims (auditor was wrong — do not act on these)',
+            '',
+        ]
+        for r in data['refuted_claims']:
+            lines += [
+                f'- ~~{r.get("defect_class")}~~: {r.get("claim", "")[:220]}',
+                f'  - why refuted: {r.get("why_refuted", "")[:320]}',
+            ]
+        lines.append('')
+    return lines
+
+
 def render_case(graph_path: Path, out_dir: Path) -> tuple[str, bool]:
     task = Task.model_validate(json.loads(graph_path.read_text()))
     g = task.graph
@@ -138,6 +192,7 @@ def render_case(graph_path: Path, out_dir: Path) -> tuple[str, bool]:
             f'| `{nid}` | {"✓" if n.is_terminal else ""} '
             f'| {len(n.volunteered_info)} | {len(n.symptom_images)} | {sym} |'
         )
+    lines += _findings_section(task.task_id)
     lines += ['', CHECKLIST]
     out = out_dir / f'{graph_path.stem}.md'
     out.write_text('\n'.join(lines))
@@ -145,25 +200,44 @@ def render_case(graph_path: Path, out_dir: Path) -> tuple[str, bool]:
 
 
 def main() -> None:
+    global _FINDINGS  # noqa: PLW0603
+    _FINDINGS = (
+        json.loads(FINDINGS_PATH.read_text())
+        if FINDINGS_PATH.exists()
+        else {}
+    )
     index: list[str] = [
         '# Human review queue',
         '',
         'One page per task graph: rendered graph, edge audit table, source',
         'links, and the review checklist (defect catalog from the pilot).',
         '',
-        '| case | kind | reviewed |',
-        '|---|---|---|',
+        '| case | kind | audit verdict | confirmed findings | reviewed |',
+        '|---|---|---|---|---|',
     ]
     for graphs_dir in sorted(REPO.glob('data/*/graphs')):
         out_dir = graphs_dir.parent / 'review'
         out_dir.mkdir(exist_ok=True)
         for gp in sorted(graphs_dir.glob('*.json')):
             stem, reviewed = render_case(gp, out_dir)
+            created = json.loads(gp.read_text()).get('metadata', {}).get(
+                'created_from', ''
+            )
             rel = (out_dir / f'{stem}.md').relative_to(REPO)
-            kind = 'draft' if 'github' in str(gp) else 'pilot'
+            kind = 'LLM draft' if 'LLM-draft' in created else 'hand'
             link = rel.as_posix().removeprefix('data/')
+            fd = _FINDINGS.get(stem, {})
+            sevs = [
+                f.get('severity') for f in fd.get('confirmed_findings', [])
+            ]
+            badge = ' '.join(
+                f'{_SEV_MARK[s]}{sevs.count(s)}'
+                for s in ('high', 'medium', 'low')
+                if sevs.count(s)
+            ) or '—'
             index.append(
                 f'| [{stem}]({link}) | {kind} '
+                f'| {fd.get("reviewer_verdict", "—")} | {badge} '
                 f'| {"✅" if reviewed else "⬜"} |'
             )
             print('wrote', rel)

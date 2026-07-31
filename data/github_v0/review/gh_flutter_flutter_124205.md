@@ -75,6 +75,30 @@ flowchart LR
 | `N5` |  | 0 | 0 | On the fixed Flutter release and current master, affected users can open and dismiss the keyboard without the extra white space or incorrect |
 | `N_terminal` | ✓ | 0 | 0 | The Flutter web geometry fix is available in stable 3.38.6 and later; reporters confirm that focusing, closing, and reopening mobile keyboar |
 
+## Machine review (audit pass, adversarially verified)
+
+Auditor verdict: **minor_issues** · 1 of 4 findings survived independent refutation.
+
+_The case is a long-running Flutter web bug (extra blank space between a focused text field and the mobile virtual keyboard) that ran for ~3 years and was finally closed after PR 179581 (the fix for the identical negative-view-inset defect tracked as issue 175074) was cherry-picked into stable 3.38.6. The graph's spine is faithful: the resizeToAvoidBottomInset dead end is correctly blind-labelled (reporter answered "Already tried" in c3, and c25/c35/c95 repeat the failure), the physical-device and HTML-renderer probes are correctly clarification edges with the right images from c7 and c14, the decisive Size(412,458)/-312 inset measurement matches c100 verbatim, and the terminal verification matches c109-c113. Defects found are fidelity-level, not scoring-inverting: an opening-report leak of a fact that the graph itself later asks for, a clarification order inverted relative to the thread, and release-identifier requirements in the full-match elements._
+
+### Confirmed findings
+
+- [ ] 🟠 **future_knowledge_leak** (medium) — `body (Task opening report)`
+  - claim: The opening report already states physical-device iPhone AND Android reproduction, which in the thread is only established later — and which is exactly what the graph's own e2 clarification asks for.
+  - thread evidence: Original body mentions only 'open the Flutter app on the iPhone mobile browser' and the flutter doctor block lists CoreSimulator devices; c0 (participant1): 'I see that you tried on simulator. Can you try the same on physical device and confirm if you still get same behavior or not ?'; the physical-device/Android fact first appears in c1 (reporter): 'Yes, i have same issue on iPhone 14, iPhone 10, Android Samsung S22 Ultra.' The graph body says 'I can reproduce it with a CanvasKit web build on physical iPhones and Android devices.'
+  - suggested fix: Rewrite the body to the reporter's day-0 knowledge only (iPhone mobile browser / Safari, CanvasKit web build, hosted repro, 3.7.9); drop 'physical' and 'Android devices'. Leave that fact to be surfaced by the e2 clarification info_id reproduces_on_physical_ios_and_android, which the final solution hard-requires at L1.
+  - verifier: Independently confirmed against the raw body and c0-c1. The original body only says 'open the Flutter app on the iPhone mobile browser' / 'open it on Safari', and its flutter doctor block lists a single iOS CoreSimulator device plus macOS/Chrome — no physical phone, and no Android device at all (the only Android entries are SDK/toolchain, not a device). c0 (participant1) explicitly reads the repor
+
+### Refuted claims (auditor was wrong — do not act on these)
+
+- ~~logistics_gate~~: Two of the five full-match elements ('identifies_pr_179581_as_the_framework_fix', 'mentions_stable_3_38_6_or_later') gate a full match on release/packaging identifiers rather than on the diagnostic-to-fix chain, so an ag
+  - why refuted: The graph already honors the contract's actual rule: the two identifiers are declared in info_inferred_by_engineer and are kept OUT of the solution's hard required_info (required_info L1/L2/L3 contain only user-gettable clarification ids). Grading elements are the answer key for the reply, not a gettability constraint,
+- ~~graph_shape~~: The clarification chain order is inverted relative to the thread: the graph proposes the resizeToAvoidBottomInset blind path directly from N0 and only afterwards asks the physical-device question, whereas in the thread t
+  - why refuted: The chronology claim is factually right (c0 device question -> c1 answer -> c2 resizeToAvoidBottomInset -> c3 'Already tried ('), but a task graph is an answer key, not a transcript, and nothing in the contract requires canonical-path order to mirror comment order. The chosen shape is in fact the stronger encoding: e1'
+- ~~unfaithful_reveal~~: Two engineer-side facts are carried in the user-side info_state of N5 and N_terminal even though no clarification grants them and no node volunteers them; in the thread they are maintainer knowledge, not something the re
+  - why refuted: The observation is accurate but is not a defect. Per the contract info_state is 'the monotonically growing set of surfaced information ids along the canonical path' — it is not restricted to user-produced ids, and the gettability rule it feeds applies only to a solution's hard required_info. Both ids sit in e6's info_i
+
+
 ## Review checklist
 
 Structural (machine-checked by `scripts/validate.py`, re-verify after edits):
