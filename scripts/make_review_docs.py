@@ -1,0 +1,176 @@
+"""Generate per-case human-review documents under data/*/review/.
+
+Each drafted (or hand-annotated) task graph gets one Markdown page with the
+rendered graph (mermaid — GitHub renders it natively), an edge-by-edge audit
+table, source links, and the review checklist distilled from the pilot's
+defect catalog. Reviewers work through the checklist, edit the graph JSON if
+needed, re-validate, and flip ``metadata.hitl_reviewed`` to true.
+
+Usage:  uv run scripts/make_review_docs.py
+"""
+
+from __future__ import annotations
+
+import json
+import sys
+from pathlib import Path
+
+REPO = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO / 'src'))
+
+from graph_bench.oncall_graph.models import Task  # noqa: E402
+from graph_bench.oncall_graph.visualize import task_to_mermaid  # noqa: E402
+
+CHECKLIST = """\
+## Review checklist
+
+Structural (machine-checked by `scripts/validate.py`, re-verify after edits):
+
+- [ ] validates: schema + info-containment + terminal reachability
+
+Semantic (the defect catalog — check each against the source thread):
+
+- [ ] **Faithful blind paths** — every `is_known_blind_path` edge corresponds
+  to an attempt actually falsified in the thread (or a brush-off the
+  reporter rejected). No invented failures; no ACCEPTED fix mislabeled as
+  a blind path (the most common LLM defect class).
+- [ ] **Gettable required info** — every id in any `solution.required_info`
+  is obtainable: a clarification on some edge, or in the start node's
+  info_state, or volunteered (with matching `volunteered_info` text).
+  Engineer-only inference belongs in `info_inferred_by_engineer` /
+  `inference_hint`, not in hard required_info.
+- [ ] **Measurement-class rule** — handler-initiated measurements the user
+  executed (bisections, test builds, config probes, version checks) are
+  clarification edges, not solutions; their answers state what the
+  measurement showed.
+- [ ] **No logistics gates** — `required_elements_for_full_match` encode the
+  technical diagnostic→fix chain, not release/packaging/scheduling
+  remarks the engineer merely mentioned.
+- [ ] **Coherent reveals** — each `user_answer_in_this_oncall` is consistent
+  with the thread, delivers what it promises, and stays in the user's
+  voice (no future knowledge, no diagnosis the user never made).
+- [ ] **Symptoms are observations** — `symptoms_visible` contains only what
+  the user can see; no causes or advice.
+- [ ] **Terminal semantics** — satisfaction_conditions demand root cause +
+  evidence grounding + prohibition of falsified moves + user verification;
+  the terminal node is the verified-resolved state.
+- [ ] **Image assignment** — referenced attachments exist and sit on the
+  right hook (opening / node symptom / clarification evidence).
+- [ ] **Persona** — matches the reporter's actual expertise and style.
+
+## How to sign off
+
+1. Edit the graph JSON if needed (authored fields only; keep
+   `concrete_example` as the factual record).
+2. `uv run scripts/validate.py '<graph path>'`
+3. Set `metadata.hitl_reviewed: true` in the graph JSON.
+4. Re-run `uv run scripts/make_review_docs.py` to refresh this page.
+"""
+
+
+def render_case(graph_path: Path, out_dir: Path) -> tuple[str, bool]:
+    task = Task.model_validate(json.loads(graph_path.read_text()))
+    g = task.graph
+    src = task.metadata.created_from or ''
+    url = src.split(' ')[0] if src.startswith('http') else ''
+    kind = (
+        'LLM draft (needs review)'
+        if 'LLM-draft' in src
+        else 'hand-annotated pilot'
+    )
+    lines = [
+        f'# Review: {task.task_id}',
+        '',
+        f'**{task.title}**',
+        '',
+        f'- source: {url or src}',
+        f'- kind: {kind}',
+        f'- reviewed: `{task.metadata.hitl_reviewed}`',
+        f'- graph: `{graph_path.relative_to(REPO)}` · raw thread: '
+        f'`{graph_path.relative_to(REPO).as_posix().replace("/graphs/", "/raw/")}`',
+        '',
+        '```mermaid',
+        task_to_mermaid(task),
+        '```',
+        '',
+        '## Opening (body)',
+        '',
+        '> ' + (task.body or '').replace('\n', '\n> '),
+        '',
+        '## Satisfaction conditions',
+        '',
+    ]
+    lines += [f'{i + 1}. {c}' for i, c in enumerate(task.satisfaction_conditions)]
+    lines += ['', '## Edges', '']
+    lines += [
+        '| edge | type | gates / info | payload |',
+        '|---|---|---|---|',
+    ]
+    for e in g.edges:
+        if e.solution is not None:
+            blind = ' **BLIND**' if e.solution.is_known_blind_path else ''
+            req = ', '.join(
+                e.solution.required_info.L1
+                + e.solution.required_info.L2
+                + e.solution.required_info.L3
+            )
+            elems = ', '.join(e.solution.required_elements_for_full_match)
+            payload = e.solution.intent.replace('|', '\\|')
+            gates = f'req_info: {req}<br>elements: {elems}'
+            kind_cell = f'{e.edge_type}{blind}'
+        else:
+            infos = ', '.join(c.info_id for c in e.clarifications)
+            answers = ' / '.join(
+                c.user_answer_in_this_oncall[:110].replace('|', '\\|')
+                for c in e.clarifications
+            )
+            payload = answers
+            gates = f'asks: {infos}'
+            kind_cell = e.edge_type
+        lines.append(
+            f'| `{e.edge_id}` | {kind_cell} | {gates} | {payload} |'
+        )
+    lines += ['', '## Nodes', '']
+    lines += ['| node | terminal | volunteered | images | symptoms |', '|---|---|---|---|---|']
+    for nid, n in g.nodes.items():
+        sym = ' '.join(n.symptoms_visible)[:140].replace('|', '\\|')
+        lines.append(
+            f'| `{nid}` | {"✓" if n.is_terminal else ""} '
+            f'| {len(n.volunteered_info)} | {len(n.symptom_images)} | {sym} |'
+        )
+    lines += ['', CHECKLIST]
+    out = out_dir / f'{graph_path.stem}.md'
+    out.write_text('\n'.join(lines))
+    return graph_path.stem, task.metadata.hitl_reviewed
+
+
+def main() -> None:
+    index: list[str] = [
+        '# Human review queue',
+        '',
+        'One page per task graph: rendered graph, edge audit table, source',
+        'links, and the review checklist (defect catalog from the pilot).',
+        '',
+        '| case | kind | reviewed |',
+        '|---|---|---|',
+    ]
+    for graphs_dir in sorted(REPO.glob('data/*/graphs')):
+        out_dir = graphs_dir.parent / 'review'
+        out_dir.mkdir(exist_ok=True)
+        for gp in sorted(graphs_dir.glob('*.json')):
+            stem, reviewed = render_case(gp, out_dir)
+            rel = (out_dir / f'{stem}.md').relative_to(REPO)
+            kind = 'draft' if 'github' in str(gp) else 'pilot'
+            link = rel.as_posix().removeprefix('data/')
+            index.append(
+                f'| [{stem}]({link}) | {kind} '
+                f'| {"✅" if reviewed else "⬜"} |'
+            )
+            print('wrote', rel)
+    # one index at data/REVIEW.md linking both datasets
+    (REPO / 'data' / 'REVIEW.md').write_text('\n'.join(index) + '\n')
+    print('index: data/REVIEW.md')
+
+
+if __name__ == '__main__':
+    main()
