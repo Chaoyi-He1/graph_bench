@@ -1,0 +1,204 @@
+{
+ "repo": "bugzilla.mozilla.org/Core",
+ "number": 1823817,
+ "url": "https://bugzilla.mozilla.org/show_bug.cgi?id=1823817",
+ "title": "Crash in [@ mozilla::dom::syncedcontext::Transaction<T>::Commit] with CanSet failed for field(s): OpenerPolicy",
+ "state": "FIXED",
+ "labels": [
+  "Networking",
+  "crash",
+  "regression",
+  "reproducible",
+  "topcrash"
+ ],
+ "reporter": "reporter",
+ "created_at": "2023-03-22T00:13:05Z",
+ "closed_at": "2023-05-16T21:30:47Z",
+ "body": "Crash report: https://crash-stats.mozilla.org/report/index/001e9464-e793-4c9c-a96a-3148b0230317\n\nMOZ_CRASH Reason: ```CanSet failed for field(s): OpenerPolicy```\n\nTop 10 frames of crashing thread:\n```\n0  libxul.so  MOZ_Crash  mfbt/Assertions.h:261\n0  libxul.so  mozilla::dom::syncedcontext::Transaction<mozilla::dom::BrowsingContext>::Commit  docshell/base/SyncedContextInlines.h:103\n1  libxul.so  mozilla::dom::BrowsingContext::SetOpenerPolicy  docshell/base/BrowsingContext.h:277\n2  libxul.so  mozilla::dom::Document::StartDocumentLoad  dom/base/Document.cpp:3539\n3  libxul.so  nsHTMLDocument::StartDocumentLoad  dom/html/nsHTMLDocument.cpp:350\n4  libxul.so  nsContentDLF::CreateDocument  layout/build/nsContentDLF.cpp:315\n5  libxul.so  nsContentDLF::CreateInstance  layout/build/nsContentDLF.cpp\n6  libxul.so  nsDocShell::NewContentViewerObj  docshell/base/nsDocShell.cpp:8109\n6  libxul.so  nsDocShell::CreateContentViewer  docshell/base/nsDocShell.cpp:7843\n6  libxul.so  nsDSURIContentListener::DoContent  docshell/base/nsDSURIContentListener.cpp:168\n```\n\nThis particular field appears to be the most popular current cause of this crash signature. It looks like it is mostly Fenix for whatever reason.\n\nThere are some bugs on file for this signature, but not for this specific field as far as I can see.",
+ "comments": [
+  {
+   "author": "reporter",
+   "created_at": "2023-03-22T00:14:58Z",
+   "body": "From the chart, it looks like the signature popped up from around 8 a day to more like 70 a day in the middle of February."
+  },
+  {
+   "author": "release-mgmt-account-bot@mozilla.tld",
+   "created_at": "2023-03-22T12:14:37Z",
+   "body": "The bug is linked to a topcrash signature, which matches the following [criterion](https://wiki.mozilla.org/CrashKill/Topcrash):\n- Top 10 AArch64 and ARM crashes on release \n\n:peterv, could you consider increasing the severity of this top-crash bug?\n\nFor more information, please visit [auto_nag documentation](https://wiki.mozilla.org/Release_Management/autonag#topcrash_add_keyword.py)."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-03-22T19:18:08Z",
+   "body": "`[@ mozilla::dom::syncedcontext::Transaction<T>::Commit ]` is a generic crash signature with various MOZ_CRASH reasons, but there was a jump in this bug's particular \"CanSet failed for field(s): OpenerPolicy\" crash reason in Fenix 111.\n\nI don't know what's significant about mid February. 111 merged to Beta on 2023-02-14."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-04-19T21:44:36Z",
+   "body": "*** Bug 1828997 has been marked as a duplicate of this bug. ***"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-04-21T03:02:51Z",
+   "body": "\"Platform\" is _NOT_ Android. \n\nThis happened on Windows 10, 64 bit."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2023-04-21T17:55:02Z",
+   "body": "Too late to get this fixed in a Fenix 112 dot release, but it would be good if we could get a fix in time for Fenix 113 going to RC in a bit over a week given its topcrash status. Any updates on this, Andreas?"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2023-05-03T16:36:31Z",
+   "body": "Progress has been slow, but I'll give it full focus from tomorrow onward."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2023-05-04T13:45:09Z",
+   "body": "One thing that I noted was that before Fenix version 106.1.0 we didn't hit this assert, but instead we hit [this](https://crash-stats.mozilla.org/report/index/ba5ee597-58ca-4cf7-b686-a8af60230418) crash, which in turn got fixed by bug 1790203. The question is: are we seeing a similar root cause and what implications does it have to have the call to [`WindowContext::SetEmbedderPolicy`](https://searchfox.org/mozilla-central/source/dom/base/Document.cpp#6872-6876) be delayed, possible to after the call to [`BrowsingContext::SetOpenerPolicy`](https://searchfox.org/mozilla-central/source/dom/base/Document.cpp#3530). `EmbedderPolicy` isn't directly translated to `OpenerPolicy` but it is used in a [couple of places](https://searchfox.org/mozilla-central/search?q=WindowContext%3A%3AGetEmbedderPolicy&path=&case=false&regexp=false)\n\nEmilio and Sean might know more, but I'll contiue digging."
+  },
+  {
+   "author": "participant6",
+   "created_at": "2023-05-04T15:10:54Z",
+   "body": "So the line crashing is [this one](https://searchfox.org/mozilla-central/rev/5c922d8b93b43c18bf65539bfc72a30f84989003/dom/base/Document.cpp#3530) right?\n\nI don't think it's quite the same root cause. `BrowsingContext::CanSet` for `OpenerPolicy` is about the exact values that get set. That other bug was about an origin trial, where we try to process the trial before the window context is initialized. This code runs unconditionally right?\n\nBut, I think [this code](https://searchfox.org/mozilla-central/rev/5c922d8b93b43c18bf65539bfc72a30f84989003/netwerk/protocol/http/HttpBaseChannel.cpp#5967-5975) and the origin trial might still be involved to some extent. In particular, it seems feasible that:\n\n * Document A gets served with `Origin-trial: <valid-token>`, ends up being cross-origin isolated.\n * Document B doesn't, and we try to set the opener policy and fail.\n\nQuestions I have:\n\n * Why is it ok to set something global to the browsing-context based on the document's channel?\n * What is supposed to guarantee the invariant that CanSet is effectively asserting? Should the caller check instead?\n\nI'm not familiar enough with COEP (I only reviewed the origin-trial bits) to know the answers to those off-hand."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2023-05-05T09:43:05Z",
+   "body": "Yep, that line.\n\nIn a Windows crash I can see the policy being set is `OPENER_POLICY_UNSAFE_NONE`, which means that the `OpenerPolicy` of the `BrowsingContext` is `OPENER_POLICY_SAME_ORIGIN_EMBEDDER_POLICY_REQUIRE_CORP` and we're effectively trying to downgrade it.\n\nThis points to [`HttpBaseChannel::mComputedCrossOriginOpenerPolicy`](https://searchfox.org/mozilla-central/source/netwerk/protocol/http/HttpBaseChannel.h#776) either not being set at all, or not being set in time. \n\nIf we look at how `BrowsingContext` is [created](https://searchfox.org/mozilla-central/source/docshell/base/BrowsingContext.cpp#388-413), a `BrowsingContext` can be initialized with `OPENER_POLICY_SAME_ORIGIN_EMBEDDER_POLICY_REQUIRE_CORP` that it inherits from an opener. For this case, we know that the crash happens in a top level content browsing context, so _if_ we're seeing that Document A gets an origin trial token and becomes cross-origin isolated, then opens Document B to the same site, but not serving it then this should be fairly trivial to write a test for.\n\nBut _if_ this is what we're seeing, my bet would be that we'd see it on all platforms equally prevalent, but Android dominates. And Android doesn't run Fission, which also is something that might be interfering here.\n\nI'll continue digging. I'll clear Sean's ni, and ask Valentin if he has any ideas to what might be happening. Because I don't think that it's necessarily setting the opener policy and crashing that's the problem, but that we're actually setting it to something bad."
+  },
+  {
+   "author": "participant7",
+   "created_at": "2023-05-05T10:14:15Z",
+   "body": "I think the DocumentChannel works a bit differently on Android, but I don't really know how.\n\nI would have expected the COOP policy to be computed by the time we call the listener, but looking at the stack trace from the crash it seems the request is coming from a JAR channel instead?\n18 \tlibxul.so \tnsJARChannel::OnStartRequest(nsIRequest*) \tmodules/libjar/nsJARChannel.cpp:1230 \tcfi\n\nSo I'm not totally sure what the JS code in the middle is doing, or what channel is being passed to `nsDocumentOpenInfo::OnStartRequest(nsIRequest*)`\n\nMaybe Nika has a better idea of what's happening there."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2023-05-05T14:53:03Z",
+   "body": "Latest clue is how error pages are [handled on android](https://searchfox.org/mozilla-central/rev/85b4f7363292b272eb9b606e00de2c37a6be73f0/docshell/base/nsDocShell.cpp#3792-3809). I guess what could happen is that we try to load an error page in a document with `OPENER_POLICY_SAME_ORIGIN_EMBEDDER_POLICY_REQUIRE_CORP`, but the error page has a channel that isn't set up for that. Does that sound plausible :participant8?"
+  },
+  {
+   "author": "participant8",
+   "created_at": "2023-05-05T16:19:17Z",
+   "body": "I discussed this a bit with :farre over matrix, and noticed that there's some JS on the stack between the callback from a JAR channel (as noted in comment 11) and the actual callback which is apparently seeing a HTTP(s) channel. This suggests that we're probably actually loading a PDF through the PDF.js stream converter. This handles the `onStartRequest` from the original HTTP(s) channel, and instead sends the data from a local resource (the PDF.js viewer: https://searchfox.org/mozilla-central/rev/85b4f7363292b272eb9b606e00de2c37a6be73f0/toolkit/components/pdfjs/content/PdfStreamConverter.sys.mjs#19) instead, pretending like it's coming from the HTTP(s) channel: https://searchfox.org/mozilla-central/rev/85b4f7363292b272eb9b606e00de2c37a6be73f0/toolkit/components/pdfjs/content/PdfStreamConverter.sys.mjs#1138.\n\nTheoretically this should be passing through the original HTTP(s) channel, but perhaps something else is going wrong under the hood here leading to the confusion. I'd look into seeing if we can reproduce this by serving a PDF with the `Cross-Origin-Opener-Policy: same-origin` and `Cross-Origin-Embedder-Policy: require-corp` headers set, then try navigating to it.\n\nI don't know if that'd reproduce the issue inherently, so there's also a chance that it needs to have slightly different header configurations in some way.\n\nThere's also a chance, I suppose, that this requires `Cross-Origin-Embedder-Policy: credentialless` which I think is behind origin-trial right now (https://searchfox.org/mozilla-central/rev/85b4f7363292b272eb9b606e00de2c37a6be73f0/netwerk/protocol/http/HttpBaseChannel.cpp#5946-5964), or that it requires some special situations around e.g. service workers and interception - but starting simple seems better for now."
+  },
+  {
+   "author": "participant9",
+   "created_at": "2023-05-07T03:52:01Z",
+   "body": "bug 1831757 has some STR (but I was not able to repro)"
+  },
+  {
+   "author": "participant10",
+   "created_at": "2023-05-07T13:07:19Z",
+   "body": "I can reproduce the crash with Fenix nightly on a Pixel 7 with the url mentioned in bug 1831757: https://www.movierotator.com/stats/ and then in taping on `cancel`.\nHere's a crash report: https://crash-stats.mozilla.org/report/index/57d8b87e-8e68-4d4e-bc1b-63c110230507"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2023-05-09T09:59:59Z",
+   "body": "Turns out that I can reproduce this on desktop as well! \n\n1) Load https://www.movierotator.com/\n2) Enter https://www.movierotator.com/ in the address bar for the loaded page\n3) Hit cancel in the auth prompt \n\nThis crashes the content process for movierotator.com. The reason for 1) is probably to make sure that there is a content process running when you get to step 3. \n\n:peterv helped me get a crash in socorro https://crash-stats.mozilla.org/report/index/275b30a5-5fa8-4c9a-8361-cb44f0230509\n\nPernosco should be on it's way soon."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2023-05-10T14:29:14Z",
+   "body": "*** Bug 1831757 has been marked as a duplicate of this bug. ***"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2023-05-11T14:31:25Z",
+   "body": "Created attachment 9333106\nBug 1823817 - Process cross origin security headers from nsHttpChannel::OnAuthCancelled.\n\n\nnsHttpChannel::OnAuthCancelled calls nsHttpChannel::CallOnStartRequest\ndirectly, effectively bypassing\nHttpBaseChannel::ProcessCrossOriginSecurityHeaders, which is needed to\nget CORP handling right."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2023-05-11T14:32:52Z",
+   "body": "I've found something that I know is wrong, but I'm not entirely sure how to fix. the trouble is in nsHttpChannel::OnAuthCancelled. The docs say that it needs to call OnStartRequest, but it calls CallOnStartRequest. My problem is that this bypasses ProcessCrossOriginSecurityHeaders, which makes us crash, eventually, at https://searchfox.org/mozilla-central/source/dom/base/Document.cpp#3530.\n\nThat crash is correct, because we're loading an error page that doesn't have the correct security headers for the site we canceled the auth prompt for.  What's missing is to somehow have nsHttpChannel::OnAuthCancelled call ProcessCrossOriginSecurityHeaders before calling CallOnStartRequest, but I'm not sure if it's that easy.\n\nI've attached a patch that does exactly that, and I'm also moving it to Networking where the bug actually is."
+  },
+  {
+   "author": "pulsebot@bmo.tld",
+   "created_at": "2023-05-16T15:15:03Z",
+   "body": "Pushed by participant5:\nhttps://hg.mozilla.org/integration/autoland/rev/48bd2b9e261d\nProcess cross origin security headers from nsHttpChannel::OnAuthCancelled. r=necko-reviewers,valentin"
+  },
+  {
+   "author": "participant11",
+   "created_at": "2023-05-16T21:30:47Z",
+   "body": "https://hg.mozilla.org/mozilla-central/rev/48bd2b9e261d"
+  },
+  {
+   "author": "release-mgmt-account-bot@mozilla.tld",
+   "created_at": "2023-05-17T12:06:12Z",
+   "body": "The patch landed in nightly and beta is affected.\n:farre, is this bug important enough to require an uplift?\n- If yes, please nominate the patch for beta approval.\n- If no, please set `status-firefox114` to `wontfix`.\n\nFor more information, please visit [BugBot documentation](https://wiki.mozilla.org/BugBot#uplift_beta.py)."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2023-05-17T14:11:19Z",
+   "body": "I'm not sure if I'm the correct person to decide this. What do you think Valentin?"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2023-05-17T14:12:36Z",
+   "body": "This is an Android topcrash. I think we should uplift to both Beta and Release assuming the risk is low."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2023-05-17T14:13:55Z",
+   "body": "More concerning to me is that https://crash-stats.mozilla.org/report/index/8e430149-805f-416e-b88f-325530230517 looks like a crash report from a build which should have contained the fix."
+  },
+  {
+   "author": "participant7",
+   "created_at": "2023-05-19T08:22:30Z",
+   "body": "Yes, let's uplift to beta. The patch fixes at least one broken code path.\n\n(In reply to comment #25)\n> More concerning to me is that https://crash-stats.mozilla.org/report/index/8e430149-805f-416e-b88f-325530230517 looks like a crash report from a build which should have contained the fix.\n\nThe build does seem to contain the fix, so the fact that it still happens indicates there's still something wrong.\nIt also has the jar channel on the stack, so maybe it's the same pdf-reader issue. I see us changing a few attributes on the [response](https://searchfox.org/mozilla-central/rev/85b4f7363292b272eb9b606e00de2c37a6be73f0/toolkit/components/pdfjs/content/PdfStreamConverter.sys.mjs#1098-1099,1115) but I'm not  sure if that can affect which policy we end up using for the channel.\nI think we should also add an automated test case for cancelled auth with a pdfjs channel?"
+  },
+  {
+   "author": "participant7",
+   "created_at": "2023-05-19T13:55:19Z",
+   "body": "Comment on attachment 9333106\nBug 1823817 - Process cross origin security headers from nsHttpChannel::OnAuthCancelled.\n\n### Beta/Release Uplift Approval Request\n* **User impact if declined**: Potential crash when the user dismisses auth login popup causing the channel to have the wrong Opener policy.\nTests for feature are r+ in bug 1833642.\n* **Is this code covered by automated tests?**: Yes\n* **Has the fix been verified in Nightly?**: No\n* **Needs manual test from QE?**: Yes\n* **If yes, steps to reproduce**: \n* **List of other uplifts needed**: Bug 1833642\n* **Risk to taking this patch**: Low\n* **Why is the change risky/not risky? (and alternatives if risky)**: This change is low risk, as it makes sure the Cross-Origin-Opener-Policy is parsed in all code paths.\n* **String changes made/needed**: \n* **Is Android affected?**: Yes"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2023-05-20T00:10:46Z",
+   "body": "Comment on attachment 9333106\nBug 1823817 - Process cross origin security headers from nsHttpChannel::OnAuthCancelled.\n\nI'd like to see the tests landed and uplifted still as well, but don't want to block getting this on to Beta now in the mean time while we consider this for 113.0.2 also. Approved for 114.0b7."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2023-05-20T00:19:49Z",
+   "body": "https://hg.mozilla.org/releases/mozilla-beta/rev/471145a3f303"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2023-05-20T06:06:01Z",
+   "body": "We should probably look for missing security header processing on the JAR channel. I'm on PTO until Tuesday, so if we want to look before that I'd recommend adding the same (or similar) assert that we added in CallOnStartRequest.  Maybe start up a new bug for this?"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2023-05-22T13:25:37Z",
+   "body": "Comment on attachment 9333106\nBug 1823817 - Process cross origin security headers from nsHttpChannel::OnAuthCancelled.\n\nApproved for Desktop 113.0.2 & Fenix 113.2.0"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2023-05-22T13:57:50Z",
+   "body": "https://hg.mozilla.org/releases/mozilla-release/rev/2828e01c0617"
+  },
+  {
+   "author": "participant12",
+   "created_at": "2023-05-23T08:23:01Z",
+   "body": "Hello! It seems that I can reproduce the tab crash with Firefox 113.0.1 ([crash report](https://crash-stats.mozilla.org/report/index/72094605-2473-4534-9532-d3aad0230523)) and 114.0a1 (2023-05-06)([crash report](https://crash-stats.mozilla.org/report/index/453359f1-a2bd-4116-b7a7-79dce0230523)) on Windows 10x64 by following the next steps:\n1. Load https://www.movierotator.com/.\n2. In the same tab load https://www.movierotator.com/stats/.\n3. Click the Cancel Button or focus the auth prompt window and Hit the `Esc` keyboard key.\n\nI could not reproduce the tab crash with the steps from comment 16 but it may be because there is the same link for step 2 and there is no auth prompt displayed when loading the same page (maybe a bad copy-paste) instead of https://www.movierotator.com/stats/.\n\nBy using the steps from above I can no longer reproduce the tab crash with Firefox 113.0.2, 114.0b7, and 115.0a1 (2023-05-22) on Windows 10x64, Ubuntu 22.04, macOS 13 ARM, and macOS 12. \nLeaving this open for the QA mobile team to verify as well."
+  },
+  {
+   "author": "participant13",
+   "created_at": "2023-05-23T08:31:31Z",
+   "body": "Hi!\nVerified as fixed on the latest FENIX builds: Nightly 115.0a1 from 5/23, Beta 114.0b7, and RC 113.2.0, with the following devices:\n* Google Pixel 6 (Android 13), and\n* Lenovo tab M10 (Android 10).\n\nNote: I was able to reproduce the crash on previous Fenix builds, following the steps provided by Alex above.\nI'll mark this ticket as verified."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2023-05-24T20:49:43Z",
+   "body": "(In reply to comment #30)\n> We should probably look for missing security header processing on the JAR channel. I'm on PTO until Tuesday, so if we want to look before that I'd recommend adding the same (or similar) assert that we added in CallOnStartRequest.  Maybe start up a new bug for this?\n\nFiled bug 1834864 to continue this investigation. I included a link to a crash report from Fenix 113.2.0 which has the patch from this bug."
+  }
+ ],
+ "_attachments_meta": [
+  {
+   "id": 9333106,
+   "content_type": "text/x-phabricator-request",
+   "description": "Bug 1823817 - Process cross origin security headers from nsHttpChannel::OnAuthCancelled."
+  }
+ ],
+ "images": [],
+ "slug": "bmo_core_1823817"
+}

@@ -1,0 +1,183 @@
+{
+ "repo": "bugzilla.mozilla.org/Core",
+ "number": 1834711,
+ "url": "https://bugzilla.mozilla.org/show_bug.cgi?id=1834711",
+ "title": "Assertion failure: IsBackgroundFinalizedWhenTenured(a) == IsBackgroundFinalizedWhenTenured(b), at /builds/worker/checkouts/gecko/js/src/vm/JSObject.cpp:1226",
+ "state": "FIXED",
+ "labels": [
+  "JavaScript Engine",
+  "regression",
+  "reporter-external",
+  "sec-high"
+ ],
+ "reporter": "reporter",
+ "created_at": "2023-05-24T08:24:13Z",
+ "closed_at": "2023-06-07T03:42:08Z",
+ "body": "Run following javascript code\n```\nconst v3 = newGlobal();\nv3.nukeAllCCWs();\nconst v13 = this.transplantableObject(v3);\nconst v27 = newGlobal({\"newCompartment\": true});\n\ntry {\n    const t45 = v27.DataView;\n    const v29 = new t45(v27);\n} catch(e30) {\n}\n\nv27.firstGlobalInCompartment(v13.object);\nv13.transplant(v3);\n```\nStacktrace\n```\n#0  0x0000555556f4913d in JSObject::swap(JSContext*, JS::Handle<JSObject*>, JS::Handle<JSObject*>, js::AutoEnterOOMUnsafeRegion&) ()\n#1  0x00005555572c903d in js::RemapDeadWrapper(JSContext*, JS::Handle<JSObject*>, JS::Handle<JSObject*>) ()\n#2  0x00005555572c8ba4 in js::RemapWrapper(JSContext*, JSObject*, JSObject*) ()\n#3  0x00005555572c9770 in js::RemapAllWrappersForObject(JSContext*, JS::Handle<JSObject*>, JS::Handle<JSObject*>) ()\n#4  0x0000555557270f25 in JS_TransplantObject(JSContext*, JS::Handle<JSObject*>, JS::Handle<JSObject*>) ()\n#5  0x0000555556bd9808 in TransplantObject(JSContext*, unsigned int, JS::Value*) ()\n#6  0x0000555556d0dff6 in CallJSNative(JSContext*, bool (*)(JSContext*, unsigned int, JS::Value*), js::CallReason, JS::CallArgs const&) ()\n#7  0x0000555556d0d786 in js::InternalCallOrConstruct(JSContext*, JS::CallArgs const&, js::MaybeConstruct, js::CallReason) ()\n#8  0x0000555556d1bc1b in js::Interpret(JSContext*, js::RunState&) ()\n#9  0x0000555556d0ccda in js::RunScript(JSContext*, js::RunState&) ()\n#10 0x0000555556d1045b in js::ExecuteKernel(JSContext*, JS::Handle<JSScript*>, JS::Handle<JSObject*>, js::AbstractFramePtr, JS::MutableHandle<JS::Value>) ()\n#11 0x0000555556d109a0 in js::Execute(JSContext*, JS::Handle<JSScript*>, JS::Handle<JSObject*>, JS::MutableHandle<JS::Value>) ()\n#12 0x0000555556e55120 in ExecuteScript(JSContext*, JS::Handle<JSObject*>, JS::Handle<JSScript*>, JS::MutableHandle<JS::Value>) ()\n#13 0x0000555556e5535c in JS_ExecuteScript(JSContext*, JS::Handle<JSScript*>) ()\n#14 0x0000555556be2ae9 in RunFile(JSContext*, char const*, _IO_FILE*, CompileUtf8, bool, bool) ()\n#15 0x0000555556be20b0 in Process(JSContext*, char const*, bool, FileKind) ()\n#16 0x0000555556b7d20d in Shell(JSContext*, js::cli::OptionParser*) ()\n#17 0x0000555556b76fb0 in main ()\n```",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2023-05-24T21:11:38Z",
+   "body": "This doesn't seem like the kind of thing content could do. Some of the actions could be caused to happen by opening and closing windows, but probably not with the control needed in this testcase."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-05-30T16:06:51Z",
+   "body": "Hey Jon, \n\nThis bug seems to be related to last year's work to transplant nursery objects (bug 1765338). It strikes me as potentially shell only, but may be worth a look."
+  },
+  {
+   "author": "release-mgmt-account-bot@mozilla.tld",
+   "created_at": "2023-05-31T12:42:08Z",
+   "body": "Set release status flags based on info from the regressing bug 1765338"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-05-31T16:19:35Z",
+   "body": "Created attachment 9336811\nBug 1834711 - Set background finalized flag for dead object proxes created after nuking all CCWs r?jandem\n\n\nThe background finalized flag wasn't getting set in the second overload of\nNewDeadProxyObject. The patch makes the first overload of this function more\ngeneric so it can accept non-proxy arguments and uses it in all cases.\n\nThe testcase also results in dead object proxies being returned from rewrap()\nin RemapDeadWrapper which previously cased an assertion. I added an early\nreturn for this case - do you think that's OK?"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-05-31T16:20:33Z",
+   "body": "Created attachment 9336812\nBug 1834711 - Add testcase r?jandem\n\n\n\nDepends on D179576"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-05-31T21:57:28Z",
+   "body": "Jon: is this a security problem for Firefox? Or is Matthew right this is shell (and chrome?) only?"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-06-01T09:19:10Z",
+   "body": "(In reply to comment #6)\nThe testcase relies on shell test functionality to reproduce the problem.\n\nI don't know whether this is possible in the browser.  It would require transplanting an object after we have nuked all CCWs for the current compartment.  I suspect that is not possible, but I don't know for sure."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2023-06-01T13:40:35Z",
+   "body": "Peter, can we run JS code that could do a transplant after we nuke a window in WindowDestroyedEvent? My vague recollection is that we are still running JS at that point, and we're only killing chrome to content references when we do that, so you could still have a reference to another global to transplant into or something? Thanks."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-06-05T13:54:07Z",
+   "body": "Comment on attachment 9336811\nBug 1834711 - Set background finalized flag for dead object proxes created after nuking all CCWs r?jandem\n\n### Security Approval Request\n* **How easily could an exploit be constructed based on the patch?**: Extremely difficult.\n* **Do comments in the patch, the check-in comment, or tests included in the patch paint a bulls-eye on the security problem?**: No\n* **Which older supported branches are affected by this flaw?**: Everything back to 101\n* **If not all supported branches, which bug introduced the flaw?**: None\n* **Do you have backports for the affected branches?**: No\n* **If not, how different, hard to create, and risky will they be?**: This patch should apply but I haven't tested this.\n* **How likely is this patch to cause regressions; how much testing does it need?**: Unlikley.  This cleans up setting flags for dead object proxy to make it more obviously correct.\n* **Is Android affected?**: Yes"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-06-05T13:54:59Z",
+   "body": "I've requested approval to land the patch, but I don't know what sec rating this should be.  I'm not even sure this is something that could be triggered in the browser."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2023-06-05T19:25:31Z",
+   "body": "Comment on attachment 9336811\nBug 1834711 - Set background finalized flag for dead object proxes created after nuking all CCWs r?jandem\n\nApproved to land and request uplift"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2023-06-05T19:29:35Z",
+   "body": "If you do need to uplift it here's a reminder for landing tests."
+  },
+  {
+   "author": "release-mgmt-account-bot@mozilla.tld",
+   "created_at": "2023-06-06T16:44:04Z",
+   "body": "Set release status flags based on info from the regressing bug 1765338"
+  },
+  {
+   "author": "participant6",
+   "created_at": "2023-06-07T03:42:08Z",
+   "body": "https://hg.mozilla.org/mozilla-central/rev/a4d881b1f4ed"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2023-06-07T14:05:44Z",
+   "body": "It would be good to get confirmation from Peter, but I think this is at least in the ballpark of something that could really happen on a web page if you worked at it hard enough, so I'm going to mark it sec-high."
+  },
+  {
+   "author": "participant6",
+   "created_at": "2023-06-08T02:36:51Z",
+   "body": "Please nominate this for Beta approval when you get a chance. It'll also need a rebased patch for ESR102."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-06-14T14:44:35Z",
+   "body": "Comment on attachment 9336811\nBug 1834711 - Set background finalized flag for dead object proxes created after nuking all CCWs r?jandem\n\n### Beta/Release Uplift Approval Request\n* **User impact if declined**: Possible crash / security vulnerability.\n* **Is this code covered by automated tests?**: Yes\n* **Has the fix been verified in Nightly?**: Yes\n* **Needs manual test from QE?**: No\n* **If yes, steps to reproduce**: \n* **List of other uplifts needed**: None\n* **Risk to taking this patch**: Low\n* **Why is the change risky/not risky? (and alternatives if risky)**: This change fixes the logic around creating dead objects proxies and the result is simpler and more obviously correct than before.  This change has been on central for a week with no regressions found.\n* **String changes made/needed**: \n* **Is Android affected?**: Yes"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-06-14T15:11:44Z",
+   "body": "Created attachment 9339088\nBug 1834711 - Set background finalized flag for dead object proxes created after nuking all CCWs r=jandem (ESR102)\n\n\nThe background finalized flag wasn't getting set in the second overload of\nNewDeadProxyObject. The patch makes the first overload of this function more\ngeneric so it can accept non-proxy arguments and uses it in all cases.\n\nThe testcase also results in dead object proxies being returned from rewrap()\nin RemapDeadWrapper which previously cased an assertion. I added an early\nreturn for this case - do you think that's OK?"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-06-14T15:13:55Z",
+   "body": "Comment on attachment 9339088\nBug 1834711 - Set background finalized flag for dead object proxes created after nuking all CCWs r=jandem (ESR102)\n\n### ESR Uplift Approval Request\n* **If this is not a sec:{high,crit} bug, please state case for ESR consideration**: This is a sec-high bug\n* **User impact if declined**: Possible crash / security vulnerability.\n* **Fix Landed on Version**: 116\n* **Risk to taking this patch**: Low\n* **Why is the change risky/not risky? (and alternatives if risky)**: This change fixes the logic around creating dead objects proxies and the result is simpler and more obviously correct than before. This change has been on central for a week with no regressions found."
+  },
+  {
+   "author": "participant7",
+   "created_at": "2023-06-14T18:56:17Z",
+   "body": "Comment on attachment 9336811\nBug 1834711 - Set background finalized flag for dead object proxes created after nuking all CCWs r?jandem\n\nApproved for 115.0b6."
+  },
+  {
+   "author": "participant7",
+   "created_at": "2023-06-14T19:23:20Z",
+   "body": "https://hg.mozilla.org/releases/mozilla-beta/rev/c5d9308166ae"
+  },
+  {
+   "author": "participant7",
+   "created_at": "2023-06-15T14:25:40Z",
+   "body": "Comment on attachment 9339088\nBug 1834711 - Set background finalized flag for dead object proxes created after nuking all CCWs r=jandem (ESR102)\n\nApproved for 102.13esr."
+  },
+  {
+   "author": "participant7",
+   "created_at": "2023-06-15T14:29:40Z",
+   "body": "https://hg.mozilla.org/releases/mozilla-esr102/rev/145eb64b95c1"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-06-27T18:23:08Z",
+   "body": "We'll go ahead and assume this is really triggerable from content and therefore sec-high for bug bounty purposes, but if we get proof of that (a POC that runs in a web page) we can raise the bounty amount we are awarding."
+  },
+  {
+   "author": "participant8",
+   "created_at": "2023-06-28T13:35:12Z",
+   "body": "Created attachment 9341517\nadvisory.txt"
+  },
+  {
+   "author": "release-mgmt-account-bot@mozilla.tld",
+   "created_at": "2023-08-15T12:00:48Z",
+   "body": "2 months ago, tjr placed a reminder on the bug using the whiteboard tag `[reminder-test 2023-08-15]` .\n\njonco, please refer to the original comment to better understand the reason for the reminder."
+  },
+  {
+   "author": "pulsebot@bmo.tld",
+   "created_at": "2023-08-15T12:16:34Z",
+   "body": "Pushed by participant3:\nhttps://hg.mozilla.org/integration/autoland/rev/34ea39f6bd8a\nAdd testcase r=jandem"
+  },
+  {
+   "author": "participant6",
+   "created_at": "2023-08-16T03:49:47Z",
+   "body": "https://hg.mozilla.org/mozilla-central/rev/34ea39f6bd8a"
+  }
+ ],
+ "_attachments_meta": [
+  {
+   "id": 9336811,
+   "content_type": "text/x-phabricator-request",
+   "description": "Bug 1834711 - Set background finalized flag for dead object proxes created after nuking all CCWs r?jandem"
+  },
+  {
+   "id": 9336812,
+   "content_type": "text/x-phabricator-request",
+   "description": "Bug 1834711 - Add testcase r?jandem"
+  },
+  {
+   "id": 9339088,
+   "content_type": "text/x-phabricator-request",
+   "description": "Bug 1834711 - Set background finalized flag for dead object proxes created after nuking all CCWs r=jandem (ESR102)"
+  },
+  {
+   "id": 9341517,
+   "content_type": "text/plain",
+   "description": "advisory.txt"
+  }
+ ],
+ "images": [],
+ "slug": "bmo_core_1834711"
+}

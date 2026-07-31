@@ -1,0 +1,187 @@
+{
+ "repo": "bugzilla.mozilla.org/Core",
+ "number": 1814961,
+ "url": "https://bugzilla.mozilla.org/show_bug.cgi?id=1814961",
+ "title": "Some pages trying to fetch fonts from eg fonts.gstatic.com never finish loading",
+ "state": "FIXED",
+ "labels": [
+  "Networking",
+  "power",
+  "regression"
+ ],
+ "reporter": "reporter",
+ "created_at": "2023-02-03T20:22:46Z",
+ "closed_at": "2023-02-24T09:26:56Z",
+ "body": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:109.0) Gecko/20100101 Firefox/111.0 ID:20230129213553\n\nWith my current profile I have a couple of pages which regularly do not finish loading (see bug 1503259). All of them are trying to load fonts from eg. fonts.gstatic.com and as it looks like the response is never received.\n\nFirst I thought it is related to the NoScript extension but after removing it the problem was still persistent after a while - probably when certain items from the network cache gets removed.\n\nHere a profile: https://share.firefox.dev/3Y0WV4p\n\nSo far I don't have steps for a fresh profile but also haven't had the time yet to strip down my daily profile.\n\nHere some pages where I can see this behavior:\n\n* https://www.selenium.dev/blog/2023/headless-is-going-away\n* https://hacks.mozilla.org/2023/02/announcing-interop-2023/\n* https://www.podcasts.com/",
+ "comments": [
+  {
+   "author": "reporter",
+   "created_at": "2023-02-06T12:33:18Z",
+   "body": "Created attachment 9316104\ntest_profile.zip\n\nI bisected my profile and that is the minimal state I could strip my profile to actually reproduce this problem.\n\nHere some steps:\n1) Unzip the profile\n2) Start Firefox with the profile by eg. using the `--profile` command line option\n3) If the first tab (Selenium web page) finishes loading quit Firefox and repeat step 2\n\nUsually it takes me up to 3 restarts of Firefox to replicate the problem.\n\nGijs, given that it's all related to browser preferences I wonder if this might be related to some weird behavior due to browser cache in use? If yes we probably want to move this bug into another component."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-02-06T13:29:39Z",
+   "body": "Created attachment 9316111\nprefs.js from profile\n\n(In reply to Henrik Skupin (:whimboo) [⌚️UTC+1] from comment #1)\n> Gijs, given that it's all related to browser preferences I wonder if this might be related to some weird behavior due to browser cache in use? If yes we probably want to move this bug into another component.\n\nI'm not sure why you needinfo'd me as I'm not a networking expert. This still seems like a networking issue, if the request never completes?\n\nIt looks like this profile disables \"smart\" caching and sets the disk cache capacity to 0, meaning nothing is allowed to cache to disk. I expect this breaks \"something\" that leads to the brokenness, but I'm not sure what. Hopefully the networking team can help.\n\nFWIW, I can reproduce with this profile and repeated `mach run` invocations on a macOS machine."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-02-06T13:31:35Z",
+   "body": "Not sure how related bug 1814976 is but it's also google and also \"infinite loading spinner\", so adding for now and we can remove if it becomes obvious there's no relation."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-02-06T16:17:55Z",
+   "body": "(In reply to :Gijs (he/him) from comment #2)\n> It looks like this profile disables \"smart\" caching and sets the disk cache capacity to 0, meaning nothing is allowed to cache to disk. I expect this breaks \"something\" that leads to the brokenness, but I'm not sure what. Hopefully the networking team can help.\n\nFYI I've set those values some years ago when I switched to a SSD drive and to reduce the amount of data that gets written. Not sure how much impact that would still have those days and in my case I might set those values back to the original ones.\n\nValentin, could you maybe have a look at the attached profile in comment 0? Any idea what could cause the blocking of network requests that eg. trying to load fonts?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-02-06T16:53:17Z",
+   "body": "I tried to use mozregression to check if that is actually a regression and it actually is. Given that no autoland builds are available anymore for 78.0a1 builds this is the closest changeset that I was able to get to:\n\nhttps://hg.mozilla.org/mozilla-central/pushloghtml?fromchange=34d71b4a00863e7615463592662dfe362c4a993e&tochange=385f49adaf00d02fc8e04da1e0031e3477182d67"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-02-06T17:23:48Z",
+   "body": "Thank you for the profile with logs, I think I know what's going on:\n\nIn the parent process these are the 3 channels for the Bd1O9uYNmnUQomAgE25imKSbHLSMA6Sw_lSg.woff2 request.\nThey all seemed to complete successfully - they got onDataAvailable and onStop, but they didn't reach the HttpChannelChild.\n```\n(nsHttp) nsHttpChannel::Init [this=359332e00]\n{ \"start\": 175871086.186875, \"end\": null, \"name\": \"LogMessages\", \"category\": 1, \"threadId\": null, \"data\": { \"type\": \"Log\", \"module\": \"nsHttp\", \"name\": \"nsHttpChannel::Init [this=359332e00]\\n\" } }\n\nnsHttpChannel::Init [this=359333700]\n{ \"start\": 175871090.045792, \"end\": null, \"name\": \"LogMessages\", \"category\": 1, \"threadId\": null, \"data\": { \"type\": \"Log\", \"module\": \"nsHttp\", \"name\": \"nsHttpChannel::Init [this=359333700]\\n\" } }\n\nnsHttpChannel::Init [this=43307dc00]\n{ \"start\": 175871090.8335, \"end\": null, \"name\": \"LogMessages\", \"category\": 1, \"threadId\": null, \"data\": { \"type\": \"Log\", \"module\": \"nsHttp\", \"name\": \"nsHttpChannel::Init [this=43307dc00]\\n\" } }\n```\n\nFiltering by `this=43307dc00` it seems the problem is likely caused by race cache with network.\nWe look for an entry in the cache, but it takes too long, so we trigger the network after 20ms. The cache callback eventually comes, so we cancel the network transaction - we look at the cache entry, but it seems it's incomplete, so we hit the network from [here](https://searchfox.org/mozilla-central/rev/ddbeacddc15008936e8f619c8c3a05fac6eab8d8/netwerk/protocol/http/nsHttpChannel.cpp#7654,7665). The request eventually completes, but we raced and we expected the response to come from the cache, so we ignore it and never notify the child.\n\nNot sure how common this is, but this kind of intermittent failure is really bad."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-02-07T10:37:59Z",
+   "body": "Perhaps this bug is related?\nBug 1027122 - Fonts loaded from cache are missing from DevTools network tab"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-02-07T13:13:14Z",
+   "body": "Created attachment 9316312\nBug 1814961 - Test that RCWN network response isn't ignored when triggeered by cache load r=#necko"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-02-07T13:13:23Z",
+   "body": "Created attachment 9316313\nBug 1814961 - Clear mRaceCacheWithNetwork when a new request is performed r=#necko\n\n\nIf a new network request is performed because when the cache wins\n(either a revalidation, or because the cache entry is not complete) we need to\nclear mRaceCacheWithNetwork so the network response is not ignored.\n\nDepends on D169064"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-02-07T13:15:07Z",
+   "body": "Henrik, could you check if this build fixes the issue?\nhttps://treeherder.mozilla.org/jobs?repo=try&revision=9508e9f4b60bc68af9cc73f3dd0972a01a5b0b30"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-02-07T19:30:26Z",
+   "body": "By using this build I'm no longer able to reproduce the reported issue. Switching back to a Nightly build and restarting Firefox if needed multiple times always shows it. As such the patch fixes the problem for me. Thanks a lot!"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-02-07T20:47:37Z",
+   "body": "(In reply to Henrik Skupin (:whimboo) [⌚️UTC+1] from comment #11)\n> By using this build I'm no longer able to reproduce the reported issue. Switching back to a Nightly build and restarting Firefox if needed multiple times always shows it. As such the patch fixes the problem for me. Thanks a lot!\n\nGoing to assume you didn't mean to clear the `regression` keyword."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-02-08T08:13:41Z",
+   "body": "(In reply to :Gijs (he/him) from comment #12)\n> Going to assume you didn't mean to clear the `regression` keyword.\n\nIndeed. Nevertheless it looks like we cannot easily find the regressor here so not sure if we actually have to keep it as a regression given that it's already quite old."
+  },
+  {
+   "author": "pulsebot@bmo.tld",
+   "created_at": "2023-02-08T09:53:10Z",
+   "body": "Pushed by participant2:\nhttps://hg.mozilla.org/integration/autoland/rev/c9c03c715fa0\nTest that RCWN network response isn't ignored when triggeered by cache load r=necko-reviewers,kershaw\nhttps://hg.mozilla.org/integration/autoland/rev/60b65e604e1c\nClear mRaceCacheWithNetwork when a new request is performed r=necko-reviewers,kershaw"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2023-02-08T11:10:11Z",
+   "body": "Backed out 2 changesets (bug 1814961) for causing XPCshell failures at test_rcwn_interrupted.js\n\nBackout: https://hg.mozilla.org/integration/autoland/rev/b0af87d0fc47beb14f004a9e213ad83cdb1fa0f7\n\nFailure push: https://treeherder.mozilla.org/jobs?repo=autoland&selectedTaskRun=cYmegthISsG7mAa28CKXvQ.0&resultStatus=testfailed%2Cbusted%2Cexception%2Cretry%2Cusercancel&revision=60b65e604e1cdfcbd9abf8e537812070bb3d2a23\n\nhttps://treeherder.mozilla.org/jobs?repo=autoland&group_state=expanded&resultStatus=pending%2Crunning%2Ctestfailed%2Cbusted%2Cexception&fromchange=80ad3f28c6a64702257f4e59c90fdee6f6316f10&searchStr=linux%2C18.04%2Cx64%2Cwebrender%2Casan%2Copt%2Cxpcshell%2Ctests%2Cwith%2Cnetworking%2Con%2Csocket%2Cprocess%2Ctest-linux1804-64-asan-qr%2Fopt-xpcshell-spi-nw%2Cx1&tochange=b0af87d0fc47beb14f004a9e213ad83cdb1fa0f7\n\nFailure log: https://treeherder.mozilla.org/logviewer?job_id=404987416&repo=autoland&lineNumber=4171"
+  },
+  {
+   "author": "release-mgmt-account-bot@mozilla.tld",
+   "created_at": "2023-02-08T12:09:25Z",
+   "body": "Based on comment #5, this bug contains a bisection range found by mozregression. However, the `Regressed by` field is still not filled.\n\n:valentin, if possible, could you fill the `Regressed by` field and investigate this regression?\n\nFor more information, please visit [auto_nag documentation](https://wiki.mozilla.org/Release_Management/autonag#bisection_without_regressed_by.py)."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-02-13T15:33:06Z",
+   "body": "Probably regressed by bug 1392841"
+  },
+  {
+   "author": "pulsebot@bmo.tld",
+   "created_at": "2023-02-13T15:33:38Z",
+   "body": "Pushed by participant2:\nhttps://hg.mozilla.org/integration/autoland/rev/85190e2952da\nTest that RCWN network response isn't ignored when triggeered by cache load r=necko-reviewers,kershaw\nhttps://hg.mozilla.org/integration/autoland/rev/dafb2e6890e1\nClear mRaceCacheWithNetwork when a new request is performed r=necko-reviewers,kershaw"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2023-02-13T17:10:53Z",
+   "body": "Backed out for causing xpcshell failures on test_rcwn_interrupted.js.\n\nPush with failures: https://treeherder.mozilla.org/jobs?repo=autoland&selectedTaskRun=Tgll1NswScGNHM4eZOEa3w.0&resultStatus=testfailed%2Cbusted%2Cexception%2Cretry%2Cusercancel&revision=dafb2e6890e11b74ec00d49c8f2767903a67aa92&searchStr=xpc\n\nFailure log: https://treeherder.mozilla.org/logviewer?job_id=405448938&repo=autoland\n\nBackout link: https://hg.mozilla.org/integration/autoland/rev/7214abac24c92750ca72edcfc06a402d9786b838"
+  },
+  {
+   "author": "release-mgmt-account-bot@mozilla.tld",
+   "created_at": "2023-02-15T00:33:52Z",
+   "body": "Set release status flags based on info from the regressing bug 1392841"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-02-23T11:55:54Z",
+   "body": "Created attachment 9319433\nBug 1814961 - Update RCWN test functions r=#necko\n\n\nPreviously the network could be triggered by calling\nnsHttpChannel::Test_triggerNetwork.\nTechnically this should have been called after AsyncOpen & BeginConenct\nwere called. However, is rare instances, if the call to BeginConnect\nwere delayed and the test ended up calling channel.test_triggerNetwork\nthen we would try to connect without first setting up mConnectionInfo\nin BeginConnect.\n\nThis patch changes Test_triggerNetwork so that it doesn't immediately\ntrigger the network - instead it sets a delay variable similar to\nTest_delayCacheEntryOpeningBy. However if Test_triggerNetwork(0) is\ncalled and a mNetworkTriggerTimer exists, it will immediately trigger\nthe network.\n\nThe tests were updated to account for the fact that\nchannel.test_triggerNetwork now needs to be called before asyncOpen\nin order for the delay to be properly registered.\n\nDepends on D169065"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-02-23T11:59:15Z",
+   "body": "Turns out the issue causing the backout was the call to Test_triggerNetwork from the test.\nI made a diagram of the RCWN related function calls [here](https://gist.github.com/valenting/3b95facf469876f604da8a98c95004e3#file-rcwn-md) You can see that if Test_triggerNetwork(0) gets called before the classifier or proxy resolution are completed, we end up calling ContinueConnect before BeginConnect, which leads to the null connectionInfo dereference."
+  },
+  {
+   "author": "pulsebot@bmo.tld",
+   "created_at": "2023-02-23T22:31:34Z",
+   "body": "Pushed by participant2:\nhttps://hg.mozilla.org/integration/autoland/rev/73c741cb7a5d\nTest that RCWN network response isn't ignored when triggeered by cache load r=necko-reviewers,kershaw\nhttps://hg.mozilla.org/integration/autoland/rev/fa3b52b91a6f\nClear mRaceCacheWithNetwork when a new request is performed r=necko-reviewers,kershaw\nhttps://hg.mozilla.org/integration/autoland/rev/0c16d02bd213\nUpdate RCWN test functions r=necko-reviewers,kershaw"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2023-02-24T09:26:56Z",
+   "body": "https://hg.mozilla.org/mozilla-central/rev/73c741cb7a5d\nhttps://hg.mozilla.org/mozilla-central/rev/fa3b52b91a6f\nhttps://hg.mozilla.org/mozilla-central/rev/0c16d02bd213"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-02-24T19:41:10Z",
+   "body": "Thanks Valentin! I've tested with the latest nightly and it all works great now! I assume we want to uplift to 111 at least, but not sure about 102esr?"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-03-02T09:53:57Z",
+   "body": "I was looking into whether bug 1818653, and bug 1818757, pose any risk for an uplift."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-03-02T10:00:05Z",
+   "body": "Comment on attachment 9316313\nBug 1814961 - Clear mRaceCacheWithNetwork when a new request is performed r=#necko\n\n### Beta/Release Uplift Approval Request\n* **User impact if declined**: Users with slow hardware and fast networks (that is more likely to trigger race-cache-with-network) might have some of their sub-requests hang unexpectedly leading to page loads hanging or bad styling for pages.\n* **Is this code covered by automated tests?**: Yes\n* **Has the fix been verified in Nightly?**: Yes\n* **Needs manual test from QE?**: No\n* **If yes, steps to reproduce**: \n* **List of other uplifts needed**: None\n* **Risk to taking this patch**: Medium\n* **Why is the change risky/not risky? (and alternatives if risky)**: This patch fixes the issue by clearing the mRaceCacheWithNetwork flag after we've settled on using a network request, so the subsequent network request works.\nWhile the fix has been verified on Nightly there is a small chance that the change in behaviour might uncover other issues.\n* **String changes made/needed**: \n* **Is Android affected?**: Yes"
+  },
+  {
+   "author": "participant6",
+   "created_at": "2023-03-02T13:49:46Z",
+   "body": "Comment on attachment 9316312\nBug 1814961 - Test that RCWN network response isn't ignored when triggeered by cache load r=#necko\n\nRejecting beta uplift request\nWe are at the end of the 111 beta cycle. This bug was introduced in Fx59, the patch has medium risk, and if we uplift it now it won't have any time to bake in beta.\nPlease let me know if there are any objections."
+  }
+ ],
+ "_attachments_meta": [
+  {
+   "id": 9316104,
+   "content_type": "application/zip",
+   "description": "test_profile.zip"
+  },
+  {
+   "id": 9316111,
+   "content_type": "text/plain",
+   "description": "prefs.js from profile"
+  },
+  {
+   "id": 9316312,
+   "content_type": "text/x-phabricator-request",
+   "description": "Bug 1814961 - Test that RCWN network response isn't ignored when triggeered by cache load r=#necko"
+  },
+  {
+   "id": 9316313,
+   "content_type": "text/x-phabricator-request",
+   "description": "Bug 1814961 - Clear mRaceCacheWithNetwork when a new request is performed r=#necko"
+  },
+  {
+   "id": 9319433,
+   "content_type": "text/x-phabricator-request",
+   "description": "Bug 1814961 - Update RCWN test functions r=#necko"
+  }
+ ],
+ "images": [],
+ "slug": "bmo_core_1814961"
+}

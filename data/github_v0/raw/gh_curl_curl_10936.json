@@ -1,0 +1,274 @@
+{
+ "repo": "curl/curl",
+ "number": 10936,
+ "url": "https://github.com/curl/curl/issues/10936",
+ "title": "SIGSEGV in on_stream_close() from multi in combination with nghttp2",
+ "state": "closed",
+ "labels": [
+  "crash",
+  "HTTP/2"
+ ],
+ "reporter": "reporter",
+ "created_at": "2023-04-11T20:44:12Z",
+ "closed_at": "2023-12-22T09:06:46Z",
+ "body": "Trying to upgrade to latest curl releases causes very sporadic crashes for me. I have yet to be able to find a consistent method to reproduce this. It happens on random systems \"in the field\", hence currently hard to analyze from my point of view.\r\n\r\nI am creating this issue in case this corresponds to other observations, or if people with better knowledge of the sources can see where things might go wrong.\r\n\r\nI am happy to apply debug patches or test potentional changes to see if things behave better.\r\n\r\nCurrently I am running curl 7.86.0 release, since all later releases appear to trigger this behavior for me.\r\n\r\n### I did this\r\n\r\ncurl_multi_perform(), and it ended with SIGSEGV in on_stream_close()\r\n\r\n### I got the following backtrace from the crash\r\n\r\n```\r\n#0  0x0000007fa08b58e4 in (/lib/libcurl.so.4.8.0 @ 0x000358e4) on_stream_close + 0x54\r\n#1  0x0000007f9f8fbd74 in (/lib/libnghttp2.so.14.24.1 @ 0x0000bd74) nghttp2_session_close_stream + 0x84\r\n#2  0x0000007f9f900490 in (/lib/libnghttp2.so.14.24.1 @ 0x00010490) nghttp2_session_mem_send_internal + 0x730\r\n#3  0x0000007f9f9010a8 in (/lib/libnghttp2.so.14.24.1 @ 0x000110a8) nghttp2_session_send + 0x78\r\n#4  0x0000007fa08b5bbc in (/lib/libcurl.so.4.8.0 @ 0x00035bbc) h2_session_send + 0xbc\r\n#5  0x0000007fa08b6c30 in (/lib/libcurl.so.4.8.0 @ 0x00036c30) cf_h2_send + 0x90\r\n#6  0x0000007fa08ce1f4 in (/lib/libcurl.so.4.8.0 @ 0x0004e1f4) Curl_write + 0x54\r\n#7  0x0000007fa08dd9c8 in (/lib/libcurl.so.4.8.0 @ 0x0005d9c8) Curl_readwrite + 0x538\r\n#8  0x0000007fa08c62dc in (/lib/libcurl.so.4.8.0 @ 0x000462dc) multi_runsingle + 0x37c\r\n#9  0x0000007fa08c7a88 in (/lib/libcurl.so.4.8.0 @ 0x00047a88) curl_multi_perform + 0xf8\r\n```\r\n\r\nLooking into the on_stream_close() function at offset 0x54, I suspect this corresponds to the code:\r\n```\r\nstream = data_s->req.p.http;\r\n```\r\n\r\n### curl/libcurl version\r\n\r\n```\r\ncurl 8.0.1-DEV (aarch64-unknown-linux-gnu) libcurl/8.0.1-DEV OpenSSL/1.1.1t-fips zlib/1.2.13 c-ares/1.19.0 nghttp2/1.52.0\r\nRelease-Date: [unreleased]\r\nProtocols: dict file ftp ftps gopher gophers http https imap imaps mqtt pop3 pop3s rtsp smb smbs smtp smtps telnet tftp\r\nFeatures: alt-svc AsynchDNS HSTS HTTP2 HTTPS-proxy IPv6 Largefile libz NTLM NTLM_WB SSL threadsafe TLS-SRP UnixSockets\r\n```\r\n\r\n### operating system\r\n\r\nLinux 4.9.337 based embedded system, aarch64 GNU/Linux. Toolchain based upon GCC 11.3.0.",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2023-04-11T21:38:18Z",
+   "body": "Maybe build with debug symbols present so that the stack trace offers more details? If not, we really can't do much unless you detail how to reproduce this. problem."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-04-12T07:14:53Z",
+   "body": "> Maybe build with debug symbols present so that the stack trace offers more details? If not, we really can't do much unless you detail how to reproduce this. problem.\r\n\r\nFully understand @participant1, thank for the tip.\r\n\r\nI will hunt a way to reproduce the problem, could of course be me doing something wrong as well."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-05-16T08:45:40Z",
+   "body": "No news. Let's reopen if we can reproduce or otherwise act on it."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-07-24T18:31:47Z",
+   "body": "Hello,\r\n\r\nI have a dozen of reproductions of that stacktrace. Below stacktrace based on [this](https://github.com/curl/curl/tree/f7a3fae4cb2af0f3b917eb6ccacb372a67ce8781) commit.\r\nv1.41.0 of nghttp2 is in use.\r\n\r\nLooking onto code, it corresponds. Where crash happens on second line:\r\n```\r\n  stream->closed = TRUE;\r\n  stream->error = error_code;\r\n```\r\n\r\nStacktrace:\r\n```\r\n0x000000555edb5768 ( -http2.c:1061)\t\ton_stream_close\r\n0x000000555ede0e88 ( -nghttp2_session.c:1196)\t\tnghttp2_session_close_stream\r\n0x000000555ede1a0c\t( -nghttp2_session.c:2975)\t\tnghttp2_session_mem_send_internal\r\n0x000000555ede1dd8 ( + 0x00c22dd8)\t\tnghttp2_session_send\r\n0x000000555edb4a7c\t( -http2.c:1713)\t\th2_session_send\r\n0x000000555edb496c\t( + 0x00bf596c)\t\th2_process_pending_input\r\n0x000000555edb4cd8 ( -http2.c:1588)\t\thttp2_handle_stream_close\r\n0x000000555edb3c40\t( -http2.c)\t\tcf_h2_recv\r\n0x000000555edc7350\t( + 0x00c08350)\t\tCurl_read\r\n0x000000555edcd5e0\t( -transfer.c:461)\t\tCurl_readwrite\r\n0x000000555edc3744\t( -multi.c:2443)\t\tmulti_runsingle\r\n0x000000555edc3060\t( + 0x00c04060)\t\tcurl_multi_perform\r\n```\r\n\r\nHope it would help with resolving the issue, and it would be nice to reopen :)"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-07-24T18:40:08Z",
+   "body": "Which version exactly are you building with? On tag `curl-8_0_1` the code is at other line numbers."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-07-24T18:54:55Z",
+   "body": "I spot no less than **37** individual commits to lib/http2.c since 8.0.1 in git. It would make a lot of sense to first test this problem with curl 8.2.0 or current git since it is *likely* that we already fixed or at least changed this issue."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-07-24T19:47:50Z",
+   "body": "Thank you for fast responses!\r\n\r\n> Which version exactly are you building with? On tag `curl-8_0_1` the code is at other line numbers.\r\n\r\nHead was at f7a3fae4cb2af0f3b917eb6ccacb372a67ce8781 for the stacktrace. I the left [link](https://github.com/curl/curl/tree/f7a3fae4cb2af0f3b917eb6ccacb372a67ce8781) to make it easy to looks at the tree snapshot at the moment and check sources.\r\n\r\n> I spot no less than **37** individual commits to lib/http2.c since 8.0.1 in git. It would make a lot of sense to first test this problem with curl 8.2.0 or current git since it is _likely_ that we already fixed or at least changed this issue.\r\n\r\nIt definitelly might be a case. But what was curious for me, is that in the code below, if consider everything executed in order, assigning something to 'closed' does not cause violation. I was thinking, that may be a clue for someone deep into the code.\r\n```\r\nstream->closed = TRUE;\r\nstream->error = error_code;\r\n```"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-07-24T20:06:37Z",
+   "body": "Checked other crashes, and found that there are some for very old libcurl.so version 7.70.0.\r\n```\r\n0x00000000f70b8844\t(libcurl.so -http2.c:809)\t\ton_stream_close\r\n0x00000000f6eebd63\t(libnghttp2.so -nghttp2_session.c:1175)\t\tnghttp2_session_close_stream\r\n0x00000000f6eecff9\t(libnghttp2.so -nghttp2_session.c:2941)\t\tnghttp2_session_mem_send_internal\r\n0x00000000f6eed489\t(libnghttp2.so -nghttp2_session.c:3209)\t\tnghttp2_session_send\r\n0x00000000f70b7f7b\t(libcurl.so -http2.c:1506)\t\th2_session_send\r\n0x00000000f70b7b63\t(libcurl.so -http2.c:1856)\t\thttp2_send\r\n0x00000000f70c29e5\t(libcurl.so -sendf.c:349)\t\tCurl_write\r\n0x00000000f70c6ce9\t(libcurl.so -transfer.c:1139)\t\tCurl_readwrite\r\n0x00000000f70bec7d\t(libcurl.so -multi.c:2095)\t\tmulti_runsingle\r\n0x00000000f70bf91b\t(libcurl.so -multi.c:2833)\t\tmulti_socket\r\n0x00000000f70bf99b\t(libcurl.so -multi.c:2956)\t\tcurl_multi_socket_action\r\n```\r\nDownloaded zipped sources, and lookc like it's quite the same line:\r\n```\r\nstream->closed = TRUE;\r\n```\r\nSo, it might exist for years already."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-07-25T07:27:14Z",
+   "body": "> So, it might exist for years already.\r\n\r\nSure, and we might already have fixed it. Why don't you *start* with checking if this is already fixed?"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-07-25T07:31:11Z",
+   "body": "I do not think you are debugging what you think you are debugging. That code originally mentioned does not exist in 7.70.0."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-07-25T08:29:31Z",
+   "body": "> > So, it might exist for years already.\r\n> \r\n> Sure, and we might already have fixed it. Why don't you _start_ with checking if this is already fixed?\r\n\r\nI plan to test latest nghttp2 and curl release, but currently far away from a proper computer so it will be a couple weeks before I can get a proper look at things."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-07-25T20:04:47Z",
+   "body": "> > So, it might exist for years already.\r\n> \r\n> Sure, and we might already have fixed it. Why don't you _start_ with checking if this is already fixed?\r\n\r\nSorry, It's not something I may reproduce easily, rather collect bugrepors from devices in a field. After some time I'd see if it's fixed. \r\nMy hope was that if you see exact place the issue happens, you may definitivelly say it's fixed or not, but if it's not a case, also fine."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-07-25T20:28:54Z",
+   "body": "Ah, ok. Yeah that makes it more complicated-"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-07-31T07:01:37Z",
+   "body": "Since we believe this is fixed, I will close this now. If you think otherwise after having had a chance to try this out (for a while), just let us know and we come back and continue."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-08-16T11:08:56Z",
+   "body": "> Since we believe this is fixed, I will close this now. If you think otherwise after having had a chance to try this out (for a while), just let us know and we come back and continue.\r\n\r\nFYI I am running cURL release 8.2.1 along with nghttp2 release 1.55.1 now, will update bug in some days about current status."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-08-18T18:24:24Z",
+   "body": "Still see this with cURL 8.2.1 and nghttp2 1.55.1, reverting cURL to 7.86.0 works around the issue.\r\n\r\nBacktrace is slightly different, but I would state still similar. Sadly I have not been able to trigger this behavior through testing, but see it from embedded devices running in the field.\r\n\r\n```\r\n#0  0x0000007f782ac19c in (/lib/libcurl.so.4.8.0 @ 0x0003c19c) on_stream_close + 0x3c\r\n#1  0x0000007f7726bde4 in (/lib/libnghttp2.so.14.24.3 @ 0x0000bde4) nghttp2_session_close_stream + 0x84\r\n#2  0x0000007f7726ffe8 in (/lib/libnghttp2.so.14.24.3 @ 0x0000ffe8) nghttp2_session_mem_send_internal + 0x218\r\n#3  0x0000007f77271108 in (/lib/libnghttp2.so.14.24.3 @ 0x00011108) nghttp2_session_send + 0x78\r\n#4  0x0000007f782aae84 in (/lib/libcurl.so.4.8.0 @ 0x0003ae84) h2_progress_egress + 0xc4\r\n#5  0x0000007f782ac304 in (/lib/libcurl.so.4.8.0 @ 0x0003c304) cf_h2_recv + 0xa4\r\n#6  0x0000007f782c329c in (/lib/libcurl.so.4.8.0 @ 0x0005329c) Curl_read + 0x5c\r\n#7  0x0000007f782d26f8 in (/lib/libcurl.so.4.8.0 @ 0x000626f8) Curl_readwrite + 0x778\r\n#8  0x0000007f782bb274 in (/lib/libcurl.so.4.8.0 @ 0x0004b274) multi_runsingle + 0x974\r\n#9  0x0000007f782bc4cc in (/lib/libcurl.so.4.8.0 @ 0x0004c4cc) curl_multi_perform + 0xfc\r\n```"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2023-08-19T07:27:46Z",
+   "body": "Does your code pause or resume connections? Does it call libcurl functions from more than one thread? Can you please give us some idea of how you use libcurl even if you don't have a self contained repro? Are you saving any debug logs from these devices?\r\n\r\nHere is a simple program that sets environment variable `CURL_DEBUG=http/2` and uses CURLOPT_DEBUGFUNCTION to record the verbose information to debug.log, including extra info for http/2 in curl debug builds.\r\n\r\n~~~c\r\n#include <stdio.h>\r\n#include <stdlib.h>\r\n#include <curl/curl.h>\r\n\r\nint debug_callback(CURL *handle, curl_infotype type, char *data, size_t size,\r\n                   void *clientp)\r\n{\r\n  if(type == CURLINFO_TEXT && size) {\r\n    fprintf((FILE *)clientp, \"== Info [%p]: %.*s\", handle, (int)size, data);\r\n  }\r\n  return 0;\r\n}\r\n\r\nstatic char linebuf[4096 + 1];\r\n\r\nint main()\r\n{\r\n  CURL *curl = NULL;\r\n  CURLcode res = CURLE_FAILED_INIT;\r\n  FILE *fp = NULL;\r\n  const char *logname = \"debug.log\";\r\n\r\n  if(putenv(\"CURL_DEBUG=http/2\")) {\r\n    fprintf(stderr, \"Error: putenv failed to set CURL_DEBUG\\n\");\r\n    goto error;\r\n  }\r\n\r\n  fp = fopen(logname, \"a\");\r\n  if(!fp) {\r\n    fprintf(stderr, \"Error: fopen failed to open %s\\n\", logname);\r\n    goto error;\r\n  }\r\n\r\n#ifdef WIN32\r\n  /* Set file buffer mode to unbuffered.\r\n     Windows doesn't support line buffering. */\r\n  setvbuf(fp, NULL, _IONBF, 0);\r\n#else\r\n  /* Set file buffer mode to line buffering. */\r\n  setvbuf(fp, linebuf, _IOLBF, sizeof(linebuf));\r\n#endif\r\n\r\n  if(curl_global_init(CURL_GLOBAL_ALL)) {\r\n    fprintf(stderr, \"Error: curl_global_init failed\\n\");\r\n    goto error;\r\n  }\r\n\r\n  curl = curl_easy_init();\r\n  if(!curl) {\r\n    fprintf(stderr, \"Error: curl_easy_init failed\\n\");\r\n    goto error;\r\n  }\r\n  \r\n  fprintf(fp, \"\\n!!!!!!!!!!!!!!!!!\\n!!!!! START !!!!!\\n!!!!!!!!!!!!!!!!!\\n\");\r\n\r\n  curl_easy_setopt(curl, CURLOPT_DEBUGFUNCTION, debug_callback);\r\n  curl_easy_setopt(curl, CURLOPT_DEBUGDATA, fp);\r\n  curl_easy_setopt(curl, CURLOPT_VERBOSE, 1L);\r\n\r\n  curl_easy_setopt(curl, CURLOPT_CAINFO, \"curl-ca-bundle.crt\");\r\n\r\n  curl_easy_setopt(curl, CURLOPT_URL, \"https://curl.se\");\r\n\r\n  res = curl_easy_perform(curl);\r\n\r\n  if(res != CURLE_OK) {\r\n    fprintf(fp, \"libcurl: (%d) %s\\n\", res, curl_easy_strerror(res));\r\n    if(stderr != fp)\r\n      fprintf(stderr, \"libcurl: (%d) %s\\n\", res, curl_easy_strerror(res));\r\n  }\r\n\r\n  goto cleanup;\r\nerror:\r\n  res = CURLE_FAILED_INIT;\r\ncleanup:\r\n  if(curl)\r\n    curl_easy_cleanup(curl);\r\n  curl_global_cleanup();\r\n  if(fp)\r\n    fclose(fp);\r\n  return (res == CURLE_OK ? 0 : 1);\r\n}\r\n~~~\r\n"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-08-19T09:40:32Z",
+   "body": "Would it be possible to get the line number of the crash? I fail to see where this is happening in 8.1.2."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2023-09-01T18:49:44Z",
+   "body": "We're seeing this in the wild with a beta that includes 8.0.1. Unfortunately we weren't able to update to 8.2.1 so the code referenced will be a bit out of date. Hopefully there's enough that might give you all some hints on what's happening.\r\n\r\nhttps://github.com/curl/curl/blob/b16d1fa8ee567b52c09a0f89940b07d8491b881d/lib/http2.c#L1049C22-L1060\r\n\r\nAn engineer looking at the crash dumps see that the address indicated for `Curl_easy *data_s` had been discarded and the address retrieved from `data_s->p.http` is invalid. Writing `TRUE` to `stream->closed` triggered the crash.\r\n\r\nThey went further into the crash dumps and saw that when it happened the value of `error_code` passed to `on_stream_close` corresponded to `NGHTTP2_STREAM_CLOSED` for 317 out of 318 reports. The single outlier had the register holding that value set to `NGHTTP2_REFUSED_STREAM`.\r\n\r\nWe've yet to create a reduced case that triggers the issue. If we get that we'll follow up back here. If there's any more information needed I'll help however I can. Thanks in advance!"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2023-10-02T16:23:25Z",
+   "body": "@participant1 @participant3 is ☝️ of any use to you all?"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-10-03T07:37:02Z",
+   "body": "Unfortunately, I was not able to make any progress on this. If we do not find a way to reproduce with current curl, there is nothing I can think of."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-12-04T21:56:48Z",
+   "body": "I don't see how we can act on this without a reproducible, without it happening on a recent version and without anyone digging in to analyze and figure out what happens. Closing.\r\n\r\nIf something of this changes substantially, we can always reopen again."
+  },
+  {
+   "author": "participant6",
+   "created_at": "2023-12-15T06:07:03Z",
+   "body": "I'm encountering the same problem(probably) with curl 8.4 and nghttp2 1.57.\r\nThe problem only happens with very weak connection, with curl_multi_info_read returned some msg at some point, client closes the easy handle.\r\nBut after a while, nghttp2 tries to close the same handler through [this line ](https://github.com/nghttp2/nghttp2/blob/master/lib/nghttp2_session.c#L3276)and then [this line](https://github.com/nghttp2/nghttp2/blob/master/lib/nghttp2_session.c#L3292).\r\n\r\nBut that easy handle is already closed so we have a crash.\r\n\r\nNow I have no idea why it behaves like this(either a false success or nghttp2 doesn't remove the stream?), but I hope this can provide some hint, and I'll keep dig into it."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-12-15T08:42:19Z",
+   "body": "@participant6 this seems related to #12356 which was fixed in curl 8.5.0."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-12-15T11:31:24Z",
+   "body": "> @participant6 this seems related to #12356 which was fixed in curl 8.5.0.\r\n\r\nThanks for mentioning this, I will give curl 8.5.0 a run to see if I no longer can trigger this crash on our end."
+  },
+  {
+   "author": "participant6",
+   "created_at": "2023-12-18T01:54:34Z",
+   "body": "Oh, ok, I'll try 8.5.0 on my side too, would take some time though. "
+  },
+  {
+   "author": "participant6",
+   "created_at": "2023-12-19T04:26:30Z",
+   "body": "No, the issue still exists. It seems http2_data_done cannot find the stream pointer so returned immediately. but nghttp somehow still get it and tries to close the stream later. \r\n\r\nEdit: remove some misleading information."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-12-19T08:26:06Z",
+   "body": "Can you produce a trace of such a situation? Like with `curl -v --trace-config ids,time,http/2` ?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-12-19T09:48:03Z",
+   "body": "curl 8.5.0 in combination with nghttp2 1.58.0 still crashes for me.\r\n\r\n```\r\n#0  0x0000007f7f34a304 in (/lib/libcurl.so.4.8.0 @ 0x0003a304) on_stream_close + 0x44\r\n#1  0x0000007f7df7be54 in (/lib/libnghttp2.so.14.25.1 @ 0x0000be54) nghttp2_session_close_stream + 0x84\r\n#2  0x0000007f7df804a0 in (/lib/libnghttp2.so.14.25.1 @ 0x000104a0) nghttp2_session_mem_send_internal + 0x730\r\n#3  0x0000007f7df80fb8 in (/lib/libnghttp2.so.14.25.1 @ 0x00010fb8) nghttp2_session_send + 0x78\r\n#4  0x0000007f7f349bfc in (/lib/libcurl.so.4.8.0 @ 0x00039bfc) h2_progress_egress + 0xfc\r\n#5  0x0000007f7f34c29c in (/lib/libcurl.so.4.8.0 @ 0x0003c29c) cf_h2_send + 0x1dc\r\n#6  0x0000007f7f36045c in (/lib/libcurl.so.4.8.0 @ 0x0005045c) Curl_nwrite + 0x3c\r\n#7  0x0000007f7f343e60 in (/lib/libcurl.so.4.8.0 @ 0x00033e60) Curl_buffer_send + 0xc0\r\n#8  0x0000007f7f345694 in (/lib/libcurl.so.4.8.0 @ 0x00035694) Curl_http_bodysend + 0x134\r\n#9  0x0000007f7f3469cc in (/lib/libcurl.so.4.8.0 @ 0x000369cc) Curl_http + 0x51c\r\n#10 0x0000007f7f3597b0 in (/lib/libcurl.so.4.8.0 @ 0x000497b0) multi_runsingle + 0x6f0\r\n#11 0x0000007f7f35a82c in (/lib/libcurl.so.4.8.0 @ 0x0004a82c) curl_multi_perform + 0xfc\r\n```\r\n\r\nThis happens very rarely, and I haven't found a simple way to reproduce locally."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-12-19T11:26:19Z",
+   "body": "Do you run `curl` or is it a custom application using `libcurl`?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-12-19T16:13:40Z",
+   "body": "> Do you run `curl` or is it a custom application using `libcurl`?\r\n\r\nFor me this is a custom application where we call into libcurl.\r\n\r\nUpdate: just noticed that I do see this crash triggered from an internal test, which is good as I can add additional logging for debugging.\r\n\r\nI will see if I can set `CURL_DEBUG=http/2` and `CURLOPT_DEBUGFUNCTION` logging to file as suggested earlier in this issue."
+  },
+  {
+   "author": "participant6",
+   "created_at": "2023-12-20T03:59:56Z",
+   "body": "https://gist.github.com/participant6/c4a7939fd39ca4a5f0d46a95cb693f87\r\n\r\nhere are some logs from a failed request (remove company related information), I'm using libcurl, tried setting trace using curl_global_trace, not sure if it's the correct way.\r\n\r\nAlso note that I also changed some pare of code to make it log more (like making mstate log completed too).\r\n"
+  },
+  {
+   "author": "participant6",
+   "created_at": "2023-12-20T04:05:34Z",
+   "body": "Also found that the filter got a CF_CTRL_DATA_DONE before CF_CTRL_DATA_DETACH, so it actually had a stream the first time, sorry for being misleading.\r\n"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-12-20T09:24:16Z",
+   "body": "@participant6 you are talking about a failed request or also about the crash in `on_stream_close()`. I want to make sure that we are not mixing things up here...thanks."
+  },
+  {
+   "author": "participant6",
+   "created_at": "2023-12-20T09:27:07Z",
+   "body": "yes I'm not mixing things up, a failed request get executed later and trying to close the stream results in a crash (since that request already closed), that's what I have observed.\r\n\r\n\r\n"
+  },
+  {
+   "author": "participant6",
+   "created_at": "2023-12-20T09:28:49Z",
+   "body": "I'm suspecting nghttp2_submit_rst_stream is not cleaning up ob_syn in nghttp2, adding more log and wait for crash."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-12-20T11:03:47Z",
+   "body": "Made https://github.com/curl/curl/pull/12562 with some small changes in clearing stream user data and checks on the seen user data in on_stream_close. Maybe that helps you to track down the fault. I am still unable to reproduce locally a crash.\r\n"
+  },
+  {
+   "author": "participant6",
+   "created_at": "2023-12-21T03:25:57Z",
+   "body": "I may have got the problem, please hear my story and see if it makes sense...\r\n\r\nI have almost zero HTTP2 knowledge before solving this bug, so may make some mistake in detail, please don't hesitate to correct me.\r\n\r\n\r\nSo the story:\r\n\r\nFor a request that is timed out. It is closed through CF_CTRL_DATA_DONE. Which will go through [cf_h2_cntrl](https://github.com/curl/curl/blob/master/lib/http2.c#L2473) and then [http2_data_done](https://github.com/curl/curl/blob/master/lib/http2.c#L274).\r\n\r\nInside http2_data_done, [we call nghttp2_submit_rst_stream](https://github.com/curl/curl/blob/master/lib/http2.c#L290C11-L290C36) to say we are not doing this frame anymore.\r\n\r\nInside nghttp2, [nghttp2_submit_rst_stream](https://github.com/nghttp2/nghttp2/blob/master/lib/nghttp2_submit.c#L281) in turns called [nghttp2_session_add_rst_stream](https://github.com/nghttp2/nghttp2/blob/master/lib/nghttp2_session.c#L1207),\r\nwhich, [marks the related outbound item to be cancelled, by finding it though stream id](https://github.com/nghttp2/nghttp2/blob/master/lib/nghttp2_session.c#L1235-L1264).\r\n\r\nThen it returned, curl returned, too, and mark the handle as complete, the user closes the easy handle.\r\n\r\n--------------------------------------------- 15 minutes later  --------------------------------------------------\r\n(15 min in my case, may be longer or shorter)\r\n\r\nIn nghttp2, the same session goes on, and sometime in the future it will get the previously cancelled outbound item.\r\n[here](https://github.com/nghttp2/nghttp2/blob/master/lib/nghttp2_session.c#L3233), and try to process that.\r\n\r\nBut it's not skipping the item, instead it goes into [session_prep_frame](https://github.com/nghttp2/nghttp2/blob/master/lib/nghttp2_session.c#L3238C12-L3238C30) and starts to [open a stream](https://github.com/nghttp2/nghttp2/blob/master/lib/nghttp2_session.c#L2390), and until after the stream is opened, [it start checking if the item is cancelled](https://github.com/nghttp2/nghttp2/blob/master/lib/nghttp2_session.c#L2402), [returning a error](https://github.com/nghttp2/nghttp2/blob/master/lib/nghttp2_session.c#L1809-L1810).\r\n\r\nBut the stream is opened now, it must [close the stream](https://github.com/nghttp2/nghttp2/blob/master/lib/nghttp2_session.c#L3292). And to close the stream, it must call [the callback which is curl's on_stream_close](https://github.com/nghttp2/nghttp2/blob/master/lib/nghttp2_session.c#L1498C18-L1498C27).\r\n\r\n\r\nAnd finally inside [on_stream_close](https://github.com/curl/curl/blob/master/lib/http2.c#L1315-L1335), we tried to access the easy handle that is closed 15 minutes ago, so it crashed.\r\n\r\n\r\n\r\nI currently feel it's nghttp2's problem for trying to open and close stream for a cancelled item. \r\nIf you agree with this, I will open an issue for them and see how to fix that (not really sure why they don't check cancel before opening the stream).\r\n\r\n\r\nAlso I will try to create a minimal example based on this story, though I don't know how to control HTTP2 frames precisely so might or might not succeed...\r\n\r\n"
+  },
+  {
+   "author": "participant7",
+   "created_at": "2023-12-21T09:14:15Z",
+   "body": "I has a app use libcurl,  recent get error from windows.  \r\n\r\nI can not get traceback. (with some error like this, after I upgrade llvm toolchain)\r\n\r\n```sh\r\n attribute, but range extraction failed (missing or invalid range list table), please file a bug and attach the file at the start of this error message\r\n```\r\n\r\n```sh\r\nrunManually indexing DWARF for test.exe...  \r\nerror: unknown errorindexing DWARF for\r\n```\r\n\r\nthe last logs is from  on_curl_data callback.  \r\n\r\n\r\ntest with https://github.com/curl/curl/pull/12562\r\n\r\n```sh\r\n  * frame #0: 0x00007ff7bad3768c aplugin.exe`Curl_llist_insert_next\r\n    frame #1: 0x00007ff7bab1b2aa aplugin.exe`multi_runsingle\r\n    frame #2: 0x00007ff7bab1d5b2 aplugin.exe`multi_socket\r\n    frame #3: 0x00007ff7bab1db0d aplugin.exe`curl_multi_socket_action\r\n    frame #4: 0x00007ff7ba955f3e aplugin.exe`curl_perform\r\n    frame #5: 0x00007ff7baae9387 aplugin.exe`uv__process_poll_req\r\n    frame #6: 0x00007ff7baabd4d3 aplugin.exe`uv__process_reqs\r\n    frame #7: 0x00007ff7baabc78b aplugin.exe`uv_run\r\n```"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-12-21T09:28:34Z",
+   "body": "I think you are onto something here. I opened https://github.com/nghttp2/nghttp2/issues/2018 at nghttp2 to get their opinion on my theory on what is happening. Let's see how they respond.\r\n\r\nIn the meantime, you could check in your local setup if calling `nghttp2_session_set_stream_user_data(ctx->h2, stream->id, NULL);` at the beginning of `http2_data_done()` before `nghttp2_submit_rst_stream()` does solve the issue for you."
+  },
+  {
+   "author": "participant6",
+   "created_at": "2023-12-21T10:10:20Z",
+   "body": "ok, adding right before nghttp2_submit_rst_stream and waiting for crash (hope not)."
+  },
+  {
+   "author": "participant7",
+   "created_at": "2023-12-21T11:24:11Z",
+   "body": "```c\r\n    if(MSTATE_COMPLETED == data->mstate) {\r\n      if(data->set.fmultidone) {\r\n        /* signal via callback instead */\r\n        data->set.fmultidone(data, result);\r\n      }\r\n      else {\r\n        /* now fill in the Curl_message with this info */\r\n        msg = &data->msg;\r\n\r\n        msg->extmsg.msg = CURLMSG_DONE;\r\n        msg->extmsg.easy_handle = data;\r\n        msg->extmsg.data.result = result;\r\n\r\n        multi_addmsg(multi, msg);\r\n        DEBUGASSERT(!data->conn);\r\n      }\r\n      multistate(data, MSTATE_MSGSENT);\r\n\r\n      /* add this handle to the list of msgsent handles */\r\n\t  printf(\"[%s:%d] data=%p\\n\", __FILE__, __LINE__, data);\r\n      Curl_llist_insert_next(&multi->msgsent, multi->msgsent.tail, data,\r\n                             &data->connect_queue);\r\n      /* unlink from the main list */\r\n      unlink_easy(multi, data);\r\n      return CURLM_OK;\r\n    }\r\n  } while((rc == CURLM_CALL_MULTI_PERFORM) || multi_ischanged(multi, FALSE));\r\n```\r\n\r\nafter upgrade to 8.50 version (with  12562 patch ),  I get crash at this call from lldb:\r\n\r\n```sh\r\n thread #1, stop reason = Exception 0xc0000005 encountered at address 0x7ff6ab987b4c: Access violation reading location 0xffffffffffffffff\r\n  * frame #0: 0x00007ff7bad3768c aplugin.exe`Curl_llist_insert_next\r\n    frame #1: 0x00007ff7bab1b2aa aplugin.exe`multi_runsingle\r\n    frame #2: 0x00007ff7bab1d5b2 aplugin.exe`multi_socket\r\n    frame #3: 0x00007ff7bab1db0d aplugin.exe`curl_multi_socket_action\r\n    frame #4: 0x00007ff7ba955f3e aplugin.exe`curl_perform\r\n    frame #5: 0x00007ff7baae9387 aplugin.exe`uv__process_poll_req\r\n    frame #6: 0x00007ff7baabd4d3 aplugin.exe`uv__process_reqs\r\n    frame #7: 0x00007ff7baabc78b aplugin.exe`uv_run\r\n```\r\n\r\nthis is come from windows.  (other platfrom not upgraded)\r\n\r\nany suggestion how can I trace this problem? \r\n\r\n\r\n"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-12-21T11:37:44Z",
+   "body": "@participant7 please do not highjack other issues. This crash is happening elsewhere. Open a new issue instead. Thank you."
+  },
+  {
+   "author": "participant7",
+   "created_at": "2023-12-21T11:40:09Z",
+   "body": "will do.\r\n\r\nbefore I trace to this line (multi.c 2660 call Curl_llist_insert_next), I was think this is the same issue.\r\n\r\n"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2023-12-21T20:14:17Z",
+   "body": "> ```shell\r\n> Curl_llist_insert_next\r\n> ```\r\n\r\nmake sure you are following the [thread safety guidelines](https://curl.se/libcurl/c/threadsafe.html)"
+  },
+  {
+   "author": "participant6",
+   "created_at": "2023-12-22T02:17:19Z",
+   "body": "@participant3 after 16 hours there's no single crash (usually it will have 6~7). I think this solves the problem.\r\n\r\nSo the real story is the nghttp2 requires the user to take care of the user data before cancelling, rather than nghttp2 skip the cancelled item, right? And curl made some mistake so the user data is not correctly cleared."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-12-22T08:41:38Z",
+   "body": "> @participant3 after 16 hours there's no single crash (usually it will have 6~7). I think this solves the problem.\r\n\r\nVery good news! I'm going to merge  #12562 soonish."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-01-04T13:17:16Z",
+   "body": "Pasing on some details from my testing as well. I use curl 8.5.0 release + change in #12562, and I have not seen any crashes yet. It has been running for 2 days, a bit limited amount of testing due to slow startup after the holidays."
+  },
+  {
+   "author": "participant8",
+   "created_at": "2024-01-09T18:28:36Z",
+   "body": "Just to make sure @participant1, @reporter , is this merged in version 8.5.0? I am encountering the same issue, and I don't see the fix listed on the patch notes. Thanks!"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-01-09T19:28:41Z",
+   "body": "> Just to make sure @participant1, @reporter , is this merged in version 8.5.0? I am encountering the same issue, and I don't see the fix listed on the patch notes. Thanks!\r\n\r\nNo, this is not merged and released with version 8.5.0, you need to cherry pick commit 35380273b9311cf0741e386284310fa7ca4d005e on top of the 8.5.0 release. IIRC it was a trivial cherry pick.\r\n\r\nI would assume this will be part of 8.6.0 release, but it is completely up to @participant1 to steer the release train (-:"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-01-11T12:17:55Z",
+   "body": "All commits present in master will be part of the next release. This includes 35380273b9311cf0741e386284310f. Scheduled to ship on January 31, 2024. The tentative release notes for the next release is always present [here](https://curl.se/dev/release-notes.html)."
+  }
+ ],
+ "images": [],
+ "slug": "gh_curl_curl_10936"
+}

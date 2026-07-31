@@ -1,0 +1,426 @@
+{
+ "task_id": "pg_bug_19490",
+ "title": "Streaming standby on 16.14 stops applying WAL on MultiXactOffsetSLRU when primary is 16.8",
+ "body": "A physical streaming standby running PostgreSQL 16.14 stops advancing WAL replay while WAL continues arriving from a 16.8 primary. Receive, write, and flush remain current, but replay is frozen with about 9 GB buffered. The startup process repeatedly shows wait_event = LWLock:MultiXactOffsetSLRU and is parked in futex_wait_queue, while pg_stat_slru reports no MultiXact reads or writes. Restarting only clears the block temporarily and it returns after catch-up. Downgrading the standby binary to 16.12 against the same data directory initially restored replay under the same workload. The primary has low MultiXact age, and there are no hot-standby readers.",
+ "graph": {
+  "start_node": "N0",
+  "nodes": {
+   "N0": {
+    "system_state_id": "S1",
+    "info_state": [
+     "primary_16_8_standby_16_14_cross_minor_replay",
+     "wal_received_but_replay_frozen",
+     "startup_waits_on_multixact_offset_slru",
+     "zero_multixact_slru_activity_during_wait",
+     "restart_only_temporarily_clears_stall",
+     "downgrade_to_16_12_initially_restores_replay",
+     "no_standby_readers_and_low_primary_multixact_age"
+    ],
+    "symptoms_visible": [
+     "The 16.14 standby continues receiving and flushing WAL from the 16.8 primary, but its replay LSN remains frozen and the replay lag grows to about 9 GB.",
+     "The startup process repeatedly reports LWLock:MultiXactOffsetSLRU and is parked in futex_wait_queue, while pg_stat_slru shows no MultiXact activity.",
+     "Restarting the standby clears the stall only until it catches up, after which the same wait returns; running the 16.12 binary initially allows replay to continue."
+    ],
+    "is_terminal": false,
+    "label": "N0 cross-minor WAL replay stall reported",
+    "volunteered_info": [
+     "restart_only_temporarily_clears_stall",
+     "downgrade_to_16_12_initially_restores_replay",
+     "no_standby_readers_and_low_primary_multixact_age"
+    ],
+    "user_perceives_resolved": false,
+    "symptom_images": []
+   },
+   "N1_x": {
+    "system_state_id": "S1",
+    "info_state": [
+     "primary_16_8_standby_16_14_cross_minor_replay",
+     "wal_received_but_replay_frozen",
+     "startup_waits_on_multixact_offset_slru",
+     "zero_multixact_slru_activity_during_wait",
+     "restart_only_temporarily_clears_stall",
+     "downgrade_to_16_12_initially_restores_replay",
+     "no_standby_readers_and_low_primary_multixact_age",
+     "downgrade_to_16_12_later_fails_recovery"
+    ],
+    "symptoms_visible": [
+     "After more than 12 hours on the 16.12 binary, recovery terminates with a FATAL error reading too few bytes from pg_multixact/offsets/017C while replaying a MultiXact CREATE_ID record."
+    ],
+    "is_terminal": false,
+    "label": "N1_x downgrade workaround aftermath",
+    "volunteered_info": [
+     "downgrade_to_16_12_later_fails_recovery"
+    ],
+    "user_perceives_resolved": false,
+    "symptom_images": []
+   },
+   "N2": {
+    "system_state_id": "S1",
+    "info_state": [
+     "primary_16_8_standby_16_14_cross_minor_replay",
+     "wal_received_but_replay_frozen",
+     "startup_waits_on_multixact_offset_slru",
+     "zero_multixact_slru_activity_during_wait",
+     "restart_only_temporarily_clears_stall",
+     "downgrade_to_16_12_initially_restores_replay",
+     "no_standby_readers_and_low_primary_multixact_age",
+     "downgrade_to_16_12_later_fails_recovery",
+     "startup_backtrace_enters_simple_lru_write_all_from_record_new_multixact",
+     "wal_dump_matches_multixact_create_id_at_offsets_page_boundary"
+    ],
+    "symptoms_visible": [
+     "The hanging startup process backtrace ends in LWLockAcquire called by SimpleLruWriteAll, RecordNewMultiXact, and multixact_redo.",
+     "The matching WAL record is a MultiXact CREATE_ID at the end of an offsets page, and replay remains parked on MultiXactOffsetSLRU."
+    ],
+    "is_terminal": false,
+    "label": "N2 hanging replay stack and WAL record collected",
+    "volunteered_info": [],
+    "user_perceives_resolved": false,
+    "symptom_images": []
+   },
+   "N3": {
+    "system_state_id": "S1",
+    "info_state": [
+     "primary_16_8_standby_16_14_cross_minor_replay",
+     "wal_received_but_replay_frozen",
+     "startup_waits_on_multixact_offset_slru",
+     "zero_multixact_slru_activity_during_wait",
+     "restart_only_temporarily_clears_stall",
+     "downgrade_to_16_12_initially_restores_replay",
+     "no_standby_readers_and_low_primary_multixact_age",
+     "downgrade_to_16_12_later_fails_recovery",
+     "startup_backtrace_enters_simple_lru_write_all_from_record_new_multixact",
+     "wal_dump_matches_multixact_create_id_at_offsets_page_boundary",
+     "commit_77dff5d_introduced_recovery_compatibility_path",
+     "record_new_multixact_reacquires_same_slru_lock",
+     "flush_must_be_preserved_before_physical_page_check"
+    ],
+    "symptoms_visible": [
+     "On the unpatched back branches, replay of the page-boundary MultiXact record remains indefinitely blocked in the startup process on LWLock:MultiXactOffsetSLRU.",
+     "No SLRU reads or writes become visible while the startup process is waiting."
+    ],
+    "is_terminal": false,
+    "label": "N3 self-deadlock isolated",
+    "volunteered_info": [],
+    "user_perceives_resolved": false,
+    "symptom_images": []
+   },
+   "N4": {
+    "system_state_id": "S1",
+    "info_state": [
+     "primary_16_8_standby_16_14_cross_minor_replay",
+     "wal_received_but_replay_frozen",
+     "startup_waits_on_multixact_offset_slru",
+     "zero_multixact_slru_activity_during_wait",
+     "restart_only_temporarily_clears_stall",
+     "downgrade_to_16_12_initially_restores_replay",
+     "no_standby_readers_and_low_primary_multixact_age",
+     "downgrade_to_16_12_later_fails_recovery",
+     "startup_backtrace_enters_simple_lru_write_all_from_record_new_multixact",
+     "wal_dump_matches_multixact_create_id_at_offsets_page_boundary",
+     "commit_77dff5d_introduced_recovery_compatibility_path",
+     "record_new_multixact_reacquires_same_slru_lock",
+     "flush_must_be_preserved_before_physical_page_check",
+     "delayed_lock_acquisition_patch_verified_cross_version",
+     "bug_reproduces_on_14_15_16_but_not_17_18"
+    ],
+    "symptoms_visible": [
+     "Without the patch, cross-version replay stops at the MultiXact offsets-page boundary on PostgreSQL 14, 15, and 16.",
+     "With the patch, a 16.14 standby replaying WAL from 16.8 applies all WAL and catches up; the compatibility initialization path still runs.",
+     "The automated cross-version replay test passes on all five tested branches after the change."
+    ],
+    "is_terminal": false,
+    "label": "N4 locking patch verified by cross-version replay",
+    "volunteered_info": [],
+    "user_perceives_resolved": false,
+    "symptom_images": []
+   },
+   "N_terminal": {
+    "system_state_id": "S2",
+    "info_state": [
+     "primary_16_8_standby_16_14_cross_minor_replay",
+     "wal_received_but_replay_frozen",
+     "startup_waits_on_multixact_offset_slru",
+     "zero_multixact_slru_activity_during_wait",
+     "restart_only_temporarily_clears_stall",
+     "downgrade_to_16_12_initially_restores_replay",
+     "no_standby_readers_and_low_primary_multixact_age",
+     "downgrade_to_16_12_later_fails_recovery",
+     "startup_backtrace_enters_simple_lru_write_all_from_record_new_multixact",
+     "wal_dump_matches_multixact_create_id_at_offsets_page_boundary",
+     "commit_77dff5d_introduced_recovery_compatibility_path",
+     "record_new_multixact_reacquires_same_slru_lock",
+     "flush_must_be_preserved_before_physical_page_check",
+     "delayed_lock_acquisition_patch_verified_cross_version",
+     "bug_reproduces_on_14_15_16_but_not_17_18",
+     "fix_applied_to_postgresql_14_through_16"
+    ],
+    "symptoms_visible": [
+     "The locking change has been applied to PostgreSQL 14, 15, and 16, and the cross-version replay test now completes successfully on every tested branch."
+    ],
+    "is_terminal": true,
+    "label": "terminal resolved",
+    "volunteered_info": [],
+    "user_perceives_resolved": true,
+    "symptom_images": []
+   }
+  },
+  "edges": [
+   {
+    "edge_id": "e1_N0__N1_x",
+    "edge_type": "solution_only",
+    "from": "N0",
+    "to": "N1_x",
+    "clarifications": [],
+    "solution": {
+     "intent": "Avoid the 16.14 replay stall by pinning the standby binary to PostgreSQL 16.12 while leaving the existing data directory in place.",
+     "approach_keywords": [
+      "downgrade_standby",
+      "pin_16_12",
+      "temporary_workaround",
+      "same_data_directory"
+     ],
+     "concrete_example": "Run the standby with the 16.12 binary, which initially resumes normal WAL replay against the older primary.",
+     "required_elements_for_full_match": [
+      "suggests_pinning_or_downgrading_standby_to_16_12"
+     ],
+     "required_info": {
+      "L1": [
+       "downgrade_to_16_12_initially_restores_replay"
+      ],
+      "L2": [
+       "primary_16_8_standby_16_14_cross_minor_replay"
+      ],
+      "L3": []
+     },
+     "info_inferred_by_engineer": [],
+     "is_composite": false,
+     "composed_of": [],
+     "is_known_blind_path": true,
+     "is_shortcut": false,
+     "shortcut_skipped_info": [],
+     "inference_hint": null
+    },
+    "comment": "The apparent downgrade workaround was falsified by the reporter: after more than 12 hours, 16.12 failed recovery with a short read from a pg_multixact offsets file. Restarting was also already reported to recur after catch-up."
+   },
+   {
+    "edge_id": "e2_N1_x__N2",
+    "edge_type": "clarification_only",
+    "from": "N1_x",
+    "to": "N2",
+    "clarifications": [
+     {
+      "info_id": "startup_backtrace_enters_simple_lru_write_all_from_record_new_multixact",
+      "level": "L3_specific",
+      "question_patterns": [
+       "Can you capture a backtrace of the hanging startup process with debug symbols?",
+       "What PostgreSQL functions are on the startup process stack when it waits on MultiXactOffsetSLRU?"
+      ],
+      "user_answer_in_this_oncall": "The debug backtrace shows PGSemaphoreLock, LWLockAcquire, SimpleLruWriteAll(MultiXactOffsetCtl, false), RecordNewMultiXact, multixact_redo, and WAL recovery. Another affected operator supplied the same SimpleLruWriteAll stack before the reporter provided the complete trace.",
+      "images": [],
+      "counterfactual_candidates": [
+       {
+        "type": "extreme",
+        "answer": "The stack is blocked in filesystem I/O inside an SLRU page read and never enters SimpleLruWriteAll or RecordNewMultiXact.",
+        "solution_should_change": true
+       },
+       {
+        "type": "minor",
+        "answer": "The same SimpleLruWriteAll and RecordNewMultiXact frames are present, but symbol line numbers differ because the package was built with different compiler options.",
+        "solution_should_change": false
+       }
+      ]
+     },
+     {
+      "info_id": "wal_dump_matches_multixact_create_id_at_offsets_page_boundary",
+      "level": "L3_specific",
+      "question_patterns": [
+       "Can you obtain the last replayed LSN and dump the WAL around the record where recovery stops?",
+       "Which WAL record is being replayed when the startup process hangs?"
+      ],
+      "user_answer_in_this_oncall": "The WAL dump matches the stack: it stops on a MultiXact CREATE_ID record. The detailed reproduction identifies multi 79871 with offset 218449 as the last MultiXact on its offsets page, so the record enters the next-page compatibility path.",
+      "images": [],
+      "counterfactual_candidates": [
+       {
+        "type": "extreme",
+        "answer": "The WAL dump shows no MultiXact records near the frozen replay LSN; recovery stops on an unrelated heap record.",
+        "solution_should_change": true
+       },
+       {
+        "type": "irrelevant",
+        "answer": "The WAL segment file has a different archive filename, but the decoded record and LSN are identical.",
+        "solution_should_change": false
+       }
+      ]
+     }
+    ],
+    "solution": null,
+    "comment": "Evidence came from the reporter and another affected operator. They are folded into one simulated user side as required for this multi-user thread."
+   },
+   {
+    "edge_id": "e3_N2__N3",
+    "edge_type": "solution_only",
+    "from": "N2",
+    "to": "N3",
+    "clarifications": [],
+    "solution": {
+     "intent": "Diagnose the hang as a self-deadlock in the back-branch recovery compatibility code introduced by commit 77dff5d937b1, while preserving the flush needed for safe page-existence checks.",
+     "approach_keywords": [
+      "self_deadlock",
+      "record_new_multixact",
+      "simple_lru_write_all",
+      "same_lwlock_reacquisition",
+      "commit_77dff5d937b1",
+      "preserve_flush"
+     ],
+     "concrete_example": "RecordNewMultiXact already holds MultiXactOffsetSLRULock exclusively when the page-boundary compatibility path calls SimpleLruWriteAll. That function tries to acquire MultiXactOffsetCtl's control lock, which is the same MultiXactOffsetSLRULock, so the startup process waits on its own lock forever. Do not simply remove the flush: dirty SLRU pages from out-of-order CREATE_ID replay can make a disk-only physical-page check return a false negative.",
+     "required_elements_for_full_match": [
+      "identifies_same_lock_self_deadlock",
+      "connects_record_new_multixact_to_simple_lru_write_all",
+      "attributes_regression_to_commit_77dff5d937b1_compatibility_path",
+      "explains_why_zero_slru_io_is_expected",
+      "preserves_flush_before_physical_page_check"
+     ],
+     "required_info": {
+      "L1": [
+       "startup_waits_on_multixact_offset_slru",
+       "zero_multixact_slru_activity_during_wait"
+      ],
+      "L2": [
+       "wal_dump_matches_multixact_create_id_at_offsets_page_boundary"
+      ],
+      "L3": [
+       "startup_backtrace_enters_simple_lru_write_all_from_record_new_multixact"
+      ]
+     },
+     "info_inferred_by_engineer": [
+      "commit_77dff5d_introduced_recovery_compatibility_path",
+      "record_new_multixact_reacquires_same_slru_lock",
+      "flush_must_be_preserved_before_physical_page_check"
+     ],
+     "is_composite": false,
+     "composed_of": [],
+     "is_known_blind_path": false,
+     "is_shortcut": false,
+     "shortcut_skipped_info": [],
+     "inference_hint": null
+    },
+    "comment": "The stack and matching page-boundary WAL record establish the self-deadlock. A first idea to remove SimpleLruWriteAll was rejected because out-of-order MultiXact WAL can leave a relevant dirty page only in SLRU buffers."
+   },
+   {
+    "edge_id": "e4_N3__N4",
+    "edge_type": "clarification_only",
+    "from": "N3",
+    "to": "N4",
+    "clarifications": [
+     {
+      "info_id": "delayed_lock_acquisition_patch_verified_cross_version",
+      "level": "L3_specific",
+      "question_patterns": [
+       "Can you test the patch that moves MultiXactOffsetSLRULock acquisition later in RecordNewMultiXact?",
+       "Does an older primary's WAL cross the MultiXact offsets-page boundary and catch up on a patched standby?"
+      ],
+      "user_answer_in_this_oncall": "Yes. A REL_16_0 primary and REL_16_STABLE standby were driven across MultiXact offsets-page boundaries: without the change startup deadlocked, while with the change the standby caught up and logged that the next offsets page was initialized. A separate 16.8-primary/16.14-standby test with about 2300 MultiXacts reproduced the deadlock without the patch and replayed all WAL with it.",
+      "images": [],
+      "counterfactual_candidates": [
+       {
+        "type": "extreme",
+        "answer": "The patched standby still deadlocks on the same RecordNewMultiXact record and never catches up.",
+        "solution_should_change": true
+       },
+       {
+        "type": "minor",
+        "answer": "The patched standby catches up using 2500 generated MultiXacts instead of about 2300.",
+        "solution_should_change": false
+       }
+      ]
+     },
+     {
+      "info_id": "bug_reproduces_on_14_15_16_but_not_17_18",
+      "level": "L2_inferable",
+      "question_patterns": [
+       "Which supported branches reproduce the cross-version replay failure?",
+       "Does the automated cross-version replay test pass on newer branches?"
+      ],
+      "user_answer_in_this_oncall": "The test reproduces the deadlock on PostgreSQL 14, 15, and 16. PostgreSQL 17 and 18 already acquire the lock later and pass. After applying the equivalent change, all five tested branches pass.",
+      "images": [],
+      "counterfactual_candidates": []
+     }
+    ],
+    "solution": null,
+    "comment": "Handler-requested patch and cross-version reproduction runs are measurements, so this is clarification_only. Test results from multiple contributors are folded into the simulated user side."
+   },
+   {
+    "edge_id": "e5_N4__N_terminal",
+    "edge_type": "solution_only",
+    "from": "N4",
+    "to": "N_terminal",
+    "clarifications": [],
+    "solution": {
+     "intent": "Fix PostgreSQL 14 through 16 by moving acquisition of MultiXactOffsetSLRULock later in RecordNewMultiXact, matching PostgreSQL 17 and 18, so SimpleLruWriteAll can safely flush before the physical-page check without recursively acquiring the lock.",
+     "approach_keywords": [
+      "move_lock_acquisition_later",
+      "record_new_multixact",
+      "preserve_simple_lru_write_all",
+      "align_back_branches_with_17_18",
+      "apply_to_14_15_16",
+      "cross_version_replay_test"
+     ],
+     "concrete_example": "Apply the patch that performs the early RecordNewMultiXact compatibility work before taking MultiXactOffsetSLRULock, then acquires the lock at the later point used by v17 and v18. Keep SimpleLruWriteAll before SimpleLruDoesPhysicalPageExist. Commit the change to v14-v16 only after the 16.8-to-16.14 and automated page-boundary replay tests show full catch-up.",
+     "required_elements_for_full_match": [
+      "moves_multixact_offset_lock_acquisition_later",
+      "does_not_remove_required_slru_flush",
+      "aligns_v14_v16_locking_with_v17_plus",
+      "applies_fix_to_postgresql_14_15_16",
+      "requires_successful_cross_version_replay_verification"
+     ],
+     "required_info": {
+      "L1": [
+       "primary_16_8_standby_16_14_cross_minor_replay",
+       "wal_received_but_replay_frozen"
+      ],
+      "L2": [
+       "wal_dump_matches_multixact_create_id_at_offsets_page_boundary",
+       "bug_reproduces_on_14_15_16_but_not_17_18"
+      ],
+      "L3": [
+       "startup_backtrace_enters_simple_lru_write_all_from_record_new_multixact",
+       "delayed_lock_acquisition_patch_verified_cross_version"
+      ]
+     },
+     "info_inferred_by_engineer": [
+      "commit_77dff5d_introduced_recovery_compatibility_path",
+      "record_new_multixact_reacquires_same_slru_lock",
+      "flush_must_be_preserved_before_physical_page_check",
+      "fix_applied_to_postgresql_14_through_16"
+     ],
+     "is_composite": false,
+     "composed_of": [],
+     "is_known_blind_path": false,
+     "is_shortcut": false,
+     "shortcut_skipped_info": [],
+     "inference_hint": null
+    },
+    "comment": "The patch was applied to PostgreSQL 14 through 16 after independent cross-version replay verification. The new buildfarm workload subsequently passed on all five branches."
+   }
+  ]
+ },
+ "satisfaction_conditions": [
+  "Must identify the true root cause: the back-branch compatibility path introduced by commit 77dff5d937b1 calls SimpleLruWriteAll while RecordNewMultiXact already holds MultiXactOffsetSLRULock, causing the startup process to try to acquire the same lock and self-deadlock.",
+  "Must ground the diagnosis in the collected evidence: the startup stack through SimpleLruWriteAll and RecordNewMultiXact, the matching MultiXact CREATE_ID record at an offsets-page boundary, the MultiXactOffsetSLRU wait, and the absence of SLRU I/O.",
+  "Must not present restarting or pinning the standby to 16.12 as a resolution: restart only postpones recurrence, and 16.12 later failed recovery with a pg_multixact offsets short-read error.",
+  "Must not fix the deadlock by simply removing SimpleLruWriteAll, because out-of-order MultiXact replay can leave a relevant dirty SLRU page that a disk-only physical-page check would miss.",
+  "The fix must move MultiXactOffsetSLRULock acquisition later in RecordNewMultiXact, preserve the flush-before-physical-page-check behavior, and align PostgreSQL 14-16 with the locking structure already used by 17 and 18.",
+  "Must require successful user-side cross-version replay testing, including crossing a MultiXact offsets-page boundary and catching up, before declaring the issue resolved."
+ ],
+ "persona_hint": {
+  "experience_level": "Experienced PostgreSQL operator and developer-facing bug reporter. Comfortable inspecting replication LSNs, wait events, kernel stacks, pg_stat_slru, debug-symbol backtraces, WAL dumps, package-version pinning, and controlled recovery tests. Evidence from other affected operators and patch testers is folded into the same simulated user side.",
+  "communication_style": "Detailed, precise, and cooperative. Provides production observations and requested diagnostics, clearly distinguishes temporary symptom relief from durable recovery, and follows up when an apparent workaround later fails."
+ },
+ "metadata": {
+  "graph_version": "v1",
+  "created_from": "https://www.postgresql.org/message-id/flat/19490-9c59c6a583513b99%40postgresql.org (LLM-draft via graph_bench pipeline; pending human review)",
+  "hitl_reviewed": false
+ },
+ "opening_images": []
+}

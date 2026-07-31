@@ -1,0 +1,260 @@
+{
+ "repo": "curl/curl",
+ "number": 11203,
+ "url": "https://github.com/curl/curl/issues/11203",
+ "title": "Hyper slowness issue",
+ "state": "closed",
+ "labels": [
+  "KNOWN_BUGS material",
+  "performance",
+  "Hyper"
+ ],
+ "reporter": "reporter",
+ "created_at": "2023-05-25T08:07:53Z",
+ "closed_at": "2024-02-10T17:27:35Z",
+ "body": "### I did this\r\nTrying to transfer 3 URLs like:\r\n```\r\nhttps://api.adsb.lol/api/0/route/SAS4133 \r\nhttps://api.adsb.lol/api/0/route/BBD6810\r\nhttps://api.adsb.lol/api/0/route/THY19Y\r\n```\r\nto get Airplane flight-information (in series or parallel), causes curl to hang for a really long time between each URL.\r\nBut only when built with `-DUSE_HYPER` !? Entering the URLs either from a config-file or set on the command-line doesn't matter.\r\nA simple `get-urls.bat` file to reproduce:\r\n```bat\r\n@echo off\r\nsetlocal\r\nset CURL_SSL_BACKEND=schannel\r\necho url=https://api.adsb.lol/api/0/route/SAS4133  > %TEMP%\\curl_urls.txt\r\necho url=https://api.adsb.lol/api/0/route/BBD6810 >> %TEMP%\\curl_urls.txt\r\necho url=https://api.adsb.lol/api/0/route/THY19Y  >> %TEMP%\\curl_urls.txt\r\ncurl -s -K - < %TEMP%\\curl_urls.txt | grep \"_airport_codes_iata\"\r\n```\r\n\r\nRunning the above `.bat` file takes at least 1 minute to complete! With `--parallel` or not.\r\n\r\n### I expected the following\r\nThe transfer to complete in < 1 sec. as the `curl.exe` bundled with Win-10 does:\r\n```\r\ntimer & c:\\windows\\system32\\curl.exe -s https://api.adsb.lol/api/0/route/SAS4133 https://api.adsb.lol/api/0/route/BBD6810 https://api.adsb.lol/api/0/route/THY19Y | grep \"_airport_codes_iata\"  & timer\r\nTimer 1 on:  9:42:26\r\n  \"_airport_codes_iata\": \"CGN-BLL-KEF\",\r\n  \"_airport_codes_iata\": \"SFO-IST\",\r\n  \"_airport_codes_iata\": \"BGO-SVG\",\r\nTimer 1 off:  9:42:26  Elapsed: 0:00:00,45\r\n\r\nc:\\windows\\system32\\curl -V\r\ncurl 8.0.1 (Windows) libcurl/8.0.1 Schannel WinIDN\r\nRelease-Date: 2023-03-20\r\n```\r\n\r\nAdding the `--parallel` option I'd assume the URLs would be issued in parallel. Doesn't look so to me.\r\n\r\n###  Version info:\r\n```\r\ncurl -V\r\ncurl 8.2.0-DEV (x86_64-pc-win32) libcurl/8.2.0-DEV (OpenSSL/3.2.0) Schannel \r\n  (rustls-ffi/0.10.0/rustls/0.21.0) zlib/1.2.12 brotli/1.0.9 zstd/1.5.2 c-ares/1.19.0 libssh2/1.10.1_DEV Hyper/1.0.0-rc.3\r\nRelease-Date: [unreleased]\r\nProtocols: dict file ftp ftps gopher gophers http https imap imaps ldap ldaps mqtt pop3 pop3s scp sftp smb smbs smtp \r\n  smtps telnet tftp ws wss\r\nFeatures: alt-svc AsynchDNS brotli HSTS HTTP2 HTTPS-proxy Kerberos Largefile libz MultiSSL NTLM SPNEGO SSL SSPI threadsafe \r\n  TLS-SRP UnixSockets zstd\r\n```\r\n\r\nI'm on Windows-10, 22H2 (OS-build 19045.2965).\r\n",
+ "comments": [
+  {
+   "author": "reporter",
+   "created_at": "2023-05-26T08:25:12Z",
+   "body": "After updating Rust with:\r\n```rust\r\n  rustup update\r\n  rustup toolchain install nightly-x86_64-pc-windows-msvc\r\n  rustup override set nightly-x86_64-pc-windows-msvc\r\n```\r\na `git pull` of Hyper's `master` and rebuilding everything, this issue persists."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-05-29T15:17:23Z",
+   "body": "Reproduces for me as well on Linux."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-05-30T10:21:06Z",
+   "body": "Added some debug info's to this. I see that in `Curl_hyper_stream()`which is called by curl's transfer loop:\r\n\r\n1. socket gives POLLIN event\r\n2. Curl_hyper_stream() is called\r\n3. `hyper_waker_wake(h->read_waker)` is called\r\n4. socket input reads the HTTP response\r\n5. `hyper_executor_poll(h->exec);` gives `HYPER_TASK_EMPTY`\r\n6. `Curl_hyper_stream()` returns\r\n7. time passes\r\n8. transfer loop calls this transfer again after 100ms or more\r\n9. no POLL event, no `hyper_wake...`, NO network IO\r\n10. `hyper_executor_poll(h->exec);` gives `HYPER_TASK_RESPONSE `\r\n\r\nthis explains the \"slowness\" of handling hyper transfers.\r\n\r\nExperimentally, if I change step 5 to call `hyper_executor_poll(h->exec);` a second time, directly after the EMPTY result, it delivers `HYPER_TASK_RESPONSE` and the transfers are  fast.\r\n\r\nThis seem to be y hyper internal synchronization issue that make IO result not available *though they have been processed internally*. Only when calling the hyper poll function again, the result is returned.\r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-06-01T05:38:33Z",
+   "body": "@participant2 \r\n> Only when calling the hyper poll function again, the result is returned.\r\n\r\nHope someone (you?) is working on a fix. I'm clueless about such internal details."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-06-01T08:28:09Z",
+   "body": "@reporter you are right. I wanted to document my observations to drag the hyper project in. I think this is a bug on their behalf, but if the insist everything is fine, we'll make a workaround in curl."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-06-01T08:37:40Z",
+   "body": "Opened https://github.com/hyperium/hyper/issues/3237"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-06-01T08:43:33Z",
+   "body": "We also have  #10803 as known bug now. It is a memory-leak with hyper as a backend."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-06-19T10:17:50Z",
+   "body": "On advisement of @participant5 I made some small changes that resolve the slowness for me. Pr in #11344.\r\n\r\nI see our http/1.1 test cases work, h2 has issues with connection reuse."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-06-20T07:36:06Z",
+   "body": "Does not fix it for @reporter apparently"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-08-29T06:59:06Z",
+   "body": "I can replicate the slowness on Linux. I used this script:\r\n```\r\n#! /bin/sh\r\ncurl -s -K - <<EOF | grep \"_airport_codes_iata\"\r\nurl=https://api.adsb.lol/api/0/route/SAS4133\r\nurl=https://api.adsb.lol/api/0/route/BBD6810\r\nurl=https://api.adsb.lol/api/0/route/THY19Y\r\nEOF\r\n```\r\nWith normal curl it takes 1-2 seconds to complete. With curl+hyper it takes about a minute; the first result comes immediately, then there is a pause of about 30 seconds before the second result, then another pause of about 30 seconds before the third result."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-08-29T07:00:20Z",
+   "body": "> We also have #10803 as known bug now. It is a memory-leak with hyper as a backend.\r\n\r\n#10803 has now been fixed. It is unrelated to this issue."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-08-29T11:10:29Z",
+   "body": "With everything up-to-date, `.bat` file above now shows Hyper is 20 sec slower than before:\r\n```\r\nUsing 'c:\\Windows\\system32\\curl.exe':\r\n  \"_airport_codes_iata\": \"BGO-SVG\",\r\n  \"_airport_codes_iata\": \"CGN-BLL-KEF\",\r\n  \"_airport_codes_iata\": \"SFO-IST\",\r\nTimer 1 off: 13:01:11  Elapsed: 0:00:01,515\r\n\r\nUsing 'curl -- tip of git master':\r\n  \"_airport_codes_iata\": \"CGN-BLL-KEF\",\r\n  \"_airport_codes_iata\": \"SFO-IST\",\r\nTimer 1 off: 13:03:58  Elapsed: 0:01:01,321\r\n```\r\n\r\nBesides the response of first URL got dropped in some cases!"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-08-30T04:15:41Z",
+   "body": "Some notes from my investigations:\r\n\r\nThe first response arrives quickly. After that, logging shows that  `Curl_hyper_stream` is called once per second for 30 seconds with `select_res` of 0. Every time `hyper_executor_poll` returns NULL and so `Curl_hyper_stream` returns without doing anything other than setting `*didwhat = KEEP_RECV`. Finally after 30 calls, `Curl_hyper_stream` is called with `select_res` of 1, and then things start happening. And it's a similar story for the third response.\r\n\r\nI grepped for 30 and found that the `-y`/`--speed-time` option affects the behaviour here. If I use `-y 5` then the 30 second loop is reduced to 5 seconds, but the middle response doesn't arrive, and the whole thing takes a little over 5 seconds. In fact, any `-y` value less than 30 seems to cause this drop-the-middle-response behaviour.\r\n\r\nThe 1 second delay comes from a `Curl_poll` call with a timeout of 1000ms in `multi_wait`.\r\n\r\n`multi_wait` calls `multi_timeout`, to possibly adjust the timeout down from 1000ms. Normal curl frequently adjusts this down to very small numbers: 0, 1, etc. curl+hyper never does, because it doesn't have `multi->timetree`.\r\n\r\nQuestions: \r\n- Why does vanilla curl end up with a non-zero `select_res` (from `Curl_socket_check`) so much more quickly than curl+hyper?\r\n- And what changes at the 30 second mark for curl+hyper?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-08-30T07:55:04Z",
+   "body": "When the 30 second hang occurs, curl wants to send off the (second) request over the connection. But due to hyper's asynch API and behavior (combined with some bug in curl obviously) curl does not know it is still sending the request but it has already moved on to the `PERFORMING` state and since this is a plain GET, it does not wait for the socket to be writable and thus it sits there waiting without sending the request.\r\n\r\n(Presumably the socket gets readable after 30 seconds anyway for some reason and that triggers the send to get sent.)\r\n\r\nThis is can be seen by `multi_getsock()` getting called and the handle being in state `MSTATE_PERFORMING` before the request has been sent. The native HTTP will issue the request in the `DO` or `DOING` states."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-08-30T07:57:37Z",
+   "body": "My adjusted reproduce script with tracing + time stamps\r\n~~~sh\r\n#! /bin/sh\r\n./src/curl --trace-ascii - --trace-time -K - <<EOF | tee dump\r\nurl=https://api.adsb.lol/api/0/route/SAS4133\r\nurl=https://api.adsb.lol/api/0/route/BBD6810\r\nurl=https://api.adsb.lol/api/0/route/THY19Y\r\nEOF\r\n"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-08-31T06:09:14Z",
+   "body": "Vanilla curl is using http/1.1 while curl+hyper is using h2. Is that significant?"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-08-31T06:11:22Z",
+   "body": "Also, the 30 second thing might be due to an SSL timeout, which trigger a new connection?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-08-31T06:30:01Z",
+   "body": "> Vanilla curl is using http/1.1 while curl+hyper is using h2. Is that significant?\r\n\r\nMy vanilla build uses h2 for this. But no, that does not matter.\r\n\r\n> Also, the 30 second thing might be due to an SSL timeout, which trigger a new connection?\r\n\r\nNo, the trace shows no new connection. And a curl will not silently do a new connection if a transfer fails in the middle, it would return an error."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-09-12T12:46:51Z",
+   "body": "There's also an issue with Hyper + GnuTls  as the backend and possibly `-DCURLDEBUG`. \r\nE.g. `curl.exe --tlsv1.2 -v https://mas-oyama.com/` gives:\r\n```\r\n...\r\n* Curl_hyper_send(24)\r\n* Curl_hyper_send(24) -> 24\r\n> GET / HTTP/2\r\n> Host: mas-oyama.com\r\n> Authorization: Basic YW5vbnltb3VzOnlvdXJAZW1haWwuYWRkcmVzcw==\r\n> User-Agent: GoogleBot/2.1\r\n> Accept: */*\r\n>\r\n* STATE: DO => DID handle 0x29ebeb074b8; line 2233\r\n* STATE: DID => PERFORMING handle 0x29ebeb074b8; line 2351\r\n* Curl_hyper_recv(8192)\r\nAssertion failed: (size_t)nread <= len, file vtls/vtls.c, line 1590\r\n```"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-09-12T13:18:14Z",
+   "body": "@reporter can you inspect/dump the values of that assertion failure?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-09-13T05:31:01Z",
+   "body": "Adding a `DEBUGF()` before that Assertion and running `curl.exe --tlsv1.2 -v https://mas-oyama.com/`:\r\n\r\n```\r\n...\r\n* schannel: recv returned CURLE_AGAIN\r\n* schannel: encrypted data buffer: offset 0 length 9216\r\n* schannel: encrypted data buffer: offset 0 length 9216\r\n* schannel: decrypted data buffer: offset 0 length 8192\r\n* schannel: schannel_recv cleanup\r\n* nread: 18446744073709551615, len: 8152\r\nAssertion failed: (size_t)nread <= len, file vtls/vtls.c, line 1591\r\n```"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-09-13T05:35:20Z",
+   "body": "hmm, a 64bit -1 as unsigned. but the var `nread` is an `ssize_t`. How could that happen in:\r\n\r\n```\r\n  ssize_t nread;\r\n\r\n  CF_DATA_SAVE(save, cf, data);\r\n  *err = CURLE_OK;\r\n  nread = Curl_ssl->recv_plain(cf, data, buf, len, err);\r\n  if(nread > 0) {\r\n    DEBUGASSERT((size_t)nread <= len);\r\n  }\r\n  ...\r\n```\r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-09-13T07:26:48Z",
+   "body": "Don't ask, but it seems some Rust code inside Hyper caused a panic."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2023-09-19T08:49:12Z",
+   "body": "We have looked into this issue and have found the potential problem.\r\n\r\nI can reproduce the issue with hyper + Rustls / OpenSSL and various endpoints. Some appeared to be somewhat fast and some slow (> 60 seconds). For example:\r\n\r\n```sh\r\n# this takes > 60 seconds\r\ncurl https://api.adsb.lol/api/0/route/SAS4133 https://api.adsb.lol/api/0/route/BBD6810 https://api.adsb.lol/api/0/route/THY19Y\r\n# this takes 300 ms\r\ncurl --http1.1 https://api.adsb.lol/api/0/route/SAS4133 https://api.adsb.lol/api/0/route/BBD6810 https://api.adsb.lol/api/0/route/THY19Y\r\n# this takes around 4 seconds\r\ncurl https://github.com/curl/curl/issues/11203 https://github.com/curl/curl/issues/10803 https://github.com/curl/curl/pull/11729\r\n```\r\nSo the problem appears to only occur with HTTP2 and some servers cause a delay of 30 seconds for the 2nd and 3rd request. I have confirmed this by testing several of different endpoints.\r\n\r\nInspecting the HTTP2 traffic with wireshark (and a SSLKEYLOGFILE) I noticed that curl with the default backend sends over:\r\n- A HTTP2 connection preface\r\n- Settings / window update\r\n- Request 1\r\n- Request 2\r\n- Request 3\r\n\r\nCurl with hyper sends over:\r\n- A HTTP2 connection preface\r\n- Settings / window update\r\n- Request 1\r\n- A HTTP2 connection preface\r\n- Settings / window update\r\n- Request 2\r\n- A HTTP2 connection preface\r\n- Settings / window update\r\n- Request 3\r\n\r\nAll web servers I tested cannot handle the second / third HTTP2 connection preface / Settings / window update (i think this is called a \"handshake\" in `c-hyper.c`). In these cases curl+hyper send the second GET request, but the server will, either immediately or after a delay of 30 seconds, send a `GOAWAY` after which curl+hyper sets up a new connection and  tries again (which will succeed). For instance, github will send the `GOAWAY` immediately after the second HTTP2 connection preface / settings is sent. This is why the third example above only takes 4 seconds.\r\n\r\nThe hyper API is constructed in such a way that this \"handshake\" is performed every time a new hyper client is constructed. So my first plan to fix this was reusing the hyper client in `c-hyper.c`, however this causes some problems since the executor (that is bound to the hyper client) is recreated for every request.\r\n\r\nWould you see any problems in reusing the executor / client for multiple requests?"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2023-09-19T12:36:22Z",
+   "body": "> Would you see any problems in reusing the executor / client for multiple requests?\r\n\r\nAt least from hyper's point of view, they are meant to be reusable."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-09-19T12:38:32Z",
+   "body": "> Would you see any problems in reusing the executor / client for multiple requests?\r\n\r\nNo. The easy handles are already encouraged to be reused in the public libcurl API. If we can reuse more parts within it, we should."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2023-09-19T13:02:29Z",
+   "body": "> > Would you see any problems in reusing the executor / client for multiple requests?\r\n> \r\n> No. The easy handles are already encouraged to be reused in the public libcurl API. If we can reuse more parts within it, we should.\r\n\r\nI have looked into persisting the `hyptransfer` struct between requests, but I can't pinpoint the appropriate place to do this. Do you have any suggestions?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-09-19T16:08:58Z",
+   "body": "The hypertransfer struct itself persists between requests since it is a member of the `struct Curl_easy` struct, which is the `CURL *` handle's internal version.\r\n\r\n`Curl_http_done()` gets called when the request is \"done\" (reaches [DONE state](https://everything.curl.dev/internals/statemachines)) and that then calls `Curl_hyper_done()` which currently seems to free most/all hyper related resources. I presume it should keep some of them around longer and instead rather close them later. Maybe in `Curl_close()` which is the function that kills and frees the handle.\r\n\r\nNote that this handle is the handle for a transfer, but not for data that associated with the connections. They are in the `struct connectdata` as a single transfer very well may involve one or more connections and connections can survive and be used by other transfers."
+  },
+  {
+   "author": "participant6",
+   "created_at": "2023-09-19T17:07:25Z",
+   "body": "is `struct curl_easy` the right place for the executor then? it is most efficient to only create the executor once, and then reuse it for any request that curl makes while it runs. So maybe it should instead live in `struct connectdata`?\r\n\r\n<hr>\r\n\r\n> The hypertransfer struct itself persists between requests since it is a member of the struct Curl_easy struct, which is the CURL * handle's internal version.\r\n\r\nYes, but somehow the executor gets cleared and we can't figure out why. This patch \r\n\r\n- disables a `memset` that would clear the pointer to the executor\r\n- disables the freeing of the executor\r\n\r\n```diff\r\ndiff --git a/lib/c-hyper.c b/lib/c-hyper.c\r\nindex 61ca29a3a..d72c2c575 100644\r\n--- a/lib/c-hyper.c\r\n+++ b/lib/c-hyper.c\r\n@@ -912,8 +912,11 @@ CURLcode Curl_http(struct Curl_easy *data, bool *done)\r\n      the rest of the request in the PERFORM phase. */\r\n   *done = TRUE;\r\n \r\n+  infof(data, \"-------------------------> the hyptransfer pointer is %p\", h);\r\n+  infof(data, \"-------------------------> the executor pointer is %p\", h->exec);\r\n+\r\n   infof(data, \"Time for the Hyper dance\");\r\n-  memset(h, 0, sizeof(struct hyptransfer));\r\n+  // memset(h, 0, sizeof(struct hyptransfer));\r\n \r\n   result = Curl_http_host(data, conn);\r\n   if(result)\r\n@@ -1261,8 +1264,8 @@ void Curl_hyper_done(struct Curl_easy *data)\r\n {\r\n   struct hyptransfer *h = &data->hyp;\r\n   if(h->exec) {\r\n-    hyper_executor_free(h->exec);\r\n-    h->exec = NULL;\r\n+    // hyper_executor_free(h->exec);\r\n+    // h->exec = NULL;\r\n   }\r\n   if(h->read_waker) {\r\n     hyper_waker_free(h->read_waker);\r\n```\r\n\r\nwe see this output\r\n\r\n    *   Trying 104.26.5.74:443...\r\n    * Connected to api.adsb.lol (104.26.5.74) port 443\r\n    * ALPN: curl offers h2,http/1.1\r\n    * rustls_connection wants us to write_tls.\r\n    * Curl_socket_check: reading would block\r\n    * rustls_connection wants us to read_tls.\r\n    * rustls_connection wants us to write_tls.\r\n    * rustls_connection wants us to read_tls.\r\n    * Curl_socket_check: reading would block\r\n    * rustls_connection wants us to read_tls.\r\n    * Done handshaking\r\n    * ALPN: server accepted h2\r\n    * -------------------------> the hyptransfer pointer is 0x55b69b469a18\r\n    * -------------------------> the executor pointer is (nil)\r\n    * Time for the Hyper dance\r\n    > GET /api/0/route/SAS4133 HTTP/2\r\n    > Host: api.adsb.lol\r\n    > User-Agent: curl/8.4.0-DEV\r\n    > Accept: */*\r\n    > \r\n    < HTTP/2 200 OK\r\n    < date: Tue, 19 Sep 2023 17:00:45 GMT\r\n    < content-type: application/json\r\n    < content-length: 659\r\n    < access-control-allow-origin: *\r\n    < access-control-allow-methods: POST, OPTIONS\r\n    < access-control-allow-headers: access-control-allow-origin,content-type\r\n    < strict-transport-security: max-age=31536000; includeSubDomains\r\n    < cf-cache-status: DYNAMIC\r\n    < report-to: {\"endpoints\":[{\"url\":\"https:\\/\\/a.nel.cloudflare.com\\/report\\/v3?s=1lneCHWqONSQxNCcJMd5cO9gX7h2SxL01tWW28YlzR7E5HYGTBSAfpW46NhHWrDQ2w%2ForS4K%2Fj6hgTMQCu2DpVwsDgMz58JsinMUg199oTCTxrq1U9QEBl6JaeSKNA%3D%3D\"}],\"group\":\"cf-nel\",\"max_age\":604800}\r\n    < nel: {\"success_fraction\":0,\"report_to\":\"cf-nel\",\"max_age\":604800}\r\n    < server: cloudflare\r\n    < cf-ray: 809362fd1b0efa40-AMS\r\n    < alt-svc: h3=\":443\"; ma=86400\r\n    < \r\n    <http response body>\r\n    * hyperstream is done\r\n    * Connection #0 to host api.adsb.lol left intact\r\n    * Found bundle for host: 0x55b69b4648e0 [can multiplex]\r\n    * Re-using existing connection with host api.adsb.lol\r\n    * -------------------------> the hyptransfer pointer is 0x55b69b469a18\r\n    * -------------------------> the executor pointer is (nil)\r\n    * Time for the Hyper dance\r\n    > GET /api/0/route/BBD6810 HTTP/2\r\n    > Host: api.adsb.lol\r\n    > User-Agent: c\r\n    ...\r\n\r\nso `hyptransfer` is the same pointer, but the executor pointer does get reset. We haven't been able to figure out why this happens. \r\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-09-19T21:10:15Z",
+   "body": "> is `struct curl_easy` the right place for the executor then? it is most efficient to only create the executor once, and then reuse it for any request that curl makes while it runs. So maybe it should instead live in `struct connectdata`?\r\n\r\nThe executor is independent of the connection, right? Then I think the Curl_easy sounds like exactly the right place for it to be.\r\n\r\n> the executor pointer does get reset\r\n\r\nI can find two places where curl does it:\r\n\r\n~~~\r\n$ git grep -n 'h->exec = NULL'\r\nlib/c-hyper.c:1265:    h->exec = NULL;\r\nlib/cf-h1-proxy.c:947:    h->exec = NULL;\r\n\r\n"
+  },
+  {
+   "author": "participant6",
+   "created_at": "2023-09-20T09:38:15Z",
+   "body": "those are the obvious places, but\r\n\r\n- the first one is commented out by the patch I included. So it does not run\r\n- the second one does not get run anyway (maybe because we do http2?)\r\n\r\nso just a simple grep does not answer the question of why that field is reset. So I tried some fancier debugging by watching the memory address of the executor in the hyptransfer struct (so `&h->exec`). \r\n\r\n```\r\n* -----------------> the hyptransfer pointer is 0x5555555e2f20\r\n916\t  infof(data, \"-----------------> the executor pointer field is %p\", &h->exec);\r\n(gdb) \r\n* -----------------> the executor pointer field is 0x5555555e2f30\r\n918\t  infof(data, \"Time for the Hyper dance\");\r\n(gdb) watch *(long **)0x5555555e2f30\r\nHardware watchpoint 3: *(long **)0x5555555e2f30  # we just need to provide any pointer type here\r\n(gdb) c\r\nContinuing.\r\n* Time for the Hyper dance\r\n\r\nThread 1 \"curl\" hit Hardware watchpoint 2: *0x5555555e2f30\r\n\r\nOld value = 0\r\nNew value = 1432576368\r\n\r\nThread 1 \"curl\" hit Hardware watchpoint 3: *(long **)0x5555555e2f30\r\n\r\nOld value = (long *) 0x0\r\nNew value = (long *) 0x555555636170\r\nCurl_http (data=0x5555555e1a78, done=0x7fffffffd99e) at c-hyper.c:968\r\n968\t    if(!h->exec) {\r\n(gdb) \r\n```\r\n\r\nSo far it kind of makes sense. The line number seems to be off-by-one though, the actual write happens a line earlier. So now if this field were persisted, we'd expect no further changes to it until all requests have completed, right? Well that is not what I see\r\n\r\n```\r\n* hyperstream is done\r\n* STATE: PERFORMING => DONE handle 0x5555555e1a78; line 2550\r\n* multi_done[DONE]: status: 0 prem: 0 done: 0\r\n* Connection #0 to host api.adsb.lol left intact\r\n}\r\nThread 1 \"curl\" hit Hardware watchpoint 3: *(long **)0x5555555e2f30\r\n\r\nOld value = (long *) 0x555555636170\r\nNew value = (long *) 0x555555636100\r\n__memset_avx2_erms () at ../sysdeps/x86_64/multiarch/memset-vec-unaligned-erms.S:151\r\n151\t../sysdeps/x86_64/multiarch/memset-vec-unaligned-erms.S: No such file or directory.\r\n(gdb) bt\r\n#0  __memset_avx2_erms () at ../sysdeps/x86_64/multiarch/memset-vec-unaligned-erms.S:151\r\n#1  0x00007ffff7d03df2 in __libc_calloc (n=<optimized out>, elem_size=<optimized out>) at malloc.c:3480\r\n#2  0x00007ffff7f23f2a in curl_dbg_calloc (wanted_elements=1, wanted_size=5328, line=644, source=0x7ffff7f8d840 \"url.c\") at memdebug.c:175\r\n#3  0x00007ffff7f5e604 in Curl_open (curl=0x7fffffffd930) at url.c:644\r\n#4  0x00007ffff7ef87be in curl_easy_init () at easy.c:379\r\n#5  0x0000555555575eb2 in single_transfer (global=0x7fffffffddd0, config=0x5555555bd2a8, share=0x5555555ded88, capath_from_env=false, \r\n    added=0x7fffffffdc9d) at tool_operate.c:945\r\n#6  0x000055555557d3db in transfer_per_config (global=0x7fffffffddd0, config=0x5555555bd2a8, share=0x5555555ded88, added=0x7fffffffdc9d)\r\n    at tool_operate.c:2629\r\n#7  0x000055555557d43b in create_transfer (global=0x7fffffffddd0, share=0x5555555ded88, added=0x7fffffffdc9d) at tool_operate.c:2645\r\n#8  0x000055555557cf66 in serial_transfers (global=0x7fffffffddd0, share=0x5555555ded88) at tool_operate.c:2492\r\n#9  0x000055555557d4f8 in run_all_transfers (global=0x7fffffffddd0, share=0x5555555ded88, result=CURLE_OK) at tool_operate.c:2670\r\n#10 0x000055555557d8ab in operate (global=0x7fffffffddd0, argc=5, argv=0x7fffffffdf48) at tool_operate.c:2786\r\n#11 0x00005555555737b3 in main (argc=5, argv=0x7fffffffdf48) at tool_main.c:274\r\n```\r\n\r\nwe hit this place several more times\r\n\r\n```\r\nOld value = (long *) 0x555555636100\r\nNew value = (long *) 0x555555630000\r\n\r\nOld value = (long *) 0x555555630000\r\nNew value = (long *) 0x555555000000\r\n\r\nOld value = (long *) 0x555555000000\r\nNew value = (long *) 0x555500000000\r\n\r\nOld value = (long *) 0x555500000000\r\nNew value = (long *) 0x550000000000\r\n\r\nOld value = (long *) 0x550000000000\r\nNew value = (long *) 0x0\r\n```\r\n\r\nSo that just looks like `calloc` at url.c:644 wiping the memory.\r\n\r\n```\r\n// url.c\r\n/**\r\n * Curl_open()\r\n *\r\n * @param curl is a pointer to a sessionhandle pointer that gets set by this\r\n * function.\r\n * @return CURLcode\r\n */\r\n\r\nCURLcode Curl_open(struct Curl_easy **curl)\r\n{\r\n  CURLcode result;\r\n  struct Curl_easy *data;\r\n\r\n  /* Very simple start-up: alloc the struct, init it with zeroes and return */\r\n  data = calloc(1, sizeof(struct Curl_easy)); // <- line 644\r\n```\r\n\r\nSo, the `hypertransfer` struct (or its `exec` field, anyway) just gets wiped after the first request, right? Which suggests that the whole thing has been freed and definitely is not persisted across requests. \r\n\r\nBut we never see `free(data->hyp)` in the source code, so how this works is not clear yet.\r\n\r\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-09-20T22:09:43Z",
+   "body": "`Curl_open()`  is the internal version of `curl_easy_init()`. It creates a new handle so it is not strange that it clears the struct.\r\n\r\n> So, the hypertransfer struct (or its exec field, anyway) just gets wiped after the first request, right?\r\n\r\nRight now, yes, as I said [before](https://github.com/curl/curl/issues/11203#issuecomment-1725991024)\r\n\r\n> But we never see free(data->hyp) in the source code\r\n\r\nIt is a sub-struct of `struct Curl_easy`, it is not individually allocated so there cannot be any separate free of it. It gets freed in `Curl_close()`, the internal version of `curl_easy_cleanup()`."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2023-09-25T09:39:03Z",
+   "body": "@participant1 thanks a lot for your help!\r\n\r\nI was able to persist the hyper client between requests by making it part of the `connectdata`, which makes sense for HTTP/2, since the connection configuration should happen once per connection.\r\n\r\nHowever I encountered a potential issue in the hyper C API:\r\n- When using HTTP/1.1 the GET requests are sent immediately  after calling `hyper_clientconn_send` and pushing the resulting task to the executor. \r\n- When using HTTP/2 the GET request is only sent after calling `hyper_clientconn_free` on the corresponding hyper client.\r\n\r\nA minimal way of reproducing this issue is by not-freeing the hyper client and trying to perform a HTTP/2 request with curl:\r\n\r\n```diff\r\ndiff --git a/lib/c-hyper.c b/lib/c-hyper.c\r\nindex c558955c9..c85fb5569 100644\r\n--- a/lib/c-hyper.c\r\n+++ b/lib/c-hyper.c\r\n@@ -1218,8 +1218,8 @@ CURLcode Curl_http(struct Curl_easy *data, bool *done)\r\n   }\r\n   sendtask = NULL; /* ownership passed on */\r\n \r\n-  hyper_clientconn_free(client);\r\n-  client = NULL;\r\n+  /* hyper_clientconn_free(client);\r\n+  client = NULL; */\r\n \r\n   if((httpreq == HTTPREQ_GET) || (httpreq == HTTPREQ_HEAD)) {\r\n     /* HTTP GET/HEAD download */\r\n```\r\n\r\n@participant5 do you have any idea why the request is not sent if we do not free the client?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-09-25T10:46:50Z",
+   "body": "> I was able to persist the hyper client between requests by making it part of the `connectdata`, which makes sense for HTTP/2, since the connection configuration should happen once per connection.\r\n\r\nI'm not sure I follow this. What struct did you move? hyper does not manage connections for libcurl, so I fail to see how that is important here. We setup all the necessary configs per request in `Curl_http()` so couldn't the same structs serve multiple requests done for several connections?\r\n\r\n>  * When using HTTP/2 the GET request is only sent after calling `hyper_clientconn_free` on the corresponding hyper client.\r\n\r\nThat sounds like a hyper bug to me. At least based on the rust API docs for `hyper_clientconn_send`\r\n"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2023-09-28T14:37:49Z",
+   "body": "> do you have any idea why the request is not sent if we do not free the client?\r\n\r\nIf that's really the case, that would be a hyper bug. I can't think of anything in hyper that would need to wait until it was freed to send."
+  },
+  {
+   "author": "participant7",
+   "created_at": "2023-10-23T15:11:03Z",
+   "body": "@participant4 I think I found the source of the \"request never sends\" problem you found: https://github.com/hyperium/hyper/issues/3369. I also filed a PR that fixes it: https://github.com/hyperium/hyper/pull/3370. Please let us know if that fixes it for you!\r\n\r\nFor this slowness bug it seems there are two problems:\r\n - a hyper_clientconn is created for each request, instead of once per connection, causing the connection preface to be sent multiple times, which is invalid HTTP/2\r\n  - when the server sends a [GOAWAY frame](https://datatracker.ietf.org/doc/html/rfc7540#section-6.8) with an error code, curl silently retries on a new connection (possibly after a delay) or drops the request, rather than reporting it as an error on the request that triggered it.\r\n  \r\n@participant4 it sounds like you're moving in the right direction with persisting the `hyper_clientconn` in `connectdata`. Probably the `hyper_executor` needs to be there too. Want to share what you've got so far even if it's only a branch-in-progress? I might take a stab at a fix and it would be nice to not duplicate work."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2023-10-23T19:01:13Z",
+   "body": "@participant7 nice work!\r\n\r\nI think your summary is correct.\r\n\r\nTogether with @participant6 I have tried several approaches in persisting both the `hyper_executer` and `hyper_clientconn` between requests. However, I was not able to persist these without triggering memory issues, and concluded that it requires more in-depth knowledge to do this without introducing any bugs. So our tests might not be the correct starting point. Just to summarize:\r\n\r\n- Keeping `hyptransfer` in the `Curl_easy` struct and removing the places where (parts) are cleared [1] still does not prevent it from being cleared [2] - it seems that `Curl_open` is called between requests which could cause this issue.\r\n- Making the `hyper_clientconn` part of the `connectdata` seems more appropriate and does help persisting the data, but triggers all kinds of memory issues that I was not able to debug.\r\n- I guess the `hyper_executer` should **not** be part of `connectdata`, since there might be multiple connections and, I think, there should only be one `hyper_executer`\r\n\r\nI hope to try out your fix for hyper this week.\r\n\r\nGood luck!\r\n\r\n[1] https://github.com/curl/curl/issues/11203#issuecomment-1726103603\r\n[2] https://github.com/curl/curl/issues/11203#issuecomment-1727353191"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-10-23T21:40:07Z",
+   "body": "> the Curl_easy struct and removing the places where (parts) are cleared [1] still does not prevent it from being cleared [2] - it seems that Curl_open is called between requests which could cause this issue.\r\n\r\n`Curl_easy` is a handle for a single transfer ( but it can be reused) while `connectdata` is for a specific connection. A transfer can use one or more connections to perform a single transfer.\r\n\r\n`Curl_open()` creates a new easy handle (it is the internal version of `curl_easy_init()`) and a new transfer can reuse a connection that was previously used by another transfer if the conditions are right - or create a new one.\r\n\r\n> Making the hyper_clientconn part of the connectdata seems more appropriate and does help persisting the data, but triggers all kinds of memory issues that I was not able to debug.\r\n\r\nI think the libcurl story is easy enough but I can't tell much about hyper and how we are supposed to work with it since the API is undocumented unless you can do the rust-to-C translation in your head. And it seems very few can."
+  },
+  {
+   "author": "participant7",
+   "created_at": "2023-10-24T00:34:34Z",
+   "body": "I've dug into this a little and feel like I made good progress, but I believe I'm running into an issue of conflicting lifecycles. If you want to view my branch-in-progress, very non-working, it's here: https://github.com/curl/curl/compare/master...participant7:curl:fix-hyper?expand=1\r\n\r\nHere's the lifecycle issue. @participant1 and @participant5 please correct me if I'm wrong about these assumptions.\r\n\r\nHyper has read and write callbacks. These get bundled into a `hyper_io *` object, which gets bundled into a `hyper_clientconn_handshake *`, which eventually gets bundled into a `hyper_clientconn *`. Once they're in there, they can't be changed for the lifetime of the `hyper_clientconn *`, which is the lifetime of the TCP / TLS connection.\r\n\r\nAlso bundled into the `hyper_clientconn *` is a `void *userp` to be passed to the read and write callbacks. It is set at creation time and never changed for the lifetime of the connection.\r\n\r\nRight now Curl sets the `void *userp` to `Curl_easy *data`. That's handy for the callbacks (`Curl_hyper_recv` and `Curl_hyper_send`), because those delegate to `Curl_read` / `Curl_write`, which want a `Curl_easy *`. However, I think it's semantically wrong. A `Curl_easy *` represents a transfer, and one connection may serve many transfers during its lifetime.\r\n\r\nReally, I think the `void *userp` should be set to a `struct connectdata *conn`, since it has to be chosen once at the start of the connection and can never be changed.\r\n\r\nBut that runs into a problem. The `connectdata` has fields `recv` and `send`, through which we should send all data. But they have a signature like this:\r\n\r\nhttps://github.com/curl/curl/blob/31d96af8b55515a33d08c8920f0d8b472e71235a/lib/urldata.h#L145-L158\r\n\r\nIn other words, to do a read or write, we need to pass a valid `Curl_easy *`. But if we make the `hyper_clientconn *` part of the `connectdata` instead of the `Curl_easy`, then it can never get a pointer to the current `Curl_easy` in order to pass it to `recv` / `send`.\r\n\r\nIs there any object we can set as the `void *userp` in a `hyper_io *` / `hyper_clientconn *` that lives as long as the connection, and allows us to find a `Curl_easy *` when we need to send / receive? I've thought about adding a pointer from `connectdata` to the currently functioning `Curl_easy *` but I figure that must be wrong or it probably would already have been done for convenience in other areas. :D"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-10-24T06:34:06Z",
+   "body": "Great research @participant7 \r\n\r\nIn curl a single connection might have many concurrent transfers (when multiplexed) so a connection cannot itself identify a single transfer - each connection has a list transfers. Also, every ongoing transfer has a single current connection it uses (at a time). An individual connection is used by none, one or many transfers.\r\n\r\n>  I've thought about adding a pointer from connectdata to the currently functioning Curl_easy * but I figure that must be wrong or it probably would already have been done for convenience in other areas. :D\r\n\r\nRight. Because the connection can be used by up to several hundred concurrent transfers..."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-10-24T07:07:17Z",
+   "body": "There are other places in curl with the same use pattern/problem. Callbacks in OpenSSL, nghttp2 and quiche.\r\n\r\nThe solution there, all of those being connection filters, is to either:\r\n\r\n* set the \"current\" easy handle in the filter's context and look it up from there in a callback\r\n* have an `id` for the transfer (e.g. HTTP stream id) and look up the matching easy handle at the multi.\r\n\r\nMoving hyper from a http \"protocol handler\" replacement to a connection filter is not a small task. But it might be the better design."
+  },
+  {
+   "author": "participant7",
+   "created_at": "2023-10-24T14:02:11Z",
+   "body": "Great, thanks for the confirmation @participant1. And thanks for pointing a way forward @participant2.\r\n\r\nI think for the short term, we should disable HTTP/2 support in the Hyper integration, because it's broken (sends the connection preface on every request) and requires a rearchitecture to fix, which might take some time. The other alternative would be to have the HTTP/2 support send only a single request per connection. But it seems better to fall back to HTTP/1.1 where connections can be reused."
+  },
+  {
+   "author": "participant7",
+   "created_at": "2023-10-24T14:59:10Z",
+   "body": "I've posted #12191 with the quick / temporary fix of disabling HTTP2 with Hyper."
+  },
+  {
+   "author": "participant7",
+   "created_at": "2023-11-19T22:49:56Z",
+   "body": "I've posted https://github.com/hyperium/hyper/pull/3424 adding documentation for Hyper's FFI API.\r\n\r\n@participant1 @participant2 would one of you be willing to add more detail to the connection filter docs and/or cfilters.h? I looked at docs/CONNECTION-FILTERS.md and I don't understand how the connection filter API handles multiplexing of multiple requests on a single connection. Also, the docs suggest that HTTP/2 might be a connection filter, which seems to be presently the case, so maybe it needs some updating? Thanks!"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-11-24T09:24:13Z",
+   "body": "@participant7 After getting the latest Hyper + curl from `git master` and rebuilding everything, the speed has improved\r\nvery much.\r\n\r\nThe API at [ADSB-LOL](https://api.adsb.lol/docs) has changed into a new JSON-format. So with this .bat-file:\r\n```bat\r\n@echo off\r\nsetlocal\r\nset CURL_SSL_BACKEND=schannel\r\nset URLS= https://vrs-standing-data.adsb.lol/routes/SA/SAS4133.json ^\r\n          https://vrs-standing-data.adsb.lol/routes/BB/BBD6810.json ^\r\n          https://vrs-standing-data.adsb.lol/routes/TH/THY19Y.json\r\n\r\necho Using 'c:\\Windows\\system32\\curl.exe':\r\ntimer\r\nc:\\Windows\\system32\\curl.exe -s %URLS% > NUL\r\ntimer\r\n\r\necho.\r\necho Using 'curl -- tip of git master':\r\ntimer \r\n%~dp0\\src\\curl -s %URLS% > NUL\r\ntimer\r\n```\r\n\r\nThe timings are:\r\n```\r\nUsing 'c:\\Windows\\system32\\curl.exe':\r\nTimer 1 off: 10:05:45  Elapsed: 0:00:00,233\r\n\r\nUsing 'curl -- tip of git master':\r\nTimer 1 off: 10:05:46  Elapsed: 0:00:01,137\r\n```\r\n\r\nMuch better; not >1 minute as before.\r\nBut the Win-10 bundled curl (w/o Hyper) is still ~5 times  faster.\r\n\r\n\r\n"
+  },
+  {
+   "author": "participant7",
+   "created_at": "2023-11-27T18:59:21Z",
+   "body": "@reporter thanks for verifying that things got faster.\r\n\r\nI'm not very surprised that the Hyper backend is still slightly slower than the nghttp2 (default) backend, because the hyper backend is now using HTTP/1.1. I'm _guessing_ that curl serializes the requests when using HTTP/1.1 and parallelizes them when using HTTP/2.\r\n\r\nI think the solution will be as @participant2 said: to rewrite the Hyper backend as a connection filter so we can restore HTTP/2 support with the Hyper backend and have it work properly."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-12-02T09:22:20Z",
+   "body": "> to rewrite the Hyper backend as a connection filter so we can restore HTTP/2 support with the Hyper backend and \r\n> have it work properly.\r\n\r\nHas this been done? Just rebuilt everything and now it's only 20% slower than the Win-10 bundled curl:\r\n```\r\nUsing 'c:\\Windows\\system32\\curl.exe':\r\nTimer 1 on: 10:18:49\r\nTimer 1 off: 10:18:49  Elapsed: 0:00:00,803\r\n\r\nUsing 'curl -- tip of git master':\r\nTimer 1 on: 10:18:49\r\nTimer 1 off: 10:18:50  Elapsed: 0:00:00,974\r\n```"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-02-10T17:27:35Z",
+   "body": "This is mentioned in `KNOWN_BUGS`."
+  }
+ ],
+ "images": [],
+ "slug": "gh_curl_curl_11203"
+}

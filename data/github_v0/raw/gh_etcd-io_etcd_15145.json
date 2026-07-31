@@ -1,0 +1,280 @@
+{
+ "repo": "etcd-io/etcd",
+ "number": 15145,
+ "url": "https://github.com/etcd-io/etcd/issues/15145",
+ "title": "Remove the dependency on grpc-go's experimental API (e.g. resolver & balancer)",
+ "state": "closed",
+ "labels": [
+  "type/feature",
+  "stage/tracked",
+  "priority/important-longterm"
+ ],
+ "reporter": "reporter",
+ "created_at": "2023-01-18T20:56:12Z",
+ "closed_at": "2026-06-04T18:39:34Z",
+ "body": "### What would you like to be added?\n\netcd is depending on some experimental APIs of grpc-go, such as resolver. Once these APIs change in future, it might break etcd. So we should try to remove the dependency on any experimental APIs; instead, let's try to use stable APIs.\n\nReferences:\n- https://github.com/grpc/grpc-go/pull/5748#issuecomment-1385964654\n- https://github.com/grpc/grpc-go/pull/5748#issuecomment-1387426476\n- https://github.com/etcd-io/etcd/issues/19700#issuecomment-2779240534\n\nWe should have\n- a summary on existing design/implementation first\n- proposal(s) to replace them, and with pros & cons. invite grpc's experts to review.\n- evaluate the impact on etcd itself and users of etcd client sdk.\n\n\nMitigations:\n- https://github.com/etcd-io/etcd/pull/19780\n- https://github.com/etcd-io/etcd/issues/19706\n  - https://github.com/etcd-io/etcd/pull/19785\n  - https://github.com/etcd-io/etcd/pull/19825\n- mark the [gRPC naming and discovery](https://etcd.io/docs/v3.5/dev-guide/grpc_naming/) feature as experimental, see also https://github.com/etcd-io/etcd/issues/19700#issuecomment-2821703505\n  - https://github.com/etcd-io/website/issues/990\n\nLong-term solution?\n- use the GCP gRPC connection pool ?\n  - https://github.com/etcd-io/etcd/issues/19700#issuecomment-2815923497\n\nRelated followup:\n- An endpoint may have multiple addresses: i.e. IPv4 and IPv6. Currently we only assume each endpoint only has one address\n  - https://github.com/etcd-io/etcd/issues/19700#issuecomment-2819173767\n  - https://github.com/etcd-io/etcd/pull/19780\n\n- https://github.com/etcd-io/etcd/issues/19772\n\n\nSummary:\n- https://docs.google.com/document/d/14pPPyQkJ8NvPZSM6Pe1Wr0BDHAsw_Xcp0mepoSVTQHs/edit?tab=t.0\n### Why is this needed?\n\nImprove stability",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2023-01-18T21:09:20Z",
+   "body": "grpc-go TL here.  I'm happy to work with you to find / provide a stable solution, but I would first need to know more about your use cases & requirements."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-02-02T12:23:11Z",
+   "body": "just to randomly add what I've found in https://github.com/etcd-io/etcd/issues/14501 - once we reconsider the balancer/resolver, we should also add some circuit breaking. There were some ideas by Easwar in https://github.com/grpc/grpc-go/issues/5672."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-02-20T08:42:11Z",
+   "body": "Sorry for the late response. \r\n\r\nThe use cases & requirement seems to be simple. Users may specify multiple endpoints on the client side (see example below), and etcd [clientv3](https://github.com/etcd-io/etcd/tree/main/client/v3) needs to support client side load balancing. \r\n```\r\n$ ./etcdctl --endpoints=http://127.0.0.1:2379,http://127.0.0.1:22379,http://127.0.0.1:32379 get k1 \r\n```\r\n\r\nCurrently the target used when calling [grpc.DialContext](https://pkg.go.dev/google.golang.org/grpc@v1.51.0#DialContext) is a string in format `etcd-endpoints://<pointer>/<authority>`, e.g.  `etcd-endpoints://0xc00036e1e0/127.0.0.1:2379`.  etcd implements a [customized resolver](https://github.com/etcd-io/etcd/blob/main/client/v3/internal/resolver/resolver.go) , which is passed to gRPC via [grpc.WithResolvers](https://github.com/etcd-io/etcd/blob/b17b9c1428f3fdbd03662c7adc4aa2f80eddc3ad/client/v3/client.go#L285). The [loadBalancingPolicy is round_robin](https://github.com/etcd-io/etcd/blob/b17b9c1428f3fdbd03662c7adc4aa2f80eddc3ad/client/v3/internal/resolver/resolver.go#L44).\r\n\r\nSome historical background:\r\n1. Previously etcd 3.4 implemented a custom load balancer, and it was changed to gRPC's Resolver and load balancing in 3.5.0 in https://github.com/etcd-io/etcd/pull/12671.\r\n2. But unfortunately https://github.com/etcd-io/etcd/pull/12671 introduced a critical issue https://github.com/etcd-io/etcd/issues/13192 due to invalid `:authority` header, which was fixed in https://github.com/etcd-io/etcd/pull/13359\r\n\r\nBased on https://github.com/grpc/grpc/blob/master/doc/naming.md, it seems the gRPC resolver plugin (although the API is still experimental) is still the right direction?  If not, could you please advise the correct approach? cc @participant1 \r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-03-12T10:17:33Z",
+   "body": "@participant1 could you advise how to replace the experimental API mentioned above? "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-03-13T03:23:16Z",
+   "body": "One more dependency on experimental API: [grpcServer.ServeHTTP](https://github.com/etcd-io/etcd/blob/e2a5df534cf6b0a12859e61bfc2758d56a1e1971/server/embed/serve.go#L237)"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-03-30T14:31:46Z",
+   "body": "Also sorry for the late rely\r\n\r\n> Based on grpc/grpc@master/doc/naming.md, it seems the gRPC resolver plugin (although the API is still experimental) is still the right direction?\r\n\r\nFor this you could instead create (N) gRPC clients, one for each address, and do round robin dispatch to them by wrapping them in another object that implements its own `grpc.ClientConnInterface` and has a pool of the `grpc.ClientConn`s created.  This is what is done by Google's cloud client libraries to spread load across multiple connections.\r\n\r\nWhat would be your concerns with such an approach?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-03-31T01:19:36Z",
+   "body": "> What would be your concerns with such an approach?\r\n\r\nThanks for the response. The only concern is what (etcd or gRPC?) is the best place to implement it. It looks like a generic client side load balancer solution, does it make more sense to get it wrapped in grpc/grpc-go instead of etcd? \r\n\r\nAlso some APIs (such as [resolver.Resolve](https://github.com/grpc/grpc-go/blob/c2899dddf5a69caf81b5c784fec6d1c86af54869/resolver/resolver.go#L305),  [balancer.Balancer](https://github.com/grpc/grpc-go/blob/c2899dddf5a69caf81b5c784fec6d1c86af54869/balancer/balancer.go#L335) , etc)  were added as experimental APIs about 6 years ago, they are still experimental APIs today. Have you considered to graduate them to stable APIs or deprecate/remove them and provide alternative solution/APIs? \r\n\r\ncc @mitake @participant3 @serathius @spzala @liggitt @wojtek-t @lavalamp for opinions."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-03-31T16:04:39Z",
+   "body": "I was just digging around and saw that C-core has the following name resolver (https://github.com/grpc/grpc/blob/master/doc/naming.md#name-syntax):\r\n\r\n> - `ipv4:address[:port][,address[:port],...]` -- IPv4 addresses\r\n>   - Can specify multiple comma-delimited addresses of the form `address[:port]`:\r\n>     - `address` is the IPv4 address to use.\r\n>     - `port` is the port to use.  If not specified, 443 is used.\r\n\r\nWe could also explore making this a first-class name resolver.  Would that take care of all of your need for `resolver` and `balancer` APIs?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-03-31T23:39:18Z",
+   "body": "> We could also explore making this a first-class name resolver. Would that take care of all of your need for `resolver` and `balancer` APIs?\r\n\r\nMy immediate feeling is it looks good. Could you please provide a rough draft API and usage, so that I can evaluate the change & effort in etcd side? "
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-04-01T08:01:15Z",
+   "body": "One aspect to be aware of is also support for DNS resolution: \r\n\r\nI think that currently such connection works: \r\n```\r\n./etcdctl --endpoints=http://etcd0.domain:2379,http://etcd1.domain:2379,http://etcd2.domain:2379 get k1 \r\n```\r\nAnd in case of problems the DNS name get's re-resolved to IP. \r\n\r\nFallback to `ipv4:address[:port][,address[:port],...]` sound like doing the DNS binding once. In some dynamically scheduled environment the etcd instance can be rescheduled and name be rebound. This would be use-case that we are explicitly dropping. \r\n\r\nAlternative is to build in within an etcd client a local [xDS](https://github.com/grpc/grpc/blob/master/doc/grpc_xds_features.md) policy supplier."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-04-06T20:02:31Z",
+   "body": "Yeah I was digging a little deeper and it seems you need more than multiple IP address support; you also need DNS names and multiple unix sockets, and mixed versions of all these things.\r\n\r\nWe have one project on the horizon that is going to require changes to the resolver API, and then I think we will be able to stabilize it.  Unfortunately, that will first require a breaking change, which is unavoidable no matter what.  In the meantime, I think the only real option would be to maintain a pool of channels, which I agree isn't trivial but also isn't something we probably would put in the main grpc-go repo, and we don't have time to implement for now.  You can find another minimal implementation here: https://github.com/googleapis/google-api-go-client/blob/3f4d679d4dae5de7ce124a7db68ef5147c9a3fa2/transport/grpc/pool.go.  Ideally it would keep track of the state of the ClientConns and skip the non-READY ones, but that may not be a strict requirement for you either."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-04-13T11:21:08Z",
+   "body": "Thanks @participant1 for the feedback.\r\n\r\n> We have one project on the horizon that is going to require changes to the resolver API, and then I think we will be able to stabilize it.\r\n\r\nCould you provide the rough timeline on when the resolve API can be stabilized, and which grpc-go version? \r\n\r\n\r\n> I think the only real option would be to maintain a pool of channels, which I agree isn't trivial but also isn't something we probably would put in the main grpc-go repo, and we don't have time to implement for now.\r\n\r\nI think we need to do some investigation & PoC firstly. I do not have time to dig into it for now. So labelled this issue with \"help wanted\". \r\n"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2023-06-07T07:03:14Z",
+   "body": "Hi @reporter I am interested in this and will provide a minimal working example/POC soon. After that, I think we can go through some any necessary processes like design, collect must to have / nice to have requirements, test verification as success criteria before the implementation, production readiness check etc before the actual migration. \r\n\r\nFor example:\r\n\r\nMust to have\r\n\r\n- [ ] Supports Unix & DNS & IPV4 & IPV6 with round robin similar load balancing client, initially it is insecure.\r\n- [ ] grpc-go supports DNS resolver (by default), unix socket resolver (only for testing purpose) and accept ipv4 and ipv6 targets with passthrough resolver. \r\n- [ ] Keep track of the state of the ClientConns and skip the non-READY ones. \r\n- [ ] E2E test the above scenarios.\r\n- [ ] Supports secure connection with TLS\r\n- [ ] The new etcd client should have at least the same performance as the old one. Measuring by etcdctl check perf command, etc. \r\n- [ ] Existing e2e test cases like [TestAuthority](https://github.com/etcd-io/etcd/blob/9abc895122e6f8e3cd50f829a068008996962e67/tests/e2e/ctl_v3_grpc_test.go#L33) won’t fail unexpectedly.\r\n- [ ] Adding new test cases that current test suite missed.\r\n\r\nNice to have\r\n\r\n- [ ] Replace all of clientv3/retry.go with [RetryPolicy](https://github.com/grpc/grpc-proto/blob/cdd9ed5c3d3f87aef62f373b93361cf7bddc620d/grpc/service_config/service_config.proto#L130)\r\n- [ ] circuit breaking on slowest endpoint, not just not READY connections https://github.com/etcd-io/etcd/issues/15145#issuecomment-1413656019\r\n- [ ] lowest latency affinity load balancing algorithm feature request https://github.com/etcd-io/etcd/issues/15918\r\n\r\n\r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-06-07T07:05:00Z",
+   "body": "Thanks @participant4 . Assigned to you."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2023-06-09T04:55:04Z",
+   "body": "2023-06-08 update:\r\n\r\nI took a little deeper look today and found out that the generated gRPC API is outdated most likely because of https://github.com/etcd-io/etcd/issues/14533 https://github.com/etcd-io/etcd/blob/b4f49a55a5aba85a30cae5742a87989132a0f750/api/etcdserverpb/rpc.pb.go#L6509-L6520 `NewKVClient(cc grpc.ClientConn)` could have been written with `NewKVClient(cc grpc.ClientConnInterface)` so that the proposed [ConnPool](https://github.com/googleapis/google-api-go-client/blob/main/internal/conn_pool.go#L12-L30) interface and its implementation [roundRobinConnPool](https://github.com/googleapis/google-api-go-client/blob/main/transport/grpc/pool.go#L58-L64) can be passed into it for customization. \r\n\r\nThis latter `NewKVClient(cc grpc.ClientConnInterface)` has been widely used in [google-cloud-go](https://github.com/googleapis/google-cloud-go) repository, for example the [spanner client](https://github.com/googleapis/google-cloud-go/blob/main/spanner/apiv1/spannerpb/spanner.pb.go#L3413-L3424). \r\n\r\nSo I can start looking into `rpc.proto` and use latest version of protoc go plugin to re-generate `rpc.pb.go`\r\n\r\n"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2023-07-27T00:25:03Z",
+   "body": "Just discovered https://github.com/etcd-io/etcd/blob/9e1abbab6e4ba2886238f49b0d48fc19a546c7cf/client/v3/credentials/credentials.go#L37 is another gRPC experimental API. However, I don't see why we need this API. etcd does not support mode switching from transport security to per RPC credentials (auth) or backwards from my understanding. It should be a easy clean up. "
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-07-28T16:30:18Z",
+   "body": "> Could you provide the rough timeline on when the resolve API can be stabilized, and which grpc-go version?\r\n\r\nhttps://github.com/grpc/grpc-go/issues/6472\r\n\r\nThe breaking changes are upcoming (within ~6 months?), but I'm pretty sure we can find a way to enable a migration path that doesn't break suddenly in a single version, and provide a couple releases of overlap.  Full details haven't been planned, but some changes are already underway (pending PRs: https://github.com/grpc/grpc-go/pull/6471 and https://github.com/grpc/grpc-go/pull/6481)"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-08-02T13:52:08Z",
+   "body": "> I took a little deeper look today and found out that the generated gRPC API is outdated most likely because of #14533\r\n\r\nWe need to bump both protobuf and grpc go plugin eventually. But is this task blocked by it?\r\n\r\n\r\nEDIT: just noticed that your following comment(pasted below). Indeed, the outdated grpc go plugin has some impact on this task. But it isn't a big problem, we can also change [grpc.ClientConnInterface](https://github.com/googleapis/google-api-go-client/blob/1e19c228cf37b343283c5af2665517cd1596b2e1/internal/conn_pool.go#L29) to `grpc.ClientConn` for now to workaround it.\r\n\r\n> NewKVClient(cc grpc.ClientConn) could have been written with NewKVClient(cc grpc.ClientConnInterface) so that the proposed [ConnPool](https://github.com/googleapis/google-api-go-client/blob/main/internal/conn_pool.go#L12-L30) interface and its implementation [roundRobinConnPool](https://github.com/googleapis/google-api-go-client/blob/main/transport/grpc/pool.go#L58-L64) can be passed into it for customization."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-08-02T16:01:52Z",
+   "body": "> [grpc/grpc-go#6472](https://github.com/grpc/grpc-go/issues/6472)\r\n> \r\n> The breaking changes are upcoming (within ~6 months?), but I'm pretty sure we can find a way to enable a migration path that doesn't break suddenly in a single version, and provide a couple releases of overlap. Full details haven't been planned, but some changes are already underway (pending PRs: [grpc/grpc-go#6471](https://github.com/grpc/grpc-go/pull/6471) and [grpc/grpc-go#6481](https://github.com/grpc/grpc-go/pull/6481))\r\n\r\nThanks @participant1 for the feedback. It seems that the already planed items in https://github.com/grpc/grpc-go/issues/6472 will not impact etcd at all.  But as you mentioned `Full details haven't been planned`, so in theory, there is still some potential risks. \r\n\r\nBut etcd's use of the grpc-go's resolver package is really very simple and basic, the golang source file has just [dozens of lines of code](https://github.com/etcd-io/etcd/blob/main/client/v3/internal/resolver/resolver.go). Please also see https://github.com/etcd-io/etcd/issues/15145#issuecomment-1436554664.\r\n\r\nEach time when there is any change (e.g. adding or removing server, or update server's address) on the backend servers, etcd client will construct a new [resolver.State object](https://github.com/grpc/grpc-go/blob/87bf02ad24f6cc071d2553eb5d62332194bba1fe/resolver/resolver.go#L198) which contains the latest list of server addresses, and then call [(*Resolver) UpdateState](https://github.com/grpc/grpc-go/blob/87bf02ad24f6cc071d2553eb5d62332194bba1fe/resolver/manual/manual.go#L94). Do you still think https://github.com/grpc/grpc-go/issues/6472 might break it in future? \r\n\r\n> You can find another minimal implementation here: https://github.com/googleapis/google-api-go-client/blob/3f4d679d4dae5de7ce124a7db68ef5147c9a3fa2/transport/grpc/pool.go. Ideally it would keep track of the state of the ClientConns and skip the non-READY ones, but that may not be a strict requirement for you either.\r\n\r\nIt's non-trivial effort. If we follow this approach, then we might want to create a separate small project something like `github.com/etcd-io/grpc-client-load-balancer` or `github.com/etcd-io/go-client-load-balancer`, so as not to complicate or pollute etcd client's implementation. But as I mentioned in https://github.com/etcd-io/etcd/issues/15145#issuecomment-1491160332, I really think it's unfortunate if we have to spend too much effort to do it ourselves.\r\n\r\nAlso reference: \r\n- https://grpc.io/blog/grpc-load-balancing/"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-08-02T18:26:08Z",
+   "body": "> Just discovered\r\n> \r\n> https://github.com/etcd-io/etcd/blob/9e1abbab6e4ba2886238f49b0d48fc19a546c7cf/client/v3/credentials/credentials.go#L37\r\n> \r\n> is another gRPC experimental API. However, I don't see why we need this API. etcd does not support mode switching from transport security to per RPC credentials (auth) or backwards from my understanding. It should be a easy clean up.\r\n\r\nGood catch. Just raised a PR to remove it. https://github.com/etcd-io/etcd/pull/16358"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2023-08-02T18:53:40Z",
+   "body": "Agreed with @reporter's point. I think the essential etcd usage of this experimental resolver API is built on top of [manual resolver](https://github.com/grpc/grpc-go/blob/master/resolver/manual/manual.go). It's quite simple. gRPC-go should be able to support in my humble opinion. (Even though it is marked as experimental indicating it's subject to change in the future). \r\n\r\nThere might be other experimental usages like `WithResolvers()` but etcd should also be able to migrate to register the resolver builder with `resolver.Register` just like the default DNS resolver. "
+  },
+  {
+   "author": "participant4",
+   "created_at": "2023-08-02T19:01:15Z",
+   "body": "> We need to bump both protobuf and grpc go plugin eventually. But is this task blocked by it?\r\n\r\nNo, I am just hesitant if we go down in this route proposed in https://github.com/etcd-io/etcd/issues/15145#issuecomment-1499550450 as I am implementing, it is essentially re-invent what gRPC-go implements between ClientConn and SubConn about state synchronization, health checking, etc.."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-09-13T08:22:16Z",
+   "body": "`Endpoints` was added into [State](https://github.com/grpc/grpc-go/blob/2d1bb21e4dc97dada938ab7d153df61593a30634/resolver/resolver.go#L185) in https://github.com/grpc/grpc-go/pull/6471, and `Addresses` will be deprecated and replaced fully by `Endpoints`, so etcd should also make change to our customized [resolver](https://github.com/etcd-io/etcd/blob/afade99a7930544a01eb785c681f1431896350b6/client/v3/internal/resolver/resolver.go#L69-L72) accordingly.\r\n\r\nSince the gRPC resolver package is still experimental, so we don't need to rush to make the change for now."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2023-09-20T05:25:09Z",
+   "body": "Hi @reporter Based on recent PoC of [gRPC LB health check](https://github.com/participant4/etcd/pull/9) and [outlier detection balancer integration](https://github.com/participant4/etcd/pull/10) with etcd client, I propose not to remove the usage of gRPC resolver & balancer. \r\n\r\n> just to randomly add what I've found in https://github.com/etcd-io/etcd/issues/14501 - once we reconsider the balancer/resolver, we should also add some circuit breaking. There were some ideas by Easwar in https://github.com/grpc/grpc-go/issues/5672.\r\n\r\nI favor to keep the opportunity of improving etcd client with better availability while keeping an eye on the gRPC API changes. \r\n\r\nNote there is an ongoing project in gRPC-go to [Promote Resolver/Balancer API to Stable](https://github.com/grpc/grpc-go/projects/8)"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-09-20T06:28:03Z",
+   "body": "> I propose not to remove the usage of gRPC resolver & balancer.\r\n\r\nYes, just as I mentioned in https://github.com/etcd-io/etcd/issues/15145#issuecomment-1662486867,  etcd's usege of the grpc-go's resolver package is really very simple and basic; and it's non-trivial effort to re-invent the wheel. So there is no plan to remove the gRPC resolver & balancer.\r\n\r\nBut we need to followup the grpc's change, and may need to make change something like https://github.com/etcd-io/etcd/issues/15145#issuecomment-1717168948"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2023-09-20T16:28:12Z",
+   "body": "> But we need to followup the grpc's change, and may need to make change something like https://github.com/etcd-io/etcd/issues/15145#issuecomment-1717168948\r\n\r\n+100 Totally agree"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2023-10-15T20:09:16Z",
+   "body": "Another deprecated API usage. \r\n\r\n> [gRPC v1.44.0 change log](https://github.com/grpc/grpc-go/releases/tag/v1.44.0), no behavior changes. But it reveals that we should replace all grpc.WithInsecure() with grpc.WithTransportCredentials(insecure.NewCredentials()) based on https://github.com/grpc/grpc-go/pull/5068 in 3.4/3.5/main"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-10-25T21:21:27Z",
+   "body": "> gRPC v1.44.0 change log, no behavior changes. But it reveals that we should replace all grpc.WithInsecure() with grpc.WithTransportCredentials(insecure.NewCredentials()) based on grpc/grpc-go#5068 in 3.4/3.5/main\r\n\r\nAlso consider that you shouldn't use \"insecure\" credentials at all.  Tests should be okay, though they should also be OK to use local credentials.  Production code should probably also prefer local credentials (or TLS/etc), which verifies that the address is local and not over a network: https://pkg.go.dev/google.golang.org/grpc@v1.59.0/credentials/local#NewCredentials\r\n\r\nYes, this is unfortunately also experimental.  I believe we can promote it to stable, as I'm not aware of any issues."
+  },
+  {
+   "author": "stale[bot]",
+   "created_at": "2024-03-17T12:58:06Z",
+   "body": "This issue has been automatically marked as stale because it has not had recent activity. It will be closed after 21 days if no further activity occurs. Thank you for your contributions."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-03-18T16:56:51Z",
+   "body": "This is still very relevant for us and for your users."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2025-04-16T14:07:44Z",
+   "body": "Hi @reporter, I’d like to explore and eventually take on this issue of removing etcd’s dependency on gRPC-Go’s experimental APIs (resolver and balancer to be precise) \n\nRight now, I’m currently gathering and reviewing all previous discussions/conversations across gRPC-Go and etcd, to better understand the motivations, constraints, and potential paths forward.\n\nOnce I am able to gather enough context, I will do the following if it hasn't been done already:\n\n- write a summary on existing design/implementation \n- send proposal with pros/cons\n- evaluate impact on etcd and it's users\n\nOnce all has been considered and with the guidance of the members of etcd, I'll work out the final implementation.\n\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-04-17T10:08:34Z",
+   "body": "Thanks @participant5 . \n\nLet's start with summarizing the existing design/implementation, pls start with the following two comments,\n- https://github.com/etcd-io/etcd/issues/15145#issuecomment-1662486867\n- https://github.com/etcd-io/etcd/issues/15145#issuecomment-1436554664\n\nWe will need multiple maintainers/contributors' collaboration. @participant4 @participant7 are you able to help on this? \n\nEDIT: also link to comments from the other ticket,\n- https://github.com/etcd-io/etcd/issues/19700#issuecomment-2804202982\n- https://github.com/etcd-io/etcd/issues/19700#issuecomment-2810073810\n- https://github.com/etcd-io/etcd/issues/19700#issuecomment-2812385008"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2025-04-17T10:21:04Z",
+   "body": "On it!\nThanks for the clear directives @reporter "
+  },
+  {
+   "author": "participant5",
+   "created_at": "2025-04-18T09:51:26Z",
+   "body": "...just doing a quick drop-by on this.\n\nI must say, there was a lot of discussion around this subject. It's been a lot of fun catching up though 😄\n\nThat said, I will be done in a couple of days with the summarised design gathered from all the highlighted comments \n\nOnce I have that in place @reporter, would you prefer I open a new ticket for the summarized version, or should I just attach it here under this same thread?\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-04-18T12:11:56Z",
+   "body": "> Once I have that in place [@reporter](https://github.com/reporter), would you prefer I open a new ticket for the summarized version, or should I just attach it here under this same thread?\n\nCan you get the summary included in a google doc?"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2025-04-18T13:30:56Z",
+   "body": "Yes I can do that. That's even convenient. Thanks "
+  },
+  {
+   "author": "participant5",
+   "created_at": "2025-04-19T03:03:24Z",
+   "body": "Here’s the link to the requested summary on the current design of etcd's client lb\n\n🔗https://docs.google.com/document/d/1DmWEv6Jb-tpAFh1u9cKIBYyDQh2DwXNw1YebkpyXBY4/edit?usp=sharing\n\nPlease review for any improvements or corrections.\n\nOtherwise let me know if it's ok to take the next step - drafting the proposal. \n\ncc: @reporter "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-04-22T15:39:53Z",
+   "body": "@participant5 as mentioned in https://github.com/etcd-io/etcd/issues/19700#issuecomment-2818122341, not only etcd itself uses grpc.Resolver package, but also an user-facing utility package uses it. refer to https://etcd.io/docs/v3.5/dev-guide/grpc_naming/\n\n\n\n> Otherwise let me know if it's ok to take the next step - drafting the proposal.\n\nPlease refer to https://github.com/etcd-io/etcd/issues/19700#issuecomment-2815923497"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2025-04-22T21:55:22Z",
+   "body": "@reporter, I sincerely apologise for the delayed response. I've been away for a bit. I'm back now and will review all the comments you tagged me in and respond accordingly. Thanks for your patience!\n\n\n"
+  },
+  {
+   "author": "github-actions[bot]",
+   "created_at": "2025-07-21T00:14:19Z",
+   "body": "This issue has been automatically marked as stale because it has not had recent activity. It will be closed after 21 days if no further activity occurs. Thank you for your contributions."
+  },
+  {
+   "author": "github-actions[bot]",
+   "created_at": "2025-09-20T00:11:25Z",
+   "body": "This issue has been automatically marked as stale because it has not had recent activity. It will be closed after 21 days if no further activity occurs. Thank you for your contributions."
+  },
+  {
+   "author": "github-actions[bot]",
+   "created_at": "2025-12-11T00:13:40Z",
+   "body": "This issue has been automatically marked as stale because it has not had recent activity. It will be closed after 21 days if no further activity occurs. Thank you for your contributions."
+  },
+  {
+   "author": "participant6",
+   "created_at": "2026-01-07T17:22:30Z",
+   "body": "/assign @participant6\n\nWe should not develop based on experimental features, I will take a look to see the blast radius"
+  },
+  {
+   "author": "participant6",
+   "created_at": "2026-01-08T14:30:20Z",
+   "body": "We have a detailed list of the experimental APIs in  https://github.com/etcd-io/etcd/pull/21094\n\n```\ngrpc.NewContextWithServerTransportStream\ngrpc.ServeHTTP\ngrpc.WithResolvers\nresolver.Address\nresolver.BuildOptions\nresolver.Builder\nresolver.ClientConn\nresolver.Endpoint\nresolver.ParseServiceConfig\nresolver.ResolveNowOptions\nresolver.Resolver\nresolver.State\nresolver.Target\nresolver.URL\nresolver.UpdateState\nserviceconfig.Err\nserviceconfig.ParseResult\n```\n\n"
+  },
+  {
+   "author": "participant7",
+   "created_at": "2026-01-08T19:56:27Z",
+   "body": "For the gRPC.ServeHTTP one, there was proposal - https://github.com/etcd-io/etcd/issues/15402#issuecomment-1466371314. and after https://github.com/kubernetes/kubernetes/pull/118460, kube-apiserver doesn't rely on http api. just shared that context here. Personally, from performance perspective, we should deprecate cmux usage in v3.7."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-01-22T19:06:55Z",
+   "body": "Just draft a doc/summary: https://docs.google.com/document/d/14pPPyQkJ8NvPZSM6Pe1Wr0BDHAsw_Xcp0mepoSVTQHs/edit?tab=t.0#heading=h.p9qru57gge3m \n\ncc @participant1 "
+  },
+  {
+   "author": "participant6",
+   "created_at": "2026-01-22T19:45:43Z",
+   "body": "/unassign\n\nI think that at this point I can't help much and is better to unassign me, great doc btw"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-02-04T13:12:33Z",
+   "body": "> Just draft a doc/summary: https://docs.google.com/document/d/14pPPyQkJ8NvPZSM6Pe1Wr0BDHAsw_Xcp0mepoSVTQHs/edit?tab=t.0#heading=h.p9qru57gge3m\n> \n> cc [@participant1](https://github.com/participant1)\n\nThe doc is basically finalised, please let me know if anyone has any comment. "
+  },
+  {
+   "author": "participant8",
+   "created_at": "2026-06-04T18:28:23Z",
+   "body": "Is this resolved as of v3.7rc0?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-06-04T18:39:35Z",
+   "body": "Closing. We will keep it as it's for now. The agreement between etcd and grpc-go is that etcd will make adjustment if grpc-go introduces any breaking change in future."
+  },
+  {
+   "author": "participant9",
+   "created_at": "2026-06-04T18:43:58Z",
+   "body": "congrats!"
+  },
+  {
+   "author": "participant6",
+   "created_at": "2026-06-05T07:50:48Z",
+   "body": "> congrats!\n\nAwesome, \nThis will be a beautiful history for a talk showing collaboration across OSS communities :)"
+  }
+ ],
+ "images": [],
+ "slug": "gh_etcd-io_etcd_15145"
+}

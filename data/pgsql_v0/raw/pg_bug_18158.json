@@ -1,0 +1,77 @@
+{
+ "reporter_match_keys": [
+  "alexander lakhin",
+  "exclusion"
+ ],
+ "repo": "postgresql.org/pgsql-bugs",
+ "number": 18158,
+ "url": "https://www.postgresql.org/message-id/flat/aiIxB2oawj8pZeON%40paquier.xyz",
+ "title": "Re: BUG #18158: Assert in pgstat_report_stat() fails when a backend\n shutting down with stats pending 📎",
+ "state": "thread",
+ "labels": [
+  "pgsql-bugs"
+ ],
+ "reporter": "reporter",
+ "created_at": "2023-10-16 09:00:00",
+ "closed_at": "2026-06-08 08:43:31",
+ "body": "The following bug has been logged on the website:\n\nBug reference:      18158\nLogged by:          reporter\nEmail address:      <email-scrubbed>\nPostgreSQL version: 16.0\nOperating system:   Ubuntu 22.04\nDescription:        \n\nWhen running check-world in a loop on a rather slow device, I observed\nan interesting case. All tests passed successfully, but in the system\njournal I found a message about postgres crash during the run.\nI reproduced the issue and found in src/test/recovery/tmp_check/log/\n012_subtransactions_primary.log:\nTRAP: failed Assert(\"!pgStatLocal.shmem->is_shutdown\"), File: \"pgstat.c\",\nLine: 616, PID: 23770\n\nMy analysis shows that this Assert failed in a backend (walsender, in my\ncase) when it has pending stats entries on a server shutdown.\nIn absence of such entries pgstat_report_stats() exits before the Assert:\n\t/* Don't expend a clock check if nothing to do */\n\tif (dlist_is_empty(&pgStatPending) &&\n\t\t!have_iostats &&\n\t\t!have_slrustats &&\n\t\t!pgstat_have_pending_wal())\n\t{\n\t\tAssert(pending_since == 0);\n\t\treturn 0;\n\t}\n\t/*\n\t * There should never be stats to report once stats are shut down. Can't\n\t * assert that before the checks above, as there is an unconditional\n\t * pgstat_report_stat() call in pgstat_shutdown_hook() - which at least\n\t * the process that ran pgstat_before_server_shutdown() will still call.\n\t */\n\tAssert(!pgStatLocal.shmem->is_shutdown);\n\nWith the following modification in pgstat_flush_pending_entries():\n+if (nowait && (rand() % 10 == 0))\n+        did_flush = false;\n+else\n+{\n         did_flush = kind_info->flush_pending_cb(entry_ref, nowait);\n+}\n\nthe issue reproduced easily:\nmake -s check -C src/test/recovery/ PROVE_TESTS=\"t/012_subtransactions.pl\"\ngrep TRAP -r src/test/recovery/tmp_check/log\n\n# +++ tap check in src/test/recovery +++\nt/012_subtransactions.pl .. ok    \nAll tests successful.\nFiles=1, Tests=12,  3 wallclock secs ( 0.01 usr  0.00 sys +  0.19 cusr  0.27\ncsys =  0.47 CPU)\nResult: PASS\nsrc/test/recovery/tmp_check/log/012_subtransactions_primary.log:\nTRAP: failed Assert(\"!pgStatLocal.shmem->is_shutdown\"), File: \"pgstat.c\",\nLine: 616, PID: 2410126\n\nThe stack trace from the log:\npostgres: primary: walsender law [local] streaming\n0/3019C78(ExceptionalCondition+0xbb)[0x5616c7b58b89]\npostgres: primary: walsender law [local] streaming\n0/3019C78(pgstat_report_stat+0xef)[0x5616c7991ff1]\npostgres: primary: walsender law [local] streaming\n0/3019C78(+0x6a9e57)[0x5616c7991e57]\npostgres: primary: walsender law [local] streaming\n0/3019C78(shmem_exit+0xa6)[0x5616c792d852]\npostgres: primary: walsender law [local] streaming\n0/3019C78(+0x6456f6)[0x5616c792d6f6]\npostgres: primary: walsender law [local] streaming\n0/3019C78(proc_exit+0x19)[0x5616c792d63a]\npostgres: primary: walsender law [local] streaming\n0/3019C78(+0x607cec)[0x5616c78efcec]\npostgres: primary: walsender law [local] streaming\n0/3019C78(+0x606e47)[0x5616c78eee47]\npostgres: primary: walsender law [local] streaming\n0/3019C78(+0x6043c8)[0x5616c78ec3c8]\npostgres: primary: walsender law [local] streaming\n0/3019C78(exec_replication_command+0x4cc)[0x5616c78edfa5]\npostgres: primary: walsender law [local] streaming\n0/3019C78(PostgresMain+0x7df)[0x5616c796d54b]\n...",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2026-05-12 20:00:00",
+   "body": "Hello hackers,\n\n16.10.2023 12:00, PG Bug reporting form wrote:\n[quoted earlier message trimmed]\n\nIt looks like skink produced this failure yesterday [1]:\n241/316 recovery - postgresql:recovery/027_stream_regress ERROR           4374.08s   exit status 1\n...\nstderr:\n#   Failed test 'check contents of pg_stat_statements on regression database'\n#   at /home/bf/bf-build/skink/REL_17_STABLE/pgsql/src/test/recovery/t/027_stream_regress.pl line 177.\n#          got: 'CREATE|f\n# SELECT|t'\n#     expected: 'CREATE|t\n# DELETE|t\n# INSERT|t\n# SELECT|t\n# UPDATE|t'\n# Looks like you failed 1 test of 9.\n\n  pgsql.build/testrun/recovery/027_stream_regress/log/027_stream_regress_primary.log\n\n2026-05-11 14:09:34.397 CEST [4064132][walsender][40/0:0] LOG: released physical replication slot \"standby_1\"\nTRAP: failed Assert(\"!pgStatLocal.shmem->is_shutdown\"), File: \"../pgsql/src/backend/utils/activity/pgstat.c\", Line: 612, \nPID: 4064132\npostgres: primary: walsender bf [local] streaming 0/15B4FC98(ExceptionalCondition+0x5f) [0x45ae268]\npostgres: primary: walsender bf [local] streaming 0/15B4FC98(pgstat_report_stat+0x14d) [0x4492fe2]\npostgres: primary: walsender bf [local] streaming 0/15B4FC98(+0x49315c) [0x449315c]\npostgres: primary: walsender bf [local] streaming 0/15B4FC98(shmem_exit+0x78) [0x4448f00]\npostgres: primary: walsender bf [local] streaming 0/15B4FC98(+0x449020) [0x4449020]\npostgres: primary: walsender bf [local] streaming 0/15B4FC98(proc_exit+0x22) [0x44490c1]\npostgres: primary: walsender bf [local] streaming 0/15B4FC98(+0x3f5dbd) [0x43f5dbd]\n...\n2026-05-11 14:09:34.629 CEST [4063470][postmaster][:0] LOG:  server process (PID 4064132) was terminated by signal 6: \nAborted\n2026-05-11 14:09:34.629 CEST [4063470][postmaster][:0] DETAIL: Failed process was running: START_REPLICATION SLOT \n\"standby_1\" 0/3000000 TIMELINE 1\n2026-05-11 14:09:34.631 CEST [4063470][postmaster][:0] LOG: terminating any other active server processes\n\nAnd perhaps (I can't find the full log now) one year ago [2]:\n227/305 postgresql:recovery / recovery/027_stream_regress ERROR           3364.50s   exit status 1\n\n[01:19:39.781](0.108s) not ok 9 - check contents of pg_stat_statements on regression database\n[01:19:39.781](0.000s) #   Failed test 'check contents of pg_stat_statements on regression database'\n#   at /home/bf/bf-build/skink/REL_17_STABLE/pgsql/src/test/recovery/t/027_stream_regress.pl line 173.\n[01:19:39.781](0.000s) #          got: 'CREATE|f\n# SELECT|t'\n#     expected: 'CREATE|t\n# DELETE|t\n# INSERT|t\n# SELECT|t\n# UPDATE|t'\n\nI've reproduced such failures with the above modification applied, just\nrunning:\nfor i in {1..20}; do PROVE_TESTS=\"t/027*\" make -s check -C src/test/recovery/ || break; done\n\nReproduced on REL_17_STABLE and REL_16_STABLE (starting from dd8008e8e,\nwhich updated 027_stream_regress.pl).\n\nNot reproduced on REL_18_STABLE after 87a6690cc (coming from [3]).\n\n[1] https://buildfarm.postgresql.org/cgi-bin/show_log.pl?nm=skink&dt=2026-05-11%2010%3A25%3A22\n[2] https://buildfarm.postgresql.org/cgi-bin/show_log.pl?nm=skink&dt=2025-03-18%2023%3A39%3A44\n[3] https://www.postgresql.org/message-id/yegnemsijlrhocsfgs7gs7irnczjgkom6fmk2a5u2b66pbvzwi%40ph2h3wppcvdy\n\nBest regards,\nAlexander"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2026-05-13 00:46:25",
+   "body": "Hi Alexander,\n\nOn Wed, May 13, 2026 at 4:00 AM participant1 wrote:\n[quoted earlier message trimmed]\n\nThanks for reporting this. It appears like backpatching an equivalent\nof 87a6690cc69 to REL_17/REL_16 would resolve this issue.\n\n--\nRegards,\nXuneng Zhou\nHighGo Software Co., Ltd."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2026-05-13 06:55:32",
+   "body": "On Wed, May 13, 2026 at 08:46:25AM +0800, Xuneng Zhou wrote:\n> Thanks for reporting this. It appears like backpatching an equivalent\n> of 87a6690cc69 to REL_17/REL_16 would resolve this issue.\n\nFWIW, I fear such a change in the stable branches based on its\ninvasiveness, particularly because the area of the code dealing with\nshutdown sequences has been reworked a lot lately as far as I recall.\n\nI am seriously wondering if we should just let it go and remove the\nassertion on v15~v17.  It's not perfect, of course, but I value much\nmore this assertion in terms of any future work that can be done with\npgstats, not in terms of what we could detect for bug fixes.\n--\nMichael"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2026-05-14 07:19:34",
+   "body": "On Wed, May 13, 2026 at 2:55 PM participant3 wrote:\n[quoted earlier message trimmed]\n\nI agree that applying the change wholesale could be too invasive. If\nwe decide not to address the ordering issue, removing this assertion\nseems reasonable, since the non-assert path does not actually provide\nthe required guarantee.\n\n-- \nRegards,\nXuneng Zhou\nHighGo Software Co., Ltd."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2026-06-05 02:14:31",
+   "body": "On Thu, May 14, 2026 at 03:19:34PM +0800, Xuneng Zhou wrote:\n[quoted earlier message trimmed]\n\nAttached is a patch for 15~17 that is able to achieve this goal:\n- Lift the assertion on shutdown for WAL senders, but keep it\neverywhere else.\n- Secondary trick in pgstat_shutdown_hook to cope with the fact that\nsome stats make still be around at shutdown for a WAL sender.\n\nI cannot reproduce the failure re-using the trick sent by Alexander at\nthe top of the thread.\n\nThoughts or objections?\n--\nMichael"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2026-06-05 05:00:00",
+   "body": "Hello Michael,\n\n05.06.2026 05:14, Michael Paquier wrote:\n[quoted earlier message trimmed]\n\nPlease try the following:\n--- a/src/backend/utils/activity/pgstat.c\n+++ b/src/backend/utils/activity/pgstat.c\n@@ -107,2 +107,3 @@\n\n+#include \"common/pg_prng.h\"\n\n@@ -1212,3 +1213,8 @@ pgstat_flush_pending_entries(bool nowait)\n          /* flush the stats, if possible */\n+if (nowait && (pg_prng_double(&pg_global_prng_state) < 0.1))\n+        did_flush = false;\n+else\n+{\n          did_flush = kind_info->flush_pending_cb(entry_ref, nowait);\n+}\n\nAs far as I can see, that rand() gives the same sequence on macOS each run,\nwhile on Linux I see different sequences.\n\nThe patch works for me test-wise.\n\nThank you for the fix!\n\nBest regards,\nAlexander"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2026-06-05 05:03:53",
+   "body": "On Fri, Jun 05, 2026 at 08:00:00AM +0300, reporter wrote:\n> As far as I can see, that rand() gives the same sequence on macOS each run,\n> while on Linux I see different sequences.\n\nAye.  I have used that before sending the patch, reproducing the\nfailure before-patch, getting things to work after-patch.\n--\nMichael"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2026-06-06 00:13:44",
+   "body": "On Fri, Jun 05, 2026 at 08:00:00AM +0300, reporter wrote:\n> Thank you for the fix!\n\nApplied as of 4801610f7c66 in the v15~17 range.\n--\nMichael"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2026-06-06 12:45:26",
+   "body": "Hi Michael,\n\nOn Sat, Jun 6, 2026 at 8:13 AM participant3 wrote:\n[quoted earlier message trimmed]\n\nSorry for being late. One nit for the patch -- would it be better to\nuse AmWalSenderProcess() for identification to save the include?\n+#include \"replication/walsender.h\"\n\n--\nRegards,\nXuneng Zhou\nHighGo Software Co., Ltd."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2026-06-08 05:48:55",
+   "body": "On Sat, Jun 06, 2026 at 08:45:26PM +0800, Xuneng Zhou wrote:\n> Sorry for being late. One nit for the patch -- would it be better to\n> use AmWalSenderProcess() for identification to save the include?\n> +#include \"replication/walsender.h\"\n\nIn the startup sequence, MyBackendType is updated to B_WAL_SENDER a\ncouple of lines after am_walsender.  One or the other don't really\nmatter; they're both right.\n--\nMichael"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2026-06-08 08:43:31",
+   "body": "On Mon, Jun 8, 2026 at 1:49 PM participant3 wrote:\n[quoted earlier message trimmed]\n\nYeah, both of them work well.  To use AmWalSenderProcess(), we would\nneed to include src/include/miscadmin.h, whereas using am_walsender\nrequires including “replication/walsender.h”. I’m just wondering\nwhether using AmWalSenderProcess() would result in less coupling\nbetween pgstat and replication.\n\n--\nRegards,\nXuneng Zhou\nHighGo Software Co., Ltd."
+  }
+ ],
+ "images": [],
+ "slug": "pg_bug_18158"
+}

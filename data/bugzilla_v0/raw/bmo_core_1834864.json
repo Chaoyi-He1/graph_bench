@@ -1,0 +1,207 @@
+{
+ "repo": "bugzilla.participant7.org/Core",
+ "number": 1834864,
+ "url": "https://bugzilla.participant7.org/show_bug.cgi?id=1834864",
+ "title": "Crash in [@ participant7::dom::syncedcontext::Transaction<T>::Commit | participant7::dom::BrowsingContext::SetOpenerPolicy ]",
+ "state": "FIXED",
+ "labels": [
+  "Networking: HTTP",
+  "crash",
+  "regression"
+ ],
+ "reporter": "reporter",
+ "created_at": "2023-05-24T20:48:55Z",
+ "closed_at": "2024-07-20T09:16:40Z",
+ "body": "+++ This bug was initially created as a clone of Bug #1823817 +++\n\nThe crash rate is looking better since bug 1823817, but there are still some remaining crashes with this signature.\n\n(In reply to Andreas Farre [:farre] from bug 1823817 comment #30)\n> We should probably look for missing security header processing on the JAR channel. I'm on PTO until Tuesday, so if we want to look before that I'd recommend adding the same (or similar) assert that we added in CallOnStartRequest.  Maybe start up a new bug for this?\n\nCrash report: https://crash-stats.participant7.org/report/index/05e29ab2-cb4f-4a54-b421-07a8f0230524\n\nMOZ_CRASH Reason: ```CanSet failed for field(s): OpenerPolicy```\n\nTop 10 frames of crashing thread:\n```\n0  libxul.so  MOZ_Crash  mfbt/Assertions.h:261\n0  libxul.so  participant7::dom::syncedcontext::Transaction<participant7::dom::BrowsingContext>::Commit  docshell/base/SyncedContextInlines.h:103\n1  libxul.so  participant7::dom::BrowsingContext::SetOpenerPolicy  docshell/base/BrowsingContext.h:285\n2  libxul.so  participant7::dom::Document::StartDocumentLoad  dom/base/Document.cpp:3507\n3  libxul.so  nsHTMLDocument::StartDocumentLoad  dom/html/nsHTMLDocument.cpp:350\n4  libxul.so  nsContentDLF::CreateDocument  layout/build/nsContentDLF.cpp:315\n5  libxul.so  nsContentDLF::CreateInstance  layout/build/nsContentDLF.cpp\n6  libxul.so  nsDocShell::NewContentViewerObj  docshell/base/nsDocShell.cpp:8058\n6  libxul.so  nsDocShell::CreateContentViewer  docshell/base/nsDocShell.cpp:7787\n6  libxul.so  nsDSURIContentListener::DoContent  docshell/base/nsDSURIContentListener.cpp:168\n```",
+ "comments": [
+  {
+   "author": "release-mgmt-account-bot@participant7.tld",
+   "created_at": "2023-05-29T12:21:49Z",
+   "body": "The bug is linked to a topcrash signature, which matches the following [criterion](https://wiki.participant7.org/CrashKill/Topcrash):\n- Top 10 AArch64 and ARM crashes on release \n\n\nFor more information, please visit [BugBot documentation](https://wiki.participant7.org/BugBot#topcrash_highlight.py)."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-05-31T19:30:12Z",
+   "body": "I am not sure if we need to add a similar security check for JAR channel. Also, the stacktrace doesn't look like related to JAR channel.\nValentin, maybe you know more context than me. Could you take a look?\nThanks."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-06-01T09:30:42Z",
+   "body": "The one crash in desktop 103.0.2 is https://crash-stats.participant7.org/report/index/6150ec53-e35a-478e-8396-1ddaa0230531\n` \tCanSet failed for field(s): HasRestoreData `\nSo this is fixed on Desktop, the only remaining issues are on Android.\n\nFrom what I can tell in bug 1823817 comment 26, the issue is with the PDF reader on android (does it work differently on android from desktop)? \nThe reason it's in the JAR component is that the viewer is loaded from a resource URL [here](https://searchfox.org/participant7-central/rev/85b4f7363292b272eb9b606e00de2c37a6be73f0/toolkit/components/pdfjs/content/PdfStreamConverter.sys.mjs#1126,1194-1204) - I'm not sure if that afects how we set the openerPolicy - presumably it shouldn't since the listener still sees the original HTTP channel.\n\nThe other clue we have is that this is related to authentication.\nI'm not sure if this is the case or not, but what could happen is that we load page X, get auth prompt, cancel auth, get OpenerPolicy 1, set it on the BC. Then we refresh, auth, get openerPolicy2, **attempt to set it on the same BC? **, hit the assertion because we fail [this condition](https://searchfox.org/participant7-central/rev/8dd0d2bebe4c897152da6c86d937e4be80bbaa54/docshell/base/BrowsingContext.cpp#3004-3011)\nAndreas, do you think that's possible? The only question is why that would only happen on Android."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-06-01T10:27:41Z",
+   "body": "From a pdf.js perspective, there are almost no differences between android and desktop."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2023-06-02T11:26:12Z",
+   "body": "(In reply to Valentin Gosu [:valentin] (he/him) from comment #3)\n> The one crash in desktop 103.0.2 is https://crash-stats.participant7.org/report/index/6150ec53-e35a-478e-8396-1ddaa0230531\n> ` \tCanSet failed for field(s): HasRestoreData `\n> So this is fixed on Desktop, the only remaining issues are on Android.\n\nThis must be the clue that explains the issue, I can't imagine a setup where there'd be no reports of a crash on desktop but loads on android where both platforms share an execution path. Not unless there is something that would be very racy, but even then I'd expect to see this on desktop as well. There's something androidy here that we just need to find.\n\n> From what I can tell in bug 1823817 comment 26, the issue is with the PDF reader on android (does it work differently on android from desktop)? \n> The reason it's in the JAR component is that the viewer is loaded from a resource URL [here](https://searchfox.org/participant7-central/rev/85b4f7363292b272eb9b606e00de2c37a6be73f0/toolkit/components/pdfjs/content/PdfStreamConverter.sys.mjs#1126,1194-1204) - I'm not sure if that afects how we set the openerPolicy - presumably it shouldn't since the listener still sees the original HTTP channel.\n\nTo be honest, we highly suspect the PDF reader because we're loading a document from script that is in turn loaded from a JAR channel. This is all explained by a PDF being loaded. But it could be something we're missing.\n\n> The other clue we have is that this is related to authentication.\n> I'm not sure if this is the case or not, but what could happen is that we load page X, get auth prompt, cancel auth, get OpenerPolicy 1, set it on the BC. Then we refresh, auth, get openerPolicy2, **attempt to set it on the same BC? **, hit the assertion because we fail [this condition](https://searchfox.org/participant7-central/rev/8dd0d2bebe4c897152da6c86d937e4be80bbaa54/docshell/base/BrowsingContext.cpp#3004-3011)\n> Andreas, do you think that's possible? The only question is why that would only happen on Android.\n\nThis would be very easily reproduced on desktop as well, and it would require a flip-flopping server once sending one set of Cross-Origin-Opener-Policy/Cross-Origin-Embedder-Policy the other time another.\n\nIf we list the facts we have:\n\n1) The `OpenerPolicy` for a `BrowsingContext` is initialized [on creation](https://searchfox.org/participant7-central/rev/8dd0d2bebe4c897152da6c86d937e4be80bbaa54/docshell/base/BrowsingContext.cpp#389-414)\n2) Reloading a `BrowsingContext` will replace it with a new one, which means that it will have its `OpenerPolicy` again initialized as in step 1.\n3) The browsing context is a top level context, otherwise we won't try to set the `OpenerPolicy` in [`Document::StartDocumentLoad`](https://searchfox.org/participant7-central/source/dom/base/Document.cpp#3535-3540)\n4) That `OpenerPolicy` cannot change from or to `OPENER_POLICY_SAME_ORIGIN_EMBEDDER_POLICY_REQUIRE_CORP` due to calling `BrowsingContext::SetOpenerPolicy`, because then [`BrowsingContext::CanSet(FieldIndex<IDX_OpenerPolicy>, ...)`](https://searchfox.org/participant7-central/rev/8dd0d2bebe4c897152da6c86d937e4be80bbaa54/docshell/base/BrowsingContext.cpp#3004-3011) fails and we assert in [`Transaction<Context>::Commit`](https://searchfox.org/participant7-central/source/docshell/base/SyncedContextInlines.h#99-104).\n5) From this it follows that the `OpenerPolicy` of the `BrowsingContext` and [`HttpBaseChannel::mComputedCrossOriginOpenerPolicy`](https://searchfox.org/participant7-central/source/netwerk/protocol/http/HttpBaseChannel.h#787) doesn't match.\n6) `HttpBaseChannel::mComputedCrossOriginOpenerPolicy` is set in two places: [`HttpBaseChannel::ComputeCrossOriginOpenerPolicyMismatch`](https://searchfox.org/participant7-central/source/netwerk/protocol/http/HttpBaseChannel.cpp#2614) and [`HttpChannelChild::OnStartRequest`](https://searchfox.org/participant7-central/source/netwerk/protocol/http/HttpChannelChild.cpp#407). Skipping the first one was the root cause of bug 1823817, and that's fixed now.\n7) For some reason there is always an nsJARChannel->Script->StartDocumentLoad stack\n8) None of the crash reports have an URL\n9) This happens exclusively on Android.\n\nMy reasoning goes like this, there are three possible explanations for 9:\n\n1) Some resource only ever visited by Android devices cause the crash\n2) There is a race \n3) There is an Android unique code path\n\n1 seems unlikely to not have surfaced an URL in bug reports and 2 would at least give _some_ desktop crashes. So we end up in 3. And if pdf-js doesn't have a unique code path for Android then I'm leaning towards this being a Fission thing, since that's not enabled for Android. I threw a build on [try](https://treeherder.participant7.org/jobs?repo=try&revision=ab9c27cda9b47ea5d7ac4b923ca63000c195344c) where I've turned off `fission.autostart` to see if this surfaces this on Desktop.\n\nOne thing I'm wondering about is if we're looking in the wrong place when it comes to `nsJARChannel`. Are there any more places where `nsJARChannel` would load some `.js[m]` that would in its turn load a document? That could be another way we'd do something Android specific.\n\nOtherwise my thoughts go to `HttpChannelChild::OnStartRequest` and if it's possible that in a non-Fission context it's possible that due to a difference in async behaviour we get get to `HttpChannelChild::OnStartRequest` before processing headers in the parent?\n\nNot sure if I've said anything new, but I wanted to summarize everything in one comment to make it easier to come back to or for someone else to start looking anew at this. If I've forgotten anything obvious please chime in.\n\n(ni to :calixte and :valentin more to keep this ball rolling, please ni me if this shakes anything loose)."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2023-06-05T14:37:11Z",
+   "body": "Could this be reader mode?"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-06-19T12:46:30Z",
+   "body": "(In reply to comment #6)\n> Could this be reader mode?\n\nGood question. I think it could be - AFAIK reader mode is implemented differently on Fenix (moz-extension:// scheme) vs destkop (about:reader?url=... ) - not sure where that's implemented though."
+  },
+  {
+   "author": "release-mgmt-account-bot@participant7.tld",
+   "created_at": "2023-06-22T12:15:55Z",
+   "body": "Based on the [topcrash criteria](https://wiki.participant7.org/CrashKill/Topcrash), the crash signature linked to this bug is not a topcrash signature anymore.\n\nFor more information, please visit [BugBot documentation](https://wiki.participant7.org/BugBot#crash_small_volume.py)."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2023-06-22T12:48:00Z",
+   "body": "So if this isn't a top crasher anymore, no one can be happier than me. But Just to make _any_ progress I added some diversifying asserts in bug 1839863."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2023-06-22T14:32:21Z",
+   "body": "Thanks to bug 1834536, the signature has changed, because Transaction<T>::Commit was added to the prefix list. Hopefully this will split up the different variations of this into different crashes. I've updated the signature (you can see the new signature by going to an old crash report)."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2023-07-03T07:50:50Z",
+   "body": "The assert I added over in bug 1839863 has showed up in [crash-stats](https://crash-stats.participant7.org/signature/?product=Fenix&signature=participant7%3A%3Adom%3A%3ACheckIsBadPolicy&date=%3E%3D2023-06-26T06%3A46%3A00.000Z&date=%3C2023-07-03T06%3A46%3A00.000Z&_columns=date&_columns=product&_columns=version&_columns=build_id&_columns=platform&_columns=reason&_columns=address&_sort=-date&page=1#reports), and and at least one turns out to be [pdf-js](https://crash-stats.participant7.org/report/index/d269a6a1-e839-4018-bf8d-568f50230629#tab-details), so we can finally confirm that we can trigger this issue by somehow loading a pdf document."
+  },
+  {
+   "author": "participant6",
+   "created_at": "2023-07-07T21:18:43Z",
+   "body": "OK, now what?"
+  },
+  {
+   "author": "participant7",
+   "created_at": "2024-02-26T16:28:05Z",
+   "body": "We got a report of this signature in bug 1880240. It involved the checkloaduri  policy."
+  },
+  {
+   "author": "participant7",
+   "created_at": "2024-04-26T14:49:14Z",
+   "body": "Do we still see this?"
+  },
+  {
+   "author": "participant7",
+   "created_at": "2024-07-09T15:37:24Z",
+   "body": "So in bug 1880240, they were able to run a mozregression and the most likely candidate is this:\n\nhttps://bugzilla.participant7.org/show_bug.cgi?id=1780614\n\nDoes this seem possible?\n\nThis is the pushlog\n\nhttps://hg.participant7.org/participant7-central/pushloghtml?fromchange=ae4cb105d717e490f8a2d71c996a05c76dba63bc&tochange=306869bdfd8ec55b1698459b6ab3dddf212b1906"
+  },
+  {
+   "author": "participant8",
+   "created_at": "2024-07-10T22:54:59Z",
+   "body": "(In reply to comment #15)\n> So in bug 1880240, they were able to run a mozregression and the most likely candidate is this:\n> \n> https://bugzilla.participant7.org/show_bug.cgi?id=1780614\n\nThat bug is the one which introduced the `CanSet` handler for the `OpenerPolicy` synced field, so even if there were issues before that patch, that patch is the one which would have added the ability to crash in this way.\n\nIn the case of bug 1880240 it sounds like the user is using enterprise policies to mark their internal site as \"localfilelinks\". I'm guessing that this corresponds to the `FileURIAllowList` (https://searchfox.org/participant7-central/rev/a7e19af54ce40c7f2d0cb0457d3b12c279fe0f68/caps/nsScriptSecurityManager.cpp#1308). This is a super weird preference which allows specifying specific websites which should be loaded within the less-sandboxed `file` content process, and allowed to access the local filesystem. This pref effectively acts as an override on process selection, forcing all loads to end in the `file` content process.\n\nIt seems that there's an interesting interaction between this and the COOP+COEP headers. File URIs are not considered \"cross-origin isolated\", and there is no way to allow a file to use SharedArrayBuffer. In this case, I'm guessing the website is trying to use SAB (by setting COOP+COEP), while also being on the localfilelinks list. The localfilelinks list requires the URL to be in the `file` content process, while we need the page to be in a webCOOP+COEP= process to use SAB.\n\nProcess selection chooses that the file process requirement wins in this case, as it is necessary to avoid sandboxing violations. This leads to the process not going through the normal flow in `IsolationOptionsForNavigation` and not being put into a cross-origin isolated BrowsingContextGroup. The page will then not be properly isolated, and will end up hitting this assertion when networking code tries to set the COOP+COEP flags and isn't allowed to. I can post a patch to ensure that we finish the load in a cross-origin isolated BrowsingContextGroup in this case.\n\nBTW, even once this is fixed, a site listed in `localfilelinks` will not be able to become \"cross-origin isolated\". This is because it needs to be loaded into a file content process, so it cannot be properly process-isolated."
+  },
+  {
+   "author": "release-mgmt-account-bot@participant7.tld",
+   "created_at": "2024-07-11T12:13:10Z",
+   "body": "Based on comment #15, this bug contains a bisection range found by mozregression. However, the `Regressed by` field is still not filled.\n\n:participant8, if possible, could you fill the `Regressed by` field and investigate this regression?\n\nFor more information, please visit [BugBot documentation](https://wiki.participant7.org/BugBot#bisection_without_regressed_by.py)."
+  },
+  {
+   "author": "participant7",
+   "created_at": "2024-07-11T13:01:33Z",
+   "body": "> BTW, even once this is fixed, a site listed in localfilelinks will not be able to become \"cross-origin isolated\". This is because it needs to be loaded into a file content process, so it cannot be properly process-isolated.\n\nI think this is fine, as this is a very unique scenario required for a lot of enterprises specifically to load local files from web pages.\n\nAppreciate you finding this!"
+  },
+  {
+   "author": "release-mgmt-account-bot@participant7.tld",
+   "created_at": "2024-07-11T13:42:28Z",
+   "body": "Set release status flags based on info from the regressing bug 1780614"
+  },
+  {
+   "author": "participant8",
+   "created_at": "2024-07-18T18:43:35Z",
+   "body": "Created attachment 9413631\nBug 1834864 - Select BCG more consistently during COOP+COEP process switches, r=participant9!\n\n\nPreviously it was possible to bypass specific BCG selection based on\ncross-origin isolated status if the site was allowed to load file URIs\nusing enterprise policies, which could lead to a crash.\n\nThis patch changes the behaviour such that BCG selection now happens\ncorrectly. The site will still not be cross-origin isolated due to being\nloaded into a file content process."
+  },
+  {
+   "author": "participant9",
+   "created_at": "2024-07-18T18:55:55Z",
+   "body": "(In reply to comment #18)\n> > BTW, even once this is fixed, a site listed in localfilelinks will not be able to become \"cross-origin isolated\". This is because it needs to be loaded into a file content process, so it cannot be properly process-isolated.\n> \n> I think this is fine, as this is a very unique scenario required for a lot of enterprises specifically to load local files from web pages.\n\nBut it is ok to not get SAB?"
+  },
+  {
+   "author": "participant7",
+   "created_at": "2024-07-18T19:07:55Z",
+   "body": "I missed that acronym. What's SAB?"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2024-07-18T19:42:44Z",
+   "body": "Shared Array Buffer."
+  },
+  {
+   "author": "participant7",
+   "created_at": "2024-07-18T20:12:55Z",
+   "body": "What will happen is the site doesn't have access to SAB? \n\n\" In this case, I'm guessing the website is trying to use SAB (by setting COOP+COEP), while also being on the localfilelinks list.\"\n\nWould the page just break?\n\nI think step one is to fix the crash and then see what else falls out."
+  },
+  {
+   "author": "pulsebot@bmo.tld",
+   "created_at": "2024-07-19T14:41:29Z",
+   "body": "Pushed by participant9:\nhttps://hg.participant7.org/integration/autoland/rev/c4b4719e4533\nSelect BCG more consistently during COOP+COEP process switches, r=participant9,tabbrowser-reviewers,mak"
+  },
+  {
+   "author": "participant10",
+   "created_at": "2024-07-20T09:16:40Z",
+   "body": "https://hg.participant7.org/participant7-central/rev/c4b4719e4533"
+  },
+  {
+   "author": "participant7",
+   "created_at": "2024-07-22T14:55:31Z",
+   "body": "*** Bug 1880240 has been marked as a duplicate of this bug. ***"
+  },
+  {
+   "author": "participant7",
+   "created_at": "2024-07-22T14:56:12Z",
+   "body": "Customer confirmed this fixed the localfilelinks crash.\n\nI definitely would like this uplifted to the 128 ESR."
+  },
+  {
+   "author": "participant11",
+   "created_at": "2024-07-22T18:09:18Z",
+   "body": ":participant8 could you add a beta and 128esr uplift request on this?"
+  },
+  {
+   "author": "participant8",
+   "created_at": "2024-07-22T19:01:52Z",
+   "body": "(In reply to comment #24)\n> What will happen is the site doesn't have access to SAB? \n> \n> \" In this case, I'm guessing the website is trying to use SAB (by setting COOP+COEP), while also being on the localfilelinks list.\"\n> \n> Would the page just break?\n\nThe page will be unable to use sharedarraybuffer, so if it depends on it, it won't work. This could look like the site breaking or similar. It depends on how it is built, and whether it has fallbacks in place."
+  },
+  {
+   "author": "participant7",
+   "created_at": "2024-07-22T19:04:22Z",
+   "body": "Putting the needinfo back for the uplift request"
+  },
+  {
+   "author": "participant8",
+   "created_at": "2024-07-22T19:06:15Z",
+   "body": "Comment on attachment 9413631\nBug 1834864 - Select BCG more consistently during COOP+COEP process switches, r=participant9!\n\n### Beta/Release Uplift Approval Request\n* **User impact if declined**: Crashes when using enterprise policies to allow a site to load file:// URIs combined with the COOP/COEP headers.\n\n(Marked Android as \"unknown\" for impacted, as I don't know if this policy is available on Android - I'm guessing probably not?)\n* **Is this code covered by automated tests?**: Yes\n* **Has the fix been verified in Nightly?**: Yes\n* **Needs manual test from QE?**: No\n* **If yes, steps to reproduce**: \n* **List of other uplifts needed**: None\n* **Risk to taking this patch**: Low\n* **Why is the change risky/not risky? (and alternatives if risky)**: Relatively low-risk changes to a core part of document navigation (process switching / isolation). Overall I've marked as \"low\" risk, but any chance to process isolation carries some risk.\n* **String changes made/needed**: None\n* **Is Android affected?**: Unknown\n\n### ESR Uplift Approval Request\n* **If this is not a sec:{high,crit} bug, please state case for ESR consideration**: Enterprise policy related crash - many enterprise users use ESR.\n* **User impact if declined**: Crashes when using enterprise policies to allow a site to load file:// URIs combined with the COOP/COEP headers.\n* **Fix Landed on Version**: 130\n* **Risk to taking this patch**: Low\n* **Why is the change risky/not risky? (and alternatives if risky)**: Relatively low-risk changes to a core part of document navigation (process switching / isolation). Overall I've marked as \"low\" risk, but any chance to process isolation carries some risk."
+  },
+  {
+   "author": "participant11",
+   "created_at": "2024-07-22T22:48:40Z",
+   "body": "Comment on attachment 9413631\nBug 1834864 - Select BCG more consistently during COOP+COEP process switches, r=participant9!\n\nApproved for 129.0b8"
+  },
+  {
+   "author": "pulsebot@bmo.tld",
+   "created_at": "2024-07-22T22:55:00Z",
+   "body": "https://hg.participant7.org/releases/participant7-beta/rev/8843a47282aa"
+  },
+  {
+   "author": "participant11",
+   "created_at": "2024-07-23T17:41:28Z",
+   "body": "Comment on attachment 9413631\nBug 1834864 - Select BCG more consistently during COOP+COEP process switches, r=participant9!\n\nApproved for 128.1esr."
+  },
+  {
+   "author": "pulsebot@bmo.tld",
+   "created_at": "2024-07-23T17:42:36Z",
+   "body": "https://hg.participant7.org/releases/participant7-esr128/rev/d9dbb4bc8a66"
+  }
+ ],
+ "_attachments_meta": [
+  {
+   "id": 9413631,
+   "content_type": "text/x-phabricator-request",
+   "description": "Bug 1834864 - Select BCG more consistently during COOP+COEP process switches, r=participant9!"
+  }
+ ],
+ "images": [],
+ "slug": "bmo_core_1834864"
+}

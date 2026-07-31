@@ -1,0 +1,301 @@
+{
+ "repo": "moby/moby",
+ "number": 47728,
+ "url": "https://github.com/moby/moby/issues/47728",
+ "title": "NetworkDB does not always reliably converge",
+ "state": "closed",
+ "labels": [
+  "exp/expert",
+  "kind/bug",
+  "area/networking",
+  "area/networking/d/overlay"
+ ],
+ "reporter": "reporter",
+ "created_at": "2024-04-17T17:33:03Z",
+ "closed_at": "2025-07-10T17:04:18Z",
+ "body": "### Description\r\n\r\nIn our setups, we keep having issues around Docker DNS resolution around times where we either:\r\n\r\n1. restart Docker nodes in quick succession\r\n2. update Docker nodes (and therefore restart them in quick succession)\r\n3. have network issues\r\n\r\nFor a second we thought that the MTU settings for the networking controlplane might be the issue, but the issue seems to have happened even on an MTU that fits our setup (we used 1350 instead of the default 1500).\r\n\r\nIt seems that during these times, the gossip network of networkdb does not get synched up properly. We debugged this with the built in debugging tooling of libnetwork (which is really helpful btw) and found that there exists no mechanism in dockerd that concerns itself with resynching the `endpoint_table` of networkdb (or `overlay_peer_table` for that matter but that does not seem to be that much of a problem). We double checked this by going through the code of libnetwork/agent.go:\r\n\r\nThe only places that update anything in networkdb are calls to `addServiceInfoToCluster` (CreateEntry), `addDriverInfoToCluster` (CreateEntry), `deleteDriverInfoFromCluster` (DeleteEntry), `deleteServiceInfoFromCluster` (DeleteEntry). `disableServiceInNetworkDB` (UpdateEntry).\r\n\r\nWhile we might have missed things, here comes our proposal: There should be a (opt-in) docker daemon config option that enables a background job in the docker daemon that on a schedule resyncs all the DNS entries to networkdb. Design wise I have not thought about it a lot, but I imagine that this should be fine to run on a schedule of maybe 1-5 minutes in most clusters. This way, whenever a DNS entry is out of sync things should fix themselves in a somewhat acceptable schedule.",
+ "comments": [
+  {
+   "author": "reporter",
+   "created_at": "2024-04-17T17:41:29Z",
+   "body": "I also found bulkSync in `libnetwork/networkdb/cluster.go` but this seems to only synchronize the \"already known state\". This means that if something went bad at some point, there is no way the system can fix itself still if I read things correctly?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-04-17T21:17:25Z",
+   "body": "@participant1 I have seen a lot of changes by you in libnetwork in the recent weeks. I'd be interested in your gut feeling here. Would this be a bad idea?\r\n\r\nIf this is something that is worth exploring I'd be happy to help with the implementation. This has been bugging us for a lot of time and if this helps the way that I envision it, this would make our clusters so much more reliable.\r\n\r\n/cc @neersighted "
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-04-18T07:58:50Z",
+   "body": "HI @reporter - thank you for the debugging, description and proposal. As I've not looked at Swarm in any detail yet, I think @participant2 is much better placed to take a look at this."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-04-18T15:03:29Z",
+   "body": "Swarm is only tangentially involved: it informs libnetwork of the addresses of the remote peers for bootstrapping/joining the NetworkDB gossip cluster. NetworkDB and the memberlist gossip cluster are entirety within the domain of libnetwork, unfortunately."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-04-18T15:22:14Z",
+   "body": "Yeah, that is my understanding as well. But this problem only materializes in Docker Swarm environments, because networkdb does not seem to be involved in single node setups. Or well... if it is, no data is lost because its all on the same node anyways.\r\n\r\nIn the end it all boils down to this - how bad of an idea would it be to build some automatic resynching mechanism for networkdb?\r\n\r\nAlso, what I found when looking into memberlist (the underlying library for networkdb) - the behaviour of the networkdb being broken in non optimal network conditions is quite likely without a resynch mechanism."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-04-18T18:04:07Z",
+   "body": "NetworkDB not converging in a reasonable amount of time is a bug. It does look like `bulkSync` is intended to be that resynching mechanism you suggest, though apparently it is not working properly. To a first approximation, NetworkDB is a distributed KV store with multiple \"keyspaces\" (called networks) where each node in the cluster gets to pick and choose which keyspaces to participate in. A node only holds the state for the keyspaces it participates in, and therefore can only receive state updates from other nodes also participating. ~I suspect (from a cursory reading of a small slice of the networkdb package source) that there is a design flaw in how this is implemented: the mapping of nodes to networks is only updated with broadcasts, with no mechanism for recovering from a missed broadcast. That mapping probably has to be reliably distributed—like the KV pairs themselves are—to all nodes in the cluster for bulk sync to reliably converge in imperfect conditions.~"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-04-18T18:30:07Z",
+   "body": "Thanks for looking into it. For what it's worth, I can somewhat confirm this feeling from me reading into the code for about 2-3 hours.\r\n\r\nHappy to help here if it's needed in any way."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-04-23T17:03:34Z",
+   "body": "Just to clarify - is this something that will likely be picked up by a subject matter expert? Happy to help anyways, but I think implementing the full thing is out of reach for me at the moment."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-04-23T20:13:29Z",
+   "body": "I will likely be the one to pick this up unless you or someone else in the community steps up before this reaches the top of my backlog. (I tagged this issue `exp/expert` to warn away community members looking for an easy first contribution.)\r\n\r\nMy current idea is to implement a \"system\" keyspace which uses the same reliable synchronization machinery as the per-network tables—which all nodes in the cluster unconditionally participate in—and distribute the mapping of nodes to networks through a system table."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-05-01T17:59:21Z",
+   "body": "@reporter are Swarm tasks affected, basic containers connected to an attachable overlay, or both? I wonder if there are any other root causes, such as race conditions, to be on the lookout for."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-05-02T07:59:58Z",
+   "body": "This issue mostly came up in Docker Swarm environments with services/tasks due to the nature of containers joining and leaving networks frequently.\r\n\r\nBut: I am 99% sure that we encountered this issue with standalone Docker Containers attached to overlay networks as well. (Older setups where we didn't use anything besides overlay networks out of the Docker Swarm mode feature set)."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-05-19T06:11:30Z",
+   "body": "Is there anything I can do to support here?"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-06-06T14:21:11Z",
+   "body": "Hello is there any tool available or docker daemon log to detect such issue? \r\nWe are experiencing some docker service with \"double\" VIP resolution (1 of them is the VIP of a previous iteration of the same service in the same overlay network).  Sometimes it happens that we have correctly 1 VIP but we have a \"dead\" task IP present in the resolution of the tasks.service.network DNS.\r\nIs there any way to remove/cleanup NetworkDB from these \"false\" entries, besides removing the entire overlay network (and all services attached)?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-06-06T14:47:56Z",
+   "body": "There is documentation how this part of moby works here:\r\n\r\nhttps://github.com/moby/moby/blob/master/libnetwork/docs/networkdb.md\r\n\r\nDocumentation for the debugging tools are here:\r\n\r\nhttps://github.com/moby/moby/blob/f3f20c3a862ff90c7e7b0ee07dabe2176ed0a170/libnetwork/cmd/diagnostic/README.md"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-06-06T14:52:51Z",
+   "body": "Thank you reporter.\r\nJust to be sure can I use the containerized diagnostic tool with dind version 17.12 (6 years old) and join a cluster with Docker version 23.0.5?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-06-06T14:54:23Z",
+   "body": "We actually used curl to interact with the API directly, but the old version should still work iirc."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-06-06T14:55:00Z",
+   "body": "But: as the ticket says, there seems to be no automatic way to trigger a resynch / there is no automatic mechanism. In our tests, restarting nodes/daemons seemed to help."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-06-06T15:10:49Z",
+   "body": "I understand that somehow networkdb holds the \"network\" state,  but each entry on the networkdb has a \"owner\" (a node).\r\nProbably restarting the \"owner\" node would fix the issue clearing the wrong entry, but I have a 70 nodes cluster and I cannot restart all workers in a short period of time.\r\nCan I find the \"owner\" node of the wrong entry with the diagnostic tool?  How can I call the API directly?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-06-06T15:13:19Z",
+   "body": "If this is just about deleting entries, you might have luck with the API, but be advised that this might break things in unexpected ways:\r\n\r\nhttps://github.com/moby/moby/blob/f3f20c3a862ff90c7e7b0ee07dabe2176ed0a170/libnetwork/cmd/diagnostic/README.md#access-the-diagnostic-tools-api\r\n\r\nI'd suggest you see what the networkdb holds in terms of entries. If there are other questions you have regarding this, may I ask you to move this to a GitHub discussion? Feel free to ping me there. This issue is probably not the right place for this discussion.\r\n\r\n@participant2  regarding the issue: How can I help?"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-06-06T18:52:57Z",
+   "body": "@reporter I'm pretty confident in our root-cause analysis. Want to take a crack at making the mapping of nodes->networks reliable?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-06-07T06:58:54Z",
+   "body": "I might have a crack at this, but I'd like to discuss design ideas first.\r\n\r\nMy first (somewhat misguided) idea was to keep track of all service updates that come from the current node (ourselves) and then we just resend these on a timer. The problem with this is however that this would mean that we would have to merge creation and deletion of entries locally. I guess this is one of the main issues of this synching algorithm we need - how do we track deletions so that we can re-send them again.\r\n\r\nAlternatively - is there a way to make the events we send to the other nodes in the cluster use TCP and not UDP? This would at least help a bit in terms of reliability even though it will not solve split brain 100%.\r\n\r\nAll of this is just early ideas. What would you have in mind?"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-06-07T15:45:26Z",
+   "body": "I think there's merit to the \"system tables\" idea I sketched out in https://github.com/moby/moby/issues/47728#issuecomment-2073364693. NetworkDB has already solved the challenges you mention for keeping the table entries themselves within a keyspace up to date. And NetworkDB has a reliable list of all nodes participating in the cluster thanks to the memberlist module. If we had tables where all records are implicitly part of a system keyspace which all nodes in the cluster participate in, the same reliable gossip logic could be used for NetworkDB bookkeeping as is used to synchronize user tables. With such infrastructure in place, NetworkDB could simply use a system table to distribute the node-network mappings reliably to the whole cluster. "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-06-11T07:42:16Z",
+   "body": "Aha, so our working theory is that we could get all of this stable by making endpoint_table a \"system table\". So this would mean the changes would also be much more localized than what I proposed."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-06-11T15:34:11Z",
+   "body": "No, endpoint_table is user data, which would continue to be sharded for scalability. The metadata _which is currently only propagated using broadcasts_ would instead be propagated through a new system table. The system tables would be reserved for internal NetworkDB bookkeeping only -- like PostgreSQL's system catalogues."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-06-11T17:54:47Z",
+   "body": "Okay. \r\n\r\nI'll be honest, you will have to do some handholding here, but I think I am slowly understanding the idea. A quick search for the pattern you describe leads me to libnetwork/networkdb/broadcast.go\r\n\r\n```\r\nfunc (nDB *NetworkDB) sendNetworkEvent(nid string, event NetworkEvent_Type, ltime serf.LamportTime) error {\r\n```\r\n\r\nwhich seems to be used in libnetwork/networkdb/networkdb.go inside `JoinNetwork` and `LeaveNetwork`. I can see how this might not be reliable as `sendNetworkEvent` only uses `nDB.networkBroadcasts.QueueBroadcast`.\r\n\r\nThese network events are handled in `func (nDB *NetworkDB) handleNetworkEvent(nEvent *NetworkEvent) bool {` of libnetwork/networkdb/delegate.go.\r\n\r\nI am now trying to figure out how system tables would have to be built. Currently trying to find what you mean by `the per-network tables`. Can you point me to the code that handles this case already?\r\n"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-06-11T18:31:46Z",
+   "body": "> Currently trying to find what you mean by `the per-network tables`. Can you point me to the code that handles this case already?\r\n\r\nThe code which handles per-network tables is the meat of NetworkDB. For example, `endpoint_table` is a per-network table. Though to reduce confusion I am going to refer to them as \"user tables\" from now on. (Remember, in NetworkDB parlance, a \"network\" is really a namespace for table entries; one of the database dimensions.) So to answer your question, the entrypoints for the code which handles the \"per-network\" user tables are the exported NetworkDB methods for tables and entries: `CreateEntry`, `DeleteEntry`, `UpdateEntry`, `DeleteEntry`, `GetTableByNetwork`, `WalkTable`, `Watch`."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-06-29T09:00:31Z",
+   "body": "Update: sorry, currently i cant find the time to dig into this. If you want to pick it after all i think that would be better. @participant2 \r\n\r\n"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-08-04T23:02:00Z",
+   "body": "Could this also be related to this?\r\n\r\nhttps://www.reddit.com/r/docker/comments/1ejymn2/massive_problems_with_docker_swarm_overlay/\r\n\r\nUpdate: Yes, it is. For one container's IP, I've multiple conflicting entries in both the endpoint table as well as the overlay table."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-08-05T09:10:01Z",
+   "body": "This bug poses a huge reliability problem for production clusters. Would using a different driver like flannel get rid of this issue by not using libnetwork? Or would libnetwork still be involved, even with flannel?  \r\nIf flannel would get around this, are there any reasons not to use it until this bug is fixed? I mean, aside from the inconvenience that we need one flannel daemon per network on each node."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-08-06T20:58:14Z",
+   "body": "I think I may have been wrong in my earlier diagnosis. The NetworkDB code [is (ostensibly) reliably distributing the mapping of nodes to networks](https://github.com/moby/moby/blob/1dd102e9b64e56debec06579fa08210c18f0f37a/libnetwork/networkdb/delegate.go#L412-L494) through memberlist's gossip layer TCP push/pull mechanism in addition to unreliable broadcasts. With each push/pull gossiping the complete state of the mapping, and the push/pull interval left at the 30-second default, the mapping should be expected to converge across all nodes within a few minutes. The root cause may be a much more subtle bug, which on the one hand means more debugging is required to identify the root cause, but on the other hand gives me hope that it might be fixable without any protocol-level changes!"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-08-07T07:19:23Z",
+   "body": "The fact that I had multiple entries for one container in both tables tells me that the NetworkDB in fact converged. But it did so with bad data."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-08-07T07:24:55Z",
+   "body": "If it helps, I think I should be able to provide docker logs from when it happened. And I also still might have some bad data in my NetworkDB as I didn't yet try to fix all of them."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-08-20T07:55:19Z",
+   "body": "> I think I may have been wrong in my earlier diagnosis. The NetworkDB code [is (ostensibly) reliably distributing the mapping of nodes to networks](https://github.com/moby/moby/blob/1dd102e9b64e56debec06579fa08210c18f0f37a/libnetwork/networkdb/delegate.go#L412-L494) through memberlist's gossip layer TCP push/pull mechanism in addition to unreliable broadcasts. With each push/pull gossiping the complete state of the mapping, and the push/pull interval left at the 30-second default, the mapping should be expected to converge across all nodes within a few minutes. The root cause may be a much more subtle bug, which on the one hand means more debugging is required to identify the root cause, but on the other hand gives me hope that it might be fixable without any protocol-level changes!\r\n\r\nHmm. okay. That's both good and bad.\r\n\r\nStupid question: Would it not still make sense to re-distribute information about the expected state into the cluster? At the moment this would help us a lot. We have clusters that are affected by this regularly at the moment."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-10-11T13:09:40Z",
+   "body": "@participant2 Did you get the chance to look into this? I am somewhat out of answers at this point with our clusters.\n\nThis materializes heavily during upgrades of the cluster. How can we workaround this? Should we just not restart the nodes in quick succession?\n\nHow can I help debugging this?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-10-13T14:51:21Z",
+   "body": "For anyone that is following this issue, you might want to also look into our project at https://github.com/neuroforgede/swarmdns \n\nThis repository will contain a DNS server that tries to mimick the dns resolution behaviour of docker swarm, but will do that in a hopefully simple to maintain way.\n\nAt this time we are doing the implementation in python just to get a prototype out as we keep being affected by this issue. The only outside dependency will be an S3 server.\n\nUsage instructions will follow."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-10-14T22:53:40Z",
+   "body": "As far as I understand, this will only help for the cases where the `endpoint` table of the networkdb is corrupt. If the `overlay_peer` table is corrupt - either no entry for the endpoint IP or an incorrect TunnelEndpointIp value, a different DNS server won't help. In fact, in these cases not even using the IP address instead of the DNS name will help, because the packages are not being routed to the correct node.\n\n<strike>I've created a tool that simply deletes incorrect entries from the networkdb: https://github.com/sovarto/swarm-network-fixer (run as service, mode global, using host network and map 3175 to host and /var/run/docker.sock into the service)\nUnfortunately, this doesn't seem to be enough.</strike> (Don't use, fixing the entries of networkDB has no effect at all)\n\nI think that there are multiple layers of issues to these networking problems:\n1. Incorrect or missing DNS entries in `endpoint` table. **Consequence**: Resolution of service name to IP address fails or results in an incorrect address\n2. Incorrect or missing routing info in `overlay_peer` table. **Consequence**: Packages get routed to a node that doesn't actually run the container with the given IP address\n3. Broken VXLAN setup on some nodes (???), triggered by errors in the networkdb (???). **Consequence**: Packages have the correct target IP and get routed to the correct node, but are not reaching the container. Verified via tcpdump: Packages are visible on the correct node on its physical network interface, but they aren't visible in the VXLAN interface that belongs to the overlay network.\n\n1 and 2 I can fix via docker restart. But 3, I can only \"fix\" by creating a completely new overlay network and moving all services to the new one. Update: 3 can actually be fixed by manually fixing vxlan and fdb entries, see gist I linked in a later comment."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-10-15T07:23:26Z",
+   "body": "How often did the broken VXLAN setup happen on your end? We had this once, but this was a long-ish time ago."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-10-15T22:15:12Z",
+   "body": "That happened twice within the past 6 months. However, I didn't know about the possibilities to analyse the networkDB back then, so while I traced the packages with tcpdump, I didn't check networkDB.\n\nThe project I posted may actually be enough to fix the issues 1 and 2 - yesterday, I had another, unrelated error that manifested itself similar to the broken VXLAN, so I thought that the deletion of the entries corrupted things even more, but that's not what happened.\n\nI'm happy for feedback, if you want to test it"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-10-17T08:36:07Z",
+   "body": "The docker daemon on one of my nodes just crashed, essentially with this messsage:\n\n> Oct 17 08:15:07 swarm-infrastructure-1 systemd[1]: docker.service: Main process exited, code=exited, status=2/INVALIDARGUMENT\n\nIt might be related to my swarm-network-fixer tool, because the stack trace starts with this:\n\n```\nOct 17 08:15:07 swarm-infrastructure-1 dockerd[1124232]: fatal error: concurrent map read and map write\nOct 17 08:15:07 swarm-infrastructure-1 dockerd[1124232]: goroutine 2559854 [running]:\nOct 17 08:15:07 swarm-infrastructure-1 dockerd[1124232]: github.com/docker/docker/libnetwork/networkdb.(*NetworkDB).GetTableByNetwork(0xc000989d40, {0xc001f283a2, 0xe}, {0xc001f28382, 0x19})\nOct 17 08:15:07 swarm-infrastructure-1 dockerd[1124232]:         /build/docker.io-app-6d9rLt/docker.io-app-24.0.7/engine/libnetwork/networkdb/networkdb.go:426 +0x69\nOct 17 08:15:07 swarm-infrastructure-1 dockerd[1124232]: github.com/docker/docker/libnetwork/networkdb.dbGetTable({0x5626bf004820?, 0xc000989d40}, {0x5626bf04a4c0, 0xc002faca80}, 0xc001f15000)\nOct 17 08:15:07 swarm-infrastructure-1 dockerd[1124232]:         /build/docker.io-app-6d9rLt/docker.io-app-24.0.7/engine/libnetwork/networkdb/networkdbdiagnostic.go:390 +0x48d\nOct 17 08:15:07 swarm-infrastructure-1 dockerd[1124232]: github.com/docker/docker/libnetwork/diagnostic.httpHandlerCustom.ServeHTTP(...)\nOct 17 08:15:07 swarm-infrastructure-1 dockerd[1124232]:         /build/docker.io-app-6d9rLt/docker.io-app-24.0.7/engine/libnetwork/diagnostic/server.go:29\nOct 17 08:15:07 swarm-infrastructure-1 dockerd[1124232]: net/http.(*ServeMux).ServeHTTP(0xc0022bfb68?, {0x5626bf04a4c0, 0xc002faca80}, 0xc001f15000)\nOct 17 08:15:07 swarm-infrastructure-1 dockerd[1124232]:         /usr/lib/go-1.21/src/net/http/server.go:2514 +0x142\nOct 17 08:15:07 swarm-infrastructure-1 dockerd[1124232]: github.com/docker/docker/libnetwork/diagnostic.(*Server).ServeHTTP(0x5626c038b580?, {0x5626bf04a4c0?, 0xc002faca80?}, 0xc0022bfb50?)\nOct 17 08:15:07 swarm-infrastructure-1 dockerd[1124232]:         /build/docker.io-app-6d9rLt/docker.io-app-24.0.7/engine/libnetwork/diagnostic/server.go:81 +0x25\nOct 17 08:15:07 swarm-infrastructure-1 dockerd[1124232]: net/http.serverHandler.ServeHTTP({0xc001c49020?}, {0x5626bf04a4c0?, 0xc002faca80?}, 0x6?)\nOct 17 08:15:07 swarm-infrastructure-1 dockerd[1124232]:         /usr/lib/go-1.21/src/net/http/server.go:2938 +0x8e\nOct 17 08:15:07 swarm-infrastructure-1 dockerd[1124232]: net/http.(*conn).serve(0xc000bc5e60, {0x5626bf058d78, 0xc0035dd530})\nOct 17 08:15:07 swarm-infrastructure-1 dockerd[1124232]:         /usr/lib/go-1.21/src/net/http/server.go:2009 +0x5f4\n```"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-10-18T17:19:32Z",
+   "body": "I've just had the case that the networkDB looked correct, but the packages were still being routed to the wrong node.\n\nI've detailed how I analyzed this and the potential fixes here: https://gist.github.com/participant4/1d2c350ddb1204ae07640471b4f2a732\n\nI had two different issues, but in both cases, the networkDB looked correct, but there still was an incorrect bridge fdb entry."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-10-20T14:39:59Z",
+   "body": "Unfortunately, it looks like editing the networkDB doesn't actually result in a correction of the corresponding network configurations. So, my fixer tool from above is useless in its current form"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-11-07T21:31:08Z",
+   "body": "I'm giving up on the overlay networks. They break in so many different ways, it's a huge operational risk.\n@reporter Did you try a different networking stack like Flannel? In combination with your DNS server, this could actually solve all issues."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-11-11T17:31:09Z",
+   "body": "I have not tested Flannel yet, no. Have you tried it?\n\nEDIT:\n\nAfter a quick look into how flannel works, I think you are right. Together with the DNS server this would be a replacement to overlay networks. I might look into this just to understand it better."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2024-12-05T19:29:22Z",
+   "body": "@reporter @participant4 Did you guys come up with a workaround yet? Did Flannel work for either of you? I've had this happen to me couple of days back and it's a major blocker to move Docker Swarm to production.\n\nThe only easy \"solution\" I can think of is to reduce chances of it happening by staggering deploys and making sure nodes don't update at the same time. And needs reboot of nodes when it does happen.\n\n@participant2 Not that I can complain while using an open source product and not having means to contribute anything back, but this is a pretty huge bug IMO. Are there plans to take a deeper look at this from Mirantis?"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-12-05T19:35:53Z",
+   "body": "@participant5 I'm in the final stages of an implementation that completely replaces swarms overlay network and internal DNS server.\nI don't know if it's the right place to talk about it but look at my companies GitHub and it should be obvious \n\n@participant2 if it helps, I actually was able to create a stable reproduction of some of these issues. I'll put them in a repo in the coming days and link it here."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-12-05T19:42:01Z",
+   "body": "> if it helps, I actually was able to create a stable reproduction of some of these issues. I'll put them in a repo in the coming days and link it here.\n\n@participant4 that would be incredibly helpful; thank you!"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2024-12-05T19:43:36Z",
+   "body": "@participant4 Found it, thank you very much. It looks very promising. I'll keep an eye out and will give it a try when it's in little better shape."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-12-06T10:32:21Z",
+   "body": "@participant2 Please check: https://github.com/participant4/swarm-overlay-network-breaker"
+  },
+  {
+   "author": "participant6",
+   "created_at": "2025-01-23T15:46:04Z",
+   "body": "For some added context and for those experiencing this issue and looking for a solution, here's what worked for me.\n\nThe error when trying to update an affected service:\n```sh\n$ docker service update 012j1cjl2kjc\nnetwork sandbox join failed: subnet sandbox join failed for \"10.0.5.0/24\": error creating vxlan interface: file exists\n```\nThe solution without the need to restart: (based on [this comment](https://github.com/moby/libnetwork/issues/562#issuecomment-1155015141))\n```sh\n$ ip -d link show | grep vx # find the problem\n538009: vx-001005-lhn5p: <BROADCAST,MULTICAST> mtu 1450 qdisc noop state DOWN mode DEFAULT group default\n    vxlan id 4101 srcport 0 0 dstport 4789 proxy l2miss l3miss ttl auto ageing 300 udpcsum noudp6zerocsumtx noudp6zerocsumrx addrgenmode eui64 numtxqueues 1 numrxqueues 1 gso_max_size 65536 gso_max_segs 65535 tso_max_size 65536 tso_max_segs 65535 gro_max_size 65536 gso_ipv4_max_size 65536 gro_ipv4_max_size 65536\n\n$ docker network ls | grep -E \"lhn5p\" # show the associated overlay network\nlhn5pw0ttydq   mynetwork_default          overlay   swarm\n\n$ sudo ip link delete vx-001005-lhn5p # delete it: problem solved!\n```\nHopefully there will be a structural solution soon!"
+  },
+  {
+   "author": "participant7",
+   "created_at": "2025-04-30T18:10:29Z",
+   "body": "I'm sorry if this is the wrong place to post this (which it might be), but I’ve been debugging an issue that occasionally occurs after restarting our Docker Swarm (4 nodes in total).\n\nProblem: The replicated-service container (EndpointIP:10.0.1.191) on host-0 (10.1.1.1) randomly loses connectivity to a container (the antivirus service) on host-1 (10.1.1.2) over the overlay network. The same replicated-service container on host-3 and host-4 can still communicate with the same target container just fine.\n\nObservations:\nRunning tshark on the VXLAN interface on host-0 shows SYN packets being sent to the correct internal Docker IP.\nHowever, host-1 is unable to resolve the IP in response.\n\nFrom what I can tell, the network diagnostics look fine. I have noticed that requests originating from the service with EndpointIP: 10.0.1.191 appear with source IP 10.0.1.3, I am not sure if this is intended, as no Endpoint is identified with IP 10.0.1.3.\n\nCould this be related to this issue? Or does someone maybe have some more input for how to further debug?\n\ntshark -i vxlan0 (inside correct namespace)\n``` \n  405 1498.239917869     10.0.1.3 → 10.0.1.7     TCP 74 [TCP Retransmission] 36770 → 3310 [SYN] Seq=0 Win=65280 Len=0 MSS=1360 SACK_PERM TSval=262959958 TSecr=0 WS=128\n  406 1499.263882747     10.0.1.3 → 10.0.1.7     TCP 74 [TCP Retransmission] 36770 → 3310 [SYN] Seq=0 Win=65280 Len=0 MSS=1360 SACK_PERM TSval=262960982 TSecr=0 WS=128\n  407 1500.287903412     10.0.1.3 → 10.0.1.7     TCP 74 [TCP Retransmission] 36770 → 3310 [SYN] Seq=0 Win=65280 Len=0 MSS=1360 SACK_PERM TSval=262962006 TSecr=0 WS=128\n  408 1501.311885173     10.0.1.3 → 10.0.1.7     TCP 74 [TCP Retransmission] 36770 → 3310 [SYN] Seq=0 Win=65280 Len=0 MSS=1360 SACK_PERM TSval=262963030 TSecr=0 WS=128\n  409 1501.695916722 02:42:0a:00:01:03 → 02:42:0a:00:01:07 ARP 42 Who has 10.0.1.7? Tell 10.0.1.3\n  410 1501.695923575 02:42:0a:00:01:07 → 02:42:0a:00:01:03 ARP 42 10.0.1.7 is at 02:42:0a:00:01:07\n  411 1503.359936411     10.0.1.3 → 10.0.1.7     TCP 74 [TCP Retransmission] 36770 → 3310 [SYN] Seq=0 Win=65280 Len=0 MSS=1360 SACK_PERM TSval=262965078 TSecr=0 WS=128\n  412 1507.391908837     10.0.1.3 → 10.0.1.7     TCP 74 [TCP Retransmission] 36770 → 3310 [SYN] Seq=0 Win=65280 Len=0 MSS=1360 SACK_PERM TSval=262969110 TSecr=0 WS=128\n  413 1515.519903785     10.0.1.3 → 10.0.1.7     TCP 74 [TCP Retransmission] 36770 → 3310 [SYN] Seq=0 Win=65280 Len=0 MSS=1360 SACK_PERM TSval=262977238 TSecr=0 WS=128\n\n``` \n\nOn host-1, the packets are received, but the ARP seems to fail\n```\n  466 1537.098869880     10.0.1.3 → 10.0.1.7     TCP 74 [TCP Retransmission] 36770 → 3310 [SYN] Seq=0 Win=65280 Len=0 MSS=1360 SACK_PERM TSval=262963030 TSecr=0 WS=128\n  467 1539.146954100     10.0.1.3 → 10.0.1.7     TCP 74 [TCP Retransmission] 36770 → 3310 [SYN] Seq=0 Win=65280 Len=0 MSS=1360 SACK_PERM TSval=262965078 TSecr=0 WS=128\n  468 1539.147032776 02:42:0a:00:01:07 → Broadcast    ARP 42 Who has 10.0.1.3? Tell 10.0.1.7\n  469 1540.156707408 02:42:0a:00:01:07 → Broadcast    ARP 42 Who has 10.0.1.3? Tell 10.0.1.7\n  470 1541.180706147 02:42:0a:00:01:07 → Broadcast    ARP 42 Who has 10.0.1.3? Tell 10.0.1.7\n  471 1542.205726090 02:42:0a:00:01:07 → Broadcast    ARP 42 Who has 10.0.1.3? Tell 10.0.1.7\n  472 1543.178966136     10.0.1.3 → 10.0.1.7     TCP 74 [TCP Retransmission] 36770 → 3310 [SYN] Seq=0 Win=65280 Len=0 MSS=1360 SACK_PERM TSval=262969110 TSecr=0 WS=128\n  473 1543.228590698 02:42:0a:00:01:07 → Broadcast    ARP 42 Who has 10.0.1.3? Tell 10.0.1.7\n  474 1544.252668996 02:42:0a:00:01:07 → Broadcast    ARP 42 Who has 10.0.1.3? Tell 10.0.1.7\n  475 1551.306945801     10.0.1.3 → 10.0.1.7     TCP 74 [TCP Retransmission] 36770 → 3310 [SYN] Seq=0 Win=65280 Len=0 MSS=1360 SACK_PERM TSval=262977238 TSecr=0 WS=128\n  476 1551.307003523 02:42:0a:00:01:07 → Broadcast    ARP 42 Who has 10.0.1.3? Tell 10.0.1.7\n  477 1552.316685667 02:42:0a:00:01:07 → Broadcast    ARP 42 Who has 10.0.1.3? Tell 10.0.1.7\n```\n\nhost-0 network debug\n```\ndocker run --net host dockereng/network-diagnostic:onlyclient -port 2000 -v -net wllkxis2oyd8 -t sd 2>&1\ntime=\"2025-04-30T17:40:31Z\" level=info msg=\"Connecting to 127.0.0.1:2000 checking ready\"\ntime=\"2025-04-30T17:40:31Z\" level=info msg=\"Fetch cluster peers\"\ntime=\"2025-04-30T17:40:31Z\" level=debug msg=\"Parsing JSON response\"\ntime=\"2025-04-30T17:40:31Z\" level=debug msg=\"name:e0d2d73451ef ip:10.1.1.1\"\ntime=\"2025-04-30T17:40:31Z\" level=debug msg=\"name:578168a2aaff ip:10.1.1.2\"\ntime=\"2025-04-30T17:40:31Z\" level=debug msg=\"name:37f9bf8606d2 ip:10.1.1.4\"\ntime=\"2025-04-30T17:40:31Z\" level=debug msg=\"name:822c8f2972f7 ip:10.1.1.3\"\ntime=\"2025-04-30T17:40:31Z\" level=info msg=\"Fetch peers network:\\\"wllkxis2oyd8\\\"\"\ntime=\"2025-04-30T17:40:31Z\" level=debug msg=\"Parsing JSON response\"\ntime=\"2025-04-30T17:40:31Z\" level=warning msg=\"There is no peer on network \\\"wllkxis2oyd8\\\", check the network ID, and verify that is the non truncated version\"\ntime=\"2025-04-30T17:40:31Z\" level=info msg=\"Fetch endpoint_table table and check owners\"\ntime=\"2025-04-30T17:40:31Z\" level=debug msg=\"Parsing data structures\"\ntime=\"2025-04-30T17:40:31Z\" level=debug msg=\"key:7a9bef6a300455407c669ce5b3b2d08e6c8967bc08526fba96c141e4d57cf030 value:{Name:apps-staging-stack_av.1.rys8h4a1i1aj64joyzuvxr5to ServiceName:apps-staging-stack_av ServiceID:nc07xapyx5vb859nmb5gor861 VirtualIP:10.0.1.93 EndpointIP:10.0.1.7 IngressPorts:[] Aliases:[av] TaskAliases:[d732a6aafb8a] ServiceDisabled:false} owner:578168a2aaff\"\ntime=\"2025-04-30T17:40:31Z\" level=warning msg=\"The element with key:7a9bef6a300455407c669ce5b3b2d08e6c8967bc08526fba96c141e4d57cf030 does not belong to any node on this network\"\ntime=\"2025-04-30T17:40:31Z\" level=debug msg=\"key:95bc4cb3fdb2fa2e953124031f5f10a8f414ea27f13a51ff0415b8c0ba79e5d2 value:{Name:apps-staging-stack_replicated-service.o59hery1s7gpnj1agh015186t.z6dcvoqa3ilc11633rmk6yhtu ServiceName:apps-staging-stack_replicated-service ServiceID:im84nojk3v7grzflshuudswd8 VirtualIP:10.0.1.106 EndpointIP:10.0.1.66 IngressPorts:[] Aliases:[replicated-service] TaskAliases:[6c956ccd7833] ServiceDisabled:false} owner:822c8f2972f7\"\ntime=\"2025-04-30T17:40:31Z\" level=warning msg=\"The element with key:95bc4cb3fdb2fa2e953124031f5f10a8f414ea27f13a51ff0415b8c0ba79e5d2 does not belong to any node on this network\"\ntime=\"2025-04-30T17:40:31Z\" level=debug msg=\"key:f188990284592069a9321a7e1a7bce3a0a46cfa5e1ea6a66b0a47da2a3fb9b2c value:{Name:apps-staging-stack_replicated-service.1ltk5hjb29iqgs761z9x1kajm.p2r32ba9jk7wxx9fjgqd9lz3z ServiceName:apps-staging-stack_replicated-service ServiceID:im84nojk3v7grzflshuudswd8 VirtualIP:10.0.1.106 EndpointIP:10.0.1.191 IngressPorts:[] Aliases:[replicated-service] TaskAliases:[33a9aaffa58b] ServiceDisabled:false} owner:e0d2d73451ef\"\ntime=\"2025-04-30T17:40:31Z\" level=warning msg=\"The element with key:f188990284592069a9321a7e1a7bce3a0a46cfa5e1ea6a66b0a47da2a3fb9b2c does not belong to any node on this network\"\ntime=\"2025-04-30T17:40:31Z\" level=debug msg=\"key:ce453c94f9f697e5289208b05ceff049c6248776b7e50b9d5b778160cd18819b value:{Name:apps-staging-stack_replicated-service.687g1h02bpiiame0hxx8tdb4i.t70fz0vim551mc6eiyxjnn4p0 ServiceName:apps-staging-stack_replicated-service ServiceID:im84nojk3v7grzflshuudswd8 VirtualIP:10.0.1.106 EndpointIP:10.0.1.68 IngressPorts:[] Aliases:[replicated-service] TaskAliases:[914154b1cf07] ServiceDisabled:false} owner:37f9bf8606d2\"\ntime=\"2025-04-30T17:40:31Z\" level=warning msg=\"The element with key:ce453c94f9f697e5289208b05ceff049c6248776b7e50b9d5b778160cd18819b does not belong to any node on this network\"\n...more services\n```\n\nhost-1 network debug\n```\ndocker run --net host dockereng/network-diagnostic:onlyclient -port 2000 -v -net wllkxis2oyd8 -t sd 2>&1\ntime=\"2025-04-30T17:41:34Z\" level=info msg=\"Connecting to 127.0.0.1:2000 checking ready\"\ntime=\"2025-04-30T17:41:34Z\" level=info msg=\"Fetch cluster peers\"\ntime=\"2025-04-30T17:41:34Z\" level=debug msg=\"Parsing JSON response\"\ntime=\"2025-04-30T17:41:34Z\" level=debug msg=\"name:578168a2aaff ip:10.1.1.2\"\ntime=\"2025-04-30T17:41:34Z\" level=debug msg=\"name:e0d2d73451ef ip:10.1.1.1\"\ntime=\"2025-04-30T17:41:34Z\" level=debug msg=\"name:37f9bf8606d2 ip:10.1.1.4\"\ntime=\"2025-04-30T17:41:34Z\" level=debug msg=\"name:822c8f2972f7 ip:10.1.1.3\"\ntime=\"2025-04-30T17:41:34Z\" level=info msg=\"Fetch peers network:\\\"wllkxis2oyd8\\\"\"\ntime=\"2025-04-30T17:41:34Z\" level=debug msg=\"Parsing JSON response\"\ntime=\"2025-04-30T17:41:34Z\" level=warning msg=\"There is no peer on network \\\"wllkxis2oyd8\\\", check the network ID, and verify that is the non truncated version\"\ntime=\"2025-04-30T17:41:34Z\" level=info msg=\"Fetch endpoint_table table and check owners\"\ntime=\"2025-04-30T17:41:34Z\" level=debug msg=\"Parsing data structures\"\ntime=\"2025-04-30T17:41:34Z\" level=debug msg=\"key:7a9bef6a300455407c669ce5b3b2d08e6c8967bc08526fba96c141e4d57cf030 value:{Name:apps-staging-stack_av.1.rys8h4a1i1aj64joyzuvxr5to ServiceName:apps-staging-stack_av ServiceID:nc07xapyx5vb859nmb5gor861 VirtualIP:10.0.1.93 EndpointIP:10.0.1.7 IngressPorts:[] Aliases:[av] TaskAliases:[d732a6aafb8a] ServiceDisabled:false} owner:578168a2aaff\"\ntime=\"2025-04-30T17:41:34Z\" level=warning msg=\"The element with key:7a9bef6a300455407c669ce5b3b2d08e6c8967bc08526fba96c141e4d57cf030 does not belong to any node on this network\"\ntime=\"2025-04-30T17:41:34Z\" level=debug msg=\"key:ce453c94f9f697e5289208b05ceff049c6248776b7e50b9d5b778160cd18819b value:{Name:apps-staging-stack_replicated-service.687g1h02bpiiame0hxx8tdb4i.t70fz0vim551mc6eiyxjnn4p0 ServiceName:apps-staging-stack_replicated-service ServiceID:im84nojk3v7grzflshuudswd8 VirtualIP:10.0.1.106 EndpointIP:10.0.1.68 IngressPorts:[] Aliases:[replicated-service] TaskAliases:[914154b1cf07] ServiceDisabled:false} owner:37f9bf8606d2\"\ntime=\"2025-04-30T17:41:34Z\" level=warning msg=\"The element with key:ce453c94f9f697e5289208b05ceff049c6248776b7e50b9d5b778160cd18819b does not belong to any node on this network\"\ntime=\"2025-04-30T17:41:34Z\" level=debug msg=\"key:95bc4cb3fdb2fa2e953124031f5f10a8f414ea27f13a51ff0415b8c0ba79e5d2 value:{Name:apps-staging-stack_replicated-service.o59hery1s7gpnj1agh015186t.z6dcvoqa3ilc11633rmk6yhtu ServiceName:apps-staging-stack_replicated-service ServiceID:im84nojk3v7grzflshuudswd8 VirtualIP:10.0.1.106 EndpointIP:10.0.1.66 IngressPorts:[] Aliases:[replicated-service] TaskAliases:[6c956ccd7833] ServiceDisabled:false} owner:822c8f2972f7\"\ntime=\"2025-04-30T17:41:34Z\" level=warning msg=\"The element with key:95bc4cb3fdb2fa2e953124031f5f10a8f414ea27f13a51ff0415b8c0ba79e5d2 does not belong to any node on this network\"\ntime=\"2025-04-30T17:41:34Z\" level=debug msg=\"key:f188990284592069a9321a7e1a7bce3a0a46cfa5e1ea6a66b0a47da2a3fb9b2c value:{Name:apps-staging-stack_replicated-service.1ltk5hjb29iqgs761z9x1kajm.p2r32ba9jk7wxx9fjgqd9lz3z ServiceName:apps-staging-stack_replicated-service ServiceID:im84nojk3v7grzflshuudswd8 VirtualIP:10.0.1.106 EndpointIP:10.0.1.191 IngressPorts:[] Aliases:[replicated-service] TaskAliases:[33a9aaffa58b] ServiceDisabled:false} owner:e0d2d73451ef\"\ntime=\"2025-04-30T17:41:34Z\" level=warning msg=\"The element with key:f188990284592069a9321a7e1a7bce3a0a46cfa5e1ea6a66b0a47da2a3fb9b2c does not belong to any node on this network\"\n...more services\n```"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-04-30T19:23:14Z",
+   "body": "@participant7 Hi! You've come to the right place.\n\nWhen you restart your Swarm, do you perform a rolling restart or do you shut down all nodes before starting them back up? Are you just stopping and restarting the dockerd service, or performing a full reboot of the host?\n\nWhen you say that the container \"randomly\" loses connectivity to the other container, could you elaborate? How does that relate to the cluster restarts? Are the host-0 and host-1 containers able to communicate at first after the cluster restarts, then breaks some time after? Is it initially broken then heals?\n\nThe logs and packet captures you have provided are pretty informative, but don't show the whole picture. It would help me debug if you could provide the following from each affected host:\n1. The service table dump for the affected overlay network. Note that you need to specify the full-length network ID on the command line for the diagnostic tool to work properly. You can find that using the `docker network ls --no-trunc` command.\n2. A dump of the overlay table on the affected nodes: `docker run --net host dockereng/network-diagnostic:onlyclient -port 2000 -v -net $NETWORK_ID -t overlay 2>&1`\n3. Dumps of the forwarding databases for the VXLAN network links on the nodes: `bridge fdb show dev vxlan0` inside the correct namespace.\n4. The IP addresses assigned to the affected containers on the overlay network. I can work with either the output of the `ip a` command from inside the containers, or `docker container inspect` output.\n\nFeel free to reach out to me on the [Docker Community Slack](http://dockr.ly/comm-slack) workspace if you need any assistance gathering the debugging info above. I go by the same username there."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-05-01T22:57:27Z",
+   "body": "It looks to me that three distinct types of failure mode are being discussed in this issue's comments:\n\n1. NetworkDB state gets corrupted in some way. (This issue)\n2. NetworkDB state is correct, but the overlay network's data plane (VXLAN FDB, etc.) gets out of sync with what NetworkDB says. Let's continue debugging that failure mode over in #49908\n3. `error creating vxlan interface: file exists`. That is being discussed in #49555"
+  },
+  {
+   "author": "participant8",
+   "created_at": "2025-06-11T16:54:48Z",
+   "body": "This issue has been driving me crazy for the last few weeks. I can't thank you enough [reporter](https://github.com/reporter) for figuring out and sharing about the issue! 💎"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-07-10T17:29:48Z",
+   "body": "@participant2 i see you have been busy :)\n\nSo essentially you have found a bug in the behaviour for propagation of entries in NetworkDB that happens around dying/dead nodes?"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-07-10T17:43:44Z",
+   "body": "Not quite; simply having a container flapping, if it's the only one on the node attached to the network, is sufficient to trigger the bug. It's the sequence of events of leaving a network, rejoining, and creating an entry that is the problem. If some other node receives the events in the order CREATE, LeaveNetwork, JoinNetwork, it will mark the entry as deleted and ignore any other copies of the CREATE event (e.g. through bulk syncs) which say otherwise. Once in that state, the node will only converge after one of two things happen. The owning node could update the entry, superseding the bugged marked-as-deleted entry. Or the marked-as-deleted entry gets garbage collected after 30 minutes, allowing the node to accept the non-deleted entry from the next bulk sync. There have been reports that the cluster does self-heal after around 30 minutes; this is why."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-07-10T20:05:28Z",
+   "body": "@participant2 It's awesome to see that these network issues are being tackled by you! I think I grew quite a few grey hair because of them ;-)\n\nAnyway, I just wanted to note that some of the networking issues I had and that I analyzed above did not self-heal. Not after 30 minutes and not after hours or even days."
+  }
+ ],
+ "images": [],
+ "slug": "gh_moby_moby_47728"
+}

@@ -1,0 +1,72 @@
+{
+ "reporter_match_keys": [
+  "sergey shinderuk",
+  "s(dot)shinderuk"
+ ],
+ "repo": "postgresql.org/pgsql-bugs",
+ "number": 19412,
+ "url": "https://www.postgresql.org/message-id/flat/19412-1d0318089b86859e%40postgresql.org",
+ "title": "BUG #19412: Wrong query result with not null constraint",
+ "state": "thread",
+ "labels": [
+  "pgsql-bugs"
+ ],
+ "reporter": "reporter",
+ "created_at": "2026-02-17 11:19:36",
+ "closed_at": "2026-02-20 10:54:10",
+ "body": "The following bug has been logged on the website:\n\nBug reference:      19412\nLogged by:          reporter\nEmail address:      s(dot)<email-scrubbed>\nPostgreSQL version: 17.8\nOperating system:   Ubuntu 24.04\nDescription:        \n\nUsing this script (repro.sql):\n\ndrop table if exists a, x, y;\n\ncreate table a (id int, x_id int, y_id int);\ninsert into a values (1, 1, 1), (1, 2, 2), (1, 3, 3);\ncreate table x (id int, nm text, constraint pk_x_id primary key (id));\ninsert into x values (1, 'x1'), (2, 'x2'), (3, 'x3');\ncreate table y (id int, nm text, constraint pk_y_id primary key (id));\ninsert into y values (1, 'y1'), (3, 'y3'), (4, 'y4');\n\nselect a.id, z.id\nfrom a\njoin x on x.id = a.x_id\nleft join y on y.id = a.y_id\njoin lateral(select x.id\n             union all\n             select y.id) z on z.id is not null;\n\nalter table y drop constraint pk_y_id;\nalter table y alter column id drop not null;\n\nselect a.id, z.id\nfrom a\njoin x on x.id = a.x_id\nleft join y on y.id = a.y_id\njoin lateral(select x.id\n             union all\n             select y.id) z on z.id is not null;\n\non PostgreSQL 17.8 I get:\n\npostgres=# \\i repro.sql\nDROP TABLE\nCREATE TABLE\nINSERT 0 3\nCREATE TABLE\nINSERT 0 3\nCREATE TABLE\nINSERT 0 3\n id | id\n----+----\n  1 |  1\n  1 |  1\n  1 |  2\n  1 |\n  1 |  3\n  1 |  3\n(6 rows)\n\nALTER TABLE\nALTER TABLE\n id | id\n----+----\n  1 |  1\n  1 |  1\n  1 |  2\n  1 |  3\n  1 |  3\n(5 rows)\n\nSomething seems to be wrong with IS NOT NULL optimization. v18 and master\nshow the same, v16 is fine.",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2026-02-17 12:14:40",
+   "body": "On 2/17/26 14:19, PG Bug reporting form wrote:\n[quoted earlier message trimmed]\n\ngit bisect shows the bug was introduced by commit 3af7040985b [0]\n\nI suppose presence of UNION ALL subquery is important for the reproduction\nbecause the commit uses RangeTblEntry->inh, which has the following remark\nin the comment in src/include/nodes/parsenodes.h\n        * inh is true for relation references that should be expanded to \ninclude\n        * inheritance children, if the rel has any.  In the parser, this \nwill\n        * only be true for RTE_RELATION entries.  The planner also uses this\n        * field to mark RTE_SUBQUERY entries that contain UNION ALL \nqueries that\n        * it has flattened into pulled-up subqueries (creating a \nstructure much\n        * like the effects of inheritance).\n\n[0] \nhttps://github.com/postgres/postgres/commit/3af7040985b6df504a72cd307aad5d69ac5f5384\n\nRegards,\nArtem Fadeev.\nhttps://postgrespro.com"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2026-02-17 22:53:50",
+   "body": "On Wed, 18 Feb 2026 at 00:31, PG Bug reporting form\n<noreply(at)postgresql(dot)org> wrote:\n[quoted earlier message trimmed]\n\nThanks for the reproducer.\n\nI'd say that y.id Var in the lateral join should be getting marked as\nnullable by the left join, but it's not being marked as nullable by\nanything.\n\nTom, do you have any thoughts on the empty varnullingrels here?\n\nDavid"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2026-02-18 01:51:40",
+   "body": "On Wed, Feb 18, 2026 at 7:54 AM participant2 wrote:\n[quoted earlier message trimmed]\n\n[quoted earlier message trimmed]\n\nExactly.  I think this is because when adjust_appendrel_attrs_mutator\npropagates the nullingrel bits from the parent rel's Var into the\ntranslated Var, it loses the translated Var's original bits.  Instead\nof overwriting the translated Var's nullingrels, I think we should\nmerge them.\n\n--- a/src/backend/optimizer/util/appendinfo.c\n+++ b/src/backend/optimizer/util/appendinfo.c\n@@ -291,8 +291,11 @@ adjust_appendrel_attrs_mutator(Node *node,\n                 var->varattno, get_rel_name(appinfo->parent_reloid));\n        if (IsA(newnode, Var))\n        {\n-           ((Var *) newnode)->varreturningtype = var->varreturningtype;\n-           ((Var *) newnode)->varnullingrels = var->varnullingrels;\n+           Var    *newvar = (Var *) newnode;\n+\n+           newvar->varreturningtype = var->varreturningtype;\n+           newvar->varnullingrels = bms_add_members(newvar->varnullingrels,\n+                                                    var->varnullingrels);\n        }\n\n- Richard"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2026-02-18 09:50:34",
+   "body": "On Wed, Feb 18, 2026 at 10:51 AM participant3 wrote:\n[quoted earlier message trimmed]\n\nHere is a more readable version of the patch.\n\n- Richard"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2026-02-18 12:03:30",
+   "body": "On 2/18/26 12:50, Richard Guo wrote:\n[quoted earlier message trimmed]\n\nThank you!\n\nI'm not familiar with the code, just curios. There is a long comment \nabove saying \"You might think we need to adjust var->varnullingrels, but \nthat shouldn't need any changes.\" Doesn't it need an update?\n\n-- \nreporter\t\thttps://postgrespro.com/"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2026-02-19 01:49:44",
+   "body": "On Wed, Feb 18, 2026 at 9:03 PM reporter\n<s(dot)<email-scrubbed>> wrote:\n> I'm not familiar with the code, just curios. There is a long comment\n> above saying \"You might think we need to adjust var->varnullingrels, but\n> that shouldn't need any changes.\" Doesn't it need an update?\n\nNo, I don't think we need to update it.  That comment explains why\nvarnullingrels do not require translation (since they are outer join\nrelids, not baserel relids).  It's unrelated to what this patch does,\nwhich is about propagating varnullingrels into the translated Var.\n\n- Richard"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2026-02-19 02:18:54",
+   "body": "On Wed, Feb 18, 2026 at 6:50 PM participant3 wrote:\n> Here is a more readable version of the patch.\n\nRegarding back-patching, I plan to back-patch this all through to v16.\nAlthough the reported case does not seem to cause problems in v16, the\nunderlying logic error persists.  Leaving incorrect varnullingrels in\nthe tree seems like a trap for the unwary.\n\nAny thoughts?\n\n- Richard"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2026-02-19 18:25:48",
+   "body": "participant3 writes:\n[quoted earlier message trimmed]\n\n[quoted earlier message trimmed]\n\nI agree with this fix: I think the code is like it is simply because\nit didn't occur to me that the child Vars could have any nullingrel\nbits yet.  However, I don't agree that that comment needs no updates.\nI suggest something like\n\n-         * Below, we just propagate var->varnullingrels into the translated\n-         * Var.\n+         * Below, we just merge var->varnullingrels into the translated\n+         * Var.  (We must merge not just copy: the child Var could have\n+         * some nullingrel bits set already, and we mustn't drop those.)\n\nAlso, I think I'd then drop the comment you added adjacent to the\nactual update; it seems redundant if the earlier comment says this.\n\nI agree with back-patching to v16.  This particular example doesn't\nmisbehave in versions that don't have the drop-allegedly-redundant-\nNOT-NULL-tests logic, but the varnullingrels are certainly wrong\nall the way back, so possibly there are other examples that do\nmisbehave in v16.\n\n\t\t\tregards, tom lane"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2026-02-20 09:57:12",
+   "body": "On Fri, Feb 20, 2026 at 3:25 AM participant5 wrote:\n[quoted earlier message trimmed]\n\nThanks for taking a look.  I've updated the comments as suggested,\n\n[quoted earlier message trimmed]\n\n... and then pushed and back-patched to v16.\n\nThank you, Sergey, for the report and the excellent self-contained\nrepro query.  This is a great catch.  (I'm curious how you found this\nbug -- was it from a production query or a fuzzing tool?)\n\n- Richard"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2026-02-20 10:54:10",
+   "body": "On 2/20/26 12:57, Richard Guo wrote:\n> ... and then pushed and back-patched to v16.\n\nThank you!\n\n> Thank you, Sergey, for the report and the excellent self-contained\n> repro query.  This is a great catch.  (I'm curious how you found this\n> bug -- was it from a production query or a fuzzing tool?)\n\nThe bug was encountered by our customer upgrading to v17 and my \ncolleague passed this repro to me.\n\n-- \nreporter\t\thttps://postgrespro.com/"
+  }
+ ],
+ "images": [],
+ "slug": "pg_bug_19412"
+}

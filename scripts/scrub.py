@@ -25,10 +25,33 @@ import click
 
 REPO = Path(__file__).resolve().parent.parent
 MAP_DIR = Path.home() / 'graph_bench_private'
-_EMAIL = re.compile(r'[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}')
+_EMAIL = re.compile(
+    r'[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}'
+    # postgresql.org archive obfuscation: user(at)host(dot)tld
+    r'|[A-Za-z0-9._%+-]+\(at\)[A-Za-z0-9.-]+(?:\(dot\)[A-Za-z0-9.-]+)+'
+)
 _REPLY_NAME = re.compile(r'\(In reply to [^)]*?from comment #(\d+)\)')
-_BOT_MARKERS = ('bot', 'release-mgmt', 'orangefactor', 'pulsebot', 'ghost')
+_BOT_MARKERS = (
+    'bot',
+    'release-mgmt',
+    'orangefactor',
+    'pulsebot',
+    'ghost',
+    'noreply',
+)
 _DROP_KEYS = {'creator_detail', 'assigned_to_detail', 'cc_detail'}
+# High-confidence credential shapes occasionally pasted into public threads
+# (GitHub push protection caught a live OpenAI key in an ollama thread).
+_SECRETS = re.compile(
+    r'sk-[A-Za-z0-9_-]{20,}'
+    r'|ghp_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{30,}|gho_[A-Za-z0-9]{30,}'
+    r'|xox[baprs]-[A-Za-z0-9-]{10,}'
+    r'|AKIA[0-9A-Z]{16}'
+    r'|hf_[A-Za-z0-9]{30,}'
+    r'|AIza[0-9A-Za-z_-]{35}'
+    r'|lb_[A-Za-z0-9]{24,}'
+    r'|eyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{10,}'
+)
 
 
 def _is_bot(handle: str) -> bool:
@@ -58,6 +81,7 @@ class CaseMap:
             if len(local) >= 4:
                 text = text.replace(local, self.map[handle])
         text = _REPLY_NAME.sub(r'(In reply to comment #\1)', text)
+        text = _SECRETS.sub('<secret-scrubbed>', text)
         return _EMAIL.sub(
             lambda m: m.group(0) if _is_bot(m.group(0)) else '<email-scrubbed>',
             text,
@@ -121,6 +145,7 @@ def scrub_graph(path: Path, maps: dict[str, dict], apply: bool) -> int:  # noqa:
                 if len(token) >= 4 and token in text:
                     hits += text.count(token)
                     text = text.replace(token, pseudo)
+    text = _SECRETS.sub('<secret-scrubbed>', text)
     new = _EMAIL.sub(
         lambda mt: mt.group(0) if _is_bot(mt.group(0)) else '<email-scrubbed>',
         text,
@@ -136,7 +161,7 @@ def scrub_graph(path: Path, maps: dict[str, dict], apply: bool) -> int:  # noqa:
 def main(apply: bool) -> None:  # noqa: FBT001
     maps: dict[str, dict] = {}
     for p in sorted(REPO.glob('data/*/raw/*.json')):
-        if p.name.startswith(('bmo_', 'gh_')):
+        if p.name.startswith(('bmo_', 'gh_', 'pg_')):
             maps[p.name] = scrub_raw(p, apply)
             click.echo(f'{p.name}: {len(maps[p.name])} identities')
     for p in sorted(REPO.glob('data/*/graphs/*.json')):

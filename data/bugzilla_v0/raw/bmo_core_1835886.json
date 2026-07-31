@@ -1,0 +1,228 @@
+{
+ "repo": "bugzilla.mozilla.org/Core",
+ "number": 1835886,
+ "url": "https://bugzilla.mozilla.org/show_bug.cgi?id=1835886",
+ "title": "Reproducible Tab Crash while doing module load in iframe",
+ "state": "FIXED",
+ "labels": [
+  "JavaScript Engine",
+  "csectype-wildptr",
+  "regression",
+  "sec-high"
+ ],
+ "reporter": "reporter",
+ "created_at": "2023-05-30T17:07:24Z",
+ "closed_at": "2023-06-13T15:35:50Z",
+ "body": "While trying to see if I could potentially close Bug 1573262 I loaded the test case and discovered that it had gone from being a behaviour problem to a reproducible nightly tab crash. \n\nHere's a crash report: https://crash-stats.mozilla.org/report/index/b543a66f-1951-4402-8668-f25310230530 \n\nI ran moz-regression, but unfortunately was only able to get it down to a single nightly as the taskcluster artifcats no longer exist: \n\n```\n 5:52.82 INFO: Got as far as we can go bisecting nightlies...\n 5:52.82 INFO: Last good revision: 872b574394a6e1f97ed229b6d2d9a3fa5bbac298 (2022-04-11)\n 5:52.82 INFO: First bad revision: 85290d18c6eeab2c1b741e2c92d2b6eaa252a7d5 (2022-04-12)\n```\n\nHere's the associated [push log](https://hg.mozilla.org/mozilla-central/pushloghtml?fromchange=872b574394a6e1f97ed229b6d2d9a3fa5bbac298&tochange=85290d18c6eeab2c1b741e2c92d2b6eaa252a7d5).\n\nIn a debug build, we fail [this assert](https://searchfox.org/mozilla-central/source/js/loader/ModuleLoaderBase.cpp#536) inside of  `ModuleLoaderBase::GetFetchedModule` -- we don't find the module we expected to. \n\nGiven the push log and the assertion both come from Bug 1761938, I'm going to call it the regressor. \n\nI'm not sure if we should mark reproducible content crashes as security bugs -- I think it's sec-low if anything (low address dereference).",
+ "comments": [
+  {
+   "author": "reporter",
+   "created_at": "2023-05-30T17:07:59Z",
+   "body": "Created attachment 9336605\nBacktrace from recent debug build"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-05-30T17:19:41Z",
+   "body": "Null derefs don't need to be hidden."
+  },
+  {
+   "author": "release-mgmt-account-bot@mozilla.tld",
+   "created_at": "2023-05-30T17:42:19Z",
+   "body": "Set release status flags based on info from the regressing bug 1761938\n\n:jonco, since you are the author of the regressor, bug 1761938, could you take a look? Also, could you set the severity field?\n\nFor more information, please visit [BugBot documentation](https://wiki.mozilla.org/BugBot#needinfo_regression_author.py)."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-06-01T16:23:08Z",
+   "body": "(In reply to Matthew Gaudet (he/him) [:reporter] from comment #0)\n> While trying to see if I could potentially close Bug 1573262 I loaded the test case and discovered that it had gone from being a behaviour problem to a reproducible nightly tab crash. \n\nThanks for reproducing this.  That does sound concerning."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-06-01T16:54:30Z",
+   "body": "I'm going to rehide this.  We end up accessing the wrong module loader (which is why it doesn't have the expected module)."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-06-02T09:50:29Z",
+   "body": "Created attachment 9337185\nBug 1835886 - Cancel outstanding load requests when a document is detached from a global r?smaug\n\n\nAlso cancel module load requests when cancelling requests generally.\n\nWhat was happening here was that a previous load was completing and calling\ninto the wrong module loader, because the loader to use is determined via the\ncurrent global, and this was now associated with a different document / script\nloader / module loader."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-06-02T09:50:57Z",
+   "body": "Created attachment 9337186\nBug 1835886 - Add testcase r?smaug\n\n\n\nDepends on D179787"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-06-05T13:50:11Z",
+   "body": "Comment on attachment 9337185\nBug 1835886 - Cancel outstanding load requests when a document is detached from a global r?smaug\n\n### Security Approval Request\n* **How easily could an exploit be constructed based on the patch?**: It would be difficult to see how to exploit this.\n* **Do comments in the patch, the check-in comment, or tests included in the patch paint a bulls-eye on the security problem?**: No\n* **Which older supported branches are affected by this flaw?**: Everything back to FF 101\n* **If not all supported branches, which bug introduced the flaw?**: Bug 1761938\n* **Do you have backports for the affected branches?**: No\n* **If not, how different, hard to create, and risky will they be?**: There was a previous refactoring patch that this one builds on (Bug 1813494 part 1) but it shouldn't be too hard to backport around it.\n* **How likely is this patch to cause regressions; how much testing does it need?**: Unlikely.  The patch mostly adds more cancellation code in line with existing cancellation code.\n* **Is Android affected?**: Yes"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-06-05T19:37:49Z",
+   "body": "Comment on attachment 9337185\nBug 1835886 - Cancel outstanding load requests when a document is detached from a global r?smaug\n\nApproved to land and request uplift"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2023-06-06T11:24:53Z",
+   "body": "Landed: https://bugzilla.mozilla.org/show_bug.cgi?id=1835886\n\nBacked out for bc failure in browser_protectionsUI_categories.js:\nhttps://hg.mozilla.org/integration/autoland/rev/6f1ff2bca66b3dfdd8844e9e25ada2a2cffdcf70\n\n[Push with failure](https://treeherder.mozilla.org/jobs?repo=autoland&group_state=expanded&resultStatus=testfailed%2Cbusted%2Cexception%2Cretry%2Cusercancel&revision=57b6e61589490098fa3bba69186eab2a4f855248&selectedTaskRun=brBGuI6lSBWLt9aP3zcJcQ.0)\n[Failure log](https://treeherder.mozilla.org/logviewer?job_id=418262204&repo=autoland)\n\n> browser/base/content/test/protectionsUI/browser_protectionsUI_categories.js | A promise chain failed to handle a rejection: error loading dynamically imported module: chrome://global/content/elements/moz-button-group.mjs - stack: (No stack available.)"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-06-06T15:10:11Z",
+   "body": "Created attachment 9337690\nBug 1835886 - Report errors for dynamicly loaded modules in ensureCustomElements r?mstriemer\n\n\nThis is required to prevent unhandled rejections causing test failures when\ntests close the window before these dynamically loaded modules finish loading."
+  },
+  {
+   "author": "release-mgmt-account-bot@mozilla.tld",
+   "created_at": "2023-06-06T16:43:48Z",
+   "body": "Set release status flags based on info from the regressing bug 1761938"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2023-06-13T15:35:50Z",
+   "body": "Cancel outstanding load requests when a document is detached from a global r=smaug \nhttps://hg.mozilla.org/integration/autoland/rev/4093c0c1147fddb86f5675a6860c92e370b3ae83\nhttps://hg.mozilla.org/mozilla-central/rev/4093c0c1147f\n\nReport errors for dynamicly loaded modules in ensureCustomElements r=mstriemer \nhttps://hg.mozilla.org/integration/autoland/rev/6e1ed6cba6942bf676c684a291c2b9f3376fddd9\nhttps://hg.mozilla.org/mozilla-central/rev/6e1ed6cba694"
+  },
+  {
+   "author": "release-mgmt-account-bot@mozilla.tld",
+   "created_at": "2023-06-14T12:05:05Z",
+   "body": "The patch landed in nightly and beta is affected.\n:jonco, is this bug important enough to require an uplift?\n- If yes, please nominate the patch for beta approval.\n- If no, please set `status-firefox115` to `wontfix`.\n\nFor more information, please visit [BugBot documentation](https://wiki.mozilla.org/BugBot#uplift_beta.py)."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-06-19T09:21:06Z",
+   "body": "Comment on attachment 9337185\nBug 1835886 - Cancel outstanding load requests when a document is detached from a global r?smaug\n\n### Beta/Release Uplift Approval Request\n* **User impact if declined**: Possible crash / security vulnerability.\n* **Is this code covered by automated tests?**: Yes\n* **Has the fix been verified in Nightly?**: Yes\n* **Needs manual test from QE?**: No\n* **If yes, steps to reproduce**: \n* **List of other uplifts needed**: Bug 1838484\n* **Risk to taking this patch**: Medium\n* **Why is the change risky/not risky? (and alternatives if risky)**: This is a straightforward change to make the script loader do more cleanup when it notices a document is being detached.  However the script loader is a complex system so I'm going to be cautious and call this medium risk.\n\nThis change has been on central for 6 days and one additional bug in this area was identified (bug 1838484).\n* **String changes made/needed**: \n* **Is Android affected?**: Yes"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2023-06-19T13:33:17Z",
+   "body": "Comment on attachment 9337185\nBug 1835886 - Cancel outstanding load requests when a document is detached from a global r?smaug\n\nApproved for 115.0b8."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2023-06-19T13:33:26Z",
+   "body": "Comment on attachment 9337690\nBug 1835886 - Report errors for dynamicly loaded modules in ensureCustomElements r?mstriemer\n\nApproved for 115.0b8."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2023-06-19T13:37:55Z",
+   "body": "https://hg.mozilla.org/releases/mozilla-beta/rev/3dfa983e13c9\nhttps://hg.mozilla.org/releases/mozilla-beta/rev/30ef31c86617"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2023-06-21T17:58:18Z",
+   "body": ":jonco could you add an esr102 uplift request on this? It will need a patch that grafts cleanly."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2023-06-26T21:29:57Z",
+   "body": ":jonco this patches under bug and Bug 1838484 don't graft's cleanly to esr102.\nCould you add an esr uplfit request and a patch based on esr102?"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-06-27T12:25:15Z",
+   "body": "Created attachment 9341253\nWIP: Bug 1835886 - Cancel outstanding load requests when a document is detached from a global (ESR102)\n\n\nAlso cancel module load requests when cancelling requests generally.\n\nWhat was happening here was that a previous load was completing and calling\ninto the wrong module loader, because the loader to use is determined via the\ncurrent global, and this was now associated with a different document / script\nloader / module loader.\n\nDepends on D182191"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-06-27T12:25:43Z",
+   "body": "Created attachment 9341254\nWIP: Bug 1835886 - Report errors for dynamicly loaded modules in ensureCustomElements (ESR102)\n\n\nThis is required to prevent unhandled rejections causing test failures when\ntests close the window before these dynamically loaded modules finish loading.\n\nDepends on D182192"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-06-27T13:02:06Z",
+   "body": "Comment on attachment 9341253\nWIP: Bug 1835886 - Cancel outstanding load requests when a document is detached from a global (ESR102)\n\n### ESR Uplift Approval Request\n* **If this is not a sec:{high,crit} bug, please state case for ESR consideration**: This is a sec-high bug.\n* **User impact if declined**: Possible crash / security vulnerability.\n* **Fix Landed on Version**: 116\n* **Risk to taking this patch**: Low\n* **Why is the change risky/not risky? (and alternatives if risky)**: This is a straightforward change to make the script loader do more cleanup when it notices a document is being detached.  This has been present on central for two weeks."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2023-06-27T19:04:14Z",
+   "body": "Comment on attachment 9341253\nWIP: Bug 1835886 - Cancel outstanding load requests when a document is detached from a global (ESR102)\n\nApproved for 102.13esr."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2023-06-27T19:04:19Z",
+   "body": "Comment on attachment 9341254\nWIP: Bug 1835886 - Report errors for dynamicly loaded modules in ensureCustomElements (ESR102)\n\nApproved for 102.13esr."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2023-06-27T19:33:57Z",
+   "body": "https://hg.mozilla.org/releases/mozilla-esr102/rev/a09940345a85\nhttps://hg.mozilla.org/releases/mozilla-esr102/rev/13502893a893\nhttps://hg.mozilla.org/releases/mozilla-esr102/rev/e00b12330b4f"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2023-06-27T21:22:26Z",
+   "body": "https://hg.mozilla.org/releases/mozilla-esr102/rev/d40fb6996e040f9d089e3cb114add8d8e8e801c3\nhttps://hg.mozilla.org/releases/mozilla-esr102/rev/48a99343226e9954d4c6a63c789e58c3b6fdca56\nhttps://hg.mozilla.org/releases/mozilla-esr102/rev/50835623f55bf08cb8c4812ae1b0a789bec7ed57\nBacked out changeset a09940345a85 (bug 1835886) with Bug 1813494 and Bug 1838484 for causing test failures in esr102\n\nhttps://treeherder.mozilla.org/jobs?repo=mozilla-esr102&group_state=expanded&revision=e00b12330b4f762b921611f3be26433c5a7c7728"
+  },
+  {
+   "author": "participant6",
+   "created_at": "2023-06-28T03:30:35Z",
+   "body": "FWIW, Try bisection confirms that it was this bug which caused the issues."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2023-06-28T15:51:40Z",
+   "body": "https://hg.mozilla.org/releases/mozilla-esr102/rev/4e773e69c9b3"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2023-08-03T09:40:14Z",
+   "body": "The signature is still reported for recent versions, e.g. 116.0 where it is the most reported crash for macOS (but only from 3 installations). Could you take another look?"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-08-15T10:38:36Z",
+   "body": "It looks like we're still not always finding a module in the module map when expect to.  This is likely a different root cause to the one fixed above.\n\nIt's possible this is related to the fix for bug 1803984."
+  },
+  {
+   "author": "release-mgmt-account-bot@mozilla.tld",
+   "created_at": "2023-08-15T12:00:43Z",
+   "body": "2 months ago, tjr placed a reminder on the bug using the whiteboard tag `[reminder-test 2023-08-15]` .\n\njonco, please refer to the original comment to better understand the reason for the reminder."
+  },
+  {
+   "author": "pulsebot@bmo.tld",
+   "created_at": "2023-08-15T12:16:27Z",
+   "body": "Pushed by participant2:\nhttps://hg.mozilla.org/integration/autoland/rev/0038346134ec\nAdd testcase r=smaug"
+  },
+  {
+   "author": "participant6",
+   "created_at": "2023-08-16T03:49:10Z",
+   "body": "https://hg.mozilla.org/mozilla-central/rev/0038346134ec"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-08-17T10:01:09Z",
+   "body": "(In reply to Sebastian Hengst [:aryx] (needinfo me if it's about an intermittent or backout) from comment #30)\nI filed bug 1849115 for investigation of continuing crashes."
+  }
+ ],
+ "_attachments_meta": [
+  {
+   "id": 9336605,
+   "content_type": "text/plain",
+   "description": "Backtrace from recent debug build"
+  },
+  {
+   "id": 9337185,
+   "content_type": "text/x-phabricator-request",
+   "description": "Bug 1835886 - Cancel outstanding load requests when a document is detached from a global r?smaug"
+  },
+  {
+   "id": 9337186,
+   "content_type": "text/x-phabricator-request",
+   "description": "Bug 1835886 - Add testcase r?smaug"
+  },
+  {
+   "id": 9337690,
+   "content_type": "text/x-phabricator-request",
+   "description": "Bug 1835886 - Report errors for dynamicly loaded modules in ensureCustomElements r?mstriemer"
+  },
+  {
+   "id": 9341253,
+   "content_type": "text/x-phabricator-request",
+   "description": "WIP: Bug 1835886 - Cancel outstanding load requests when a document is detached from a global (ESR102)"
+  },
+  {
+   "id": 9341254,
+   "content_type": "text/x-phabricator-request",
+   "description": "WIP: Bug 1835886 - Report errors for dynamicly loaded modules in ensureCustomElements (ESR102)"
+  }
+ ],
+ "images": [],
+ "slug": "bmo_core_1835886"
+}

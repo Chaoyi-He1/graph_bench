@@ -1,0 +1,238 @@
+{
+ "repo": "bugzilla.mozilla.org/Core",
+ "number": 1839007,
+ "url": "https://bugzilla.mozilla.org/show_bug.cgi?id=1839007",
+ "title": "Access Violation on IsPatternMatching -> JS_GetProperty -> JS_ForwardGetPropertyTo",
+ "state": "FIXED",
+ "labels": [
+  "JavaScript Engine",
+  "csectype-oom",
+  "reporter-external",
+  "sec-moderate"
+ ],
+ "reporter": "reporter",
+ "created_at": "2023-06-17T10:19:19Z",
+ "closed_at": "2023-07-22T09:23:01Z",
+ "body": "Created attachment 9339698\ntestcase.html\n\nAfter allocate memory to exhaust the process virtual memory and execute invalid JS function inside try {} catch() {} and input pattern. On Firefox 32-bit it able to crash on JS_GetProperty on address 0x000083d8, more interestingly on Firefox 64-bit it able to crash on dynamic (changing) address including 0x00050512fab2b080, 0x000514975972b080, 0x000526aa3e72b080, and more..\n\nCurrently the testcase.html is fine-tuned to make it very reliably to reproduce on Firefox 114.0.1 (32-bit) on Windows 11, I tested this very reliably crash on JS_GetProperty on both my machine Intel i9-13900k and AMD Ryzen 7 5700G, it still able to crash on Firefox Nightly 116.0a1 (2023-06-16) (32-bit), but reduced success rate and have to adjust fillMemory code to make it very reliably on Nightly. For now I decided to submit this report and adjust that later.\n\n## Tested on:\n- Firefox 114.0.1 (32-bit)\n- Firefox 114.0.1 (64-bit)\n- Firefox Nightly 116.0a1 (2023-06-16) (32-bit)\n- Firefox Nightly 116.0a1 (2023-06-16) (64-bit)\n\n## Steps to reproduce:\n1. Open Firefox 114.0.1 (32-bit)\n2. Visit attached testcase.html\n3. Wait ~20 seconds\n4. Firefox tab crashed\n5. Analyze the minidump using WinDbg\n6. Firefox crash on JS_GetProperty -> JS_ForwardGetPropertyTo",
+ "comments": [
+  {
+   "author": "reporter",
+   "created_at": "2023-06-17T10:23:21Z",
+   "body": "Created attachment 9339699\nfirefox-114.0.1-32-minidump.txt"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-06-17T10:25:27Z",
+   "body": "Created attachment 9339701\nfirefox-114.0.1-64-minidump.txt"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-06-17T10:26:51Z",
+   "body": "Created attachment 9339702\nfirefox-116.0a1-20230616-64-minidump.txt"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-06-20T21:53:30Z",
+   "body": "Looking at the attached stacks, nsContentUtils::IsPatternMatching() is here:\n`ReportPatternCompileFailure(aPattern, aDocument, &error, cx);`\nI'm guessing that is on this line, because that's the only call to `JS_GetProperty` in the file:\n`if (!JS_GetProperty(cx, exnObj, \"message\", &messageVal)) {`\n\nI'm not sure how we're getting into IsPatternMatching, though."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-06-21T10:20:13Z",
+   "body": "Because of the testcase setting inputElement.pattern, so when then later value is updated using setRangeText, that triggers HasPatternMismatch() call, I believe through https://searchfox.org/mozilla-central/rev/4e8f62a231e71dc53eb50b6d74afca21d6b254e9/dom/html/HTMLInputElement.cpp#6800,6814"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-06-21T10:26:56Z",
+   "body": "Isn't this more a JS engine issue. I don't immediately see anything unusual on the DOM side."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-06-21T12:40:42Z",
+   "body": "I have no idea."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-06-21T13:07:46Z",
+   "body": "(In reply to comment #6)\n> Isn't this more a JS engine issue. I don't immediately see anything unusual on the DOM side.\n\nIf this is unrelated to the DOM, would there be a way to convert the failing test case into one which does not rely on the DOM?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-06-21T13:11:27Z",
+   "body": "Ok great! I got the root cause of memory allocation failure that cause the access violation, I'll post the detail soon."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-06-21T15:33:34Z",
+   "body": "The testcase.html is set `inputElement.pattern` that invoke[`nsContentUtils::IsPatternMatching`](https://searchfox.org/mozilla-central/source/dom/base/nsContentUtils.cpp#7077) to do `JS::CheckRegExpSyntax` -> `js::FrontendContext::convertToRuntimeError` -> [`js::ErrorToException`](https://searchfox.org/mozilla-central/source/js/src/jsexn.cpp#350) -> [`js::CopyErrorReport`](https://searchfox.org/mozilla-central/source/js/src/jsexn.cpp#208)\n\nOn [`CopyErrorHelper`](https://searchfox.org/mozilla-central/source/js/src/jsexn.cpp#163) it do `calloc` to allocate the `uint8_t* cursor` using `cx->pod_calloc<uint8_t>(mallocSize);` then when `calloc` failure, the `cursor` is set to `null` then as `if (!cursor) {` the function will [`return nullptr;`](https://searchfox.org/mozilla-central/source/js/src/jsexn.cpp#165)\n\nWhen the `calloc` is failure at first try, it look like the [`js::CopyErrorReport`](https://searchfox.org/mozilla-central/source/js/src/jsexn.cpp#208) is also call to [`JSRuntime::onOutOfMemory`](https://searchfox.org/mozilla-central/source/js/src/vm/Runtime.cpp#669) to try do GC, but it still return the `nullptr` for the `uint8_t* cursor`. Then [`js::ErrorToException`](https://searchfox.org/mozilla-central/source/js/src/jsexn.cpp#350) check `if (!report) {` it will call `return`\n\nAfter the [`fc.convertToRuntimeErrorAndClear();`](https://searchfox.org/mozilla-central/source/js/src/vm/RegExpObject.cpp#1245) function is called, then the [`JS::CheckRegExpSyntax`](https://searchfox.org/mozilla-central/source/js/src/vm/RegExpObject.cpp#1251) will `return true;` cause [`nsContentUtils::IsPatternMatching`](https://searchfox.org/mozilla-central/source/dom/base/nsContentUtils.cpp#7054) to pass the [`return Nothing()`](https://searchfox.org/mozilla-central/source/dom/base/nsContentUtils.cpp#7079) so it go inside `if (!error.isUndefined()) {` to call [`ReportPatternCompileFailure(aPattern, aDocument, &error, cx);`](https://searchfox.org/mozilla-central/source/dom/base/nsContentUtils.cpp#7035), the function call [`JS_GetProperty(cx, exnObj, \"message\", &messageVal)`](https://searchfox.org/mozilla-central/source/js/src/vm/PropertyAndElement.cpp#627) -> [`JS_ForwardGetPropertyTo`](https://searchfox.org/mozilla-central/source/js/src/vm/PropertyAndElement.cpp#595) -> `check` -> `checkImpl` -> `check` -> `compartment ` -> `shape` -> [`headerPtr`](https://searchfox.org/mozilla-central/source/js/src/gc/Cell.h#833) then crash at [`get`](https://searchfox.org/mozilla-central/source/js/src/gc/Cell.h#141)"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-06-21T16:46:12Z",
+   "body": "Thanks for the report!\nThis indeed sounds like a JS engine issue then, and now I know who to forward it to.\n\nBryan it sounds like  [`JS::CheckRegExpSyntax`](https://searchfox.org/mozilla-central/rev/4e8f62a231e71dc53eb50b6d74afca21d6b254e9/js/public/RegExp.h#93-102) does not behave as described in its declaration, by [discarding the error and returning true](https://searchfox.org/mozilla-central/rev/4e8f62a231e71dc53eb50b6d74afca21d6b254e9/js/src/vm/RegExpObject.cpp#1245-1251).\n\nI suspect the problem comes from either not setting or clearing the [FrontendContext OutOfMemory flag](https://searchfox.org/mozilla-central/rev/4e8f62a231e71dc53eb50b6d74afca21d6b254e9/js/src/vm/RegExpObject.cpp#1241-1242) ahead of returning into `JS::CheckRegExpSyntax`."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2023-06-21T18:02:47Z",
+   "body": "I'll take a look!"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-07-13T14:23:19Z",
+   "body": "(In reply to Irvan Kurniawan (:sourc7) from comment #0)\n> it still able to crash on Firefox Nightly 116.0a1 (2023-06-16) (32-bit), but reduced success rate and have to adjust fillMemory code to make it very reliably on Nightly.\n\nOk, after testing for a while, the attached testcase.html is also very reliable on Firefox Nightly 117.0a1 (2023-07-13) (32-bit), when testing 20 times on ffpuppet launcher I can get 20 times success, 0 failure on Intel i9-13900k and AMD Ryzen 7 5700G. \n\nWhen attach the process with WinDbg, I able to capture the access-violation crash, on crash stack index `[0xb]` the `xul!ReportPatternCompileFailure` code `if (!JS_GetProperty(cx, exnObj, \"message\", &messageVal)) {` the `exnObj` variable `exnObj->ptr->header_->value_` value already set to `0x83d8`, then on stack `[0x0]` the `xul!js::gc::HeaderWord::get` code `uintptr_t value = value_;` the `this` local name is set to `0x83d8` which is the crash address."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2023-07-18T21:49:06Z",
+   "body": "It looks like the problem is that `fc.convertToRuntimeErrorAndClear();` allocates memory, so it can trigger OOM.\n\nThis can cause `JS::CheckRegExpSyntax()` to return true when it should return false in the following scenario:\n1. `JS::CheckRegExpSyntax()` is called with a string that has invalid syntax\n1. `irregexp::CheckPatternSyntax()` returns false and sets SyntaxError on the FrontendContext\n1. `JS::CheckRegExpSyntax()` follows the failure path and [calls fc.convertToRuntimeErrorAndClear()](https://searchfox.org/mozilla-central/source/js/src/vm/RegExpObject.cpp#1245)\n1. `convertToRuntimeErrorAndClear()` triggers OOM and sets a pending OOM exception on the JSContext\n1. `JS::CheckRegExpSyntax()` extracts the OOM exception, thinking it is the SyntaxError, and returns true\n\nI should have a patch to correctly check for OOM in `convertToRuntimeErrorAndClear()` soon.\n\nThanks for the detailed analysis, :sourc7, it was really helpful in diagnosing the problem!"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2023-07-20T19:33:29Z",
+   "body": "Created attachment 9344931\nBug 1839007 - Return bool from ErrorToException r=arai\n\n\nIt is simpler to think about ErrorToException returning true when the error is\ncorrectly converted, which is why it returns false on recursion even though you\ncould argue that nothing went wrong in that case."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2023-07-20T19:33:49Z",
+   "body": "Created attachment 9344932\nBug 1839007 - Return bool from FrontendContext::convertToRuntimeErrorAndClear r=arai\n\n\n\nDepends on D184160"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2023-07-20T19:33:55Z",
+   "body": "Created attachment 9344933\nBug 1839007 - Return false if converting to a runtime error triggers OOM r=arai\n\n\nIn that case, the error stored in cx is an OOM rather than the expected\nSyntaxError. CheckRegExpSyntax should return false in that case.\n\nDepends on D184161"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2023-07-21T18:37:58Z",
+   "body": "Created attachment 9345111\nBug 1839007 - Add CheckRegExpSyntax jit-test r=arai\n\n\n\nDepends on D184162"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2023-07-21T19:30:51Z",
+   "body": "Landing patches D184160, D184161, and D184162 without sec-approval because this is marked sec-moderate.\n\nPatch D184254 contains tests and will be landed at a later time, according to security procedure."
+  },
+  {
+   "author": "pulsebot@bmo.tld",
+   "created_at": "2023-07-21T20:03:59Z",
+   "body": "Pushed by participant4:\nhttps://hg.mozilla.org/integration/autoland/rev/599e241178d6\nReturn bool from ErrorToException r=arai\nhttps://hg.mozilla.org/integration/autoland/rev/880d3a8b52ba\nReturn bool from FrontendContext::convertToRuntimeErrorAndClear r=arai\nhttps://hg.mozilla.org/integration/autoland/rev/ea812280de66\nReturn false if converting to a runtime error triggers OOM r=arai"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2023-07-22T09:23:01Z",
+   "body": "https://hg.mozilla.org/mozilla-central/rev/599e241178d6\nhttps://hg.mozilla.org/mozilla-central/rev/880d3a8b52ba\nhttps://hg.mozilla.org/mozilla-central/rev/ea812280de66"
+  },
+  {
+   "author": "phab-bot@bmo.tld",
+   "created_at": "2023-07-24T16:07:32Z",
+   "body": "Comment on attachment 9345111\nBug 1839007 - Add CheckRegExpSyntax jit-test r=arai\n\nRevision D184254 was moved to bug 1845132. Setting attachment 9345111 to obsolete."
+  },
+  {
+   "author": "participant6",
+   "created_at": "2023-07-25T19:07:08Z",
+   "body": "We're going to leave the severity at moderate because so far the read access violation is only for a fixed offset (slightly varying with the base allocation pointer in 64 bits, but that doesn't appear to be under your control). If there's a way to get more control over the read address we'd consider raising the severity."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2023-08-03T21:34:16Z",
+   "body": "Comment on attachment 9344931\nBug 1839007 - Return bool from ErrorToException r=arai\n\n### ESR Uplift Approval Request\n* **If this is not a sec:{high,crit} bug, please state case for ESR consideration**: This is a small change that improves content tab stability in low-memory situations and there is a low risk of applying it.\n* **User impact if declined**: There is a chance of crashing the content tab in low-memory situations when the JavaScript executes an invalid regular expression.\n* **Fix Landed on Version**: 117\n* **Risk to taking this patch**: Low\n* **Why is the change risky/not risky? (and alternatives if risky)**: The change only effects the code path in the case of an invalid regular expression, so only websites with broken regular expressions could potentially see any change in behavior. The change is also isolated to a small number of files and applies cleanly to the esr115 release commit."
+  },
+  {
+   "author": "participant7",
+   "created_at": "2023-08-04T14:56:53Z",
+   "body": "Managed to reproduce the crash on Firefox Firefox 114.0.1 (32-bit) and on Firefox Nightly 116.0a1 (2023-06-16) (32-bit) on Windows 11 and Windows 10.\nThe crash is still reproducible on the latest Firefox Nightly 118.0a1 (2023-08-04) x32 on both Windows 11/10.\n\nBryan, could you please take a look at this to see if it's also reproducible on your side?\nThanks."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2023-08-07T21:56:45Z",
+   "body": "Unfortunately, the testcase for this bug eats up all the memory available to the tab, so the tab will crash even if the bug is fixed. I'm sorry for not making that clear earlier!\n\nDoes Firefox have different behavior if a tab crashes because of OOM vs. other crashes? That might be one way to verify the bug is fixed.\n\nI'm also looking at verifying that the code behaves as I expect on current mozilla-central using a debugger."
+  },
+  {
+   "author": "participant7",
+   "created_at": "2023-08-08T11:30:55Z",
+   "body": "I didn't see any different behavior between the two builds, they even crashed at approximative the same time.\n\nCould you please mark this bug as verified after verifying that the code behaves as I expect on current mozilla-central using a debugger?\nThanks."
+  },
+  {
+   "author": "participant8",
+   "created_at": "2023-08-14T19:47:59Z",
+   "body": "Comment on attachment 9344931\nBug 1839007 - Return bool from ErrorToException r=arai\n\nApproved for 115.2esr."
+  },
+  {
+   "author": "pulsebot@bmo.tld",
+   "created_at": "2023-08-14T19:58:55Z",
+   "body": "https://hg.mozilla.org/releases/mozilla-esr115/rev/e2eaa313a346\nhttps://hg.mozilla.org/releases/mozilla-esr115/rev/f03409ee57eb\nhttps://hg.mozilla.org/releases/mozilla-esr115/rev/301266ba9108"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2023-08-14T22:22:51Z",
+   "body": "I couldn't get the attached testcase to reproduce the same memory failure as it originally did, but I was able to use a debugger to do so and verify that mozilla-central, including the patches for this bug, handles the OOM correctly now.\n\nSpecifically, when an OOM happens while converting the FrontendContext error to a JSContext error, `JS::CheckRegExpSyntax()` returns false, which is the documented behavior."
+  },
+  {
+   "author": "participant7",
+   "created_at": "2023-08-17T08:31:38Z",
+   "body": "Removing qa-verify+ since we couldn't verify this issue on our end."
+  },
+  {
+   "author": "participant9",
+   "created_at": "2023-08-25T06:10:51Z",
+   "body": "Created attachment 9350223\nadvisory.txt"
+  },
+  {
+   "author": "pulsebot@bmo.tld",
+   "created_at": "2023-09-26T14:09:07Z",
+   "body": "Pushed by participant4:\nhttps://hg.mozilla.org/integration/autoland/rev/e55f2c5a7f0b\nAdd CheckRegExpSyntax jit-test r=arai"
+  },
+  {
+   "author": "participant8",
+   "created_at": "2023-09-27T04:01:19Z",
+   "body": "https://hg.mozilla.org/mozilla-central/rev/e55f2c5a7f0b"
+  }
+ ],
+ "_attachments_meta": [
+  {
+   "id": 9339698,
+   "content_type": "text/html",
+   "description": "testcase.html"
+  },
+  {
+   "id": 9339699,
+   "content_type": "text/plain",
+   "description": "firefox-114.0.1-32-minidump.txt"
+  },
+  {
+   "id": 9339701,
+   "content_type": "text/plain",
+   "description": "firefox-114.0.1-64-minidump.txt"
+  },
+  {
+   "id": 9339702,
+   "content_type": "text/plain",
+   "description": "firefox-116.0a1-20230616-64-minidump.txt"
+  },
+  {
+   "id": 9344931,
+   "content_type": "text/x-phabricator-request",
+   "description": "Bug 1839007 - Return bool from ErrorToException r=arai"
+  },
+  {
+   "id": 9344932,
+   "content_type": "text/x-phabricator-request",
+   "description": "Bug 1839007 - Return bool from FrontendContext::convertToRuntimeErrorAndClear r=arai"
+  },
+  {
+   "id": 9344933,
+   "content_type": "text/x-phabricator-request",
+   "description": "Bug 1839007 - Return false if converting to a runtime error triggers OOM r=arai"
+  },
+  {
+   "id": 9345111,
+   "content_type": "text/x-phabricator-request",
+   "description": "Bug 1839007 - Add CheckRegExpSyntax jit-test r=arai"
+  },
+  {
+   "id": 9350223,
+   "content_type": "text/plain",
+   "description": "advisory.txt"
+  }
+ ],
+ "images": [],
+ "slug": "bmo_core_1839007"
+}

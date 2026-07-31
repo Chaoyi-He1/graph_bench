@@ -21,6 +21,23 @@ import click
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / 'src'))
 
+
+def _load_env(path: Path) -> None:
+    """Fill os.environ from a KEY=VALUE .env file (existing vars win)."""
+    import os  # noqa: PLC0415
+
+    if not path.exists():
+        return
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith('#') or '=' not in line:
+            continue
+        key, _, value = line.partition('=')
+        os.environ.setdefault(key.strip(), value.strip())
+
+
+_load_env(REPO / '.env')
+
 from graph_bench.llm import build_chat_client  # noqa: E402
 from graph_bench.pipeline.draft import (  # noqa: E402
     draft_task,
@@ -31,7 +48,7 @@ from graph_bench.pipeline.github import harvest_case, search_issues  # noqa: E40
 _EXTRA_Q = {
     'flutter/flutter': 'label:"r: fixed" comments:>12 created:>2023-01-01',
 }
-_DEFAULT_Q = 'comments:>12 created:>2023-01-01'
+_DEFAULT_Q = 'comments:12..60 created:>2023-01-01'
 _BOT_MARKERS = ('[bot]', '-bot', 'github-actions')
 
 
@@ -54,7 +71,8 @@ def _profile(thread: dict) -> dict:
 @click.command()
 @click.option(
     '--repos',
-    default='flutter/flutter,expo/expo,home-assistant/core',
+    default='flutter/flutter,expo/expo,home-assistant/core,'
+    'ClickHouse/ClickHouse,pytorch/pytorch,golang/go',
     show_default=True,
 )
 @click.option('--out', default='data/github_v0', show_default=True)
