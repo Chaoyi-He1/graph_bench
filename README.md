@@ -1,42 +1,70 @@
-# TraceGraph-Bench (working title)
+# graph_bench (working title: TraceGraph-Bench)
 
-Causal-graph-grounded, **execution-free** evaluation of conversational debugging agents, built from **real public support threads**. This repository is the paper workspace: method notes, related-work survey, pilot data, schema + validators, and the collection/privacy plan.
+Causal-graph-grounded, **execution-free** evaluation of conversational debugging agents, built from **real public support threads**. Paper workspace + benchmark harness + data pipeline.
 
-> Status: pilot complete (4 annotated Mozilla Bugzilla cases, all passing machine validation). Not yet public — see release gates below.
+> Status: pilot complete (4 hand-annotated Mozilla Bugzilla cases, machine-validated); harness ported and smoke-tested offline; GitHub drafting pipeline live. Drafted cases are `hitl_reviewed: false` until human review.
 
 ## Why
 
-Multi-turn debugging benchmarks either require executable environments — excluding exactly the environment-bound problems real users bring (drivers, devices, OS integrations, account state; CAB's own limitations section documents this selection bias) — or condition simulated users on resolved transcripts, leaking future knowledge into the dialogue. We annotate resolved threads as causal graphs — nodes are (system-state, information-state) pairs; edges are clarifications (including user-executable measurements), solutions, and known blind paths — and use the **same graph** to (a) structurally constrain the user simulator, (b) ground an execution-free judge, and (c) derive causal metrics. See [docs/method.md](docs/method.md).
+Multi-turn debugging benchmarks either require executable environments — excluding exactly the environment-bound problems real users bring (drivers, devices, OS integrations, account state; CAB's own limitations section documents this selection bias) — or condition simulated users on resolved transcripts, leaking future knowledge into the dialogue. Here each resolved thread is annotated as a causal graph — nodes are (system-state, information-state) pairs; edges are clarifications (including user-executable measurements), solutions, and known blind paths — and the **same graph** (a) structurally constrains the user simulator, (b) grounds an execution-free judge, and (c) yields causal metrics. See [docs/method.md](docs/method.md).
 
 ## Layout
 
 ```
-docs/method.md                        method distillation (paper §3 source)
-docs/related-work.md                  2026-07 survey with sources (paper §2/§6 source)
-docs/pilot-study.md                   4-case pilot: funnel, findings, costs
-docs/data-collection-and-privacy.md   wave plan, scrubbing, licensing, anti-contamination
-paper/outline.md                      framing, contributions, experiment plan
-src/tracegraph_bench/models.py        schema (pydantic) + semantic validators
-scripts/validate.py                   validate graphs, check image refs
-data/trial/graphs/*.json              4 annotated task graphs
-data/trial/raw/*.json                 raw thread snapshots (Bugzilla REST; PRE-scrub)
-data/trial/images/ + MANIFEST.json    archived attachments, sha256 + provenance
+src/graph_bench/
+  oncall_graph/      schema (pydantic + semantic validators), shortcut/rollback
+                     closure, mermaid visualization
+  user_simulator/    graph-position-constrained simulator (anti-leak), edge
+                     matcher/judge prompts, persona speaker
+  backbone/          agent-agnostic run loop (recovery ladder, resume,
+                     bounded parallelism) + scripted & OpenAI-compatible agents
+  recorder/          lossless per-turn JSONL + deterministic metric rollup
+  judge/             terminal scorer (rubrics + tiers; stub backend for CI)
+  pipeline/          GitHub harvest + CAB-style filter + LLM graph drafting
+scripts/             validate.py · prepare_github_cases.py · scrub.py
+data/trial/          4 hand-annotated Mozilla pilot cases (+ raw, images)
+data/github_v0/      LLM-drafted GitHub cases (raw, images, graphs, report)
+docs/                method · related-work survey · pilot study · collection
+                     & privacy plan · pipeline correspondence
+paper/               outline (framing, contributions, experiment plan)
 ```
 
 ## Quickstart
 
+Everything LLM-related reads an OpenAI-compatible **Responses API** endpoint
+from env (`cp .env.example .env` and fill in; no credentials in the repo):
+
 ```
-uv run scripts/validate.py
+uv run scripts/validate.py                       # validate all task graphs
+uv run python -m graph_bench backbone run \
+    --agent scripted --tasks 'data/trial/graphs/*.json' \
+    --run-id smoke --out /tmp/gb_runs            # offline end-to-end
+uv run python -m graph_bench judge run /tmp/gb_runs/smoke   # stub judge
 ```
 
-validates every trial graph against the schema (edge-type consistency, reference integrity, information-state containment) and checks that all referenced attachments exist.
+Online (simulated user + LLM edge-matching + an API-backed agent):
 
-## Release gates (do not publish before)
+```
+uv run python -m graph_bench backbone run \
+    --agent api --tasks 'data/trial/graphs/bmo_1822845.json' \
+    --run-id live1 --out data/runs --online --max-turns 8
+uv run python -m graph_bench judge run data/runs/live1 --online
+```
 
-1. **Scrubbing:** `data/trial/raw/` and graph texts are pre-pseudonymization snapshots (they contain reporter emails/usernames from the public Bugzilla). Run the full §5 scrub of [docs/data-collection-and-privacy.md](docs/data-collection-and-privacy.md) before any public push.
-2. Online replay smoke on English content (pilot F7) — before any scale-up claim.
+Prepare new cases from GitHub (see [docs/pipeline.md](docs/pipeline.md)):
+
+```
+uv run scripts/prepare_github_cases.py --target 10
+```
+
+## Release gates (do not publish datasets beyond this repo before)
+
+1. **Scrubbing:** `scripts/scrub.py --apply` pseudonymizes identities in raw
+   threads and graphs (identity map lands outside the repo). Screenshots
+   still need the human checklist pass (docs/data-collection-and-privacy.md §5.3).
+2. English online-replay quality check on the simulator/judge (pilot F7).
 3. `artifacts` schema extension for non-image evidence (pilot P0).
 
-## Licensing (intended)
+## Licensing
 
-Code: Apache-2.0. Curation layer (graphs/annotations): CC BY 4.0. Underlying thread content remains © its authors, sourced from the public Mozilla Bugzilla with per-case attribution links; redistribution follows the bugbug / BugsRepo precedents. See [DATA_LICENSE.md](DATA_LICENSE.md).
+Code: Apache-2.0. Curation layer (graphs/annotations): CC BY 4.0. Underlying thread content remains © its authors (public Mozilla Bugzilla and GitHub issue threads, per-case attribution links, takedown channel) — see [DATA_LICENSE.md](DATA_LICENSE.md).

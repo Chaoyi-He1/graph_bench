@@ -6,7 +6,9 @@ The annotation/curation layer of this dataset — task graphs, satisfaction cond
 
 ## Underlying content
 
-Thread texts and attachments under `data/*/raw/` and `data/*/images/` originate from the public Mozilla Bugzilla database (bugzilla.mozilla.org). Copyright in that content remains with its original authors. Each case records its source (`metadata.created_from`, plus per-attachment `source_url` in `images/MANIFEST.json`).
+Thread texts and attachments under `data/*/raw/` and `data/*/images/` originate from public issue trackers — the Mozilla Bugzilla database (bugzilla.mozilla.org) and public GitHub repositories (permissive-license projects only). Copyright in that content remains with its original authors. Each case records its source (`metadata.created_from`, per-attachment `source_url` where archived).
+
+GitHub-sourced threads are collected under the GitHub Acceptable Use Policies research allowance (results of the research remain open access); usernames are pseudonymized by `scripts/scrub.py` before release.
 
 Redistribution of Mozilla Bugzilla content follows established precedent:
 - Mozilla's own **bugbug** project publishes full database dumps for model training (https://github.com/mozilla/bugbug/blob/master/docs/data.md);

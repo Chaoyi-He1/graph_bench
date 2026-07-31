@@ -1,0 +1,96 @@
+"""
+Reference system-under-test agent: any OpenAI-compatible Responses endpoint.
+
+Stateless per call — the backbone hands the full leak-free transcript every
+turn, so the conversation is reconstructed as one message list. Configure via
+``agent_config`` (``model``, ``base_url``, ``api_key_env``, ``effort``,
+``system_prompt``) with ``GRAPH_BENCH_LLM_*`` env fallbacks.
+
+This adapter deliberately has no tools and no repository access: it measures
+what a plain conversational model does inside the benchmark loop, and doubles
+as the wiring example for adapters around real products.
+"""
+
+from __future__ import annotations
+
+import os
+import time
+from typing import TYPE_CHECKING
+
+from graph_bench.recorder.models import AgentTelemetry, TokenUsage
+
+if TYPE_CHECKING:
+    from graph_bench.backbone.models import AgentTurn, RecoveryMode
+
+_DEFAULT_SYSTEM_PROMPT = (
+    'You are a senior support engineer helping a user diagnose and fix a '
+    'software problem over chat. The user executes actions; you cannot run '
+    'anything yourself. Ask for the specific evidence you need, propose '
+    'concrete steps one at a time, ground your conclusions in what the user '
+    'actually reported, and reply in the language the user writes in.'
+)
+
+
+class APIChatAgent:
+    def __init__(self, cfg: dict) -> None:
+        self._cfg = cfg
+        self._llm = None
+        self._system_prompt = cfg.get('system_prompt', _DEFAULT_SYSTEM_PROMPT)
+
+    def _client(self):  # noqa: ANN202
+        if self._llm is not None:
+            return self._llm
+        from graph_bench.llm import build_chat_client  # noqa: PLC0415
+
+        key_env = self._cfg.get('api_key_env')
+        self._llm = build_chat_client(
+            model=self._cfg.get('model'),
+            base_url=self._cfg.get('base_url'),
+            api_key=os.environ.get(key_env) if key_env else None,
+            effort=self._cfg.get('effort'),
+        )
+        return self._llm
+
+    async def respond(
+        self, turn: AgentTurn, *, mode: RecoveryMode = 'normal'
+    ) -> AgentTelemetry:
+        from graph_bench.user_simulator.provider import (  # noqa: PLC0415
+            extract_text,
+        )
+
+        messages: list[tuple[str, str]] = [('system', self._system_prompt)]
+        for msg in turn.transcript:
+            role = 'user' if msg.role == 'user' else 'assistant'
+            messages.append((role, msg.text))
+        if not turn.transcript or turn.transcript[-1].role != 'user':
+            messages.append(('user', turn.latest_user_text))
+
+        start = time.monotonic()
+        reply = await self._client().ainvoke(messages)
+        latency_ms = (time.monotonic() - start) * 1000
+        usage = getattr(reply, 'usage_metadata', None) or {}
+        return AgentTelemetry(
+            text=extract_text(reply),
+            model=self._cfg.get('model')
+            or os.environ.get('GRAPH_BENCH_LLM_MODEL'),
+            usage=TokenUsage(
+                prompt_tokens=usage.get('input_tokens'),
+                completion_tokens=usage.get('output_tokens'),
+            )
+            if usage
+            else None,
+            latency_ms=latency_ms,
+        )
+
+    async def aclose(self) -> None:
+        return None
+
+
+from graph_bench.backbone.registry import register_agent
+
+
+def _api_factory(cfg: dict) -> APIChatAgent:
+    return APIChatAgent(cfg)
+
+
+register_agent('api', _api_factory)

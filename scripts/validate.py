@@ -15,7 +15,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / 'src'))
 
-from tracegraph_bench.models import Task  # noqa: E402
+from graph_bench.oncall_graph.models import Task  # noqa: E402
 
 
 def image_refs(task: Task) -> list[str]:

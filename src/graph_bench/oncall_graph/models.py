@@ -1,28 +1,15 @@
 """
-Pydantic models for the causal-graph schema of TraceGraph-Bench.
+Pydantic models for the oncall causal-graph schema.
 
-A resolved support thread is annotated as a state machine:
-
-- A ``Node`` is a ``(system_state_id, info_state)`` pair plus the symptoms
-  the user can observe at that point. Most nodes share one system state
-  (the world is unchanged while the dialogue investigates); ``info_state``
-  grows monotonically as clarifications are answered.
-- An ``Edge`` is one assistant turn. Three flavors:
-    * ``clarification_only`` — the assistant asked for information or for a
-      user-executable measurement (bisection run, test build, pref toggle);
-      information accumulates, the system is unchanged.
-    * ``solution_only`` — the assistant proposed an action that changes the
-      user's system; known-failed attempts carry ``is_known_blind_path`` and
-      land on aftermath states.
-    * ``mixed`` — both in one turn.
-- A ``Task`` is graph + satisfaction conditions + persona hint + metadata.
-
-Semantic validators enforced at load time:
-1. edge components must match the edge type;
-2. all edge endpoints and the start node must exist;
-3. information containment — every info_id asked on a clarification/mixed
-   edge must appear in the destination's ``info_state`` (the destination may
-   also gain engineer-inferred or volunteered info_ids beyond those asked).
+Mirrors §12.1 of `dsl-oncall-benchmark-design.md`:
+- A `Node` is a `(system_state_id, info_state)` pair plus what symptoms
+  the user can see at that point.
+- An `Edge` is one agent turn. Three flavors:
+    * `clarification_only` — agent asked; info accumulates, system
+      unchanged.
+    * `solution_only` — agent acted; system state changes.
+    * `mixed` — both in one turn.
+- A `Task` is graph + satisfaction conditions + persona hint + metadata.
 """
 
 from __future__ import annotations
@@ -45,9 +32,6 @@ class RequiredInfo(BaseModel):
 
 
 class CounterfactualCandidate(BaseModel):
-    """An intervention on a clarification answer, used to probe whether an
-    agent's proposal is causally grounded in the collected information."""
-
     type: Literal['extreme', 'minor', 'irrelevant']
     answer: str
     solution_should_change: bool
@@ -58,9 +42,10 @@ class Clarification(BaseModel):
     level: InfoLevel | None = None
     question_patterns: list[str] = Field(default_factory=list)
     user_answer_in_this_oncall: str
-    # Original attachments that carried (part of) this answer, so the agent
-    # sees the same evidence the real engineer saw, not a pre-digested
-    # transcription. Paths are repository-relative.
+    # Original oncall screenshots that carried (part of) this answer.
+    # Paths relative to the bench package root (data/oncalls/images/...).
+    # Revealed together with the answer text so the agent sees the same
+    # evidence the real engineer saw, not a pre-digested transcription.
     images: list[str] = Field(default_factory=list)
     counterfactual_candidates: list[CounterfactualCandidate] = Field(
         default_factory=list
@@ -78,13 +63,16 @@ class Solution(BaseModel):
     composed_of: list[str] = Field(default_factory=list)
     is_known_blind_path: bool = False
 
-    # Shortcut solution edges let an agent bypass part of the clarification
-    # chain. ``is_shortcut=True`` means the source node's info_state is
-    # insufficient for ``required_info``; the judge then grades the call as
-    # an inferred shortcut or a blind shortcut depending on whether the
-    # agent's reply shows reasoning about ``shortcut_skipped_info``.
+    # §8.2: shortcut solution edges let an agent bypass clarification
+    # chain. `is_shortcut=True` means the `from` node has insufficient
+    # info_state for the solution's `required_info`; matcher then judges
+    # the call as `inferred_shortcut` or `blind_shortcut` per §8.8 based
+    # on whether the agent's reply shows reasoning about
+    # `shortcut_skipped_info`.
     is_shortcut: bool = False
     shortcut_skipped_info: list[str] = Field(default_factory=list)
+    # Free-text hint authored at extraction time describing what kind of
+    # inference the agent should display to count as `inferred_shortcut`.
     inference_hint: str | None = None
 
 
@@ -93,19 +81,28 @@ class Node(BaseModel):
     info_state: list[str] = Field(default_factory=list)
     symptoms_visible: list[str] = Field(default_factory=list)
     is_terminal: bool = False
+    # Optional human-readable label for visualization.
     label: str | None = None
-    # Info the user volunteers on first arrival at this node, and the
-    # premature-satisfaction marker (symptoms gone is not the same as
-    # resolved-and-verified).
+    # JSON-only fields (Decision B): info the user volunteers on first
+    # arrival, and the §8.10 premature-satisfaction marker. Graphs
+    # predating these fields default safely (no volunteered info, never
+    # premature).
     volunteered_info: list[str] = Field(default_factory=list)
     user_perceives_resolved: bool = False
-    # Original attachments evidencing this node's visible symptoms.
+    # Original oncall screenshots evidencing this node's visible symptoms
+    # (error dialogs, wrong renders, console output). Shown to the agent on
+    # first arrival, alongside symptoms_visible. Paths relative to the
+    # bench package root (data/oncalls/images/...).
     symptom_images: list[str] = Field(default_factory=list)
 
 
 class Edge(BaseModel):
-    """One assistant turn. JSON uses ``from``/``to``; Python attributes are
-    ``from_node``/``to_node`` because ``from`` is a reserved keyword."""
+    """
+    One agent turn = one edge.
+
+    Uses `from`/`to` in JSON to match the design doc; Python attributes
+    are `from_node`/`to_node` because `from` is a reserved keyword.
+    """
 
     model_config = ConfigDict(populate_by_name=True)
 
@@ -115,6 +112,7 @@ class Edge(BaseModel):
     to_node: str = Field(alias='to')
     clarifications: list[Clarification] = Field(default_factory=list)
     solution: Solution | None = None
+    # Free-text annotation (e.g. "auto-generated shortcut from N0").
     comment: str | None = None
 
     @model_validator(mode='after')
@@ -166,9 +164,13 @@ class Graph(BaseModel):
             if edge.to_node not in self.nodes:
                 msg = f'edge {edge.edge_id}: to {edge.to_node!r} not in nodes'
                 raise ValueError(msg)
-        # Information containment: src ∪ asked ⊆ dst for clarification and
-        # mixed edges; the destination may gain extra ids (engineer-inferred
-        # or volunteered information).
+        # info_state accumulation (Decision B — containment, not
+        # equality): every info_id asked on a clarification/mixed edge
+        # must appear in the destination's info_state. The destination
+        # may also gain engineer-inferred/volunteered info_ids not
+        # introduced by any edge clarification (e.g. on e2_N1__N2 the
+        # destination N2 gains
+        # `screen_size_adaptation_doc_mentions_popup_page`).
         for edge in self.edges:
             if edge.edge_type not in ('clarification_only', 'mixed'):
                 continue
@@ -211,5 +213,7 @@ class Task(BaseModel):
     satisfaction_conditions: list[str] = Field(default_factory=list)
     persona_hint: PersonaHint | None = None
     metadata: Metadata = Field(default_factory=Metadata)
-    # Original attachments the reporter included in the opening message(s).
+    # Original screenshots the reporter attached to the opening message(s)
+    # of this oncall. Sent with the simulator's opening turn. Paths
+    # relative to the bench package root (data/oncalls/images/...).
     opening_images: list[str] = Field(default_factory=list)
