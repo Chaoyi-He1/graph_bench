@@ -81,6 +81,22 @@ flowchart LR
 | `N4` |  | 0 | 0 | My NeighborLoader training script now completes with torch.compile and runs about 20% faster than eager using the Triton backend. |
 | `N_terminal` | ✓ | 0 | 0 | The NeighborLoader GCN trains successfully with dynamic compilation and the measured compiled run is about 20% faster than eager. |
 
+## Machine review (audit pass, adversarially verified)
+
+Auditor verdict: **minor_issues** · 0 of 3 findings survived independent refutation.
+
+_The case is a long PyTorch dynamic-shapes/torch.compile investigation on a PyG NeighborLoader GCN: the reporter reports eager beating torch.compile with Dynamo cache-limit recompiles, then successively tries PR 93059 (segfault on the old-Triton container), new Triton + dynamic=True (SymInt size() error), and the specialize_int_float=True hack (compiled-backward AttributeError), before an updated stack finally runs and, in May, gives a ~20% speedup on his own script. The graph is a faithful reproduction of that arc: both blind paths (PR 93059 on old Triton, specialize_int_float hack) are attempts that genuinely failed in-thread, every user_answer matches the reporter's own comments verbatim in numbers and tracebacks, and the engineer-side analysis (guards/overspecialization, split reductions, graph breaks, CPU overhead) is correctly kept in info_inferred_by_engineer. Remaining issues are ordering/state-modeling fidelity plus one methodological claim in the satisfaction conditions that runs against what the thread concluded about CUDA synchronization._
+
+### Refuted claims (auditor was wrong — do not act on these)
+
+- ~~graph_shape~~: The clarification chain is reordered relative to the thread: the graph establishes 'training + old Triton backend' BEFORE the PR 93059 attempt, whereas in the thread PR 93059 was suggested and built first and the Triton-
+  - why refuted: The chronology claim is factually accurate (c2 asks 'oh is this training?' AND suggests PR 93059 in the same turn; c3 = segfault; c4 asks old-vs-new Triton; c5/c6 answer it). But under the contract a graph is an ANSWER KEY, not a transcript, and nothing forbids folding two handler questions from c2 and c4 into one cano
+- ~~graph_shape~~: system_state_id is modeled backwards: it stays S1 across four real system changes the reporter performed (source-building PyTorch from the PR branch, installing latest Triton, applying the eval_frame patch, upgrading to 
+  - why refuted: The rebuilds the reviewer cites are real (c3, c7, c14, c43), but the encoding is the corpus convention, not an inversion. I enumerated every graph in data/github_v0/graphs/: all 14 files use exactly states=['S1','S2'] with the terminal on S2 -- investigation stays S1, terminal takes S2. Penalizing this one case for a r
+- ~~wrong_root_cause~~: The clause frames un-synchronized timing as the source of the misleading (inflated) numbers, but the thread concluded the opposite about the headline 2x figure: the PyG benchmark's cuda synchronize is what made compiled 
+  - why refuted: The claim misreads both the clause and the thread's two separate scripts. The clause is about THIS case's workload -- the reporter's gcn_neighborloader_example.py -- and for that script the thread says exactly what the graph says: c40 (participant1 -> reporter) 'I noticed your benchmark script doesn't do cuda synchroni
+
+
 ## Review checklist
 
 > The graph is the case's ANSWER KEY, not a transcript: edge order need

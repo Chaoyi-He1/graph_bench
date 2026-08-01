@@ -75,6 +75,31 @@ flowchart LR
 | `N5` |  | 0 | 0 | An APK obtained from a fresh EAS server build lets me select and load the same image on the Pixel 6 emulator without the app rejecting the p |
 | `N_terminal` | ✓ | 0 | 0 | Selecting an image through the Android photo picker now fulfills launchImageLibraryAsync and the selected photo loads normally. |
 
+## Machine review (audit pass, adversarially verified)
+
+Auditor verdict: **needs_rework** · 3 of 3 findings survived independent refutation.
+
+_The case is an Expo SDK 49 Android image-picker failure whose visible "Uri lacks 'file' scheme: content://..." exception was a red herring; the real cause was old/stale expo-image-loader native code retained by the reporter's local Gradle build (and, for a second reporter, expo-image-manipulator 11.3 pinning loader 4.3.0). The graph's diagnostic spine is faithful and well built: the whatwg-fetch suggestion is correctly marked as the falsified blind path, the 14.5.0 upgrade / emulator repro / yarn-why / EAS clean-build steps are all correctly modeled as clarification (measurement) edges, and the root cause and satisfaction conditions match what participant2 concluded in c69 and what fixed participant6 in c75-c77. The defects are all leakage/chronology in the framing rather than in the answer key: the Task body carries two pieces of knowledge that only appear later in the thread, one of which is an L2 required_info that the graph itself models as a clarification the agent must ask for._
+
+### Confirmed findings
+
+- [ ] 🟠 **future_knowledge_leak** (medium) — `body (Task opening report); interacts with edges[e2_N0__N2].clarifications[picker_promise_enters_catch_after_selection] and edges[e6_N5__N_terminal].solution.required_info.L2`
+  - claim: The opening report already states that the promise goes to catch and that the display logic sits in then, which in the thread is c13 — the reporter's answer to participant2's question at c12 — and which the graph itself models as a clarification that must be elicited and as L2 required_info for the final solution.
+  - thread evidence: Original issue body contains no mention of then/catch (it says only "Is there a workaround for this? Maybe some available flag to switch back to the old UI version"). The then/catch fact first appears at c12 (participant2: "So is the picker dismissing but the image that was selected isn't showing up?") answered at c13 (reporter: "Exactly. The ExponentImagePicker.launchImageLibraryAsync() promise is handled by the catch... it never shows up because the logic behind showing the photo is handled in the then"). Graph body: "The photo is never shown because my display logic is in the promise's then handler and execution goes to catch instead." Note N0.info_state does NOT contain picker_promise_enters_catch_after_selection, so the body contradicts the node it opens on.
+  - suggested fix: Delete that sentence from the Task body (keep only the observable "the photo is never shown" if desired), leaving picker_promise_enters_catch_after_selection obtainable solely through the e2 clarification.
+  - verifier: Independently confirmed. A keyword scan of the raw thread shows 'catch' appears ONLY in c13; the original issue body contains no then/catch at all — its code snippet ends at `ImagePicker.launchImageLibraryAsync(options)` with no handlers, and its only forward-looking ask is 'Is there a workaround for this? Maybe some available flag to switch back to the old UI version'. The then/catch fact is elic
+- [ ] 🟡 **future_knowledge_leak** (low) — `body (Task opening report); pre-answers part of edges[e2_N0__N2].clarifications[failures_mainly_android_12_and_13].user_answer_in_this_oncall`
+  - claim: The body says the reporter cannot reproduce on his Android 9 test device, which is c8 knowledge volunteered only after participant2 asked for devices/OS versions, and it is verbatim the first half of the e2 clarification answer.
+  - thread evidence: Original body's repro section says only "I don't have Android. I have no idea what is an `uri` with `content://`" — no test device and no reproduction attempt. c7 (participant2): "Can you provide any other details? Devices, OS versions etc?" c8 (reporter): "I can't reproduce it either because I have an iPhone (personal) and an Android 9.1 for testing, and seems like this bug doesn't happen in Android 9.1". The graph's e2 answer opens with "I cannot reproduce it on my Android 9 test device." while the body already says "I cannot reproduce it on my Android 9 test device".
+  - suggested fix: Reduce the body to the original scope ("I don't have a modern Android device of my own") and let the Android-9 non-reproduction be revealed only by the e2 clarification answer.
+  - verifier: Confirmed on the facts. 'Android 9' occurs only in c8 and c53; the original body's repro section is just 'I don't have Android. I have no idea what is an `uri` with `content://`' (the one '9.1' string in the body is 'watchOS 9.1' in the environment block, not an Android version). c7 (participant2) asks 'Devices, OS versions etc?' and c8 answers 'I can't reproduce it either because I have an iPhone
+- [ ] 🟡 **unfaithful_reveal** (low) — `n/a`
+  - claim: The analytics evidence attached to N2 (and its edge comment's provenance 'Comments c7-c17') actually comes from c42, which is measured on the app version that already contained expo-image-picker 14.5.0 — i.e. a graph position at or after N3_x, not before it.
+  - thread evidence: None
+  - suggested fix: None
+  - verifier: Confirmed. A scan for 'UPLOAD_PHOTO' and 'ENDS_OK' across all 81 comments returns c42 ONLY: 'In my app I have 2 analytics events: UPLOAD_PHOTO_FLOW_START and UPLOAD_PHOTO_FLOW_ENDS_OK. As far as I can see, in the new version of my app (which contains the last version of expo-image-picker), there were 5 events of START and zero of ENDS_OK.' (The other 'analytic' hits are the @amplitude/analytics-re
+
+
 ## Review checklist
 
 > The graph is the case's ANSWER KEY, not a transcript: edge order need

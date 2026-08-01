@@ -82,6 +82,35 @@ flowchart LR
 | `N6` |  | 0 | 0 | With Flutter 3.19.5 and Dart 3.3.3, projects build and run successfully on the affected older processors. The Windows test application start |
 | `N_terminal` | ✓ | 0 | 0 | Flutter commands no longer exit with code 3221225501 on the older x86-64 CPUs, and new applications build and run successfully after updatin |
 
+## Machine review (audit pass, adversarially verified)
+
+Auditor verdict: **needs_rework** · 2 of 5 findings survived independent refutation.
+
+_The case tests whether an agent can drive a cross-platform, non-deterministic-looking Flutter tool crash down to a Dart VM JIT CPU-feature bug (SSE4.1 roundsd emitted on pre-SSE4.1 x86-64), via a version boundary, cross-platform verbose logs, a git bisect, a minimal floor.dart / --target-unknown-cpu / --trace-cpuid probe chain, and verification on the affected hardware. The graph is substantively faithful to the thread: the root cause, both blind paths, and every measurement answer check out against the source comments. Its problems are structural rather than diagnostic: the start node's only two out-edges are both known blind paths, so no canonical path exists from N0 and the two decisive L1 facts (version boundary, CPU model) are reachable only through a penalized edge. Two smaller fidelity issues — a cross-platform claim leaked into the opening body and the old-CPU commonality handed over as volunteered info — degrade difficulty but not the answer key._
+
+### Confirmed findings
+
+- [ ] 🔴 **graph_shape** (high) — `graph.nodes.N0 out-edges (e1_N0__N1_x, e2_N0__N2_x)`
+  - claim: The start node N0 has no canonical (non-blind) out-edge — both of its edges are is_known_blind_path=true — so no canonical path exists from the start node to the terminal, and every route into the diagnosis runs over an edge the simulator scores as 'wrong direction'.
+  - thread evidence: Thread supports both blind edges (c0 participant1 links the MSB8066 SO thread → c1 reporter: 'I read that SO thread before filing here... nothing worked for me'; c2 'Can you try a reinstall...' → c3 reinstalls did not fix 3.16.x). Verified against repo code: precompute_canonical_edges() returns {'N0': None, ...} for this graph, and responder._edge_wrong_direction() returns True for any is_known_blind_path edge; responder._fire_insurance() sets termination_reason='failed_dead_end' when canonical[node]=None, so a stalling agent at the opening turn is killed rather than walked forward.
+  - suggested fix: Add a canonical clarification edge out of N0 carrying the facts the reporter actually stated in c3 (which Flutter versions work vs fail, and the CPU model), landing on a new node from which e3 continues; keep e1/e2 as blind side-branches off N0. This restores canonical[N0] and lets an agent reach N2_x-equivalent evidence without being charged a blind path.
+  - verifier: Independently confirmed on both the data and the code. Graph: N0's only out-edges are e1_N0__N1_x and e2_N0__N2_x, and both carry solution.is_known_blind_path=true; N1_x has no out-edges at all, and the only route onward (e3_N2_x__N3) hangs off N2_x, the aftermath of the blind reinstall edge. Code: I actually ran it — `precompute_canonical_edges` on this task file returns {'N0': None, 'N1_x': None
+- [ ] 🟠 **future_knowledge_leak** (medium) — `body; graph.nodes.N0.info_state[new_projects_fail_on_windows_android_and_web]; N0.symptoms_visible[1]`
+  - claim: The opening report claims new projects also fail on Android and web, but the reporter's issue body says nothing of the sort — that cross-platform fact only appears three comments later, after the SDK-reinstall round.
+  - thread evidence: The raw body reports only 'flutter create ... exit code 3221225501', the Windows MSB8066/-1073741795 build failure, and the sky_engine download; the words 'Android'/'web'/'Chrome'/'Edge' appear in it only inside the flutter doctor output. The cross-platform claim first appears in c3 (2023-12-15): 'projects created using 3.16.0 and 3.16.4 won't properly build on any platform including web (Edge/Chrome).'
+  - suggested fix: Drop the Android/web sentence from the Task body and from N0 (symptoms + info_state), and surface new_projects_fail_on_windows_android_and_web where the thread surfaces it — with the version-boundary answer (c3) or the verbose-log answer on e3.
+  - verifier: Confirmed by regexing the raw body myself. Every occurrence of 'Android', 'web', 'Chrome' and 'Edge' in the issue body falls inside the collapsed `flutter doctor -v` block ('[OK] Android toolchain - develop for Android devices', '[OK] Chrome - develop for the web', the Connected device list) — i.e. they document available toolchains and devices, not failures. The narrative part of the body reports
+
+### Refuted claims (auditor was wrong — do not act on these)
+
+- ~~required_but_ungettable~~: Two of the three hard L1 facts the final answer requires exist only as volunteered_info on N2_x, the aftermath of the blind SDK-reinstall edge; no clarification anywhere asks for the working/failing version boundary or t
+  - why refuted: The mechanical half checks out (both ids appear only in N2_x.volunteered_info/info_state; I read all clarifications on e3/e4/e5/e6 and none asks for either), but the finding fails on its own terms. (a) Gettability: the contract's channel (c) — 'volunteered with matching volunteered_info TEXT on a node whose info_state 
+- ~~measurement_class_violation~~: The decisive 'all affected machines are old x86-64 CPUs' clue is handed to the agent for free as volunteered_info on N3, although in the thread it was produced only because a handler explicitly asked about the CPU.
+  - why refuted: The quoted c11->c12/c13 exchange is real, but it is not the only — or the decisive — source, and the reviewer's own c30 quote undercuts the claim. In the thread the old-CPU commonality is repeatedly VOLUNTEERED by the user side with no handler prompt: c3 (reporter, unprompted) 'I'm on a very old system that uses an AMD
+- ~~terminal_semantics~~: N6 records that the user already installed Flutter 3.19.5 / Dart 3.3.3 and that everything builds again, yet keeps system_state_id S1 and user_perceives_resolved=false, and e7 then books the same already-performed upgrad
+  - why refuted: The description of the graph is accurate (N6: S1, user_perceives_resolved=false, symptoms 'With Flutter 3.19.5 and Dart 3.3.3, projects build and run successfully'; e7: solution_only, S1->S2), and the thread quotes are accurate (c82 participant7 Windows/Chrome 'ceil result: 1016!', c86 participant9 Flutter 3.19.5 / Dar
+
+
 ## Review checklist
 
 > The graph is the case's ANSWER KEY, not a transcript: edge order need

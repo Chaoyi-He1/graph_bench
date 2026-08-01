@@ -88,6 +88,42 @@ flowchart LR
 | `N7` |  | 0 | 0 | Ollama 0.7.1 has been running for about two days without extra runner processes or retained VRAM, and I still have not seen the problem afte |
 | `N_terminal` | ✓ | 0 | 0 | With Ollama 0.7.1, models unload without leaving unlisted runner processes or their VRAM allocated. |
 
+## Machine review (audit pass, adversarially verified)
+
+Auditor verdict: **needs_rework** · 3 of 7 findings survived independent refutation.
+
+_The case is a long-running Ollama scheduler race: runners survive an unload decision taken while they are still starting, so they stay alive under the live `ollama serve`, hold VRAM, and never appear in `ollama ps`; two candidate releases (0.6.7, 0.7.0) failed before 0.7.1 fixed it. The graph reconstructs that chronology accurately, maps all seven images to the right comments, and ends on the right root cause and fix. The blocking problem is that the terminal solution hard-requires `concurrent_varied_context_requests_and_aborts_trigger_race`, which is engineer-only inference (participant3, c42) that no clarification, start state, or volunteered_info ever grants. Secondary issues: the two blind edges bundle the still-valid diagnosis with the falsified version bumps, and two user answers speak in the maintainer's analytical voice._
+
+### Confirmed findings
+
+- [ ] 🟠 **required_but_ungettable** (medium) — `n/a`
+  - claim: [required_but_ungettable / high] at edges[e8_N7__N_terminal].solution.required_info.L2 -> "concurrent_varied_context_requests_and_aborts_trigger_race": the final solution edge hard-requires an info_id that is pure engineer inference and is granted by no clarification, no start-node info_state, and no volunteered_info.
+  - thread evidence: None
+  - suggested fix: None
+  - verifier: Independently confirmed by machine check over the graph: gettable set = 14 clarification info_ids + 6 volunteered + 4 start-node ids; the only ungettable id in any solution's required_info across all three solution edges is exactly e8.L2 'concurrent_varied_context_requests_and_aborts_trigger_race'. It is declared in edges[e5_N4__N5_x].solution.info_inferred_by_engineer, and e8.info_inferred_by_eng
+- [ ] 🟠 **node_state_semantics** (medium) — `n/a`
+  - claim: [node_state_semantics / medium] nodes N3_x/N4/N5_x/N6/N7 all keep system_state_id="S1" across four real Ollama upgrades, while the terminal edge e8 flips S1->S2 although no system change happens on it.
+  - thread evidence: None
+  - suggested fix: None
+  - verifier: Confirmed on both halves. Thread-side the four user-side system changes are real and dated: 0.6.7 (c26 "I'll install the new version on Monday" / c27 running it), 0.6.8 (c37 "I installed the new version" / c38 "ollama version is 0.6.8"), 0.7.0 (c45 "I installed yesterday the v0.7.0 version"), 0.7.1 (c56 "v0.7.1 is now running for ~2 days"). Graph-side every node N0..N7 carries system_state_id "S1"
+- [ ] 🟡 **future_knowledge_leak** (low) — `n/a`
+  - claim: [future_knowledge_leak / low] edges[e2].clarifications[requests_use_varying_context_sizes_and_can_be_cancelled].user_answer cites context size 49152, which had not yet been observed at this point in the thread.
+  - thread evidence: None
+  - suggested fix: None
+  - verifier: The literal fact-check holds. Grep over the raw thread: '49152' appears only in c27, c45, c47, c51, c53 — c27 is the 2025-05-04 post-0.6.7 capture, i.e. graph position N3_x, one node AFTER this edge. '98304' appears only in c24; the sizes actually on the record by the N1->N2 position are 32768 (c8/c9/c20), 8192 and 4096 (c8, c21), 98304 and 24576 (c24). So the trio "98304, 49152, and 24576" is an 
+
+### Refuted claims (auditor was wrong — do not act on these)
+
+- ~~blind_path_mislabeled~~: [blind_path_mislabeled / medium] edges e3 and e5 bundle the diagnosis the thread ACCEPTED with the version upgrades that were actually falsified, so the correct root-cause statement is encoded as part of a scored dead en
+  - why refuted: The thread facts are as the reviewer states (c25 participant3 proposes 0.6.7 -> c27 reporter "I see no changes"; c33/c42 reasoning -> c45 "I installed yesterday the v0.7.0 version. And I see the the problem"), but the encoding is legitimate, not defective. A blind path in this contract is an attempt actually falsified 
+- ~~unfaithful_reveal~~: [unfaithful_reveal / medium] edges[e2].clarifications[logs_show_health_check_unload_overlap_during_model_startup].user_answer recites the maintainer's own log dissection, including his derived "31 ms" figure, in the repo
+  - why refuted: Provenance as described is accurate (reporter posts only archives in c6/c11; the line selection and the 31ms phrasing are participant1's in c14/c15; the reporter's reaction in c18 is "Is this a feature or bug? ;)"), but that does not make the encoding a defect. The content of the answer is raw log evidence that lives i
+- ~~unfaithful_reveal~~: [unfaithful_reveal / low] edges[e4].clarifications[offending_runner_absent_from_scheduler_log].user_answer makes the user report "I could not find that PID in the log entries" — a finding produced by the maintainer, not 
+  - why refuted: Provenance is as stated (c38 reporter ships the capture and asks "Is this helpful?"; c39 participant3 replies "The offending PID does not appear in the log at all which indicates the leak is during the very early startup of the runner before it finished initialization"), but the graph already encodes this the way the r
+- ~~future_knowledge_leak~~: [future_knowledge_leak / low] the case title "Ollama leaves orphaned runner processes consuming VRAM after models unload" states the runner-process mechanism that edge e1 is supposed to establish, whereas the reporter's 
+  - why refuted: The contract scopes the no-later-knowledge rule to the Task body, and the body here is clean: "the VRAM stays allocated even though `ollama ps` shows nothing", model names, 0.6.6 on Linux/Nvidia/AMD, seen in 0.6.5/0.6.4 — no runner processes, no scheduler, no fix, faithful to the c0-era report. The title is curator-fac
+
+
 ## Review checklist
 
 > The graph is the case's ANSWER KEY, not a transcript: edge order need

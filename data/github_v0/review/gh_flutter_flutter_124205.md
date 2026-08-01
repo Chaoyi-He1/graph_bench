@@ -81,6 +81,20 @@ flowchart LR
 | `N4` |  | 0 | 0 | On an updated Flutter build, the field and page return to the correct position when the mobile keyboard opens and closes. I no longer see th |
 | `N_terminal` | ✓ | 0 | 0 | After updating Flutter, mobile web text fields remain directly above the virtual keyboard and the page geometry resets correctly when the ke |
 
+## Machine review (audit pass, adversarially verified)
+
+Auditor verdict: **minor_issues** · 0 of 2 findings survived independent refutation.
+
+_This case tests a 3-year Flutter web thread where mobile-web text fields get extra space above the virtual keyboard; the real answer is that Flutter mishandles mobile-web viewport geometry across keyboard transitions (reduced height + negative bottom view inset, c100/c101), identical to issue 175074, fixed by PR 179581 and cherry-picked to stable 3.38.6 (c108), then verified by several users (c109-c113). The graph is a faithful and unusually careful rendering of that answer key: both blind paths (resizeToAvoidBottomInset=false, avoid programmatic requestFocus) are genuinely falsified in the thread, the clarification chain follows the thread's real order (c0/c1 physical devices, c6/c7 renderer swap, c100 metrics, c108-c110 fixed-build retest), and all three user-executed probes are correctly modeled as clarification edges. I found no high-severity defect: no mislabeled or fabricated blind path, no ungettable required_info, no wrong root cause, and no future-knowledge leak into the Task body. Two low-severity fidelity issues remain around evidence attribution and the Flutter version pinned on the start node._
+
+### Refuted claims (auditor was wrong — do not act on these)
+
+- ~~image_misassignment~~: [image_misassignment / low] at graph.edges[e1_N0__N1].clarifications[physical_ios_and_android_devices_reproduce].images — The clarification whose answer asserts physical-iPhone reproduction attaches c14's iOS screenshot,
+  - why refuted: The images are correctly sourced (raw images[].where: img1/img2/img3 all = c14) and the edge comment already declares them: 'The three screenshots are the Android and iOS reproductions supplied in c14' — literally accurate. Nothing contradicts: (a) c14's Android device is a PHYSICAL Samsung Galaxy Tab A7 Lite / Android
+- ~~unfaithful_reveal~~: [unfaithful_reveal / low] at graph.nodes.N0.volunteered_info[flutter_3_7_9_initial_report] (and task body) — flutter_3_7_9_initial_report is declared as volunteered on the start node but no Flutter version appears anywhe
+  - why refuted: The premise misunderstands how volunteered_info is surfaced. In src/graph_bench/user_simulator/simulator.py:187 the opening turn does parts.extend(start.volunteered_info) (and responder.py:102 does the same on first arrival), so volunteered ids ARE delivered on top of task.body — the body is not required to restate the
+
+
 ## Review checklist
 
 > The graph is the case's ANSWER KEY, not a transcript: edge order need

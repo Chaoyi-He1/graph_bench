@@ -70,6 +70,20 @@ flowchart LR
 | `N3` |  | 0 | 0 | After upgrading from Mocha 10 to the latest Mocha, the original tests pass on Node.js 22.18 and I no longer need `--no-experimental-strip-ty |
 | `N_terminal` | ✓ | 0 | 0 | The project test suite runs successfully on Node.js 22.18 with the current Mocha version and without disabling Node's type-stripping feature |
 
+## Machine review (audit pass, adversarially verified)
+
+Auditor verdict: **minor_issues** · 0 of 2 findings survived independent refutation.
+
+_The case is a Node 22.18 LTS regression report where enabling type stripping by default broke a 7-year-old project's CI; the thread resolves the reporter's specific track when he discovers his project pins Mocha 10 and upgrading to the latest Mocha makes the tests pass without `--no-experimental-strip-types` (c19). The graph is a faithful, well-scoped model of that track: the diagnostic-to-fix chain (concrete error -> framework version + repro -> upgrade trial -> upgrade as fix) matches the thread's actual order, the mocha-upgrade trial is correctly modeled as a clarification measurement, and the graph explicitly refuses to generalize the resolution to the tsx/swc/jest/jasmine/node:test sub-threads. Two fidelity issues remain: the one blind path is a real falsified attempt but was performed against a different reproduction than the node it hangs off, and the root-cause wording asserts more mechanism specificity for the reporter's case than the thread established._
+
+### Refuted claims (auditor was wrong — do not act on these)
+
+- ~~fabricated_blind_path~~: [fabricated_blind_path / medium] at edges[3] e4_N2__N2_x (and node N2_x, incl. its volunteered_info "reverting_node_pr_58657_does_not_remove_failure"): The blind path is a real falsified attempt in the thread, but it was
+  - why refuted: The finding's own headline defect class is self-contradicting: the reviewer concedes ("Keep the blind edge (the revert genuinely never fixed anything)") that c30 is a real, tried-and-falsified attempt. Under the contract that is exactly what is_known_blind_path=true is for, and the aftermath node N2_x is correctly shap
+- ~~wrong_root_cause~~: [wrong_root_cause / medium] at satisfaction_conditions[0] (and, more weakly, e5_N3__terminal.solution.inference_hint): The satisfaction condition demands the agent state the ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX-retry-logic 
+  - why refuted: The two quotes are verbatim (c15 derives the mechanism from participant4's repro; c16 says "I think the repro from @participant4 is probably significantly different from what @participant3 or @reporter are seeing"), but the reviewer stops reading at c16. c16 is 2025-08-06T15:59; c19 (2025-08-07T06:00, the reporter hims
+
+
 ## Review checklist
 
 > The graph is the case's ANSWER KEY, not a transcript: edge order need

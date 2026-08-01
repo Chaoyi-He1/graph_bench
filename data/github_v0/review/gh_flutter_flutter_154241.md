@@ -88,6 +88,36 @@ flowchart LR
 | `N6` |  | 0 | 0 | After updating to camera_android_camerax 0.6.14, the camera preview is correctly oriented on the affected Samsung tablet and on the customer |
 | `N_terminal` | ✓ | 0 | 0 | The live CameraX preview stays correctly oriented as the physical device orientation changes after updating to camera_android_camerax 0.6.14 |
 
+## Machine review (audit pass, adversarially verified)
+
+Auditor verdict: **minor_issues** · 3 of 4 findings survived independent refutation.
+
+_The case is flutter/flutter#154241: a CameraX preview-rotation regression after camera_android_camerax 0.6.7+2 that took six months and three failed attempts (close-as-duplicate of the Impeller issue, the 0.6.12 "remove the rotation correction" release, and a fixed RotatedBox quarter-turn workaround) before PR 8629 / 0.6.14 fixed it by rebuilding the preview on orientation-stream updates and replacing the API-level heuristic with SurfaceProducer.handlesCropAndRotation(). The graph is a faithful and unusually careful rendering of that arc: all three blind paths were genuinely falsified in the thread, the root cause matches participant5's own summary in comment 161 nearly word for word, and the version probes (0.6.9, 0.6.14) are correctly typed as clarification edges. Defects found are fidelity-level only: one start-state/body inconsistency about the 0.6.7+2 version boundary, and a few user answers that quantify observations the maintainer (not the reporter) made. Nothing here inverts scoring._
+
+### Confirmed findings
+
+- [ ] 🟠 **start_state_body_inconsistency (reviewer labelled it future_knowledge_leak; the direction is actually the reverse - opening-report knowledge omitted from the start info_state)** (medium) — `graph.nodes.N0.info_state (vs task body) / info id regression_occurs_after_camerax_0_6_7_2 volunteered at N1_x`
+  - claim: The version boundary 'worked on 0.6.7+2, broken after' is already stated in the opening Task body, but the graph models it as new information that only surfaces at N1_x after the duplicate-close blind path, and the final solution e8 requires it as L1.
+  - thread evidence: Issue body, 'Additional' section: 'The issue first occurs with the `camera_android_camerax: 0.6.8+2` if I override the dependency to: `camera_android_camerax: 0.6.7+2` everything works as expected.' The graph's own body repeats it: 'The same preview worked with camera_android_camerax 0.6.7+2.' Yet N0.info_state contains only pixel1_camerax_preview_rotated_90_degrees, camera_0_11_0_2_uses_camerax_0_6_8_3, preview_expected_to_be_oriented_by_camera_preview, and N1_x.volunteered_info introduces regression_occurs_after_camerax_0_6_7_2 (reporter comment index 2).
+  - suggested fix: Either add regression_occurs_after_camerax_0_6_7_2 to N0.info_state (faithful to the body, and it also removes the situation where the only e8-required L1 ids are reachable solely by traversing the known-blind duplicate-close edge e1), or drop the 0.6.7+2 sentence from the Task body so the id is genuinely first surfaced at N1_x.
+  - verifier: Every factual leg checks out. Raw body, 'Additional' section: 'The issue first occurs with the `camera_android_camerax: 0.6.8+2` if I override the dependency to: `camera_android_camerax: 0.6.7+2` everything works as expected.' The graph body repeats it verbatim in spirit ('The same preview worked with camera_android_camerax 0.6.7+2'). N0.info_state = [pixel1_camerax_preview_rotated_90_degrees, cam
+- [ ] 🟡 **unfaithful_reveal (handler-derived measurement voiced by the simulated user)** (low) — `n/a`
+  - claim: The precise landscape-start quantification ('180 degrees off in landscape left or 90 degrees off in landscape right') is put in the user's mouth, but in the thread only the maintainer produced those numbers.
+  - thread evidence: None
+  - suggested fix: None
+  - verifier: Verified literally. c78 (participant25, user) gives only device/API and 'Please note that I am rotating the device in landscape mode before starting the app' - no degrees. c79 (participant5, the plugin maintainer/handler) is the only place in the entire thread where that pairing appears: 'a rotation that's off by 180 degrees when the app is started while the device is in landscape left and 90 degr
+- [ ] 🟡 **image_misassignment** (low) — `edges[e3_N2__N3].clarifications[*].images`
+  - claim: The two screenshots from the stretched-preview-vs-captured-photo comparison are attached to the device-matrix clarification, while the clarification that actually asks that question carries no images.
+  - thread evidence: raw images index: img1 and img2 both have where='c15'; comment 15 (participant3) is the photo_view comparison ('when I am in the preview ... the preview is not only rotated but also stretched ... However, the preview(photo_view) is not stretched'), which is exactly the content of the clarification captured_photo_is_not_stretched_like_live_preview (images: []). img1/img2 are instead listed under broader_device_and_orientation_reproductions together with img3-img6 (c18, the Pixel Tablet screenshots).
+  - suggested fix: Move gh_flutter_flutter_154241_img1.png and img2.png to the captured_photo_is_not_stretched_like_live_preview clarification and leave img3-img6 (c18) on the device-matrix clarification.
+  - verifier: Confirmed against the raw images index and the comment text. img1 and img2 both have where='c15'; c15 (participant3) is precisely the photo_view comparison: 'when I am in the preview ( before the photo is taken ) I can see the preview is not only rotated but also stretched ... However, the preview(photo_view) is not stretched', with the first image captioned 'This is the preview before taking the 
+
+### Refuted claims (auditor was wrong — do not act on these)
+
+- ~~unfaithful_reveal~~: The answer has the user assert 'On naturally landscape tablets the preview can be inverted by 180 degrees' at a graph position corresponding to mid-September, but at that point only the maintainer had measured 180 degree
+  - why refuted: The reviewer's own evidence refutes the finding. A USER does report exactly this in the thread: c87 (participant27, an affected developer, not the maintainer): 'I am able to reproduce the issue using the Android Emulator Pixel Tablet (API 33) ... the preview is rotated 180 degrees using both the Webcam and Virtual Scen
+
+
 ## Review checklist
 
 > The graph is the case's ANSWER KEY, not a transcript: edge order need

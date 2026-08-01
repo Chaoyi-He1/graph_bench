@@ -70,6 +70,35 @@ flowchart LR
 | `N4` |  | 0 | 0 | After running flutter clean and flutter build ios --config-only immediately before archiving, my archive validates successfully. An affected |
 | `N_terminal` | ✓ | 0 | 0 | The iOS device archive contains only the native frameworks needed by that build and passes App Store Connect validation without the LC_ENCRY |
 
+## Machine review (audit pass, adversarially verified)
+
+Auditor verdict: **needs_rework** · 2 of 5 findings survived independent refutation.
+
+_The case tests whether an agent, given an App Store Connect LC_ENCRYPTION_INFO validation failure after a Flutter 3.38.1 upgrade, can get past the folk remedy (upgrade to 3.38.2 + flutter clean) and reach the real cause: Flutter's xcode_backend `_embedNativeAssets` copies the whole build/native_assets/ios directory, so a stale simulator-only sqlite3arm64ios_sim.framework lands in the device archive. On the core answer key the graph is faithful — the blind path is genuinely falsified in the thread (c9), the root cause matches participant5's analysis (c19) confirmed by participant6 (c21) and participant4's Issue-1 classification (c71), and the reporter's own workaround confirmation (c72) is correctly modeled as verification rather than resolution. The defects are in the encoding: one satisfaction condition demands knowledge the conversation never surfaces, the engineer-side reproduction is encoded so a handler who asks the user to run it stalls, and one node's symptoms speak with engineer knowledge the reporter never had._
+
+### Confirmed findings
+
+- [ ] 🟠 **required_but_ungettable** (medium) — `n/a`
+  - claim: [required_but_ungettable / high] satisfaction_conditions[4] requires distinguishing the reporter's native-assets failure from the separate empty-native-assets LC_ENCRYPTION_INFO bug, which is never surfaced in the graph's info_state, clarifications, symptoms, or volunteered_info.
+  - thread evidence: None
+  - suggested fix: None
+  - verifier: Confirmed against both files. The graph's complete info_id inventory is the 14 ids listed in N_terminal.info_state; none of them touches an empty build/native_assets/ios directory, a counter-app repro, the 4b6e0bdc bisect, or a second AOT/App.framework defect. The three clarification answers on e2 and the two on e4 likewise never mention it. The only place the second bug appears anywhere in the gr
+- [ ] 🟡 **symptom_contains_diagnosis** (low) — `n/a`
+  - claim: [symptom_contains_diagnosis / medium] N3.symptoms_visible[0] states the causal trigger and the archive's internal contents as a user-visible symptom, but this is an engineer's reproduction finding, not something the reporter observed.
+  - thread evidence: None
+  - suggested fix: None
+  - verifier: Confirmed on the text. N3.symptoms_visible[0] reads 'The archived device app contains sqlite3arm64ios_sim.framework after a simulator build has been run, and App Store validation rejects that archive.' Naming the framework and the causal precondition is not in the reporter's words: at that point in the thread his knowledge is c14 ('I am surprised you didn't get the sqlite3 error like I did... Mayb
+
+### Refuted claims (auditor was wrong — do not act on these)
+
+- ~~measurement_class_violation~~: [measurement_class_violation / medium] edges[2] (e3_N2__N3): the simulator-then-device build comparison and archive inspection is a user-executable measurement but is typed solution_only, so an agent asking the user to r
+  - why refuted: The MEASUREMENT-CLASS rule covers 'handler-initiated measurements that the USER executes'. In this thread nobody asked the reporter to run that sequence, and the reporter never ran it. c15 is participant4 reporting his OWN reproduction ('Okay I was able to reproduce your issue'), and c17 is participant5 reporting his O
+- ~~graph_shape~~: [graph_shape / low] edges[0] (e1_N0__N1_x): the chain inverts thread order — N0's only out-edge is the falsified 3.38.2 + clean solution, while the thread's first handler action was the pubspec/error-log request.
+  - why refuted: The chronology in the citation is right (c0/c1 on 11-17, the 3.38.2 attempt at c8/c9 on 11-19/20), but chronological fidelity is not what the contract asks for: a task graph is a state machine answer key, not a transcript, and nothing requires out-edges to be ordered by the thread's clock. The encoding is also better s
+- ~~unfaithful_reveal~~: [unfaithful_reveal / low] edges[3].clarifications[1].user_answer_in_this_oncall: the merged user claims in the first person to have tested fixed main and 'validate and deploy my app', but the reporter never left the clea
+  - why refuted: This is the declared multi-user fold working as specified. The contract says multi-user threads are folded into ONE simulated user side and that the merge must be declared in an edge comment — e4's comment states it verbatim: 'The first answer is the original reporter's verification of the clean/config-only workaround.
+
+
 ## Review checklist
 
 > The graph is the case's ANSWER KEY, not a transcript: edge order need

@@ -69,6 +69,20 @@ flowchart LR
 | `N4` |  | 0 | 0 | After clearing the stream user data before submitting RST_STREAM, a setup that normally crashed six or seven times produced no crash for 16  |
 | `N_terminal` | ✓ | 0 | 0 | With the stream-user-data fix applied, the application continues processing HTTP/2 requests without the sporadic on_stream_close() crash dur |
 
+## Machine review (audit pass, adversarially verified)
+
+Auditor verdict: **minor_issues** · 0 of 2 findings survived independent refutation.
+
+_The case tests a long-running, non-reproducible use-after-free: nghttp2 keeps stream user data pointing at a Curl_easy handle that the application already completed and closed, so a delayed on_stream_close() callback dereferences freed state. The graph is a faithful rendering of the thread: both blind paths (upgrade to 8.2.x, upgrade to unpatched 8.5.0) were genuinely tried and genuinely still crashed (c15, c26, c28); the evidence chain (custom libcurl/multi app c30, lifecycle trace c31/c34/c37, crash-dump pointer + error_code stats c18) matches what was actually asked for and returned; the fix, root cause, commit hash and verification durations (16 hours, 2 days) are all quoted correctly from c39/c45/c47/c49. The two issues found are typing and ordering fidelity, not answer-key corruption: edge e1 types a maintainer-requested version *retest* as a solution_only blind path, and the crash-dump clarification is anchored three months later in the thread than it actually arrived._
+
+### Refuted claims (auditor was wrong — do not act on these)
+
+- ~~measurement_class_violation~~: e1 is typed solution_only with is_known_blind_path=true, but its own concrete_example describes a handler-requested version retest ("Retest with curl 8.2.0 or current git"), which the measurement-class rule classifies as
+  - why refuted: The thread contains BOTH a retest request and a genuine brush-off resolution, and the graph's graded fields are anchored on the latter, not the former. c8 (participant1): "Sure, and we might already have fixed it. Why don't you *start* with checking if this is already fixed?" and c13 (participant1): "Since we believe t
+- ~~graph_shape~~: The crash-dump clarification is placed downstream of N2_x (the curl 8.5.0 retest), but in the thread that evidence arrived three months before the 8.5.0 retest and came from a reporter still on an 8.0.1-based build, so t
+  - why refuted: The chronology the reviewer cites is accurate -- c18 (participant5) is 2023-09-01 on an 8.0.1-based beta, and the 8.5.0 retest that defines N2_x is c28 (reporter) 2023-12-19 -- but chronology is not the contract's ordering constraint. The contract states explicitly that "a task graph encodes a case's ANSWER KEY, not a 
+
+
 ## Review checklist
 
 > The graph is the case's ANSWER KEY, not a transcript: edge order need

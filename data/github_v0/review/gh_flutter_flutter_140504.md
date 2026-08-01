@@ -88,6 +88,32 @@ flowchart LR
 | `N6` |  | 0 | 0 | After receiving the corrected Chrome rollout, the hosted CanvasKit example works again on my Intel Mac with its JPG images, and other affect |
 | `N_terminal` | ✓ | 0 | 0 | The published Flutter CanvasKit website renders normally in the corrected Chrome version on Intel macOS, including its network JPEG images,  |
 
+## Machine review (audit pass, adversarially verified)
+
+Auditor verdict: **minor_issues** · 1 of 5 findings survived independent refutation.
+
+_The case tests a Flutter-web CanvasKit failure that turns out to be a Chromium ANGLE-on-Metal regression on Intel macOS, triggered specifically by network JPEG decoding, and finally fixed browser-side (Chrome 122.0.6261.129 / chromium issue 328302269). The graph is a faithful and unusually well-constructed rendering of that arc: the browser/channel narrowing, master-channel test, about:gpu + raw shader dump, JPEG-vs-PNG/WebP/GIF isolation, the BROWSER_IMAGE_DECODING_ENABLED=false probe, and the corrected-Chrome verification all map to real thread turns in the right order, and the root cause and satisfaction conditions match what participant3 and participant23 established. No blind path is mislabeled in a way that inverts the answer, and every required_info id is obtainable. The remaining issues are fidelity-level: the one blind path presents a one-sided outcome for a workaround that the thread says worked for most reporters, it dead-ends, and a couple of state/merge bookkeeping details are loose._
+
+### Confirmed findings
+
+- [ ] 🟡 **graph_shape** (low) — `nodes.N4_x (no outgoing edges) / edges[e6_N4__N4_x]`
+  - claim: N4_x is a non-terminal aftermath node with no outgoing edge at all, so an agent that takes the blind path has no modeled route back toward the terminal; the edge is also hung downstream of the JPEG isolation even though the attempt happened much earlier in the thread.
+  - thread evidence: The flag attempt and its falsification are c25 (2024-02-01) through c30/c35 (2024-02-06/08), whereas the JPEG-format isolation that defines N4 is c42-c50 (2024-03-01). The edge's own comment says "Thread c25-c35", contradicting its placement after N4. In the thread the investigation continued after the flag failed (c31 reporter keeps asking participant5 for a minimum example).
+  - suggested fix: Either add a recovery clarification edge from N4_x back onto the canonical line (e.g. to N5, matching c31 "Do you have a minimum example for which widget makes this crash?"), or re-anchor the blind edge at N3, whose info_state matches what was actually known when the flag was suggested.
+  - verifier: Half confirmed, half refuted. CONFIRMED: N4_x is is_terminal=false with zero out-edges, and this has a real runtime consequence - responder.py:620 comments "Dead-end node (e.g. N3_x): no canonical path -> fail" and sets termination_reason='failed_dead_end'. src/graph_bench/oncall_graph/rollbacks.py exists precisely because "the graph builder never emitted those return edges, leaving decoy destinat
+
+### Refuted claims (auditor was wrong — do not act on these)
+
+- ~~unfaithful_reveal~~: The aftermath node states flatly that enabling Out-of-process 2D canvas rasterization still throws the exception, but in the thread that flag worked for the clear majority of affected Intel-Mac users and failed for only 
+  - why refuted: The reviewer's census of the thread is accurate (c25/c35/c43/c49/c53/c71 report the flag working; only participant5 falsifies it), but that does not make the encoding unfaithful. c30 ("I tried this workaround but its not working for me") plus c32 ("No its throwing the same exception", with screenshot, on Chrome/Mac Int
+- ~~graph_shape~~: system_state_id does not advance where the user's system actually changed: N6 describes the machine after Chrome was updated to the corrected rollout yet stays on S1, and N4_x describes Chrome after a flags change and re
+  - why refuted: This is a critique of a uniform corpus convention, not of this graph. All 14 github_v0 graphs use exactly two system states - S1 for every investigation node and S2 for the terminal only - and all 22 blind-path aftermath nodes in the corpus keep their source node's system_state_id (0 of 22 advance it), so N4_x on S1 is
+- ~~multi_user_merge_undeclared~~: The BROWSER_IMAGE_DECODING_ENABLED=false result is spoken by the single simulated user, but in the thread the probe was answered by a different affected user than the reporter, and this edge's comment does not declare th
+  - why refuted: The factual half is right - c63 participant3 asks for the build, c64 participant14 answers "This works for me", and the reporter never reports running it - but the contract requires that the merge be declared in AN edge comment, not in every edge that consumes it. This graph declares it plainly and more than once: e4's
+- ~~graph_shape~~: A genuinely falsified attempt - 'update to the Chrome 123 Beta, it is fixed there' - exists in the thread but is only mentioned inside e7's comment, so an agent that proposes exactly that premature browser-update advice 
+  - why refuted: c69/c70 are quoted correctly (participant22 proposes the v123 Beta; the reporter answers "It still exists in Chrome v123 Beta for me" with a screenshot), so this would be an authorable blind path. But omitting it is not a defect: nothing in the contract requires exhaustive enumeration of every falsified suggestion, and
+
+
 ## Review checklist
 
 > The graph is the case's ANSWER KEY, not a transcript: edge order need

@@ -75,6 +75,33 @@ flowchart LR
 | `N4` |  | 0 | 0 | The instrumented unfixed builds reproduced the failed linearization assertion, while four initial runs with the fresh-request-ID patch and f |
 | `N_terminal` | ✓ | 0 | 0 | Antithesis and periodic robustness runs containing the fix complete without reproducing the stale-read linearization failure. |
 
+## Machine review (audit pass, adversarially verified)
+
+Auditor verdict: **minor_issues** · 2 of 4 findings survived independent refutation.
+
+_The case tests a long expert-driven diagnosis of an Antithesis-detected linearizability violation in etcd: from "a member's revision stalled while still serving reads/writes" through ordered write/read-index evidence, a falsified leadership/select-race guess, deep raft readOnly instrumentation, and finally the fresh-ReadIndex-request-ID fix (PR 21399) verified by fault-injection and periodic CI. The graph is highly faithful: the blind path is genuinely falsified in-thread, the final root cause and fix match the merged change and the maintainers' conclusion, all required_info is gettable, and every quoted log/number I checked reproduces exactly from the thread. Two fidelity issues remain (an image hooked to the wrong claim, and the July rev-3/155 datum being wired into the causal chain of a root cause the thread attributes elsewhere) plus one ordering nit; none of them inverts scoring._
+
+### Confirmed findings
+
+- [ ] 🟡 **image_misassignment** (low) — `graph.edges[e2_N1__N2].clarifications[failure_run_included_container_pause_and_network_slowdown].images[0] = data/github_v0/images/gh_etcd-io_etcd_20418_img4.png`
+  - claim: The screenshot attached to the fault-type clarification answer is not evidence about fault types; it is the Antithesis search 'Map' view showing that all 880 failed linearization examples branch off a single history.
+  - thread evidence: Image img4 comes from comment c24 (participant2), where it illustrates a different point in the same comment: 'If you go to this search and view the map, you'll notice that all the 880 failed examples, "branch off" from one history. ... So, my guess is that we actually only found the linearization bug 1 time.' The fault definitions in that same comment (docker pause ~2s, Slowed partition, Jammed clog, cpu-quota throttle) carry no image. I rendered the file to confirm: it is a dark 'Search results / Map' timeline with a single highlighted purple branch, not a fault description.
+  - suggested fix: Drop img4 from this clarification (the fault-definition answer had no image), or move it to a separate info_id capturing the 'the 880 failures are one find explored repeatedly / ~4x12h clean runs ≈ 99% confidence' fact from c24, which is currently unmodeled.
+  - verifier: Independently confirmed. The raw thread's own images[] manifest maps gh_etcd-io_etcd_20418_img4.png to source 'c24' (f6bb08b2-...), and in c24 the <img> tag sits immediately after the paragraph 'If you go to this search and view the map, you'll notice that all the 880 failed examples, "branch off" from one history' -- not after the numbered fault definitions (items 1-4: docker pause ~2s, Slowed pa
+- [ ] 🟡 **unfaithful_reveal** (low) — `graph.edges[e5_N3__N4].clarifications[fresh_request_id_patch_passed_targeted_and_periodic_runs].user_answer_in_this_oncall`
+  - claim: The verification answer already reports that the fix was merged and that CI has five consecutive clean runs, i.e. the user states the fix is landed before the solution edge e6 proposes it.
+  - thread evidence: The 0/4 patched runs are c32 (2026-02-28, 'Runs with fix 05c978844f...: 0/4 runs detected issue'), but 'Merged https://github.com/etcd-io/etcd/pull/21399' is c48 (2026-03-01), the 3-extra-copies periodic run is c49 (2026-03-02) and 'no failures since March 2, 5 consecutive passes' is c55 (2026-03-04) - all strictly after the point this clarification sits at.
+  - suggested fix: Split into two info_ids: the pre-merge targeted result (2/3 unfixed vs 0/4 patched, from c32) on e5, and the post-merge periodic/CI confirmation as the terminal-node evidence after e6.
+  - verifier: Confirmed against the thread. e5's user_answer merges four separated moments: c32 (2026-02-28) gives '2/3 runs that detected issue' and 'Runs with fix 05c978844f...: 0/4 runs detected issue'; but 'Merged https://github.com/etcd-io/etcd/pull/21399' is c48 (2026-03-01), 'Took todays periodic run on main branch and run it in 3 additional copies' is c49 (2026-03-02, = img5), and 'On CI no failures sin
+
+### Refuted claims (auditor was wrong — do not act on these)
+
+- ~~wrong_root_cause~~: The rev-3-vs-155 mismatch from the original July run is wired in as hard evidence for the ReadIndex-context-reuse root cause, but the thread's last unrefuted analysis of that specific observation attributes it to a diffe
+  - why refuted: The reviewer's factual premise checks out (c30 by participant3 does attribute the Revision-3 value on etcd1 to a snapshot restore logging 'kvstore restored current-rev:1' and links #20271; no later comment rebuts it; '20271' appears only in c30). But the conclusion does not follow under the semantic contract. (a) The g
+- ~~graph_shape~~: Two of the e2 clarification answers are only given in the thread after the leadership/select-race blind guess had already been proposed and falsified, so the graph's clarification order does not match the thread's actual
+  - why refuted: The timestamps are as the reviewer states (questions c17 2026-02-25T18:21 and c18 18:27; blind guess c19 23:47 'First blind guess on root cause: Race on select'; falsification c23 2026-02-26T21:18 'Out of 3 runs, the last one got a reproduction on branch with the fix'; answers only in c24 2026-02-26T22:12). But under t
+
+
 ## Review checklist
 
 > The graph is the case's ANSWER KEY, not a transcript: edge order need

@@ -76,6 +76,34 @@ flowchart LR
 | `N4` |  | 0 | 0 | After updating an affected host to Docker 28.0.1, container forwarding and internal routing work again without manually rearranging the fire |
 | `N_terminal` | ✓ | 0 | 0 | Containers can communicate over the affected forwarded network paths after updating to Docker 28.0.1. |
 
+## Machine review (audit pass, adversarially verified)
+
+Auditor verdict: **needs_rework** · 1 of 6 findings survived independent refutation.
+
+_The case tests a Docker 28.0.0 firewall-rule-ordering regression surfacing as containers losing Tailscale connectivity, where the real culprit is Tailscale's stateful-filtering DROP in ts-forward being reached before Docker's per-bridge ACCEPT. The graph is structurally sound and faithful for the first two thirds: the DOCKER-USER rule-move blind path is real and correctly labeled, the stateful-filtering check and toggle probe are correctly typed as measurements, and the multi-user merge is declared. The fidelity breaks at the end: the graph makes "upgrade to Docker 28.0.1" the mandated durable fix for the Tailscale scenario and demotes disabling stateful filtering to a temporary workaround, whereas in the thread the maintainer doubted a rule rearrangement would fix the Tailscale case, no Tailscale participant ever tested 28.0.1, and the reporter's confirmed resolution was `--stateful-filtering=false`. The 28.0.1 verification is also placed as a prerequisite clarification before the edge that proposes 28.0.1, inverting the thread's order._
+
+### Confirmed findings
+
+- [ ] 🟡 **symptom_contains_diagnosis** (low) — `graph.nodes.N3.symptoms_visible[1]`
+  - claim: "The default Docker 28 configuration still loses Tailscale connectivity if stateful filtering remains enabled" is a causal generalization/diagnosis, not an observation in the user's words.
+  - thread evidence: What the users actually reported at this point is only the two concrete observations: c36 "i disabled it, upgrade to docker 28 and all running fine" and c39 (same). The conditional causal statement is the maintainer's analysis from c33, not a user-visible symptom.
+  - suggested fix: Reduce N3.symptoms_visible to the observation ("After setting stateful filtering to false and upgrading to Docker 28, container-to-Tailscale traffic works; with the setting on it did not") and leave the causal claim to info_inferred_by_engineer.
+  - verifier: Confirmed against the contract's literal wording. Rule 2: "symptoms_visible contains ONLY observable phenomena in the user's first-person words — never diagnoses, causes, advice, or verdicts." N3.symptoms_visible[1] is third-person, generalizes beyond the user's own host ("The default Docker 28 configuration"), and states a conditional cause attribution; the users' actual words at that point are o
+
+### Refuted claims (auditor was wrong — do not act on these)
+
+- ~~wrong_root_cause~~: The graph mandates "Docker 28.0.1 or later" as the durable fix for the Tailscale + stateful-filtering case and demotes `tailscale set --stateful-filtering=false` to a mere temporary workaround, but the thread never estab
+  - why refuted: The label is wrong: the graph's ROOT CAUSE is exactly c33's finding. satisfaction_conditions[0] says "Docker 28.0.0 firewall/FORWARD rule-ordering regression interacting with Tailscale stateful filtering, not a DNS resolver regression", and required_elements_for_full_match includes identifies_docker28_firewall_rule_ord
+- ~~graph_shape~~: The 28.0.1 verification is modeled as a clarification that must be collected BEFORE the solution edge that proposes 28.0.1, inverting the thread's order and making the answer reachable only by first instructing the user 
+  - why refuted: Both halves are explicitly sanctioned by the contract. (a) Chronology: the authoring spec states the graph "must encode the case's ANSWER KEY, not a transcript: a node's out-edges are the known moves with known outcomes at that state, and edge order need not mirror thread chronology." So c49/c50-before-c51 is not a con
+- ~~unfaithful_reveal~~: The simulated user states that Docker 28.0.1 restored connectivity on "an affected host" and "the other affected hosts", which reads as the Tailscale host being fixed by 28.0.1 — a report no participant in the Tailscale 
+  - why refuted: The wording is deliberately scoped and never claims the Tailscale path. e5's user_answer says "container routing works again" and "restored connectivity without manually changing iptables" — that maps to c51 ("we applied 28.0.1 ... this version IS WORKING", internal routing) and c53 ("I haven't even downgraded or touch
+- ~~terminal_semantics~~: N3 sets user_perceives_resolved=false even though N3 is exactly the state where the reporter declared the problem solved.
+  - why refuted: The proposed fix is not what the field means in this codebase. user_simulator/responder.py:_apply_satisfaction sets termination_reason='premature_satisfaction' whenever a non-terminal destination node has user_perceives_resolved=true, and simulator.py:_TERMINAL_REASONS includes 'premature_satisfaction', so is_terminal(
+- ~~graph_shape~~: The system state is held at S1 across two real changes to the user's system — disabling Tailscale stateful filtering plus upgrading to Docker 28 (N3), and installing Docker 28.0.1 (N4) — and only flips to S2 on the termi
+  - why refuted: The graph follows the repo's explicit convention verbatim. src/graph_bench/pipeline/prompts.py rule 1: "Node = (system_state_id, info_state). system_state_id stays 'S1' while the world is unchanged; the terminal node after the fix ships is 'S2'." docs/method.md:20 repeats it: "Most nodes share one system state; what ev
+
+
 ## Review checklist
 
 > The graph is the case's ANSWER KEY, not a transcript: edge order need
