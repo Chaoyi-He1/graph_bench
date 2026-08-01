@@ -13,6 +13,8 @@ Design goal: an evaluation where a simulated user can only reveal what a real us
 
 ## 2. The causal graph
 
+**The graph is the case's ANSWER KEY, not a transcript.** Edge order need not mirror thread chronology, and a node's out-edges are the known moves with known outcomes at that state — reviewers and auditors repeatedly mistake chronology mismatch for a defect, so this is stated up front. What must mirror the thread exactly is *who knew what, when*.
+
 Each resolved real-world support thread is annotated as a state machine.
 
 **Node = (system_state_id, info_state).** `system_state_id` changes only when the user's world actually changes (a fix applied and kept, a release installed). Most nodes share one system state; what evolves during investigation is `info_state` — the monotonically growing set of surfaced information ids. Each node carries `symptoms_visible`: only observable phenomena, never diagnoses or advice. Nodes may carry `volunteered_info` (revealed on first arrival) and attachments evidencing the symptoms.

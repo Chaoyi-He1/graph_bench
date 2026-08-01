@@ -1,30 +1,30 @@
 {
  "task_id": "pg_bug_18158",
- "title": "Assert in pgstat_report_stat() fails when a backend shuts down with pending stats",
- "body": "On PostgreSQL 16.0 on Ubuntu 22.04, while running check-world repeatedly on a slow device, all tests passed but the system journal recorded a postgres crash. The recovery test log shows `Assert(\"!pgStatLocal.shmem->is_shutdown\")` failing in `pgstat_report_stat()` during shutdown of a walsender with pending statistics. I can reproduce it in `t/012_subtransactions.pl` by occasionally making a nowait call in `pgstat_flush_pending_entries()` report that it did not flush; the test itself still reports PASS while the assertion appears in the server log.",
+ "title": "WAL sender hits pgstat_report_stat() shutdown assertion with pending statistics",
+ "body": "On PostgreSQL 16.0 on Ubuntu 22.04, I found a server crash in the journal while running check-world repeatedly on a slow device, even though all tests reported success. The recovery test log contains `TRAP: failed Assert(\"!pgStatLocal.shmem->is_shutdown\")` in `pgstat_report_stat()`, with a WAL sender exiting through `shmem_exit()`. It occurs when the WAL sender still has pending statistics during server shutdown. I can make it reproduce easily in `012_subtransactions.pl` by occasionally making a nowait call in `pgstat_flush_pending_entries()` behave as if it did not flush; the TAP test still passes, but the assertion appears in the server log.",
  "graph": {
   "start_node": "N0",
   "nodes": {
    "N0": {
     "system_state_id": "S1",
     "info_state": [
-     "postgresql_16_ubuntu_slow_check_world",
-     "tests_pass_but_server_log_has_assertion_crash",
-     "walsender_shutdown_with_pending_stats",
-     "forced_nowait_flush_failure_reproduces_assertion",
-     "assertion_stack_reaches_pgstat_report_stat_from_shmem_exit"
+     "check_world_passes_while_server_log_contains_pgstat_shutdown_assert",
+     "assert_occurs_in_walsender_exit_path",
+     "walsender_has_pending_stats_during_server_shutdown",
+     "empty_pending_stats_path_returns_before_assert",
+     "forced_nowait_flush_failure_reproduces_assert",
+     "opening_stack_trace_runs_through_pgstat_report_stat_and_shmem_exit"
     ],
     "symptoms_visible": [
-     "A recovery test reports PASS, but its server log contains `TRAP: failed Assert(\"!pgStatLocal.shmem->is_shutdown\")` from a walsender exiting through `pgstat_report_stat()` and `shmem_exit()`."
+     "My check-world run reports that all tests passed, but the system journal and recovery log contain `TRAP: failed Assert(\"!pgStatLocal.shmem->is_shutdown\")` from `pgstat_report_stat()`.",
+     "The crashing process is a WAL sender, and its logged stack runs through `pgstat_report_stat()`, `shmem_exit()` and `proc_exit()`.",
+     "When I occasionally make a nowait pending-statistics flush report no flush, `012_subtransactions.pl` still passes but its primary-server log contains the same assertion."
     ],
     "is_terminal": false,
-    "label": "N0 shutdown assertion reported",
+    "label": "N0 shutdown assertion reported and reproduced",
     "volunteered_info": [
-     "postgresql_16_ubuntu_slow_check_world",
-     "tests_pass_but_server_log_has_assertion_crash",
-     "walsender_shutdown_with_pending_stats",
-     "forced_nowait_flush_failure_reproduces_assertion",
-     "assertion_stack_reaches_pgstat_report_stat_from_shmem_exit"
+     "forced_nowait_flush_failure_reproduces_assert",
+     "opening_stack_trace_runs_through_pgstat_report_stat_and_shmem_exit"
     ],
     "user_perceives_resolved": false,
     "symptom_images": []
@@ -32,42 +32,41 @@
    "N1": {
     "system_state_id": "S1",
     "info_state": [
-     "postgresql_16_ubuntu_slow_check_world",
-     "tests_pass_but_server_log_has_assertion_crash",
-     "walsender_shutdown_with_pending_stats",
-     "forced_nowait_flush_failure_reproduces_assertion",
-     "assertion_stack_reaches_pgstat_report_stat_from_shmem_exit",
-     "rel17_buildfarm_recurrence",
-     "assertion_can_leave_expected_stats_missing"
+     "check_world_passes_while_server_log_contains_pgstat_shutdown_assert",
+     "assert_occurs_in_walsender_exit_path",
+     "walsender_has_pending_stats_during_server_shutdown",
+     "empty_pending_stats_path_returns_before_assert",
+     "forced_nowait_flush_failure_reproduces_assert",
+     "opening_stack_trace_runs_through_pgstat_report_stat_and_shmem_exit",
+     "rel17_buildfarm_recovery_test_hits_same_walsender_assert",
+     "buildfarm_run_observes_missing_pg_stat_statements_rows"
     ],
     "symptoms_visible": [
-     "The same walsender assertion occurs on a REL_17_STABLE buildfarm run, where a recovery test also observes missing expected `pg_stat_statements` entries."
+     "I found the same WAL-sender assertion in a REL_17_STABLE buildfarm recovery run.",
+     "That run also reported fewer rows than expected when checking `pg_stat_statements` on the regression database."
     ],
     "is_terminal": false,
-    "label": "N1 stable-branch recurrence confirmed",
-    "volunteered_info": [
-     "rel17_buildfarm_recurrence",
-     "assertion_can_leave_expected_stats_missing"
-    ],
+    "label": "N1 independent stable-branch occurrence surfaced",
+    "volunteered_info": [],
     "user_perceives_resolved": false,
     "symptom_images": []
    },
    "N2": {
     "system_state_id": "S1",
     "info_state": [
-     "postgresql_16_ubuntu_slow_check_world",
-     "tests_pass_but_server_log_has_assertion_crash",
-     "walsender_shutdown_with_pending_stats",
-     "forced_nowait_flush_failure_reproduces_assertion",
-     "assertion_stack_reaches_pgstat_report_stat_from_shmem_exit",
-     "rel17_buildfarm_recurrence",
-     "assertion_can_leave_expected_stats_missing",
-     "wholesale_87a6690_backpatch_too_invasive_for_stable_branches",
-     "shutdown_assertion_guarantee_invalid_for_walsenders",
-     "targeted_v15_v17_walsender_shutdown_patch_available"
+     "check_world_passes_while_server_log_contains_pgstat_shutdown_assert",
+     "assert_occurs_in_walsender_exit_path",
+     "walsender_has_pending_stats_during_server_shutdown",
+     "empty_pending_stats_path_returns_before_assert",
+     "forced_nowait_flush_failure_reproduces_assert",
+     "opening_stack_trace_runs_through_pgstat_report_stat_and_shmem_exit",
+     "rel17_buildfarm_recovery_test_hits_same_walsender_assert",
+     "buildfarm_run_observes_missing_pg_stat_statements_rows",
+     "stable_shutdown_ordering_does_not_guarantee_no_pending_walsender_stats",
+     "targeted_walsender_shutdown_patch_proposed"
     ],
     "symptoms_visible": [
-     "Unpatched v15 through v17 branches can still hit the shutdown assertion when a walsender retains pending statistics."
+     "Without the proposed patch, a WAL sender can still log the shutdown assertion when pending statistics remain."
     ],
     "is_terminal": false,
     "label": "N2 targeted stable-branch patch proposed",
@@ -78,47 +77,48 @@
    "N3": {
     "system_state_id": "S1",
     "info_state": [
-     "postgresql_16_ubuntu_slow_check_world",
-     "tests_pass_but_server_log_has_assertion_crash",
-     "walsender_shutdown_with_pending_stats",
-     "forced_nowait_flush_failure_reproduces_assertion",
-     "assertion_stack_reaches_pgstat_report_stat_from_shmem_exit",
-     "rel17_buildfarm_recurrence",
-     "assertion_can_leave_expected_stats_missing",
-     "wholesale_87a6690_backpatch_too_invasive_for_stable_branches",
-     "shutdown_assertion_guarantee_invalid_for_walsenders",
-     "targeted_v15_v17_walsender_shutdown_patch_available",
-     "pg_prng_probe_reproduces_before_patch",
-     "targeted_patch_verified_no_assertion"
+     "check_world_passes_while_server_log_contains_pgstat_shutdown_assert",
+     "assert_occurs_in_walsender_exit_path",
+     "walsender_has_pending_stats_during_server_shutdown",
+     "empty_pending_stats_path_returns_before_assert",
+     "forced_nowait_flush_failure_reproduces_assert",
+     "opening_stack_trace_runs_through_pgstat_report_stat_and_shmem_exit",
+     "rel17_buildfarm_recovery_test_hits_same_walsender_assert",
+     "buildfarm_run_observes_missing_pg_stat_statements_rows",
+     "stable_shutdown_ordering_does_not_guarantee_no_pending_walsender_stats",
+     "targeted_walsender_shutdown_patch_proposed",
+     "pg_prng_nowait_injection_is_reliable_reproducer",
+     "targeted_walsender_patch_verified_by_reporter"
     ],
     "symptoms_visible": [
-     "Using the `pg_prng_double()` probe reproduces the assertion before the patch; with the targeted patch applied, the recovery test completes without the assertion."
+     "With the proposed patch applied, my test run using the 10% `pg_prng_double()` nowait-flush injection completes without the shutdown assertion."
     ],
     "is_terminal": false,
-    "label": "N3 targeted patch verified",
-    "volunteered_info": [],
+    "label": "N3 targeted patch verified with reliable reproducer",
+    "volunteered_info": [
+     "pg_prng_nowait_injection_is_reliable_reproducer"
+    ],
     "user_perceives_resolved": false,
     "symptom_images": []
    },
    "N_terminal": {
     "system_state_id": "S2",
     "info_state": [
-     "postgresql_16_ubuntu_slow_check_world",
-     "tests_pass_but_server_log_has_assertion_crash",
-     "walsender_shutdown_with_pending_stats",
-     "forced_nowait_flush_failure_reproduces_assertion",
-     "assertion_stack_reaches_pgstat_report_stat_from_shmem_exit",
-     "rel17_buildfarm_recurrence",
-     "assertion_can_leave_expected_stats_missing",
-     "wholesale_87a6690_backpatch_too_invasive_for_stable_branches",
-     "shutdown_assertion_guarantee_invalid_for_walsenders",
-     "targeted_v15_v17_walsender_shutdown_patch_available",
-     "pg_prng_probe_reproduces_before_patch",
-     "targeted_patch_verified_no_assertion",
-     "fix_applied_as_4801610f7c66_to_v15_v17"
+     "check_world_passes_while_server_log_contains_pgstat_shutdown_assert",
+     "assert_occurs_in_walsender_exit_path",
+     "walsender_has_pending_stats_during_server_shutdown",
+     "empty_pending_stats_path_returns_before_assert",
+     "forced_nowait_flush_failure_reproduces_assert",
+     "opening_stack_trace_runs_through_pgstat_report_stat_and_shmem_exit",
+     "rel17_buildfarm_recovery_test_hits_same_walsender_assert",
+     "buildfarm_run_observes_missing_pg_stat_statements_rows",
+     "stable_shutdown_ordering_does_not_guarantee_no_pending_walsender_stats",
+     "targeted_walsender_shutdown_patch_proposed",
+     "pg_prng_nowait_injection_is_reliable_reproducer",
+     "targeted_walsender_patch_verified_by_reporter"
     ],
     "symptoms_visible": [
-     "The verified targeted fix is applied as commit `4801610f7c66` across the PostgreSQL v15 through v17 branches."
+     "The recovery test completes without the `pgStatLocal.shmem->is_shutdown` assertion when a WAL sender exits with pending statistics."
     ],
     "is_terminal": true,
     "label": "terminal resolved",
@@ -135,41 +135,41 @@
     "to": "N1",
     "clarifications": [
      {
-      "info_id": "rel17_buildfarm_recurrence",
-      "level": "L2_inferable",
+      "info_id": "rel17_buildfarm_recovery_test_hits_same_walsender_assert",
+      "level": "L1_basic",
       "question_patterns": [
-       "Does this still occur on a currently maintained stable branch?",
-       "Is there independent evidence of the same assertion outside the original PostgreSQL 16 reproduction?"
+       "Has the same assertion appeared on another supported branch or test environment?",
+       "Is there an independent occurrence showing this is not limited to your original PostgreSQL 16 run?"
       ],
-      "user_answer_in_this_oncall": "Yes. A skink REL_17_STABLE buildfarm run hit the same assertion in a walsender during `recovery/027_stream_regress`.",
+      "user_answer_in_this_oncall": "I found what looks like the same failure in a REL_17_STABLE buildfarm recovery run. Its primary log says the physical replication slot was released and then shows `TRAP: failed Assert(\"!pgStatLocal.shmem->is_shutdown\")` in a WAL sender.",
       "images": [],
       "counterfactual_candidates": [
        {
         "type": "extreme",
-        "answer": "No maintained branch reproduces it; the assertion only appears in my locally modified PostgreSQL 16 tree.",
+        "answer": "I have only seen it in my locally modified PostgreSQL 16 tree; there is no occurrence in an unmodified stable-branch run.",
         "solution_should_change": true
        },
        {
         "type": "minor",
-        "answer": "The same assertion occurred on a different REL_17_STABLE buildfarm animal.",
+        "answer": "The same assertion appears in a different REL_17_STABLE recovery test, still in a WAL sender during shutdown.",
         "solution_should_change": false
        }
       ]
      },
      {
-      "info_id": "assertion_can_leave_expected_stats_missing",
-      "level": "L3_specific",
+      "info_id": "buildfarm_run_observes_missing_pg_stat_statements_rows",
+      "level": "L1_basic",
       "question_patterns": [
-       "Did the independent occurrence have any visible test consequence?",
-       "What failed around the assertion in the buildfarm run?"
+       "What did the affected recovery test observe before the assertion appeared?",
+       "Did the independent run have any visible test failure associated with the server crash?"
       ],
-      "user_answer_in_this_oncall": "The recovery test expected CREATE, DELETE, INSERT, SELECT, and UPDATE entries from `pg_stat_statements`, but only CREATE and SELECT were present.",
+      "user_answer_in_this_oncall": "The run failed its `pg_stat_statements` contents check. I got only `CREATE|f` and `SELECT|t`, while the expected output also had DELETE, INSERT and UPDATE rows.",
       "images": [],
       "counterfactual_candidates": []
      }
     ],
     "solution": null,
-    "comment": "The reporter supplied a later REL_17_STABLE buildfarm occurrence, confirming that the original PostgreSQL 16 report remained relevant and could coincide with missing expected statistics."
+    "comment": "The later buildfarm evidence is folded into the simulated reporter side. It confirms the same WAL-sender assertion on REL_17_STABLE and records only the observed test output, not an engineer's causal interpretation."
    },
    {
     "edge_id": "e2_N1__N2",
@@ -178,45 +178,43 @@
     "to": "N2",
     "clarifications": [],
     "solution": {
-     "intent": "Prepare a conservative stable-branch fix that handles pending statistics during WAL sender shutdown without wholesale backpatching the invasive shutdown-sequence rework.",
+     "intent": "Use a narrow stable-branch fix for the shutdown race: relax the shutdown assertion only for WAL sender processes and make `pgstat_shutdown_hook()` tolerate statistics that remain pending for a WAL sender, while preserving the assertion for other backend types.",
      "approach_keywords": [
       "walsender_shutdown",
+      "pgstat_shutdown_hook",
       "pending_statistics",
       "targeted_assertion_exception",
-      "pgstat_shutdown_hook",
-      "stable_branch_backpatch"
+      "stable_branch_fix"
      ],
-     "concrete_example": "For v15 through v17, lift the shutdown assertion only for WAL senders and adjust `pgstat_shutdown_hook()` to cope with statistics that may still remain for a WAL sender at shutdown.",
+     "concrete_example": "For PostgreSQL 15 through 17, exempt WAL senders from the `!pgStatLocal.shmem->is_shutdown` assertion and adjust `pgstat_shutdown_hook()` so residual WAL-sender statistics at shutdown are handled safely. Do not import the substantially reworked shutdown sequence wholesale into the stable branches.",
      "required_elements_for_full_match": [
-      "limits_the_assertion_change_to_wal_senders",
-      "handles_remaining_stats_in_pgstat_shutdown_hook",
-      "targets_v15_through_v17",
-      "avoids_wholesale_backpatch_of_87a6690cc69"
+      "limits_assertion_relaxation_to_wal_senders",
+      "adjusts_pgstat_shutdown_hook_for_remaining_walsender_stats",
+      "preserves_assertion_for_other_process_types"
      ],
      "required_info": {
       "L1": [
-       "walsender_shutdown_with_pending_stats"
+       "assert_occurs_in_walsender_exit_path",
+       "walsender_has_pending_stats_during_server_shutdown",
+       "rel17_buildfarm_recovery_test_hits_same_walsender_assert"
       ],
       "L2": [
-       "rel17_buildfarm_recurrence"
+       "empty_pending_stats_path_returns_before_assert"
       ],
-      "L3": [
-       "assertion_stack_reaches_pgstat_report_stat_from_shmem_exit"
-      ]
+      "L3": []
      },
      "info_inferred_by_engineer": [
-      "wholesale_87a6690_backpatch_too_invasive_for_stable_branches",
-      "shutdown_assertion_guarantee_invalid_for_walsenders",
-      "targeted_v15_v17_walsender_shutdown_patch_available"
+      "stable_shutdown_ordering_does_not_guarantee_no_pending_walsender_stats",
+      "targeted_walsender_shutdown_patch_proposed"
      ],
      "is_composite": false,
      "composed_of": [],
      "is_known_blind_path": false,
      "is_shortcut": false,
      "shortcut_skipped_info": [],
-     "inference_hint": null
+     "inference_hint": "The reporter established that pending WAL-sender statistics can reach `pgstat_report_stat()` after shared statistics shutdown. Engineers inferred that the stable-branch shutdown ordering does not provide the guarantee assumed by the assertion and designed the WAL-sender-specific exception plus shutdown-hook handling."
     },
-    "comment": "The maintainers rejected wholesale stable-branch application of the newer shutdown rework as too invasive. The proposed patch preserves the assertion elsewhere while accounting for the WAL sender shutdown ordering."
+    "comment": "The thread considered backpatching an equivalent of 87a6690cc69, then rejected that wholesale approach as too invasive for stable branches. The proposed patch instead narrows the exception to WAL senders and handles their residual pending statistics."
    },
    {
     "edge_id": "e3_N2__N3",
@@ -225,112 +223,89 @@
     "to": "N3",
     "clarifications": [
      {
-      "info_id": "pg_prng_probe_reproduces_before_patch",
+      "info_id": "targeted_walsender_patch_verified_by_reporter",
       "level": "L3_specific",
       "question_patterns": [
-       "Can you provide a reliable probe that reproduces the failure before applying the patch?",
-       "Why might the original `rand()` injection fail to reproduce consistently, and can it be made reliable?"
+       "Can you apply the proposed WAL-sender patch and rerun your forced nowait-flush reproducer?",
+       "Please test the patch under the shutdown race and report whether the assertion still appears."
       ],
-      "user_answer_in_this_oncall": "Use `pg_prng_double(&pg_global_prng_state) < 0.1` for the occasional nowait flush failure. The original `rand()` can produce the same sequence on every macOS run, while the PostgreSQL PRNG probe reliably exposes the failure before the patch.",
+      "user_answer_in_this_oncall": "The patch works for me test-wise. With it applied, the recovery test completes without the assertion.",
       "images": [],
       "counterfactual_candidates": [
        {
         "type": "extreme",
-        "answer": "The PostgreSQL PRNG probe cannot reproduce the assertion either, even on the unpatched tree.",
+        "answer": "The same WAL-sender assertion still appears with the patch applied when the nowait flush is forced to fail.",
         "solution_should_change": true
        },
        {
         "type": "minor",
-        "answer": "The PRNG probe reproduces with a 5% injection rate instead of 10%.",
-        "solution_should_change": false
-       }
-      ]
-     },
-     {
-      "info_id": "targeted_patch_verified_no_assertion",
-      "level": "L3_specific",
-      "question_patterns": [
-       "Please test the targeted patch with the reliable PRNG probe. Does the assertion still occur?",
-       "Does the proposed v15-v17 patch fix the recovery test under forced nowait flush failures?"
-      ],
-      "user_answer_in_this_oncall": "The patch works for me test-wise. The maintainer also reproduced the failure before the patch with that probe and got successful runs after applying the patch.",
-      "images": [],
-      "counterfactual_candidates": [
-       {
-        "type": "extreme",
-        "answer": "The same walsender assertion still occurs with the targeted patch applied.",
-        "solution_should_change": true
-       },
-       {
-        "type": "irrelevant",
-        "answer": "The patched test takes slightly longer to run.",
+        "answer": "The patched test passes repeatedly and no assertion appears, but each run takes longer on my slow machine.",
         "solution_should_change": false
        }
       ]
      }
     ],
     "solution": null,
-    "comment": "This is a handler-requested test measurement, not the final state change. The reporter corrected the nondeterministic reproduction method and verified the patch; the maintainer independently confirmed before/after behavior."
+    "comment": "Reporter verification from c5. In the same response, the reporter volunteered a more reliable reproducer using `pg_prng_double(&pg_global_prng_state) < 0.1`, noting that plain `rand()` produced the same sequence on macOS but varying sequences on Linux. That unprompted detail is recorded in N3.volunteered_info."
    },
    {
-    "edge_id": "e4_N3__terminal",
+    "edge_id": "e4_N3__N_terminal",
     "edge_type": "solution_only",
     "from": "N3",
     "to": "N_terminal",
     "clarifications": [],
     "solution": {
-     "intent": "Apply the verified targeted WAL sender shutdown fix to all affected stable branches.",
+     "intent": "Apply the reporter-verified stable-branch patch that permits pending statistics during WAL-sender shutdown without weakening the assertion for unrelated backend types.",
      "approach_keywords": [
-      "commit_4801610f7c66",
-      "backpatch_v15_v17",
-      "walsender_only_assertion_lift",
-      "shutdown_hook_pending_stats"
+      "walsender_specific_fix",
+      "pgstat_shutdown_hook",
+      "retain_assert_elsewhere",
+      "postgresql_15_16_17"
      ],
-     "concrete_example": "Apply the targeted fix as commit `4801610f7c66` in the v15 through v17 branches: permit the WAL sender shutdown case and make the shutdown hook tolerate statistics still pending there, while retaining the assertion for other process types.",
+     "concrete_example": "Apply the targeted patch committed as 4801610f7c66 for PostgreSQL 15 through 17: WAL senders may pass the shutdown check, and `pgstat_shutdown_hook()` safely copes with their remaining statistics; other process types retain the assertion.",
      "required_elements_for_full_match": [
-      "identifies_commit_4801610f7c66",
-      "states_backpatch_range_v15_through_v17",
-      "keeps_change_targeted_to_wal_sender_shutdown",
-      "requires_successful_before_and_after_verification"
+      "identifies_shutdown_race_with_pending_walsender_statistics",
+      "relaxes_assertion_only_for_wal_senders",
+      "handles_remaining_stats_in_pgstat_shutdown_hook",
+      "requires_reporter_verification_before_resolution"
      ],
      "required_info": {
       "L1": [
-       "walsender_shutdown_with_pending_stats"
+       "assert_occurs_in_walsender_exit_path",
+       "walsender_has_pending_stats_during_server_shutdown",
+       "rel17_buildfarm_recovery_test_hits_same_walsender_assert"
       ],
       "L2": [
-       "shutdown_assertion_guarantee_invalid_for_walsenders",
-       "wholesale_87a6690_backpatch_too_invasive_for_stable_branches"
+       "stable_shutdown_ordering_does_not_guarantee_no_pending_walsender_stats"
       ],
       "L3": [
-       "pg_prng_probe_reproduces_before_patch",
-       "targeted_patch_verified_no_assertion"
+       "targeted_walsender_patch_verified_by_reporter"
       ]
      },
      "info_inferred_by_engineer": [
-      "fix_applied_as_4801610f7c66_to_v15_v17"
+      "stable_shutdown_ordering_does_not_guarantee_no_pending_walsender_stats"
      ],
      "is_composite": false,
      "composed_of": [],
      "is_known_blind_path": false,
      "is_shortcut": false,
      "shortcut_skipped_info": [],
-     "inference_hint": null
+     "inference_hint": "The root cause is not simply that the assertion fires: stable-branch shutdown ordering allows a WAL sender's exit hook to encounter pending statistics after shared statistics shutdown. The targeted fix reflects the engineer's inference that this state must be tolerated for WAL senders while remaining asserted against elsewhere."
     },
-    "comment": "The patch was applied as commit 4801610f7c66 across v15 through v17 only after the reporter and maintainer verified the reliable before/after reproduction."
+    "comment": "The verified patch was applied as commit 4801610f7c66 in the PostgreSQL 15 through 17 branches. The later discussion over `am_walsender` versus `AmWalSenderProcess()` was a code-style and coupling consideration, not a separate diagnostic or resolution path."
    }
   ]
  },
  "satisfaction_conditions": [
-  "Must identify the root cause as a WAL sender reaching `pgstat_report_stat()` during shutdown with statistics still pending after shared pgstats shutdown, making the existing `!is_shutdown` assertion invalid for that shutdown ordering.",
-  "Must ground the diagnosis in the walsender stack through `shmem_exit()`, the independent REL_17_STABLE buildfarm occurrence, and the reliable `pg_prng_double()` forced-nowait-flush probe.",
-  "Must use the targeted stable-branch fix: lift the shutdown assertion for WAL senders while retaining it elsewhere, and make `pgstat_shutdown_hook()` cope with statistics that may remain for a WAL sender.",
-  "Must not replace the targeted fix with a wholesale backpatch of 87a6690cc69 or removal of the assertion for every backend; those broader approaches were rejected as unnecessarily invasive or imprecise for v15 through v17.",
-  "Must not treat failure to reproduce with the original `rand()` probe as evidence that the bug is absent, because its sequence can be unsuitable on macOS; use the PostgreSQL PRNG probe instead.",
-  "Must require verification that the reliable probe reproduces before the patch and no longer triggers the assertion after the patch before declaring resolution, followed by application as commit `4801610f7c66` to v15 through v17."
+  "Must identify the root cause: on PostgreSQL 15 through 17, a WAL sender can reach its statistics shutdown hook with pending statistics after shared statistics have been marked shut down, violating an ordering assumption enforced by `pgstat_report_stat()`.",
+  "The diagnosis must be grounded in the WAL-sender stack, the forced nowait-flush reproduction, and the independent REL_17_STABLE occurrence rather than inferred from a generic shutdown crash alone.",
+  "The fix must be narrowly scoped: relax the shutdown assertion for WAL senders and make `pgstat_shutdown_hook()` cope with their remaining statistics while retaining the assertion for other process types.",
+  "Must not recommend wholesale backpatching of the substantially reworked shutdown sequence or removing the assertion for every backend; the thread deliberately chose the narrower stable-branch patch.",
+  "Must require the reporter's successful test with the forced pending-statistics reproducer before treating the issue as resolved; no tested patch or workaround was reported as failing."
  ],
  "persona_hint": {
-  "experience_level": "PostgreSQL contributor with strong C debugging and test-infrastructure experience; can analyze assertion control flow, modify backend code to force rare timing conditions, inspect buildfarm logs, and test stable-branch patches.",
-  "communication_style": "Technical, concise, and evidence-driven; supplies exact commands, code modifications, logs, and stack traces, and responds cooperatively with improved reproduction details and patch verification."
+  "experience_level": "PostgreSQL contributor-level reporter who reads backend source, modifies test instrumentation, interprets native stack traces, and can validate a C patch across platform-specific PRNG behavior.",
+  "communication_style": "Precise, evidence-heavy and concise; supplies source excerpts, exact commands, logs and improved reproduction code, then reports patch-test results directly."
  },
  "metadata": {
   "graph_version": "v1",

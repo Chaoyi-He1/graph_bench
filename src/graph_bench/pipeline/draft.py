@@ -25,10 +25,17 @@ FILTER_GATES = (
     'resolved_with_confirmed_fix',
     'technically_specific',
     'multi_turn_diagnostic',
+    'environment_bound',
     'reporter_engaged',
     'safe_content',
     'annotatable',
 )
+
+# The reporter's own posts are the evidence user_answers must quote from;
+# truncating them while maintainer summaries fit whole makes the drafting
+# model substitute the engineer's conclusion for the raw output — the
+# dominant leak class. So reporter comments get a much higher cap.
+_REPORTER_CAP = 4000
 
 
 def render_thread(thread: dict, *, per_comment: int = 1400) -> str:
@@ -39,15 +46,17 @@ def render_thread(thread: dict, *, per_comment: int = 1400) -> str:
         f'REPORTER: {thread["reporter"]}',
         '',
         'OPENING (reporter):',
-        thread['body'][: 3 * per_comment],
+        thread['body'][: max(3 * per_comment, _REPORTER_CAP)],
         '',
     ]
     for i, c in enumerate(thread['comments']):
         who = c['author']
-        tag = ' (reporter)' if who == thread['reporter'] else ''
+        is_reporter = who == thread['reporter']
+        tag = ' (reporter)' if is_reporter else ''
+        cap = _REPORTER_CAP if is_reporter else per_comment
         body = c['body']
-        if len(body) > per_comment:
-            body = body[:per_comment] + f' …[+{len(body) - per_comment}ch]'
+        if len(body) > cap:
+            body = body[:cap] + f' …[+{len(body) - cap}ch]'
         lines.append(f'--- c{i} [{who}{tag}] {c["created_at"][:10]}')
         lines.append(body)
     return '\n'.join(lines)
@@ -70,7 +79,9 @@ def filter_issue(llm, thread: dict) -> dict:  # noqa: ANN001
     return verdict
 
 
-def lint_task(task: Task, image_dir: Path) -> list[str]:
+def lint_task(
+    task: Task, image_dir: Path, thread: dict | None = None
+) -> list[str]:
     """Semantic checks beyond pydantic validation."""
     problems: list[str] = []
     g = task.graph
@@ -89,15 +100,38 @@ def lint_task(task: Task, image_dir: Path) -> list[str]:
         problems.append('terminal unreachable from start_node')
     if not any(e.edge_type in ('clarification_only', 'mixed') for e in g.edges):
         problems.append('no clarification edge')
-    refs = list(task.opening_images)
+    opening_refs = list(task.opening_images)
+    other_refs: list[str] = []
     for n in g.nodes.values():
-        refs += n.symptom_images
+        other_refs += n.symptom_images
     for e in g.edges:
         for c in e.clarifications:
-            refs += c.images
+            other_refs += c.images
+    refs = opening_refs + other_refs
+    repo_root = image_dir.parents[2]
     for r in refs:
-        if not (image_dir / Path(r).name).exists():
+        if not (repo_root / r).exists() and not (
+            image_dir / Path(r).name
+        ).exists():
             problems.append(f'missing image: {r}')
+    # Each attachment hooked at most once across all hooks.
+    names = [Path(r).name for r in refs]
+    for name in sorted({n for n in names if names.count(n) > 1}):
+        problems.append(f'image referenced more than once: {name}')
+    # Provenance: an attachment the harvester recorded as coming from the
+    # opening post may only appear in opening_images.
+    if thread is not None:
+        opening_files = {
+            img['file']
+            for img in thread.get('images', [])
+            if img.get('where') == 'opening'
+        }
+        for r in other_refs:
+            if Path(r).name in opening_files:
+                problems.append(
+                    f'opening-post attachment hooked to a later '
+                    f'node/edge: {Path(r).name}'
+                )
     return problems
 
 
@@ -120,8 +154,9 @@ def draft_task(
         f'pending human review)'
     )
     repo_root = Path(__file__).resolve().parents[3]
-    fewshot = (repo_root / 'data/trial/graphs/bmo_1822845.json').read_text()
-    system = DRAFT_SYSTEM.format(fewshot=fewshot)
+    fewshot_a = (repo_root / 'data/trial/graphs/bmo_1822845.json').read_text()
+    fewshot_b = (repo_root / 'data/trial/graphs/bmo_1865928.json').read_text()
+    system = DRAFT_SYSTEM.format(fewshot_a=fewshot_a, fewshot_b=fewshot_b)
     user = DRAFT_USER.format(
         repo=thread['repo'],
         number=thread['number'],
@@ -130,6 +165,9 @@ def draft_task(
         attachments=attachments,
         thread=render_thread(thread),
     )
+    # Repair rounds keep the FULL conversation (system rules + thread +
+    # the model's previous JSON) so the model can fix faithfulness errors
+    # against the source instead of blindly rewiring fields.
     messages: list[tuple[str, str]] = [('system', system), ('user', user)]
     raw = extract_text(llm.invoke(messages))
     for attempt in range(max_repairs + 1):
@@ -145,22 +183,22 @@ def draft_task(
                 log(f'  draft FAILED after {max_repairs} repairs: {exc}')
                 return None
             log(f'  repair {attempt + 1}: {str(exc)[:160]}')
-            raw = extract_text(
-                llm.invoke(
-                    REPAIR_PROMPT.format(error=str(exc)[:2000], previous=raw)
-                )
-            )
+            messages = [
+                *messages,
+                ('assistant', raw),
+                ('user', REPAIR_PROMPT.format(error=str(exc)[:2000])),
+            ]
+            raw = extract_text(llm.invoke(messages))
             continue
-        problems = lint_task(task, image_dir)
+        problems = lint_task(task, image_dir, thread)
         if problems and attempt < max_repairs:
             log(f'  repair {attempt + 1} (lint): {problems}')
-            raw = extract_text(
-                llm.invoke(
-                    REPAIR_PROMPT.format(
-                        error='; '.join(problems), previous=raw
-                    )
-                )
-            )
+            messages = [
+                *messages,
+                ('assistant', raw),
+                ('user', REPAIR_PROMPT.format(error='; '.join(problems))),
+            ]
+            raw = extract_text(llm.invoke(messages))
             continue
         if problems:
             log(f'  draft FAILED lint after repairs: {problems}')

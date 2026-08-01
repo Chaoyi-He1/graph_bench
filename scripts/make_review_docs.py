@@ -24,6 +24,10 @@ from graph_bench.oncall_graph.visualize import task_to_mermaid  # noqa: E402
 CHECKLIST = """\
 ## Review checklist
 
+> The graph is the case's ANSWER KEY, not a transcript: edge order need
+> not mirror thread chronology. Do not file chronology mismatch as a
+> defect; what must be faithful is who knew what, when.
+
 Structural (machine-checked by `scripts/validate.py`, re-verify after edits):
 
 - [ ] validates: schema + info-containment + terminal reachability

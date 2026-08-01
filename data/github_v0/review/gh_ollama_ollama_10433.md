@@ -1,6 +1,6 @@
 # Review: gh_ollama_ollama_10433
 
-**Ollama 0.6.6 leaves runner processes and VRAM allocated after models disappear from ollama ps**
+**Ollama leaves orphaned runner processes consuming VRAM after models unload**
 
 - source: https://github.com/ollama/ollama/issues/10433
 - kind: LLM draft (needs review)
@@ -9,37 +9,37 @@
 
 ```mermaid
 flowchart LR
-    N0["<b>N0 retained VRAM reported</b><br/><small>info: 3</small>"]
-    N1["<b>N1 hidden runners and load-unload sequence collected</b><br/><small>info: 6</small>"]
-    N2["<b>N2 workload and client pattern narrowed</b><br/><small>info: 10</small>"]
-    N3["<b>N3 persistent scheduler and process mismatch documented</b><br/><small>info: 12</small>"]
-    N4["<b>N4 version 0.6.7 test unchanged</b><br/><small>info: 13</small>"]
-    N5["<b>N5 early-startup failure isolated with 0.6.8 logging</b><br/><small>info: 15</small>"]
-    N6["<b>N6 version 0.7.0 test still fails</b><br/><small>info: 16</small>"]
-    N7["<b>N7 decisive PID-correlated debug evidence collected</b><br/><small>info: 18</small>"]
-    N_terminal["<b>terminal resolved on 0.7.1</b><br/><small>info: 19</small>"]
-    N0 -.->|"❓ multiple_model_families_show_same_behavior, runner_processes_remain_but_are_absent_from_ollama_ps, logs_show_health_check_then_overlapping_load_and_unload"| N1
+    N0["<b>N0 retained VRAM reported</b><br/><small>info: 4</small>"]
+    N1["<b>N1 untracked runner confirmed</b><br/><small>info: 9</small>"]
+    N2["<b>N2 workload and startup evidence collected</b><br/><small>info: 14</small>"]
+    N3_x["<b>N3_x 0.6.7 update aftermath</b><br/><small>info: 16</small>"]
+    N4["<b>N4 PID-instrumented failure captured</b><br/><small>info: 18</small>"]
+    N5_x["<b>N5_x 0.7.0 update aftermath</b><br/><small>info: 21</small>"]
+    N6["<b>N6 decisive PID-correlated debug log captured</b><br/><small>info: 22</small>"]
+    N7["<b>N7 fix verified on 0.7.1</b><br/><small>info: 23</small>"]
+    N_terminal["<b>terminal resolved on 0.7.1</b><br/><small>info: 23</small>"]
+    N0 -.->|"❓ ps_shows_runner_missing_from_ollama_ps, runner_parent_is_live_ollama_server, high_vram_visible_while_unlisted_runner_remains, server_debug_logs_collected, affected_models_include_qwen_phi4_and_deepseek"| N1
     linkStyle 0 stroke:#3b82f6,stroke-width:2px
-    N1 -.->|"❓ no_clients_intentionally_set_keep_alive, nginx_reverse_proxy_and_preloaded_models_in_use, problem_associated_with_vscode_continue_workload, simple_python_api_script_does_not_reproduce"| N2
+    N1 -.->|"❓ no_clients_intentionally_set_keep_alive, continue_plugin_generates_concurrent_varied_requests, requests_use_varying_context_sizes_and_can_be_cancelled, detector_reports_more_runners_than_active_models, logs_show_health_check_unload_overlap_during_model_startup"| N2
     linkStyle 1 stroke:#3b82f6,stroke-width:2px
-    N2 -.->|"❓ detector_confirms_runner_count_exceeds_active_model_count, expired_event_positive_refcount_repeats_over_one_million_times"| N3
-    linkStyle 2 stroke:#3b82f6,stroke-width:2px
-    N3 -.->|"❓ ollama_067_still_leaves_extra_runner"| N4
+    N2 ==>|"💥 blind: Diagnose an Ollama scheduler startup race that loses track of a live runner, then test the scheduler startup changes in Ollama 0.6.7."| N3_x
+    linkStyle 2 stroke:#ef4444,stroke-width:2px
+    N3_x -.->|"❓ ollama_068_pid_instrumented_failure_captured, offending_runner_absent_from_scheduler_log"| N4
     linkStyle 3 stroke:#3b82f6,stroke-width:2px
-    N4 -.->|"❓ ollama_068_reproduces_with_offending_pid_absent_from_scheduler_log"| N5
-    linkStyle 4 stroke:#3b82f6,stroke-width:2px
-    N5 -.->|"❓ ollama_070_still_leaves_untracked_runners"| N6
+    N4 ==>|"💥 blind: Narrow the scheduler race to very early runner initialization, account for concurrent context-size changes and abandoned requests, and test the expected fix in Ollama 0.7.0."| N5_x
+    linkStyle 4 stroke:#ef4444,stroke-width:2px
+    N5_x -.->|"❓ ollama_070_debug_log_contains_orphan_runner_pids"| N6
     linkStyle 5 stroke:#3b82f6,stroke-width:2px
-    N6 -.->|"❓ debug_logs_capture_exact_retained_runner_pids"| N7
+    N6 -.->|"❓ ollama_071_verified_no_recurrence"| N7
     linkStyle 6 stroke:#3b82f6,stroke-width:2px
-    N7 ==>|"⚡ Fix the scheduler's early runner-startup lifecycle race so concurrent reloads and request cancellation cannot leave a runner outside scheduler tracking, release the fix in Ollama 0.7.1, and require the reporter to verify it under the real Continue workload before closing."| N_terminal
+    N7 ==>|"⚡ Use Ollama 0.7.1 or later, which fixes the scheduler race that leaked runners during concurrent reload and aborted-startup conditions, after verifying that the affected workload no longer leaves unlisted processes or retained VRAM."| N_terminal
     linkStyle 7 stroke:#f97316,stroke-width:2px
     class N0 start
     class N1 normal
     class N2 normal
-    class N3 normal
+    class N3_x normal
     class N4 normal
-    class N5 normal
+    class N5_x normal
     class N6 normal
     class N7 normal
     class N_terminal terminal
@@ -50,79 +50,49 @@ flowchart LR
 
 ## Opening (body)
 
-> For the last few weeks, VRAM has remained in use after an LLM was used, even though `ollama ps` shows nothing. I first noticed it with `deepseek-coder-v2:16b` and a derived model whose Modelfile sets `num_ctx 24576` and `num_predict 8192`. I am running Ollama 0.6.6 on Linux with an Nvidia GPU and AMD CPU. I believe this also happened on 0.6.5 and 0.6.4.
+> I'm running Ollama 0.6.6 on Linux with Nvidia GPUs and an AMD CPU. After using deepseek-coder-v2:16b, including a model made from a Modelfile with num_ctx 24576 and num_predict 8192, the VRAM stays allocated even though `ollama ps` shows nothing. I have seen this for several weeks and think it was also present in 0.6.5 and 0.6.4.
 
 ## Satisfaction conditions
 
-1. Must identify the true cause as an Ollama scheduler/runner lifecycle race during very early runner startup: many concurrent requests with varying context sizes trigger model reloads while clients abort before loading completes, allowing a runner to continue outside scheduler tracking and retain resources.
-2. Must ground the diagnosis in the collected evidence: live child runner processes outnumber models in `ollama ps`, load and unload overlap around startup/health checks, the 0.6.8 offending PID is absent from scheduler logs, and the later debug capture correlates retained PIDs with scheduling activity.
-3. Must not describe this as the already-fixed Gemma 3 classical memory leak, an intentional `keep_alive`, or merely an orphan caused by the main server being killed; the retained runners are observed beneath a live `ollama serve` process.
-4. Must not claim that upgrading to 0.6.7 or 0.7.0 resolved the case, because the reporter reproduced the runner-count mismatch on both versions.
-5. The resolution must fix tracking and cleanup in the early runner-startup scheduler path, identify Ollama 0.7.1 as the fixed release, and require verification under the reporter's real concurrent VS Code Continue workload.
-6. Must declare the issue resolved only after the reporter confirms that 0.7.1 runs without recurrence, including the later follow-up that the problem has not returned.
+1. Must identify the root cause as an Ollama scheduler/runner-lifecycle race, not a model-specific classical memory leak: concurrent requests with varying context sizes trigger reload activity, and clients can abort while a runner is still starting, allowing a live runner to fall out of scheduler state and remain absent from `ollama ps` while retaining resources.
+2. The diagnosis must be grounded in the collected evidence: live runner processes under the current server despite an empty or smaller `ollama ps`, startup health-check and unload overlap, varying context-size runners, and PID-correlated debug logs.
+3. Must recommend Ollama 0.7.1 or later as the durable fix and require monitoring under the affected concurrent Continue workload.
+4. Must not treat updating to 0.6.7 or 0.7.0 as the solution; both were tried in-case and orphaned runners recurred.
+5. Restarting the Ollama service may be described only as temporary cleanup for retained processes and VRAM, not as the root-cause fix.
+6. Must treat the issue as resolved only after the reporter verifies that extra runners and retained VRAM no longer recur on 0.7.1.
 
 ## Edges
 
 | edge | type | gates / info | payload |
 |---|---|---|---|
-| `e1_N0__N1` | clarification_only | asks: multiple_model_families_show_same_behavior, runner_processes_remain_but_are_absent_from_ollama_ps, logs_show_health_check_then_overlapping_load_and_unload | It also happened with qwen2.5-coder:32b and phi4:14b, in addition to both the original and Modelfile-derived d / The service is running and the process listing shows child `ollama runner` processes. Later `ollama ps` shows  / The logs show a runner starting, a health request receiving connection refused shortly before the runner begin |
-| `e2_N1__N2` | clarification_only | asks: no_clients_intentionally_set_keep_alive, nginx_reverse_proxy_and_preloaded_models_in_use, problem_associated_with_vscode_continue_workload, simple_python_api_script_does_not_reproduce | As far as I know, no one sets `keep_alive`. / Clients use an nginx reverse proxy with long timeouts and buffering disabled. Models are normally preloaded in / It occurs when users work in Visual Studio Code with the Continue plugin and use its AI features. Open WebUI c / No. My Python script making streaming API calls could not reproduce the issue. |
-| `e3_N2__N3` | clarification_only | asks: detector_confirms_runner_count_exceeds_active_model_count, expired_event_positive_refcount_repeats_over_one_million_times | I wrote a bash detector that compares active models from `ollama ps` with `ollama runner` processes. It detect / The journal contains 1,220,404 `expired event with positive ref count, retrying` lines in about 26.5 hours, re |
-| `e4_N3__N4` | clarification_only | asks: ollama_067_still_leaves_extra_runner | No change. On 0.6.7 the detector shows one active model but two runner processes, with an older runner identif |
-| `e5_N4__N5` | clarification_only | asks: ollama_068_reproduces_with_offending_pid_absent_from_scheduler_log | On 0.6.8 the detector again found two runners for one active model. The offending older PID did not appear in  |
-| `e6_N5__N6` | clarification_only | asks: ollama_070_still_leaves_untracked_runners | The problem remains on 0.7.0. I observed three runners for one active model, and on another day one runner rem |
-| `e7_N6__N7` | clarification_only | asks: debug_logs_capture_exact_retained_runner_pids | Yes. With debug enabled, the detector caught three runners for one active model and the relevant runner PIDs w |
-| `e8_N7__N_terminal` | solution_only | req_info: runner_processes_remain_but_are_absent_from_ollama_ps, multiple_model_families_show_same_behavior, problem_associated_with_vscode_continue_workload, leaked_runner_occurs_during_very_early_startup, logs_show_health_check_then_overlapping_load_and_unload, debug_logs_capture_exact_retained_runner_pids, ollama_067_still_leaves_extra_runner, ollama_070_still_leaves_untracked_runners<br>elements: identifies_early_startup_scheduler_race_as_root_cause, connects_race_to_concurrent_varying_context_reloads_and_client_aborts, ensures_unneeded_runners_remain_tracked_and_are_terminated, names_ollama_071_as_fixed_release, requires_reporter_verification_under_real_workload | Fix the scheduler's early runner-startup lifecycle race so concurrent reloads and request cancellation cannot leave a runner outside scheduler tracking, release the fix in Ollama 0.7.1, and require the reporter to verify it under the real Continue workload before closing. |
+| `e1_N0__N1` | clarification_only | asks: ps_shows_runner_missing_from_ollama_ps, runner_parent_is_live_ollama_server, high_vram_visible_while_unlisted_runner_remains, server_debug_logs_collected, affected_models_include_qwen_phi4_and_deepseek | After `ollama ps` became empty, `ps` still showed `/usr/local/bin/ollama runner` PID 2275563 with model blob f / The runner's PPID is the PID of the current `/usr/local/bin/ollama serve` process. I restarted the service bef / The GPU still shows tens of gigabytes in use while the runner remains, even though `ollama ps` shows nothing. / I enabled `OLLAMA_DEBUG` in my ollama.service and attached the logs covering the incident. / No. I have seen it with deepseek-coder-v2:16b, qwen2.5-coder:32b, and phi4:14b, including the custom deepseek  |
+| `e2_N1__N2` | clarification_only | asks: no_clients_intentionally_set_keep_alive, continue_plugin_generates_concurrent_varied_requests, requests_use_varying_context_sizes_and_can_be_cancelled, detector_reports_more_runners_than_active_models, logs_show_health_check_unload_overlap_during_model_startup | As far as I know, none of our clients set `keep_alive`. We also put Ollama behind nginx, but the proxy only ha / I see it when other users access Ollama from VS Code with the Continue plugin and use its AI features, especia / My own streaming Python client uses `num_ctx=32768` and supports cancellation. The process captures show the s / My script compares `ollama ps` with `ps`. In one capture it reported one active model and four runner processe / The log has a runner start at 14:53:22, a health request failing with connection refused, an immediate-expiry  |
+| `e3_N2__N3_x` | solution_only **BLIND** | req_info: affected_models_include_qwen_phi4_and_deepseek, no_clients_intentionally_set_keep_alive, runner_parent_is_live_ollama_server, logs_show_health_check_unload_overlap_during_model_startup, ps_shows_runner_missing_from_ollama_ps, detector_reports_more_runners_than_active_models<br>elements: identifies_scheduler_startup_race, explains_runner_remains_alive_but_missing_from_ollama_ps, distinguishes_from_model_specific_memory_leak, tests_ollama_067_scheduler_changes | Diagnose an Ollama scheduler startup race that loses track of a live runner, then test the scheduler startup changes in Ollama 0.6.7. |
+| `e4_N3_x__N4` | clarification_only | asks: ollama_068_pid_instrumented_failure_captured, offending_runner_absent_from_scheduler_log | On 0.6.8, my script showed one model in `ollama ps` but two runner processes. The older runner was PID 3228400 / The process list identifies PID 3228400 as the extra runner, and I attached the overlapping log. I could not f |
+| `e5_N4__N5_x` | solution_only **BLIND** | req_info: continue_plugin_generates_concurrent_varied_requests, requests_use_varying_context_sizes_and_can_be_cancelled, offending_runner_absent_from_scheduler_log, ollama_068_pid_instrumented_failure_captured<br>elements: places_failure_before_runner_initialization_completes, connects_race_to_concurrent_varied_context_requests, mentions_client_abort_during_model_loading, tests_ollama_070 | Narrow the scheduler race to very early runner initialization, account for concurrent context-size changes and abandoned requests, and test the expected fix in Ollama 0.7.0. |
+| `e6_N5_x__N6` | clarification_only | asks: ollama_070_debug_log_contains_orphan_runner_pids | With `OLLAMA_DEBUG=1`, my detector found three runners for one active model. The runners included PIDs 1027376 |
+| `e7_N6__N7` | clarification_only | asks: ollama_071_verified_no_recurrence | Ollama 0.7.1 has been running for about two days and it looks good. I kept monitoring afterward and have not s |
+| `e8_N7__N_terminal` | solution_only | req_info: affected_models_include_qwen_phi4_and_deepseek, continue_plugin_generates_concurrent_varied_requests, logs_show_health_check_unload_overlap_during_model_startup, concurrent_varied_context_requests_and_aborts_trigger_race, detector_reports_more_runners_than_active_models, ollama_070_debug_log_contains_orphan_runner_pids, ollama_071_verified_no_recurrence<br>elements: identifies_concurrent_runner_startup_reload_race_as_root_cause, recommends_ollama_071_or_later, grounds_resolution_in_process_and_vram_monitoring, requires_user_verification_before_resolution | Use Ollama 0.7.1 or later, which fixes the scheduler race that leaked runners during concurrent reload and aborted-startup conditions, after verifying that the affected workload no longer leaves unlisted processes or retained VRAM. |
 
 ## Nodes
 
 | node | terminal | volunteered | images | symptoms |
 |---|---|---|---|---|
-| `N0` |  | 3 | 0 | After deepseek-coder-v2:16b or its Modelfile-derived model is used, GPU memory remains occupied while `ollama ps` shows no active model. |
-| `N1` |  | 0 | 0 | The same retained-resource behavior occurs with qwen2.5-coder:32b and phi4:14b as well as deepseek-coder-v2. Process listings show runner pr |
-| `N2` |  | 0 | 0 | The issue is observed during normal shared use, especially while users exercise Visual Studio Code Continue features, but a simple Python st |
-| `N3` |  | 0 | 0 | A detector script repeatedly reports more `ollama runner` processes than models listed by `ollama ps`, including four runners while only one |
-| `N4` |  | 0 | 0 | After upgrading to Ollama 0.6.7, the detector still reports two runner processes for one active model, with the older runner continuing to o |
-| `N5` |  | 0 | 0 | On Ollama 0.6.8, the detector again reports two runner processes for one active model. The PID of the older retained runner does not appear  |
-| `N6` |  | 0 | 0 | Ollama 0.7.0 still shows the problem: examples include three runner processes for one active model and one runner process while `ollama ps`  |
-| `N7` |  | 0 | 0 | With `OLLAMA_DEBUG=1`, Ollama 0.7.0 again leaves two or three runner processes while only one model is listed, and the retained process PIDs |
-| `N_terminal` | ✓ | 1 | 0 | After upgrading to Ollama 0.7.1, the reporter observes no extra hidden runners for about two days and later confirms that the problem has no |
-
-## Machine review (audit pass, adversarially verified)
-
-Auditor verdict: **needs_rework** · 3 of 6 findings survived independent refutation.
-
-_The case is a long evidence-gathering thread: retained `ollama runner` children under a live `ollama serve` while `ollama ps` is empty, narrowed across four Ollama releases to a scheduler race during very early runner startup (c42), fixed in v0.7.1 (c55) and verified by the reporter (c56, c57). The graph's spine is faithful — clarification chain order, the version-test-as-measurement modelling, root cause, and the verification requirement all match the thread, and images are hooked to the right turns. The main defect is that the solution hard-requires `leaked_runner_occurs_during_very_early_startup`, an id the graph itself declares engineer-inferred and that no clarification ever grants, so a correct agent can be scored down for information it cannot obtain. Secondary issues: a release-number gate in required_elements, two user answers that speak in the maintainer's voice, and no blind edge for the thread's one explicitly falsified hypothesis._
-
-### Confirmed findings
-
-- [ ] 🟠 **required_but_ungettable** (medium) — `n/a`
-  - claim: [required_but_ungettable / high] at graph.edges[e8_N7__N_terminal].solution.required_info.L2 -> "leaked_runner_occurs_during_very_early_startup": The solution hard-requires an info_id that no clarification asks for, that is not in N0's info_state and is not volunteered anywhere — and that the graph simultaneously lists in info_inferred_by_engineer, so it is engineer inference being scored as gettable evidence.
-  - thread evidence: None
-  - suggested fix: None
-  - verifier: Independently confirmed by enumeration over the graph: the 13 clarification info_ids are [debug_logs_capture_exact_retained_runner_pids, detector_confirms_runner_count_exceeds_active_model_count, expired_event_positive_refcount_repeats_over_one_million_times, logs_show_health_check_then_overlapping_load_and_unload, multiple_model_families_show_same_behavior, nginx_reverse_proxy_and_preloaded_model
-- [ ] 🟠 **logistics_gate** (medium) — `n/a`
-  - claim: [logistics_gate / medium] at graph.edges[e8_N7__N_terminal].solution.required_elements_for_full_match -> "names_ollama_071_as_fixed_release" (also solution.intent "release the fix in Ollama 0.7.1" and approach_keywords "ollama_071"): Full match is gated on naming a specific future release number, which is packaging/release-schedule knowledge from the maintainer's roadmap rather than part of the diagnostic-to-fix chain.
-  - thread evidence: None
-  - suggested fix: None
-  - verifier: Confirmed against both the thread and the repo's own catalog. In the thread the version number is produced purely by release scheduling: c43 reporter 'when you will release the fix?', c44 participant3 'the next release should be out within a few days', c54 reporter 'will the fix be a part of v0.7.1 or v0.7.2?', c55 participant3 'The fix will be in v0.7.1'. Nothing technical in the thread determine
-- [ ] 🟡 **unfaithful_reveal** (low) — `n/a`
-  - claim: [unfaithful_reveal / low] at graph.edges[e7_N6__N7].clarifications[0].user_answer_in_this_oncall: The user answer narrates the handler's own reply — "The maintainer confirmed the capture was sufficient and said debug logging could be disabled" — which the simulated user cannot know before the agent says it.
-  - thread evidence: None
-  - suggested fix: None
-  - verifier: Confirmed verbatim on both sides. The graph's answer ends '...The maintainer confirmed the capture was sufficient and said debug logging could be disabled.' In the thread, that content is exclusively c52 (participant3): 'Yes, the PIDs are in there - go ahead and remove debug logging while I analyze the log.' The reporter's own turn c51 says only 'next try. Tell me then if it's ok, cause I will dis
-
-### Refuted claims (auditor was wrong — do not act on these)
-
-- ~~unfaithful_reveal~~: [unfaithful_reveal / medium] at graph.edges[e5_N4__N5].clarifications[0].user_answer_in_this_oncall: The user answer has the reporter state that "The offending older PID did not appear in the scheduler log at all" — a de
-  - why refuted: The factual premise is right (the sentence traces to c39, participant3, not to c38), but the conclusion that this is a defect does not follow under the contract. The edge's own question_patterns include 'Does the retained runner PID appear in the 0.6.8 scheduler logs?' — that is a handler-initiated, user-executable mea
-- ~~graph_shape~~: [graph_shape / medium] at graph.edges (no edge has solution.is_known_blind_path=true): The thread's one clearly falsified explanation — the initial brush-off that the runners are orphans from a killed/crashed server — is
-  - why refuted: The quotes are accurate (c0 participant1 'most likely explanation is that the server was killed or crashed, orphaning the runners'; c8/c9 ps output with ppid 2268027 = the live /usr/local/bin/ollama serve; c15 the load/unload re-explanation; c17/c19 the gemma3 red herring), but c0 is a hypothesis plus a request for log
-- ~~future_knowledge_leak~~: [future_knowledge_leak / low] at title: The task title ("Ollama 0.6.6 leaves runner processes and VRAM allocated after models disappear from ollama ps") states the runner-process finding, which is knowledge acquired late
-  - why refuted: The observation about provenance is correct (upstream title is 'Ollama 0.6.6 memory leak with different models'; 'runner processes' is first named by participant1 in c0 and demonstrated by the reporter in c8/c9), but it does not constitute a leak under this contract. The contract constrains the body only ('The Task's b
-
+| `N0` |  | 3 | 0 | After I use deepseek-coder-v2:16b, the VRAM remains occupied even though `ollama ps` shows no loaded model. |
+| `N1` |  | 1 | 0 | I can still see an `ollama runner` process under the live `ollama serve` process after `ollama ps` becomes empty, and the GPU memory remains |
+| `N2` |  | 0 | 0 | When the problem occurs, my detector counts more `ollama runner` processes than models listed by `ollama ps`; restarting the service removes |
+| `N3_x` |  | 1 | 1 | On Ollama 0.6.7, my script shows two runner processes while `ollama ps` lists only one active model; the older runner remains present. |
+| `N4` |  | 0 | 0 | On Ollama 0.6.8, my detector again shows two runner processes for one model in `ollama ps`; after I restart the service, the extra runner an |
+| `N5_x` |  | 1 | 0 | On Ollama 0.7.0, I see three runner processes while `ollama ps` lists one model; after that active model finishes, two runner processes rema |
+| `N6` |  | 0 | 0 | With debug logging enabled on 0.7.0, my script again records multiple runner PIDs for one active model, and the matching server log covers t |
+| `N7` |  | 0 | 0 | Ollama 0.7.1 has been running for about two days without extra runner processes or retained VRAM, and I still have not seen the problem afte |
+| `N_terminal` | ✓ | 0 | 0 | With Ollama 0.7.1, models unload without leaving unlisted runner processes or their VRAM allocated. |
 
 ## Review checklist
+
+> The graph is the case's ANSWER KEY, not a transcript: edge order need
+> not mirror thread chronology. Do not file chronology mismatch as a
+> defect; what must be faithful is who knew what, when.
 
 Structural (machine-checked by `scripts/validate.py`, re-verify after edits):
 

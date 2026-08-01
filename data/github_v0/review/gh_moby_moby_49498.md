@@ -9,31 +9,31 @@
 
 ```mermaid
 flowchart LR
-    N0["<b>N0 Tailscale connectivity regression reported</b><br/><small>info: 3</small>"]
-    N1["<b>N1 failure narrowed beyond DNS</b><br/><small>info: 5</small>"]
-    N2_x["<b>N2_x ts-forward relocation aftermath</b><br/><small>info: 6</small>"]
-    N3["<b>N3 firewall interaction identified</b><br/><small>info: 8</small>"]
-    N4["<b>N4 workaround verified</b><br/><small>info: 9</small>"]
-    N5["<b>N5 released fix verified</b><br/><small>info: 10</small>"]
-    N_terminal["<b>terminal resolved</b><br/><small>info: 12</small>"]
-    N0 -.->|"❓ direct_tailscale_ip_and_ping_also_fail, affected_containers_use_bridge_networks"| N1
+    N0["<b>N0 Tailscale communication regression reported</b><br/><small>info: 4</small>"]
+    N1["<b>N1 direct-IP failure and firewall evidence collected</b><br/><small>info: 7</small>"]
+    N1_x["<b>N1_x DOCKER-USER rule-move aftermath</b><br/><small>info: 8</small>"]
+    N2["<b>N2 Tailscale stateful-filtering setting confirmed</b><br/><small>info: 9</small>"]
+    N3["<b>N3 configuration interaction reproduced</b><br/><small>info: 10</small>"]
+    N4["<b>N4 Docker 28.0.1 verified on affected hosts</b><br/><small>info: 11</small>"]
+    N_terminal["<b>terminal resolved</b><br/><small>info: 13</small>"]
+    N0 -.->|"❓ direct_tailscale_ip_traffic_also_fails, affected_containers_use_custom_bridge, docker28_iptables_dump_with_docker_and_ts_forward_counters"| N1
     linkStyle 0 stroke:#3b82f6,stroke-width:2px
-    N1 ==>|"💥 blind: Move Tailscale's ts-forward jump ahead of Docker's forwarding path by placing it in DOCKER-USER and deleting its original FORWARD-chain jump."| N2_x
+    N1 ==>|"💥 blind: Move Tailscale's ts-forward jump into DOCKER-USER so Tailscale processes forwarded packets before Docker's other forwarding rules."| N1_x
     linkStyle 1 stroke:#ef4444,stroke-width:2px
-    N2_x -.->|"❓ docker28_and_tailscale_rule_counters_show_forwarding_drop_path, tailscale_stateful_filtering_enabled_on_affected_install"| N3
+    N1_x -.->|"❓ tailscale_stateful_filtering_was_enabled"| N2
     linkStyle 2 stroke:#3b82f6,stroke-width:2px
-    N3 -.->|"❓ disabling_tailscale_stateful_filtering_restores_docker28_connectivity"| N4
+    N2 -.->|"❓ docker28_works_when_tailscale_stateful_filtering_disabled"| N3
     linkStyle 3 stroke:#3b82f6,stroke-width:2px
-    N4 -.->|"❓ docker2801_verified_restores_affected_networking"| N5
+    N3 -.->|"❓ docker2801_verified_restores_affected_forwarding_setups"| N4
     linkStyle 4 stroke:#3b82f6,stroke-width:2px
-    N5 ==>|"⚡ Resolve the Docker 28.0.0 forwarding regression by upgrading to Docker 28.0.1, whose firewall-rule changes avoid the ordering conflict with existing Tailscale and third-party FORWARD-chain rules; treat disabling Tailscale stateful filtering only as a confirmed interim workaround with security implications."| N_terminal
+    N4 ==>|"⚡ Update to Docker 28.0.1 or later, which restructures Docker's forwarding rules to avoid the Docker 28.0.0 ordering conflict with Tailscale and other pre-existing firewall rules; use disabling Tailscale stateful filtering only as a security-aware temporary workaround."| N_terminal
     linkStyle 5 stroke:#f97316,stroke-width:2px
     class N0 start
     class N1 normal
-    class N2_x normal
+    class N1_x normal
+    class N2 normal
     class N3 normal
     class N4 normal
-    class N5 normal
     class N_terminal terminal
     classDef start fill:#fee2e2,stroke:#b91c1c,color:#000
     classDef terminal fill:#dcfce7,stroke:#15803d,color:#000
@@ -42,73 +42,45 @@ flowchart LR
 
 ## Opening (body)
 
-> I use Tailscale so containers and services can communicate with containers on different hosts. After upgrading Docker Engine to 28, containers can no longer communicate with Tailscale machines. This worked on Docker 27.5.1, and rolling back to 27.5.1 restores communication. I initially suspected DNS because the host's Tailscale-managed /etc/resolv.conf was previously propagated into containers, but I expected communication to continue working after the upgrade.
+> I use Tailscale so containers and services can communicate with containers on different hosts. After updating Docker Engine to 28, containers can no longer communicate with Tailscale computers. Docker 27.5.1 used the host's Tailscale-managed resolver in the container, and rolling back to 27.5.1 restores communication. I expected this to continue working after the upgrade.
 
 ## Satisfaction conditions
 
-1. Must identify the true cause as Docker 28.0.0's firewall/FORWARD-rule reorganization interacting with pre-existing rules, specifically the enabled Tailscale stateful-filtering ts-forward rule that drops outbound traffic not seen as RELATED or ESTABLISHED; this was not a DNS-only problem.
-2. Must ground the diagnosis in the collected evidence: direct Tailscale IP traffic and ping failed, 27.5.1 worked, iptables counters exposed the drop path, and disabling Tailscale stateful filtering restored connectivity on Docker 28.
-3. Must not claim that merely moving the ts-forward jump into DOCKER-USER resolves the issue, because that exact move was tested and did not help.
-4. Must recommend Docker 28.0.1 as the shipped fix and avoid presenting deletion or flushing of Docker's protective DROP rules as a safe permanent solution.
-5. If mentioning `tailscale set --stateful-filtering=false`, must describe it as a verified interim workaround and acknowledge that disabling it may have security or ACL implications related to TS-2024-005.
-6. Must treat the issue as resolved only after an affected user verifies networking on the fixed 28.0.1 release.
+1. Must identify the root cause as a Docker 28.0.0 firewall/FORWARD rule-ordering regression interacting with Tailscale stateful filtering, not a DNS resolver regression; direct Tailscale-IP traffic failed too.
+2. The diagnosis must be grounded in the Docker 28 versus 27.5.1 behavior, the iptables rule/counter evidence, confirmation that stateful filtering was enabled, and the successful stateful-filtering toggle probe.
+3. Must recommend Docker 28.0.1 or later as the durable fix; disabling Tailscale stateful filtering may be offered only as a temporary workaround with acknowledgement of its security implications.
+4. Must not present moving ts-forward into DOCKER-USER as the complete fix, because that exact attempt was tried and did not restore connectivity.
+5. Must not recommend indiscriminately flushing firewall chains or permanently deleting Docker's protective DROP rules.
+6. Must treat the issue as resolved only after an affected user verifies forwarding on Docker 28.0.1 or later.
 
 ## Edges
 
 | edge | type | gates / info | payload |
 |---|---|---|---|
-| `e1_N0__N1` | clarification_only | asks: direct_tailscale_ip_and_ping_also_fail, affected_containers_use_bridge_networks | It is not just DNS. A metrics node using the Tailscale IP stopped working, and an affected container cannot ev / The affected setups include user-defined bridge networks; one affected user supplied a custom bridge named tra |
-| `e2_N1__N2_x` | solution_only **BLIND** | req_info: direct_tailscale_ip_and_ping_also_fail, affected_containers_use_bridge_networks<br>elements: places_ts_forward_in_docker_user, removes_original_forward_jump | Move Tailscale's ts-forward jump ahead of Docker's forwarding path by placing it in DOCKER-USER and deleting its original FORWARD-chain jump. |
-| `e3_N2_x__N3` | clarification_only | asks: docker28_and_tailscale_rule_counters_show_forwarding_drop_path, tailscale_stateful_filtering_enabled_on_affected_install | The Docker 28 dump shows traffic traversing the reorganized FORWARD and Docker chains and reaching Tailscale's / Yes. Stateful filtering was enabled on the affected node even though it was not enabled manually. The installa |
-| `e4_N3__N4` | clarification_only | asks: disabling_tailscale_stateful_filtering_restores_docker28_connectivity | Yes. After running `tailscale set --stateful-filtering=false` and upgrading to Docker 28, everything works. Th |
-| `e5_N4__N5` | clarification_only | asks: docker2801_verified_restores_affected_networking | Yes. Affected users upgraded to Docker 28.0.1 and confirmed their previously broken container networking works |
-| `e6_N5__N_terminal` | solution_only | req_info: docker2751_rollback_restores_communication, direct_tailscale_ip_and_ping_also_fail, tailscale_stateful_filtering_enabled_on_affected_install, docker28_and_tailscale_rule_counters_show_forwarding_drop_path, disabling_tailscale_stateful_filtering_restores_docker28_connectivity, docker2801_verified_restores_affected_networking<br>elements: identifies_docker28_firewall_rule_ordering_regression, connects_failure_to_tailscale_stateful_filtering_drop_path, recommends_upgrade_to_docker_28_0_1, treats_stateful_filtering_disable_as_interim_and_security_sensitive, requires_affected_user_verification | Resolve the Docker 28.0.0 forwarding regression by upgrading to Docker 28.0.1, whose firewall-rule changes avoid the ordering conflict with existing Tailscale and third-party FORWARD-chain rules; treat disabling Tailscale stateful filtering only as a confirmed interim workaround with security implications. |
+| `e1_N0__N1` | clarification_only | asks: direct_tailscale_ip_traffic_also_fails, affected_containers_use_custom_bridge, docker28_iptables_dump_with_docker_and_ts_forward_counters | Yes. One of my metrics nodes was already using only the Tailscale IP and that stopped working too. I also cann / I use a custom bridge network named traefik. It has IPv4 subnet 172.18.0.0/16 and IPv6 subnet fd6b:7060:8f07:: / After trying failed connections on Docker 28, my dump has DOCKER-USER first in FORWARD, followed by Docker's e |
+| `e2_N1__N1_x` | solution_only **BLIND** | req_info: direct_tailscale_ip_traffic_also_fails, docker28_iptables_dump_with_docker_and_ts_forward_counters<br>elements: moves_ts_forward_jump_to_docker_user | Move Tailscale's ts-forward jump into DOCKER-USER so Tailscale processes forwarded packets before Docker's other forwarding rules. |
+| `e3_N1_x__N2` | clarification_only | asks: tailscale_stateful_filtering_was_enabled | Yes, stateful filtering was enabled on my node. I did not enable it by hand; this installation had passed thro |
+| `e4_N2__N3` | clarification_only | asks: docker28_works_when_tailscale_stateful_filtering_disabled | I disabled it with `tailscale set --stateful-filtering=false`, upgraded to Docker 28, and everything is runnin |
+| `e5_N3__N4` | clarification_only | asks: docker2801_verified_restores_affected_forwarding_setups | I applied Docker 28.0.1 to an affected host and its container routing works again. On the other affected hosts |
+| `e6_N4__N_terminal` | solution_only | req_info: docker2751_rollback_restores_communication, direct_tailscale_ip_traffic_also_fails, docker28_iptables_dump_with_docker_and_ts_forward_counters, tailscale_stateful_filtering_was_enabled, docker28_works_when_tailscale_stateful_filtering_disabled, docker2801_verified_restores_affected_forwarding_setups<br>elements: identifies_docker28_firewall_rule_ordering_interaction, connects_failure_to_tailscale_stateful_filtering, recommends_update_to_docker_2801_or_later, treats_disabling_stateful_filtering_as_security_sensitive_workaround, does_not_recommend_deleting_docker_drop_rules_as_permanent_fix | Update to Docker 28.0.1 or later, which restructures Docker's forwarding rules to avoid the Docker 28.0.0 ordering conflict with Tailscale and other pre-existing firewall rules; use disabling Tailscale stateful filtering only as a security-aware temporary workaround. |
 
 ## Nodes
 
 | node | terminal | volunteered | images | symptoms |
 |---|---|---|---|---|
-| `N0` |  | 3 | 0 | After upgrading from Docker 27.5.1 to 28.0.0, containers can no longer communicate with computers over Tailscale; rolling back to 27.5.1 res |
-| `N1` |  | 0 | 0 | Connections to a Tailscale IP and even ping fail from bridge-networked containers on Docker 28, while they work after returning to Docker 27 |
-| `N2_x` |  | 1 | 0 | After moving the jump to ts-forward into DOCKER-USER and removing its FORWARD-chain jump, containers still cannot reach Tailscale devices. |
-| `N3` |  | 0 | 0 | Docker 28 still cannot route container traffic to Tailscale; the iptables counters increase along the affected forwarding path, and the inst |
-| `N4` |  | 0 | 0 | With Tailscale stateful filtering disabled, the affected systems can upgrade to Docker 28 and container communication works again. |
-| `N5` |  | 0 | 0 | Affected users report that Docker 28.0.1 restores the container networking that was broken by 28.0.0, without their earlier manual iptables  |
-| `N_terminal` | ✓ | 0 | 0 | Docker 28.0.1 is available and affected users confirm that container networking works again after upgrading. |
-
-## Machine review (audit pass, adversarially verified)
-
-Auditor verdict: **needs_rework** · 3 of 5 findings survived independent refutation.
-
-_The case tests whether an agent can move a Docker-28 "containers can't reach Tailscale" report off the reporter's DNS theory, through a falsified iptables rule-relocation attempt, to the interaction between Docker 28.0.0's reorganized FORWARD rules and Tailscale's stateful-filtering ts-forward DROP rule. The early graph (N0→N1→N2_x→N3→N4) is a faithful and well-built rendering of comments c0-c39: the ts-forward relocation blind path is genuinely falsified in the thread, and the stateful-filtering toggle is correctly modeled as a measurement rather than a solution. The tail (N4→N5→terminal) is where it breaks: the released 28.0.1 fix is handed to the simulated user as a clarification answer before the solution edge proposes it, and the graph asserts that 28.0.1 resolved the Tailscale case — something the thread never establishes for any Tailscale user, and which the maintainer explicitly doubted._
-
-### Confirmed findings
-
-- [ ] 🟠 **circular_prerequisite_on_solution_content** (medium) — `n/a`
-  - claim: [future_knowledge_leak / high] at edges[4] e5_N4__N5, clarification info_id "docker2801_verified_restores_affected_networking" (and edges[5] e6_N5__N_terminal.solution.required_info.L3, same id) — the graph's final answer (upgrade to Docker 28.0.1) is delivered to the agent as a clarification answer on e5, and is then made a hard prerequisite (required_info L3) for the very solution edge that proposes it, so the user pre-verifies the fix before the agent may recommend it.
-  - thread evidence: None
-  - suggested fix: None
-  - verifier: The thread order is confirmed as the reviewer states and is the exact inverse of the graph. c49 (participant1): "28.0.1 is likely to fix the issues ... I'd recommend waiting for it"; c50 announces packaging and closes the issue as completed. Only afterwards, unsolicited and post-close, do c51/c52/c53 confirm. Nowhere does anyone ask a reporter to install 28.0.1 as a diagnostic. The graph's e5 ques
-- [ ] 🟡 **unverified_fix_mandated_for_full_match** (low) — `n/a`
-  - claim: [wrong_root_cause / medium] at satisfaction_conditions[3] ("Must recommend Docker 28.0.1 as the shipped fix...") and edges[5] e6_N5__N_terminal.solution.required_elements_for_full_match["recommends_upgrade_to_docker_28_0_1"] — the graph mandates 28.0.1 as the resolution of the Tailscale failure and demotes the actually-verified fix to a mere interim workaround, but the thread never establishes that 28.0.1 fixes the stateful-filtering case and the maintainer explicitly doubted it would.
-  - thread evidence: None
-  - suggested fix: None
-  - verifier: Two of the three sub-claims verify. c33 is quoted accurately: "I'm not sure a simple rearrangement of the moby 28.0 rules will fix this one (as it should for some of the other issues here)", and c50 is only a belief ("I believe all the issues here will be addressed by some combination of #49518 and #49538") with no Tailscale-side confirmation anywhere after it. So requiring recommends_upgrade_to_d
-- [ ] 🟡 **user_perceives_resolved_mismatch** (low) — `n/a`
-  - claim: [terminal_semantics / low] at nodes.N4.user_perceives_resolved (false) — N4 marks the user as not perceiving resolution, but in the thread both Tailscale reporters explicitly declare themselves fixed at exactly this point.
-  - thread evidence: None
-  - suggested fix: None
-  - verifier: Confirmed against the thread and against the graph's own text. c36 (participant2): "i disabled it, upgrade to docker 28 and all running fine"; c39 (reporter): "Can comfirm, upgraded to 28 and is all running fine. Thank you." N4's own symptoms_visible says "the affected systems can upgrade to Docker 28 and container communication works again" and e4's user_answer says "everything works. The origina
-
-### Refuted claims (auditor was wrong — do not act on these)
-
-- ~~unfaithful_reveal~~: [unfaithful_reveal / medium] at edges[4] e5_N4__N5.clarifications[0].user_answer_in_this_oncall and nodes.N5.symptoms_visible — the simulated (Tailscale) user is made to report a 28.0.1 verification that no Tailscale-aff
-  - why refuted: The factual half is right (c51 = swag/rocky9 internal routing, c52 = Oracle Cloud VPS, c53 = "I haven't even downgraded or touched the iptables"; reporter and participant2 never report on 28.0.1), but it does not support the defect. The contract folds multi-user threads into ONE simulated user side and requires only th
-- ~~symptom_contains_diagnosis~~: [symptom_contains_diagnosis / low] at nodes.N3.symptoms_visible[0] — N3's symptom text carries diagnostic framing and configuration state rather than user-observable phenomena.
-  - why refuted: The contract bars a diagnosis, cause, or recommendation in symptoms_visible; N3 contains none. Its three clauses are all observations: "Docker 28 still cannot route container traffic to Tailscale" (the user's own complaint), "the iptables counters increase along the affected forwarding path" (literally what the c13/c14
-
+| `N0` |  | 3 | 0 | After upgrading to Docker Engine 28, my containers can no longer communicate with computers over Tailscale. After rolling back to Docker 27. |
+| `N1` |  | 0 | 0 | With Docker 28, containers cannot reach a Tailscale device even by its IP address. The same custom-bridge containers can reach Tailscale dev |
+| `N1_x` |  | 1 | 0 | Tailscale communication from the container still fails after I insert a jump to ts-forward in DOCKER-USER and remove the existing FORWARD ju |
+| `N2` |  | 0 | 0 | Container traffic to Tailscale devices still fails with Docker 28 while Tailscale stateful filtering is enabled. |
+| `N3` |  | 0 | 0 | After setting Tailscale stateful filtering to false and upgrading to Docker 28, my containers can communicate over Tailscale normally. The d |
+| `N4` |  | 0 | 0 | After updating an affected host to Docker 28.0.1, container forwarding and internal routing work again without manually rearranging the fire |
+| `N_terminal` | ✓ | 0 | 0 | Containers can communicate over the affected forwarded network paths after updating to Docker 28.0.1. |
 
 ## Review checklist
+
+> The graph is the case's ANSWER KEY, not a transcript: edge order need
+> not mirror thread chronology. Do not file chronology mismatch as a
+> defect; what must be faithful is who knew what, when.
 
 Structural (machine-checked by `scripts/validate.py`, re-verify after edits):
 

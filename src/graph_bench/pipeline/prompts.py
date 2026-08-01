@@ -38,7 +38,11 @@ DRAFT_SYSTEM = """\
 You convert one resolved support thread into ONE benchmark task graph for \
 an execution-free multi-turn benchmark. The graph is later used to drive a \
 leak-safe user simulator and an edge-matching judge, so it must encode the \
-case's answer key, not a transcript.
+case's ANSWER KEY, not a transcript: a node's out-edges are the known moves \
+with known outcomes at that state, and edge order need not mirror thread \
+chronology. What MUST mirror the thread exactly is who knew what, when — \
+the simulated user can only ever say what the real reporter had actually \
+produced at that point.
 
 SCHEMA (JSON, exact field names; `from`/`to` are the edge endpoint keys):
 Task: {{task_id, title, body, graph, satisfaction_conditions[],
@@ -64,9 +68,25 @@ Solution: {{intent, approach_keywords[], concrete_example,
 SEMANTIC RULES (violations make the task unusable):
 1. Node = (system_state_id, info_state). system_state_id stays "S1" while
    the world is unchanged; the terminal node after the fix ships is "S2".
-   info_state grows monotonically along the canonical path.
+   info_state grows monotonically along the canonical path, and every id
+   in any node's info_state must be INTRODUCED somewhere: the start
+   node's seed, a clarification on some edge, a node's volunteered_info,
+   or a solution's info_inferred_by_engineer (machine-validated).
+   required_info levels grade obtainability from the reporter: L1 = any
+   user states it unprompted; L2 = inferable from evidence already
+   surfaced; L3 = must be asked for or measured. A fact visible in an
+   artifact but only surfaced after a handler told the reporter to go
+   check is L3 must-ask, not inferable.
 2. symptoms_visible contains ONLY observable phenomena in the user's
-   words — never diagnoses, causes, or advice.
+   first-person words — never diagnoses, causes, advice, or verdicts on
+   an approach ("didn't help", "wrong direction"). The failed status of
+   an attempt is recorded ONLY by is_known_blind_path on the edge, never
+   in symptom text: the simulated user speaks symptoms aloud, so a
+   verdict written into a symptom leaks that a branch is dead before the
+   agent reasons. Aftermath nodes state the post-attempt OBSERVATION
+   ("backgrounds are still the wrong colour after the update"); the
+   terminal node states the observable end state, never release
+   management or engineering status.
 3. Information containment: for every clarification/mixed edge,
    to.info_state must contain from.info_state plus every asked info_id.
    The destination may additionally gain engineer-inferred ids (also list
@@ -75,7 +95,31 @@ SEMANTIC RULES (violations make the task unusable):
    executes — bisection runs, test/try builds, config-toggle probes,
    version checks, benchmarks — are clarification_only edges (they change
    knowledge, not the system), even when the probed toggle doubles as a
-   workaround. The user_answer states what the measurement showed.
+   workaround. THE ANSWER IS THE RAW OUTPUT: the user_answer states only
+   what the reporter actually produced and said (dates, pushlog URLs,
+   pasted log lines, scores, "I'm not sure which one to report") — NEVER
+   the conclusion an engineer later drew from that output (which commit
+   is the regressor, which pref/flag is implicated, what the mechanism
+   is). The conclusion belongs in the consuming solution's
+   info_inferred_by_engineer and, when displaying it should be scored as
+   inference, in that solution's inference_hint. This is the single most
+   damaging leak class: a bisection answer that names the culprit hands
+   the agent the answer key.
+4b. USER-VOICE RULE: every user_answer_in_this_oncall is in the
+   reporter's own FIRST-PERSON voice — words they actually typed or
+   could type. Never third-person narration ("the reporter provided...",
+   "a second user ran..."), never handler-action verbs (inspected/found/
+   judged/provided), never the artifact described in place of the fact
+   ("the screenshot shows the console error" — write what the user would
+   say: "the console throws invalid state mutation"). Unprompted facts a
+   user adds alongside an answer go into the TARGET node's
+   volunteered_info.
+4c. DENOISE RULE: logistics and coordination content — release
+   scheduling, uplift/backport approvals, GA dates, packaging, thanks,
+   bot chatter — never becomes an edge, a required_element, an
+   approach_keyword, or a satisfaction condition. Score only the
+   technical diagnostic-to-fix chain; release facts may appear in
+   concrete_example as factual record.
 5. Blind paths: solution_only edges with is_known_blind_path=true are
    ONLY for attempts actually falsified in the thread (tried and did not
    resolve) or brush-off resolutions the reporter rejected with evidence.
@@ -108,11 +152,17 @@ SEMANTIC RULES (violations make the task unusable):
     counterfactual_candidates on the most decision-relevant
     clarifications.
 
-Study the example task (a Mozilla thread annotated by hand), then produce
-the SAME shape for the new thread.
+Study the two example tasks (Mozilla threads annotated and leak-repaired
+by hand), then produce the SAME shape for the new thread. Example B shows
+the measurement-class rule done right: bisection/test-build answers carry
+raw output only, and the culprit identification lives in the final
+solution's inference_hint.
 
-EXAMPLE TASK:
-{fewshot}
+EXAMPLE TASK A (compact):
+{fewshot_a}
+
+EXAMPLE TASK B (measurement-heavy):
+{fewshot_b}
 
 Output exactly one JSON object (the Task). No markdown fences, no prose.
 """
@@ -129,13 +179,12 @@ Available local attachments (path -> came from):
 """
 
 REPAIR_PROMPT = """\
-Your previous Task JSON failed machine validation. Fix it and output the \
-complete corrected JSON object (no fences, no prose). Keep everything that \
-was already valid; change only what the error requires.
+Your previous Task JSON (the assistant message above) failed machine \
+validation. Re-read the thread and the semantic rules, fix the problem at \
+its source — do not just rewire fields to silence the validator — and \
+output the complete corrected JSON object (no fences, no prose). Keep \
+everything that was already valid.
 
 VALIDATION ERROR:
 {error}
-
-PREVIOUS JSON:
-{previous}
 """

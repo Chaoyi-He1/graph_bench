@@ -54,7 +54,14 @@ _SECRETS = re.compile(
 )
 
 
+# Org/infra account names are not personal identities; mapping them
+# corrupts domains ('bugzilla.mozilla.org' -> 'bugzilla.participantN.org').
+_ORG_IDENTITIES = {'mozilla', 'firefox', 'bugzilla', 'github', 'postgresql'}
+
+
 def _is_bot(handle: str) -> bool:
+    if handle.lower().strip() in _ORG_IDENTITIES:
+        return True
     return any(m in handle.lower() for m in _BOT_MARKERS)
 
 
@@ -76,10 +83,19 @@ class CaseMap:
         # then their local parts, then quoted-reply display names, then any
         # remaining non-bot email.
         for handle in sorted(self.map, key=len, reverse=True):
-            text = text.replace(handle, self.map[handle])
+            # Full-handle replacement is boundary-guarded too: GitHub
+            # logins are bare words (no '@'), and a short login like
+            # 'sync' must not rewrite the inside of '(async storage'.
+            text = re.sub(
+                rf'\b{re.escape(handle)}\b', self.map[handle], text
+            )
             local = handle.split('@')[0]
             if len(local) >= 4:
-                text = text.replace(local, self.map[handle])
+                # Word-boundary guarded: a short local part like 'glob' must
+                # not rewrite the inside of words ('globally').
+                text = re.sub(
+                    rf'\b{re.escape(local)}\b', self.map[handle], text
+                )
         text = _REPLY_NAME.sub(r'(In reply to comment #\1)', text)
         text = _SECRETS.sub('<secret-scrubbed>', text)
         return _EMAIL.sub(
@@ -142,9 +158,12 @@ def scrub_graph(path: Path, maps: dict[str, dict], apply: bool) -> int:  # noqa:
             for token in {handle, handle.split('@')[0]}:
                 if token == pseudo or _PSEUDO.match(token):
                     continue  # identity/no-op from an already-scrubbed map
-                if len(token) >= 4 and token in text:
-                    hits += text.count(token)
-                    text = text.replace(token, pseudo)
+                if len(token) >= 4:
+                    rx = re.compile(rf'\b{re.escape(token)}\b')
+                    n = len(rx.findall(text))
+                    if n:
+                        hits += n
+                        text = rx.sub(pseudo, text)
     text = _SECRETS.sub('<secret-scrubbed>', text)
     new = _EMAIL.sub(
         lambda mt: mt.group(0) if _is_bot(mt.group(0)) else '<email-scrubbed>',

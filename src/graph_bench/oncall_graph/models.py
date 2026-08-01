@@ -191,6 +191,53 @@ class Graph(BaseModel):
                     f'  missing downstream: {missing}'
                 )
                 raise ValueError(msg)
+        # Required-info availability: every non-shortcut solution must be
+        # satisfiable at its from-node — each required id either collected
+        # (from-node info_state) or explicitly engineer-inferred. Without
+        # this, the judge demands evidence the simulated user was never
+        # scripted to provide, producing unwinnable cases.
+        for edge in self.edges:
+            sol = edge.solution
+            if sol is None or sol.is_shortcut:
+                continue
+            need = sol.required_info.flat()
+            have = set(self.nodes[edge.from_node].info_state) | set(
+                sol.info_inferred_by_engineer
+            )
+            missing_req = sorted(need - have)
+            if missing_req:
+                msg = (
+                    f'edge {edge.edge_id}: solution required_info '
+                    f'{missing_req} is not available at from-node '
+                    f'{edge.from_node!r} (neither in its info_state nor in '
+                    f'info_inferred_by_engineer)'
+                )
+                raise ValueError(msg)
+        # Orphan-info check: information cannot be hand-placed into a
+        # node's info_state — every id must be introduced somewhere: the
+        # start node's seed, a clarification on some edge, a node's
+        # volunteered_info, or a solution's info_inferred_by_engineer
+        # declaration. (The internal reference pipeline derives info_state
+        # by fixpoint so this holds by construction; here it is a check.)
+        introduced = set(self.nodes[self.start_node].info_state)
+        for edge in self.edges:
+            for clar in edge.clarifications:
+                introduced.add(clar.info_id)
+            if edge.solution is not None:
+                introduced.update(edge.solution.info_inferred_by_engineer)
+        for node in self.nodes.values():
+            introduced.update(node.volunteered_info)
+        for node_id, node in self.nodes.items():
+            orphans = sorted(set(node.info_state) - introduced)
+            if orphans:
+                msg = (
+                    f'node {node_id!r}: info_state ids {orphans} are '
+                    f'introduced by no start seed, clarification, '
+                    f'volunteered_info, or info_inferred_by_engineer '
+                    f'declaration — later-established facts must not be '
+                    f'hand-placed onto nodes'
+                )
+                raise ValueError(msg)
         return self
 
 
