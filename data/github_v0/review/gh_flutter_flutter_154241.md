@@ -18,6 +18,7 @@ flowchart LR
     N5_x["<b>N5_x rotation-removal fix aftermath</b><br/><small>info: 13</small>"]
     N6["<b>N6 final package verified on physical devices</b><br/><small>info: 14</small>"]
     N_terminal["<b>terminal resolved</b><br/><small>info: 17</small>"]
+    N2b["<b>N2b canonical merge (no blind-branch knowledge)</b><br/><small>info: 6</small>"]
     N0 ==>|"💥 blind: Treat the report as a duplicate of the earlier Impeller preview-rotation issue and ask the reporter to retry on the latest Flutter main branch containing that fix."| N1_x
     linkStyle 0 stroke:#ef4444,stroke-width:2px
     N1_x -.->|"❓ old_samsung_api22_preview_is_correct, same_rotation_with_skia_and_impeller"| N2
@@ -34,10 +35,14 @@ flowchart LR
     linkStyle 6 stroke:#3b82f6,stroke-width:2px
     N6 ==>|"⚡ Use camera_android_camerax 0.6.14 or later, whose preview widget responds to orientation-stream updates and applies a rotation correction only when SurfaceProducer reports that it does not handle crop and rotation."| N_terminal
     linkStyle 7 stroke:#f97316,stroke-width:2px
-    N0 -.->|"❓ old_samsung_api22_preview_is_correct, same_rotation_with_skia_and_impeller"| N2
+    N0 -.->|"❓ old_samsung_api22_preview_is_correct, same_rotation_with_skia_and_impeller"| N2b
     linkStyle 8 stroke:#3b82f6,stroke-width:2px
     N4_manual_x ==>|"⚡ Abandon this direction and return to the investigation."| N4
     linkStyle 9 stroke:#f97316,stroke-width:2px
+    N4 -.->|"❓ camerax_0_6_14_verified_on_affected_physical_devices"| N6
+    linkStyle 10 stroke:#3b82f6,stroke-width:2px
+    N2b -.->|"❓ broader_device_and_orientation_reproductions, pixel1_api29_emulator_reproduces_consistently, captured_photo_is_not_stretched_like_live_preview"| N3
+    linkStyle 11 stroke:#3b82f6,stroke-width:2px
     class N0 start
     class N1_x normal
     class N2 normal
@@ -47,6 +52,7 @@ flowchart LR
     class N5_x normal
     class N6 normal
     class N_terminal terminal
+    class N2b normal
     classDef start fill:#fee2e2,stroke:#b91c1c,color:#000
     classDef terminal fill:#dcfce7,stroke:#15803d,color:#000
     classDef normal fill:#fef3c7,stroke:#a16207,color:#000
@@ -77,8 +83,10 @@ flowchart LR
 | `e6_N4__N4_manual_x` | solution_only **BLIND** | req_info: pixel1_camerax_preview_rotated_90_degrees<br>elements: uses_fixed_manual_quarter_turn, wraps_camera_preview_with_aspect_ratio | Manually wrap CameraPreview in a fixed RotatedBox and AspectRatio to compensate for the visible 90-degree error. |
 | `e7_N5_x__N6` | clarification_only | asks: camerax_0_6_14_verified_on_affected_physical_devices | I updated to camera_android_camerax 0.6.14 — the preview orientation is correct now on my devices. |
 | `e8_N6__N_terminal` | solution_only | req_info: regression_occurs_after_camerax_0_6_7_2, same_rotation_with_skia_and_impeller, broader_device_and_orientation_reproductions, camerax_0_6_9_corrects_common_api29_preview_case, landscape_start_and_natural_landscape_cases_remain_wrong, camerax_0_6_14_verified_on_affected_physical_devices, captured_photo_is_not_stretched_like_live_preview<br>elements: identifies_missing_preview_rebuild_on_orientation_updates, identifies_api_level_backend_heuristic_as_incorrect, uses_handles_crop_and_rotation_to_select_correction, recommends_camera_android_camerax_0_6_14_or_later, requires_physical_device_verification | Use camera_android_camerax 0.6.14 or later, whose preview widget responds to orientation-stream updates and applies a rotation correction only when SurfaceProducer reports that it does not handle crop and rotation. |
-| `e0_N0__N2` | clarification_only | asks: old_samsung_api22_preview_is_correct, same_rotation_with_skia_and_impeller | I checked an old Samsung running Android 5.1.1, API 22, and everything worked as expected there. My options fo / This is produced after the fix while running the regular Skia engine — and I also tried running the app with I |
+| `e0_N0__N2b` | clarification_only | asks: old_samsung_api22_preview_is_correct, same_rotation_with_skia_and_impeller | I checked an old Samsung running Android 5.1.1, API 22, and everything worked as expected there. My options fo / I'm running the regular Skia engine — and I also tried running the app with Impeller: same wrong rotation. |
 | `rb_N4_manual_x__N4` | solution_only | req_info: <br>elements: mentions_rollback_or_abandon_direction | Abandon this direction and return to the investigation. |
+| `e7b_N4__N6` | clarification_only | asks: camerax_0_6_14_verified_on_affected_physical_devices | I updated to camera_android_camerax 0.6.14 — the preview orientation is correct now on my devices. |
+| `e3b_N2b__N3` | clarification_only | asks: broader_device_and_orientation_reproductions, pixel1_api29_emulator_reproduces_consistently, captured_photo_is_not_stretched_like_live_preview | Reproduced it more broadly: the Pixel 1 shows it consistently, the API 29 emulator reproduces it too, and it h / Yes. I configured a Pixel 1 emulator with the API 29 system image, and it behaves exactly like my real Pixel 1 / Before capture, the CameraX preview is rotated and stretched. After I take the photo and display it with photo |
 
 ## Nodes
 
@@ -93,6 +101,7 @@ flowchart LR
 | `N5_x` |  | 1 | 1 | With the release that removed the earlier preview-rotation logic, the preview is still rotated on affected Samsung devices and tablets, and  |
 | `N6` |  | 0 | 0 | After updating to camera_android_camerax 0.6.14, the camera preview is correctly oriented on the affected Samsung tablet and on the customer |
 | `N_terminal` | ✓ | 0 | 0 | The live CameraX preview stays correctly oriented as the physical device orientation changes after updating to camera_android_camerax 0.6.14 |
+| `N2b` |  | 0 | 0 | The preview remains rotated on my Pixel 1, while the same code displays correctly on an old Samsung device running Android 5.1.1. |
 
 ## Machine review (audit pass, adversarially verified)
 
