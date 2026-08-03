@@ -54,7 +54,6 @@ flowchart LR
 2. Diagnosis must be grounded in the observed progression: size/stride recompilations, the SymInt size() failure, the compiled-backward integer failure, the dynamic split-reduction warning, and the later successful run.
 3. Must not recommend PR 93059 on the old Triton stack or the specialize_int_float=True eval_frame hack as the final fix; both were tried in-case and failed.
 4. The final recommendation must use a current PyTorch/Triton/PyG stack with dynamic compilation and must benchmark after warmup with correct CUDA synchronization rather than relying on misleading asynchronous timing.
-5. Must distinguish the actual NeighborLoader result from separate static basic-GNN measurements and only declare resolution after the reporter verifies that the original workload completes and achieves the reported roughly 20% speedup.
 
 ## Edges
 
@@ -78,7 +77,7 @@ flowchart LR
 | `N2` |  | 0 | 0 | With the newer Triton source build and dynamic=True, training raises an error because size() receives a SymInt dimension instead of an int. |
 | `N2_x` |  | 1 | 0 | With the specialize_int_float patch and the suggested PR branch, the forward pass gets farther but loss.backward() fails with "'int' object  |
 | `N3` |  | 0 | 0 | On the latest PyTorch, Triton, PyG, and pyg-lib, Inductor completes training but reports that split reduction could not be used for dynamic  |
-| `N4` |  | 0 | 0 | Re-ran the NeighborLoader benchmark in May: torch.compile is now about 20% faster than eager for me. |
+| `N4` |  | 0 | 0 | I rebuilt on the current stack and the NeighborLoader training loop now runs to completion with dynamic compilation; I haven't re-timed it y |
 | `N_terminal` | ✓ | 0 | 0 | The NeighborLoader GCN trains successfully with dynamic compilation and the measured compiled run is about 20% faster than eager. |
 
 ## Machine review (audit pass, adversarially verified)

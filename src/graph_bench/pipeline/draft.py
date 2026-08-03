@@ -127,7 +127,7 @@ def lint_task(
     _verif = _re.compile(
         r'retest|_verified_fix|verified_fixed|verified_working'
         r'|fix_verified|verified_no_recurrence|verified.*resolv'
-        r'|update_verified|verified_restores|works_again'
+        r'|update_verified|verified_restores|works_again|test_passes|now_passes'
     )
     for e in g.edges:
         if e.solution is None or not g.nodes[e.to_node].is_terminal:
