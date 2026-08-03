@@ -1,0 +1,267 @@
+{
+ "repo": "duckdb/duckdb",
+ "number": 6937,
+ "url": "https://github.com/duckdb/duckdb/issues/6937",
+ "title": "Slow conversion when loading from CSV and saving as Parquet",
+ "state": "closed",
+ "labels": [],
+ "reporter": "reporter",
+ "created_at": "2023-04-01T05:28:15Z",
+ "closed_at": "2023-04-26T18:21:53Z",
+ "body": "### What happens?\n\nI am loading several large datasets (20GB+ of CSV) data. I would like to export them to Parquet format for subsequent processing.\r\n\r\nWhen I load the data, it loads from CSV into a local on-disk database in something like 30 seconds (followed by maybe another two minutes or so, approximately, to finish loading or doing some internal indexing). When I then export the data to a Parquet file, it is taking upwards of **3 hours** to write the file in Parquet format.\r\n\r\nI am on an Apple Silicon M1 iMac with 16GB of RAM and 1TB of SSD storage.\r\n\r\nIs there a better way to do this than the steps I am following below?\n\n### To Reproduce\n\n### From the shell\r\n\r\n```\r\nrm -f edw.duck # remove any prior database file\r\nduckdb_cli edw.duck # create new db and start the console\r\n```\r\n\r\n### From the `duckdb` console\r\n\r\n```\r\ncreate or replace table ccaed182 as select * from read_csv_auto('ccaed182.csv.gz', all_varchar=true, header=true);\r\ncopy ccaed182 to 'ccaed182.parquet' (format parquet);\r\n```\r\n\r\n### Approximate times\r\n\r\n```\r\n~ 3 minutes - to load the CSV file from disk\r\n~ 3 hours - to save the Parquet file to disk\r\n```\r\n\r\n\n\n### OS:\n\nmacOS Ventura 13.2.1\n\n### DuckDB Version:\n\n0.7.1\n\n### DuckDB Client:\n\nduckdb_cli\n\n### Full Name:\n\nSteve Shreeve\n\n### Affiliation:\n\nIndependent developer\n\n### Have you tried this on the latest `master` branch?\n\n- [X] I agree\n\n### Have you tried the steps to reproduce? Do they include all relevant data and configuration? Does the issue you report still appear there?\n\n- [X] I agree",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2023-04-02T09:50:31Z",
+   "body": "try loads from CSV into an in memory database "
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-04-02T10:04:22Z",
+   "body": "```sql\r\n~ $ duckdb duckdb.db\r\nv0.7.1 b00b93f\r\nEnter \".help\" for usage hints.\r\nD copy ( SELECT i FROM range(1,200000000)t(i) ) to 'data.csv';\r\n100% ▕████████████████████████████████████████████████████████████▏\r\nD .timer on\r\nD create table test as select i from 'data.csv';\r\nRun Time (s): real 0.019 user 0.009871 sys 0.000077\r\nError: Binder Error: Referenced column \"i\" not found in FROM clause!\r\nCandidate bindings: \"data.csv.column0\"\r\nLINE 1: create table test as select i from 'data.csv';\r\n                                    ^\r\nD create table test as select * from 'data.csv';\r\n100% ▕████████████████████████████████████████████████████████████▏\r\nRun Time (s): real 22.564 user 19.538156 sys 2.970769\r\nD create temp table testm as select * from 'data.csv';\r\n100% ▕████████████████████████████████████████████████████████████▏\r\nRun Time (s): real 18.181 user 15.812405 sys 2.076044\r\nD copy (select * from test) to 'test.parquet';\r\n100% ▕████████████████████████████████████████████████████████████▏\r\nRun Time (s): real 13.677 user 10.722064 sys 4.773832\r\nD copy (select * from testm) to 'testm.parquet';\r\n100% ▕████████████████████████████████████████████████████████████▏\r\nRun Time (s): real 13.707 user 10.336879 sys 3.773431\r\nD drop table test;\r\nRun Time (s): real 0.025 user 0.001213 sys 0.019543\r\nD .exit\r\n~ $ duckdb\r\nv0.7.1 b00b93f\r\nEnter \".help\" for usage hints.\r\nConnected to a transient in-memory database.\r\nUse \".open FILENAME\" to reopen on a persistent database.\r\nD .timer on\r\nD create table testm2 as select * from 'data.csv';\r\n100% ▕████████████████████████████████████████████████████████████▏\r\nRun Time (s): real 19.054 user 18.694346 sys 4.290329\r\nD copy (select * from testm2) to 'testm2.parquet';\r\n100% ▕████████████████████████████████████████████████████████████▏\r\nRun Time (s): real 13.293 user 7.921707 sys 3.072960\r\nD copy (select * from 'data.csv') to 'testcsv.parquet';\r\n100% ▕████████████████████████████████████████████████████████████▏\r\nRun Time (s): real 32.371 user 25.964190 sys 9.151756\r\n```"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-04-02T10:05:58Z",
+   "body": "```\r\n-rw------- 1 u0_a200 u0_a200  800667054 Apr  2 17:57 test.parquet\r\n-rw------- 1 u0_a200 u0_a200  800667054 Apr  2 18:02 testcsv.parquet\r\n-rw------- 1 u0_a200 u0_a200  800667054 Apr  2 17:58 testm.parquet\r\n-rw------- 1 u0_a200 u0_a200  800667054 Apr  2 18:01 testm2.parquet\r\n-rw------- 1 u0_a200 u0_a200 1888888888 Apr  2 17:53 data.csv\r\n```"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-04-02T11:01:15Z",
+   "body": "from https://duckdb.org/docs/data/parquet/overview\r\n```\r\n-- write a csv file to an uncompressed parquet file\r\nCOPY 'test.csv' TO 'result-uncompressed.parquet' (FORMAT 'PARQUET', CODEC 'UNCOMPRESSED')\r\n```"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-04-02T11:02:32Z",
+   "body": "We have recently fixed a performance issue when writing VARCHAR columns to Parquet, see #6852. Perhaps retry on the latest master? The problem has likely already been fixed.\r\n\r\nOrder-preserving Parquet writes are also not executed in parallel currently, you can use `SET preserve_insertion_order=false` to enable parallel Parquet writing."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-04-02T11:29:02Z",
+   "body": "time\r\n```sql\r\nD:\\duckdb>duckdb071\r\nv0.7.1 b00b93f0b1\r\nEnter \".help\" for usage hints.\r\nConnected to a transient in-memory database.\r\nUse \".open FILENAME\" to reopen on a persistent database.\r\nD .timer on\r\nD copy ( SELECT i FROM range(1,20000000)t(i) ) to 'data.csv';\r\n100% ▕████████████████████████████████████████████████████████████▏\r\nRun Time (s): real 7.605 user 6.817244 sys 0.436803\r\nD copy 'data.csv' to 'testcsv.parquet';\r\n100% ▕████████████████████████████████████████████████████████████▏\r\nRun Time (s): real 18.885 user 16.286504 sys 1.138807\r\nD copy 'data.csv' to 'testcsvu.parquet' (FORMAT 'PARQUET', CODEC 'UNCOMPRESSED');\r\n100% ▕████████████████████████████████████████████████████████████▏\r\nRun Time (s): real 19.694 user 14.976096 sys 1.809612\r\nD copy 'data.csv' to 'testcsvz.parquet' (FORMAT 'PARQUET', CODEC 'ZSTD');\r\n100% ▕████████████████████████████████████████████████████████████▏\r\nRun Time (s): real 21.580 user 20.030528 sys 0.936006\r\nD SET preserve_insertion_order=false\r\n> ;\r\nRun Time (s): real 0.000 user 0.000000 sys 0.000000\r\nD copy 'data.csv' to 'testcsv2.parquet';\r\n100% ▕████████████████████████████████████████████████████████████▏\r\nRun Time (s): real 13.195 user 12.152478 sys 1.419609\r\nD copy 'data.csv' to 'testcsvz2.parquet' (FORMAT 'PARQUET', CODEC 'ZSTD');\r\n100% ▕████████████████████████████████████████████████████████████▏\r\nRun Time (s): real 22.508 user 20.732533 sys 1.123207\r\n```\r\nsize\r\n```\r\n2023/04/02  19:14        80,069,162 testcsv.parquet\r\n2023/04/02  19:20        80,069,162 testcsv2.parquet\r\n2023/04/02  19:15       160,020,714 testcsvu.parquet\r\n2023/04/02  19:17        20,367,157 testcsvz.parquet\r\n2023/04/02  19:21        20,367,157 testcsvz2.parquet\r\n```"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-04-02T11:36:56Z",
+   "body": "v0.7.2-dev1322 4161f39ca1\r\n```sql\r\nD:\\duckdb>duckdb072d\r\nv0.7.2-dev1322 4161f39ca1\r\nEnter \".help\" for usage hints.\r\nConnected to a transient in-memory database.\r\nUse \".open FILENAME\" to reopen on a persistent database.\r\nD .timer on\r\nD copy ( SELECT i FROM range(1,20000000)t(i) ) to 'data.csv';\r\n100% ▕████████████████████████████████████████████████████████████▏\r\nRun Time (s): real 8.530 user 8.018451 sys 0.327602\r\nD SET preserve_insertion_order=false;\r\nRun Time (s): real 0.000 user 0.000000 sys 0.000000\r\nD copy 'data.csv' to 'testcsv2.parquet';\r\n100% ▕████████████████████████████████████████████████████████████▏\r\nRun Time (s): real 18.814 user 15.974502 sys 1.170008\r\nD copy 'data.csv' to 'testcsv2.parquet';\r\n100% ▕████████████████████████████████████████████████████████████▏\r\nRun Time (s): real 18.737 user 15.771701 sys 1.419609\r\nD copy 'data.csv' to 'testcsvz2.parquet' (FORMAT 'PARQUET', CODEC 'ZSTD');\r\n100% ▕████████████████████████████████████████████████████████████▏\r\nRun Time (s): real 20.768 user 19.203723 sys 0.936006\r\n```\r\nsize\r\n```\r\n2023/04/02  19:32       168,888,888 data.csv\r\n2023/04/02  19:34        80,069,162 testcsv2.parquet\r\n2023/04/02  19:35        20,367,157 testcsvz2.parquet\r\n```"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-04-02T11:44:06Z",
+   "body": "query\r\n```sql\r\nD .timer on\r\nD select avg(column0) from 'data.csv';\r\n100% ▕████████████████████████████████████████████████████████████▏\r\n┌──────────────┐\r\n│ avg(column0) │\r\n│    double    │\r\n├──────────────┤\r\n│   10000000.0 │\r\n└──────────────┘\r\nRun Time (s): real 12.783 user 12.090077 sys 0.280802\r\nD select avg(column0) from 'testcsv2.parquet';\r\n┌──────────────┐\r\n│ avg(column0) │\r\n│    double    │\r\n├──────────────┤\r\n│   10000000.0 │\r\n└──────────────┘\r\nRun Time (s): real 1.098 user 1.872012 sys 0.312002\r\nD select avg(column0) from 'testcsvz2.parquet';\r\n┌──────────────┐\r\n│ avg(column0) │\r\n│    double    │\r\n├──────────────┤\r\n│   10000000.0 │\r\n└──────────────┘\r\nRun Time (s): real 1.151 user 2.121614 sys 0.156001\r\n```"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-04-02T17:32:03Z",
+   "body": "An **absolutely astonishing** improvement!\r\n\r\n```\r\nv0.7.2-dev1322 4161f39ca1\r\nEnter \".help\" for usage hints.\r\nD set preserve_insertion_order=false;\r\nD .timer on\r\nD create or replace table ccaed182 as select * from read_csv_auto('ccaed182.csv.gz', all_varchar=true, header=true);\r\n100% ▕████████████████████████████████████████████████████████████▏\r\nRun Time (s): real 962.424 user 952.173166 sys 7.611139\r\n```\r\n\r\n```\r\n$ ls -l\r\n-r--r--r--@ 1 reporter  staff  6506608484 Jan 17 08:21 ccaed182.csv.gz\r\n-rw-r--r--@ 1 reporter  staff  4167902044 Apr  2 11:29 ccaed182.parquet\r\n```\r\n\r\n`duckdb`, ftw!"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-04-02T17:56:08Z",
+   "body": "Here's a direct conversion:\r\n\r\n```\r\nv0.7.2-dev1322 4161f39ca1\r\nEnter \".help\" for usage hints.\r\nConnected to a transient in-memory database.\r\nUse \".open FILENAME\" to reopen on a persistent database.\r\nD .timer on\r\nD copy 'ccaed182.csv.gz' to 'ccaed182-1.parquet' (format 'parquet', codec 'zstd');\r\n100% ▕████████████████████████████████████████████████████████████▏\r\nRun Time (s): real 549.536 user 514.005509 sys 34.489080\r\n```\r\n\r\nHere's a direct conversion, with preserve_insertion_order=false:\r\n\r\n```\r\nset preserve_insertion_order=false;\r\nv0.7.2-dev1322 4161f39ca1\r\nEnter \".help\" for usage hints.\r\nConnected to a transient in-memory database.\r\nUse \".open FILENAME\" to reopen on a persistent database.\r\nD set preserve_insertion_order=false;\r\nD .timer on\r\nD copy 'ccaed182.csv.gz' to 'ccaed182-2.parquet' (format 'parquet', codec 'zstd');\r\n100% ▕████████████████████████████████████████████████████████████▏\r\nRun Time (s): real 551.849 user 514.792347 sys 36.401336\r\n```\r\n\r\nThe file sizes are the same:\r\n\r\n```\r\n$ ls -l\r\n-rw-r--r--@  1 reporter  staff   4794409184 Apr  2 11:43 ccaed182-1.parquet\r\n-rw-r--r--@  1 reporter  staff   4794409184 Apr  2 11:53 ccaed182-2.parquet\r\n```\r\n"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-04-02T17:58:48Z",
+   "body": "> Here's a direct conversion:\r\n> \r\n> ```\r\n> v0.7.2-dev1322 4161f39ca1\r\n> Enter \".help\" for usage hints.\r\n> Connected to a transient in-memory database.\r\n> Use \".open FILENAME\" to reopen on a persistent database.\r\n> D .timer on\r\n> D copy 'ccaed182.csv.gz' to 'ccaed182-1.parquet' (format 'parquet', codec 'zstd');\r\n> 100% ▕████████████████████████████████████████████████████████████▏\r\n> Run Time (s): real 549.536 user 514.005509 sys 34.489080\r\n> ```\r\n> \r\n> Here's a direct conversion, with preserve_insertion_order=false:\r\n> \r\n> ```\r\n> set preserve_insertion_order=false;\r\n> v0.7.2-dev1322 4161f39ca1\r\n> Enter \".help\" for usage hints.\r\n> Connected to a transient in-memory database.\r\n> Use \".open FILENAME\" to reopen on a persistent database.\r\n> D set preserve_insertion_order=false;\r\n> D .timer on\r\n> D copy 'ccaed182.csv.gz' to 'ccaed182-2.parquet' (format 'parquet', codec 'zstd');\r\n> 100% ▕████████████████████████████████████████████████████████████▏\r\n> Run Time (s): real 551.849 user 514.792347 sys 36.401336\r\n> ```\r\n> \r\n> The file sizes are the same:\r\n> \r\n> ```\r\n> $ ls -l\r\n> -rw-r--r--@  1 reporter  staff   4794409184 Apr  2 11:43 ccaed182-1.parquet\r\n> -rw-r--r--@  1 reporter  staff   4794409184 Apr  2 11:53 ccaed182-2.parquet\r\n> ```\r\n\r\nAh, you also need to enable the parallel CSV reader to enable parallelism for this query:\r\n\r\n```sql\r\nSET experimental_parallel_csv=true;\r\n```\r\n\r\nWe are aiming to fix these issues so both of those options won't be necessary anymore with the next release."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-04-02T18:05:08Z",
+   "body": "For reference, here are the file sizes:\r\n\r\n```\r\nls -l\r\n-r--r--r--@ 1 reporter  staff   6506608484 Jan 17 08:21 ccaed182.csv.gz\r\n-rw-r--r--@ 1 reporter  staff  45916561213 Apr  2 12:00 ccaed182.csv\r\n-rw-r--r--@ 1 reporter  staff   4167902044 Apr  2 11:29 ccaed182.parquet\r\n-rw-r--r--@ 1 reporter  staff   4794409184 Apr  2 11:43 ccaed182-1.parquet\r\n-rw-r--r--@ 1 reporter  staff   4794409184 Apr  2 11:53 ccaed182-2.parquet\r\n```\r\n\r\n```\r\n$ wc ccaed182.csv\r\n212363080 ccaed182.csv\r\n\r\n$ ~/bin/duckdb\r\nD select count(*) from 'ccaed182-1.parquet';\r\n┌──────────────┐\r\n│ count_star() │\r\n│    int64     │\r\n├──────────────┤\r\n│    212363079 │\r\n└──────────────┘\r\n```\r\n\r\nHere are some stats from simple `gzip` decompression of the original file:\r\n\r\n```\r\n$ gzip -dc ccaed182.csv.gz | pv > ccaed182.csv\r\n42.8GiB 0:01:09 [ 634MiB/s]\r\n```\r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-04-02T18:08:49Z",
+   "body": "@participant2 - This looks amazing!\r\n\r\nOn the following,\r\n\r\n```\r\n$ ~/bin/duckdb\r\nv0.7.2-dev1322 4161f39ca1\r\nEnter \".help\" for usage hints.\r\nConnected to a transient in-memory database.\r\nUse \".open FILENAME\" to reopen on a persistent database.\r\nD .timer on\r\nD set preserve_insertion_order=false;\r\nRun Time (s): real 0.001 user 0.000069 sys 0.000211\r\nD set experimental_parallel_csv=true;\r\nRun Time (s): real 0.001 user 0.000069 sys 0.000056\r\nD copy 'ccaed182.csv.gz' to 'ccaed182-3.parquet' (format 'parquet', codec 'zstd');\r\n\r\n 99% ▕███████████████████████████████████████████████████████████▍▏ Run Time (s): real 28.777 user 127.189310 sys 5.543211\r\nError: Invalid Input Error: Could not parse string \"07/\" according to format specifier \"%m/%d/%Y\"\r\n07/\r\n   ^\r\nError: Expected a number in column 5, at line 25109352.\r\n\r\nParser options:\r\n  file=ccaed182.csv.gz\r\n  delimiter=',' (auto detected)\r\n  quote='\"' (auto detected)\r\n  escape='\"' (auto detected)\r\n  header=1 (auto detected)\r\n  sample_size=20480\r\n  ignore_errors=0\r\n  all_varchar=0.\r\n```\r\n\r\nWhere do I specify the `all_varchar=1` in this command?"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-04-02T18:12:58Z",
+   "body": "Changing the `'ccaed182.csv.gz'` portion to:\r\n```sql\r\nread_csv_auto('ccaed182.csv.gz', all_varchar=1)\r\n```\r\nShould be it I think"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-04-02T18:15:21Z",
+   "body": "![syntax](https://user-images.githubusercontent.com/142875/229371140-c7866723-92c0-4c4b-84bd-64e3acf5d929.png)\r\n"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-04-02T18:16:24Z",
+   "body": "Ah, not possible to just input a table function call as `table-name` ?\r\nThen maybe creating it as a temp table or view before the `COPY` might be necessary\r\n\r\nOh actually, the `( select-node )` is what you can use instead here"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-04-02T18:17:24Z",
+   "body": "```\r\nv0.7.2-dev1322 4161f39ca1\r\nEnter \".help\" for usage hints.\r\nConnected to a transient in-memory database.\r\nUse \".open FILENAME\" to reopen on a persistent database.\r\nD set preserve_insertion_order=false;\r\nD set experimental_parallel_csv=true;\r\nD .timer on\r\nD copy read_csv_auto('ccaed182.csv.gz', all_varchar=1) to 'ccaed182-3.parquet' (all_varchar=1, format 'parquet', codec 'zstd');\r\nRun Time (s): real 0.001 user 0.000028 sys 0.000009\r\nError: Parser Error: syntax error at or near \"'ccaed182.csv.gz'\"\r\nLINE 1: copy read_csv_auto('ccaed182.csv.gz', all_varchar=1) to 'c...\r\n                           ^\r\nD\r\n```"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-04-02T18:18:50Z",
+   "body": "@participant2 - It would be phenomenal if the source CSV file could be read without first creating the table. It appears to work just like this, if I do not need to specify options such as `all_varchar=true`, etc. Is there any way to specify these options on the `copy` command so that we don't need to create a temporary/intermediate table?"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-04-02T18:19:32Z",
+   "body": "@reporter \r\n\r\n```sql\r\ncopy ( select * from read_csv_auto('ccaed182.csv.gz', all_varchar=1)) to 'ccaed182-3.parquet' (all_varchar=1, format 'parquet', codec 'zstd');\r\n```\r\nThat would be the `( select-node )` option instead of the `table-name`"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-04-02T18:24:29Z",
+   "body": "@participant3 - Ah, this approach worked! Here's the command needed:\r\n\r\n```\r\nset preserve_insertion_order=false;\r\nset experimental_parallel_csv=true;\r\n.timer on\r\ncopy (select * from read_csv_auto('ccaed182.csv.gz', all_varchar=true)) to 'ccaed182-3.parquet' (format 'parquet', codec 'zstd');\r\n100% ▕████████████████████████████████████████████████████████████▏\r\nRun Time (s): real 31.687 user 155.846902 sys 6.236303\r\n```\r\n\r\nFile size:\r\n\r\n```\r\n$ ls -l\r\n-rw-r--r--@  1 reporter  staff    601325023 Apr  2 12:22 ccaed182-3.parquet\r\n```\r\n\r\n@participant2 - This is **SHOCKINGLY** fast!!! Utterly amazing!!!\r\n\r\nHrm... checking the count shows:\r\n\r\n```\r\nD select count(*) from 'ccaed182-3.parquet';\r\n┌──────────────┐\r\n│ count_star() │\r\n│    int64     │\r\n├──────────────┤\r\n│     30559373 │\r\n└──────────────┘\r\nRun Time (s): real 0.055 user 0.052216 sys 0.005764\r\n```"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-04-02T18:36:07Z",
+   "body": "It could be an issue with the `set experimental_parallel_csv=true;` option:\r\n\r\n```\r\nD set experimental_parallel_csv=true;\r\nRun Time (s): real 0.000 user 0.000303 sys 0.000026\r\nD select count(*) from read_csv_auto('ccaed182.csv.gz', all_varchar=true);\r\n100% ▕████████████████████████████████████████████████████████████▏\r\n┌──────────────┐\r\n│ count_star() │\r\n│    int64     │\r\n├──────────────┤\r\n│     30559373 │\r\n└──────────────┘\r\nRun Time (s): real 22.923 user 75.056705 sys 2.250291\r\nD set experimental_parallel_csv=false;\r\nRun Time (s): real 0.000 user 0.000308 sys 0.000023\r\nD select count(*) from read_csv_auto('ccaed182.csv.gz', all_varchar=true);\r\n100% ▕████████████████████████████████████████████████████████████▏\r\n┌──────────────┐\r\n│ count_star() │\r\n│    int64     │\r\n├──────────────┤\r\n│    212363079 │\r\n└──────────────┘\r\nRun Time (s): real 254.119 user 250.558416 sys 2.667685\r\n```\r\n"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-04-02T18:41:40Z",
+   "body": "Aha, that's a good find. Hence experimental :)\r\n\r\n@participant4 perhaps we can run some tests with gzipped files for the parallel CSV reader to see if we can get this to reproduce and have it fixed?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-04-02T18:45:20Z",
+   "body": "Excellent! Thank you for looking into this."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-04-02T19:21:12Z",
+   "body": "FWIW, everything works as expected when the source `csv` file is not compressed:\r\n\r\n```\r\nv0.7.2-dev1322 4161f39ca1\r\nEnter \".help\" for usage hints.\r\nConnected to a transient in-memory database.\r\nUse \".open FILENAME\" to reopen on a persistent database.\r\nD set preserve_insertion_order=false;\r\nD set experimental_parallel_csv=true;\r\nD .timer on\r\nD copy (select * from read_csv_auto('ccaed182.csv', all_varchar=true)) to 'ccaed182-3.parquet' (format 'parquet', codec 'zstd');\r\n100% ▕████████████████████████████████████████████████████████████▏\r\nRun Time (s): real 168.212 user 1110.726295 sys 30.347045\r\nD select count(*) from 'ccaed182-3.parquet';\r\n┌──────────────┐\r\n│ count_star() │\r\n│    int64     │\r\n├──────────────┤\r\n│    212363079 │\r\n└──────────────┘\r\nRun Time (s): real 0.204 user 0.188872 sys 0.022840\r\nD\r\n```"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-04-02T23:32:02Z",
+   "body": "why ccaed182-3.parquet is smaller than other parquet files? "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-04-02T23:34:26Z",
+   "body": "It failed to load the whole file, most likely just due to the fact that it is using experimental parallel loading of CSV. I think @participant4 is going to look into it also.\r\n\r\nOn Sun, Apr 2, 2023 at 5:32 PM participant1 ***@***.***> wrote:\r\n\r\n> why ccaed182-3.parquet is smaller than other parquet files?\r\n>\r\n> —\r\n> Reply to this email directly, view it on GitHub\r\n> <https://github.com/duckdb/duckdb/issues/6937#issuecomment-1493467573>,\r\n> or unsubscribe\r\n> <https://github.com/notifications/unsubscribe-auth/AABC4G2WFMHSSURJRA5PCM3W7ID7ZANCNFSM6AAAAAAWPNEJ74>\r\n> .\r\n> You are receiving this because you were mentioned.Message ID:\r\n> ***@***.***>\r\n>\r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-04-03T04:21:07Z",
+   "body": "Some additional updates, based on some local benchmarking:\r\n\r\n```ruby\r\n#!/usr/bin/env ruby\r\n\r\n# There are 16 choices:\r\n#\r\n# 1) compressed or not\r\n# 2) direct or select-node\r\n# 3) preserve_insertion_order or not\r\n# 4) experimental_parallel_csv or not\r\n\r\nbase = \"ccaed182\"\r\nidno = 10\r\n\r\n['', '.gz'].each do |comp|\r\n  [ \"                             '%s'%*s                    \",\r\n    \"(select * from read_csv_auto('%s'%*s, all_varchar=true))\"\r\n  ].each do |tmpl|\r\n    %w[false true].each do |iord|\r\n      %w[false true].each do |pcsv|\r\n        path = \"#{base}.csv#{comp}\"\r\n        dest = \"#{base}-#{idno += 1}.parquet\"\r\n        stmt = <<~end.split(\"\\n\").join(\" \")\r\n          set preserve_insertion_order=#{ \"%-5.5s\" % iord};\r\n          set experimental_parallel_csv=#{\"%-5.5s\" % pcsv};\r\n          copy #{tmpl % [path, comp.empty? ? 3 : 0, '']} to '#{dest}' (format 'parquet', codec 'zstd');\r\n        end\r\n        puts \"time ~/bin/duckdb <<<\\\"#{stmt}\\\"\"\r\n      end\r\n    end\r\n  end\r\nend\r\n```\r\n\r\nThe above was used to create the following shell script:\r\n\r\n```zsh\r\n#!/bin/zsh\r\n\r\ntime ~/bin/duckdb <<<\"set preserve_insertion_order=false; set experimental_parallel_csv=false; copy                              'ccaed182.csv'                        to 'ccaed182-11.parquet' (format 'parquet', codec 'zstd');\"\r\ntime ~/bin/duckdb <<<\"set preserve_insertion_order=false; set experimental_parallel_csv=true ; copy                              'ccaed182.csv'                        to 'ccaed182-12.parquet' (format 'parquet', codec 'zstd');\"\r\ntime ~/bin/duckdb <<<\"set preserve_insertion_order=true ; set experimental_parallel_csv=false; copy                              'ccaed182.csv'                        to 'ccaed182-13.parquet' (format 'parquet', codec 'zstd');\"\r\ntime ~/bin/duckdb <<<\"set preserve_insertion_order=true ; set experimental_parallel_csv=true ; copy                              'ccaed182.csv'                        to 'ccaed182-14.parquet' (format 'parquet', codec 'zstd');\"\r\ntime ~/bin/duckdb <<<\"set preserve_insertion_order=false; set experimental_parallel_csv=false; copy (select * from read_csv_auto('ccaed182.csv'   , all_varchar=true)) to 'ccaed182-15.parquet' (format 'parquet', codec 'zstd');\"\r\ntime ~/bin/duckdb <<<\"set preserve_insertion_order=false; set experimental_parallel_csv=true ; copy (select * from read_csv_auto('ccaed182.csv'   , all_varchar=true)) to 'ccaed182-16.parquet' (format 'parquet', codec 'zstd');\"\r\ntime ~/bin/duckdb <<<\"set preserve_insertion_order=true ; set experimental_parallel_csv=false; copy (select * from read_csv_auto('ccaed182.csv'   , all_varchar=true)) to 'ccaed182-17.parquet' (format 'parquet', codec 'zstd');\"\r\ntime ~/bin/duckdb <<<\"set preserve_insertion_order=true ; set experimental_parallel_csv=true ; copy (select * from read_csv_auto('ccaed182.csv'   , all_varchar=true)) to 'ccaed182-18.parquet' (format 'parquet', codec 'zstd');\"\r\ntime ~/bin/duckdb <<<\"set preserve_insertion_order=false; set experimental_parallel_csv=false; copy                              'ccaed182.csv.gz'                     to 'ccaed182-19.parquet' (format 'parquet', codec 'zstd');\"\r\ntime ~/bin/duckdb <<<\"set preserve_insertion_order=false; set experimental_parallel_csv=true ; copy                              'ccaed182.csv.gz'                     to 'ccaed182-20.parquet' (format 'parquet', codec 'zstd');\"\r\ntime ~/bin/duckdb <<<\"set preserve_insertion_order=true ; set experimental_parallel_csv=false; copy                              'ccaed182.csv.gz'                     to 'ccaed182-21.parquet' (format 'parquet', codec 'zstd');\"\r\ntime ~/bin/duckdb <<<\"set preserve_insertion_order=true ; set experimental_parallel_csv=true ; copy                              'ccaed182.csv.gz'                     to 'ccaed182-22.parquet' (format 'parquet', codec 'zstd');\"\r\ntime ~/bin/duckdb <<<\"set preserve_insertion_order=false; set experimental_parallel_csv=false; copy (select * from read_csv_auto('ccaed182.csv.gz', all_varchar=true)) to 'ccaed182-23.parquet' (format 'parquet', codec 'zstd');\"\r\ntime ~/bin/duckdb <<<\"set preserve_insertion_order=false; set experimental_parallel_csv=true ; copy (select * from read_csv_auto('ccaed182.csv.gz', all_varchar=true)) to 'ccaed182-24.parquet' (format 'parquet', codec 'zstd');\"\r\ntime ~/bin/duckdb <<<\"set preserve_insertion_order=true ; set experimental_parallel_csv=false; copy (select * from read_csv_auto('ccaed182.csv.gz', all_varchar=true)) to 'ccaed182-25.parquet' (format 'parquet', codec 'zstd');\"\r\ntime ~/bin/duckdb <<<\"set preserve_insertion_order=true ; set experimental_parallel_csv=true ; copy (select * from read_csv_auto('ccaed182.csv.gz', all_varchar=true)) to 'ccaed182-26.parquet' (format 'parquet', codec 'zstd');\"\r\n```\r\n\r\nTiming results (notice several above 100% CPU, meaning utilization of multiple cores; also the total time matters, the left-most time is time across all cores):\r\n\r\n```\r\nccaed182-11.parquet  436.62s user 37.39s system  99% cpu    7:54.84 total\r\nccaed182-12.parquet  889.70s user 32.69s system 722% cpu    2:07.68 total\r\nccaed182-13.parquet  436.25s user 37.93s system  84% cpu    9:20.47 total\r\nccaed182-14.parquet  554.50s user 38.06s system  11% cpu 1:23:52.63 total\r\nccaed182-15.parquet  586.75s user 41.45s system  99% cpu   10:29.70 total\r\nccaed182-16.parquet 1265.93s user 32.03s system 724% cpu    2:59.14 total\r\nccaed182-17.parquet  589.75s user 44.82s system  99% cpu   10:37.29 total\r\nccaed182-18.parquet 1576.43s user 38.64s system  99% cpu   27:02.68 total\r\nccaed182-19.parquet  510.87s user 32.76s system  47% cpu   19:10.93 total\r\nccaed182-20.parquet  127.65s user  7.60s system 450% cpu      29.99 total # DIED - see \"First error\" below\r\nccaed182-21.parquet  512.90s user 29.85s system  46% cpu   19:31.31 total\r\nccaed182-22.parquet   89.81s user  7.51s system   6% cpu   26:07.03 total # DIED - see \"Second error\" below\r\nccaed182-23.parquet  656.32s user 34.88s system  99% cpu   11:31.89 total # second run... first run was 14% cpu at 1:18:06.71?\r\nccaed182-24.parquet  154.70s user  7.45s system 494% cpu      32.81 total # didn't die, but file was truncated\r\nccaed182-25.parquet  660.70s user 39.01s system  99% cpu   11:40.35 total\r\nccaed182-26.parquet  112.53s user  8.84s system  99% cpu    2:02.46 total # didn't die, but file was truncated\r\n\r\n# whoa... the first run was 14% cpu at 1:18:06.71?\r\nccaed182-23.parquet  649.06s user 29.10s system  14% cpu 1:18:06.71 total\r\n```\r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-04-03T04:22:38Z",
+   "body": "Here are the two errors from above (I think they could be fixed with loading options):\r\n\r\n```\r\n==[ First error ]==\r\n\r\nError: near line 1: Invalid Input Error: Could not parse string \"07/\" according to format specifier \"%m/%d/%Y\"\r\n07/\r\n   ^\r\nError: Expected a number in column 5, at line 25109352.\r\n\r\nParser options:\r\n  file=ccaed182.csv.gz\r\n  delimiter=',' (auto detected)\r\n  quote='\"' (auto detected)\r\n  escape='\"' (auto detected)\r\n  header=1 (auto detected)\r\n  sample_size=20480\r\n  ignore_errors=0\r\n  all_varchar=0.\r\n\r\nConsider either increasing the sample size (SAMPLE_SIZE=X [X rows] or SAMPLE_SIZE=-1 [all rows]), or skipping column conversion (ALL_VARCHAR=1)\r\n\r\n==[ Second error ]==\r\n\r\nError: near line 1: Invalid Input Error: Could not parse string \"07/\" according to format specifier \"%m/%d/%Y\"\r\n07/\r\n   ^\r\nError: Expected a number in column 5, at line 25109352.\r\n\r\nParser options:\r\n  file=ccaed182.csv.gz\r\n  delimiter=',' (auto detected)\r\n  quote='\"' (auto detected)\r\n  escape='\"' (auto detected)\r\n  header=1 (auto detected)\r\n  sample_size=20480\r\n  ignore_errors=0\r\n  all_varchar=0.\r\n\r\nConsider either increasing the sample size (SAMPLE_SIZE=X [X rows] or SAMPLE_SIZE=-1 [all rows]), or skipping column conversion (ALL_VARCHAR=1)\r\n```\r\n\r\nA question would be why did only these two flavors complain about the above? How was the same file read without problem by the other versions?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-04-03T04:23:50Z",
+   "body": "Here are the file sizes:\r\n\r\n```\r\n$ ls -l\r\n-rw-r--r--@ 1 reporter  staff  4794409184 Apr  2 14:23 ccaed182-11.parquet\r\n-rw-r--r--@ 1 reporter  staff  4822913359 Apr  2 14:25 ccaed182-12.parquet\r\n-rw-r--r--@ 1 reporter  staff  4794409184 Apr  2 14:34 ccaed182-13.parquet\r\n-rw-r--r--@ 1 reporter  staff  4794497684 Apr  2 15:58 ccaed182-14.parquet\r\n-rw-r--r--@ 1 reporter  staff  4141872129 Apr  2 16:09 ccaed182-15.parquet\r\n-rw-r--r--@ 1 reporter  staff  4214973827 Apr  2 16:12 ccaed182-16.parquet\r\n-rw-r--r--@ 1 reporter  staff  4141872129 Apr  2 16:22 ccaed182-17.parquet\r\n-rw-r--r--@ 1 reporter  staff  4144267957 Apr  2 16:49 ccaed182-18.parquet\r\n-rw-r--r--@ 1 reporter  staff  4794409184 Apr  2 17:08 ccaed182-19.parquet\r\n-rw-r--r--@ 1 reporter  staff   680927232 Apr  2 17:09 ccaed182-20.parquet\r\n-rw-r--r--@ 1 reporter  staff  4794409184 Apr  2 17:28 ccaed182-21.parquet\r\n-rw-r--r--@ 1 reporter  staff   677081088 Apr  2 17:55 ccaed182-22.parquet\r\n-rw-r--r--@ 1 reporter  staff  4141872129 Apr  2 21:17 ccaed182-23.parquet # this was run again afterwards\r\n-rw-r--r--@ 1 reporter  staff   601253821 Apr  2 19:13 ccaed182-24.parquet\r\n-rw-r--r--@ 1 reporter  staff  4141872129 Apr  2 19:25 ccaed182-25.parquet\r\n-rw-r--r--@ 1 reporter  staff   588166409 Apr  2 19:27 ccaed182-26.parquet\r\n```"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-04-03T04:26:15Z",
+   "body": "It looks like all of the compressed files that were loaded with 'set experimental_parallel_csv=true;` failed to properly load, thus the *experimental* as @participant2 mentioned. @participant4 will follow-up."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-04-03T05:36:25Z",
+   "body": "Of interest, the output file sizes were slightly different in the above cases, but a few seem to generate the same size output file:\r\n\r\n```\r\n\r\n# group 1 (the smallest)\r\n4141872129 ccaed182-15.parquet\r\n4141872129 ccaed182-17.parquet\r\n4141872129 ccaed182-23.parquet\r\n4141872129 ccaed182-25.parquet\r\n\r\n# group 2 (almost the same size)\r\n4144267957 ccaed182-18.parquet\r\n\r\n# group 3 (just a little larger)\r\n4214973827 ccaed182-16.parquet\r\n\r\n# group 4 (a bit larger)\r\n4794409184 ccaed182-11.parquet\r\n4794409184 ccaed182-13.parquet\r\n4794409184 ccaed182-19.parquet\r\n4794409184 ccaed182-21.parquet\r\n4794497684 ccaed182-14.parquet # just a few bytes larger?\r\n\r\n# group 5 (the largest)\r\n4822913359 ccaed182-12.parquet\r\n\r\n# group 6 (all these appear broken)\r\n588166409 ccaed182-26.parquet\r\n601253821 ccaed182-24.parquet\r\n677081088 ccaed182-22.parquet\r\n680927232 ccaed182-20.parquet\r\n```\r\n\r\nI'm not sure if the small differences matter, but they may be useful to someone here."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-04-03T05:58:07Z",
+   "body": "At the risk of going overboard, here are some of the numbers in a table:\r\n\r\n<img width=\"1020\" alt=\"Monosnap duckdb-results - Google Sheets 2023-04-02 23-57-12\" src=\"https://user-images.githubusercontent.com/142875/229423413-c339f4a8-ef68-41cf-997f-aa1bb96d8c37.png\">\r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-04-03T06:01:01Z",
+   "body": "Note that it only takes `1:09` (1 minute and 9 seconds) to decompress the data file on disk and then it can be processed by `duckdb` in `2:07` or `2:59` (see the bright green above). If I let `duckdb` do the decompression, the best times I see are in the `19:10` range or `11:31` range."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2023-04-03T08:36:10Z",
+   "body": "> Aha, that's a good find. Hence experimental :)\r\n> \r\n> @participant4 perhaps we can run some tests with gzipped files for the parallel CSV reader to see if we can get this to reproduce and have it fixed?\r\n\r\nI've recently fixed this in a branch where I'm working on getting the Parallel CSV Reader to be our default option.\r\nhttps://github.com/participant4/duckdb/commit/d49d9c12089ef3202b0af400491cdca6da6f69b0\r\nMy hopes are to PR this latest tomorrow (:"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-04-03T09:11:03Z",
+   "body": "@participant4 - Perfect timing! I'll be able to test your PR with the above files. :-)"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-04-20T18:57:47Z",
+   "body": "Looks like the PR with this fix https://github.com/duckdb/duckdb/pull/6977 was just merged!\r\n\r\nI will rerun some of the above benchmarks and post new times and results."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-04-20T22:49:08Z",
+   "body": "<img width=\"1308\" alt=\"Monosnap duckdb-results - Google Sheets 2023-04-20 16-48-53\" src=\"https://user-images.githubusercontent.com/142875/233502940-405466a2-cc31-4ad5-8c49-4d67a781dd79.png\">\r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-04-20T22:49:57Z",
+   "body": "<img width=\"596\" alt=\"Monosnap -zsh 2023-04-20 16-49-41\" src=\"https://user-images.githubusercontent.com/142875/233503042-37a607ff-8d4b-4042-9cda-bb1defe8aeb5.png\">\r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-04-20T22:52:32Z",
+   "body": "With the recent PR https://github.com/duckdb/duckdb/pull/6977 to support `parallel_csv` by default, all of the files were loaded successfully.\r\n\r\nHowever, when I try to do the above `select count(*) from read_parquet('filename.parquet');` I get the error message:\r\n\r\n`Error: Invalid Input Error: No magic bytes found at end of file 'xyz.parquet'`\r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-04-20T22:54:34Z",
+   "body": "@participant4 and @participant2 - Adding you here, to followup after PR https://github.com/duckdb/duckdb/pull/6977 was merged.\r\n\r\nQuick summary is that it seems to load now (which is awesome!), but I couldn't run `select count(*) from read_parquet('filename.parquet');`."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-04-21T07:08:25Z",
+   "body": "Thanks for giving this another shot! That is very helpful.\r\n\r\nDoes the issue also occur if you load the CSV files into a table first prior to writing to the Parquet file? Does it occur if you disable the parallel reader (`parallel=False`)?\r\n\r\nI have been playing around with compressed CSV files a bit and can't seem to reproduce this error locally. Would be great to have some more details on the data set (or access to the dataset!) so we can debug this."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-04-26T08:08:58Z",
+   "body": "Thanks again for the investigative work and sharing the files - this has been incredibly helpful! The high memory usage leading to the OOM killer should be fixed by #7253. "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-04-26T08:11:54Z",
+   "body": "@participant2 - Wonderful! Thank you. :-)"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-04-26T17:26:01Z",
+   "body": "@participant2 and @participant4 - YES!!! I compiled the latest version from github (`v0.7.2-dev2675 688b2f1f8c`) and it worked **BEAUTIFULLY!***\r\n\r\nIn fact, it loaded in 2:57, whereas the prior version was loading in about 5:04 (and it was broken).\r\n\r\nIn our case here, the *speedup* is 304 secs / 177 secs = **1.72** times faster... and it works, too! :-)\r\n\r\n```\r\nD select count(*) from read_parquet('ccaed182-20.parquet');\r\n┌──────────────┐\r\n│ count_star() │\r\n│    int64     │\r\n├──────────────┤\r\n│    212363079 │\r\n└──────────────┘\r\n```\r\n\r\nThank you both for the excellent work to ferret this out and to come up with a solution!\r\n\r\nDuckDB will be all the better now for properly processing files and even faster than before."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-04-26T18:21:43Z",
+   "body": "Just to close the loop on this... here are the final numbers. I would call this a **slam dunk** by @participant4 and @participant2:\r\n\r\n![stats](https://user-images.githubusercontent.com/142875/234667360-e7a88daf-dc4b-4c63-9a9d-e2f08d58de8d.png)\r\n\r\n```\r\n# compressed source file on disk\r\ntime ~/bin/duckdb <<<\"set preserve_insertion_order=true ; copy (select * from read_csv_auto('ccaed182.csv.gz', all_varchar=true)) to 'ccaed182-26.parquet' (format 'parquet', codec 'zstd');\" # 4.14 GB  794.47s user  35.77s system  99% cpu 13:52.37 total\r\ntime ~/bin/duckdb <<<\"set preserve_insertion_order=true ; copy                              'ccaed182.csv.gz'                     to 'ccaed182-22.parquet' (format 'parquet', codec 'zstd');\" # 4.79 GB  632.53s user  29.95s system  99% cpu 11:03.74 total\r\ntime ~/bin/duckdb <<<\"set preserve_insertion_order=false; copy (select * from read_csv_auto('ccaed182.csv.gz', all_varchar=true)) to 'ccaed182-24.parquet' (format 'parquet', codec 'zstd');\" # 4.22 GB 1145.16s user  26.05s system 576% cpu  3:23.13 total\r\ntime ~/bin/duckdb <<<\"set preserve_insertion_order=false; copy                              'ccaed182.csv.gz'                     to 'ccaed182-20.parquet' (format 'parquet', codec 'zstd');\" # 4.82 GB  899.18s user  26.96s system 522% cpu  2:57.35 total\r\n```\r\n\r\nFor reference, this is on-the-fly decompression of CSV files, reading those with a parallelized CSV reader, and then converted the output to compressed parquet files (which will will save directly to S3)... all in ONE pass! Amazing."
+  }
+ ],
+ "images": [
+  {
+   "where": "c14",
+   "source_url": "https://user-images.githubusercontent.com/142875/229371140-c7866723-92c0-4c4b-84bd-64e3acf5d929.png",
+   "file": "gh_duckdb_duckdb_6937_img0.png"
+  },
+  {
+   "where": "c31",
+   "source_url": "https://user-images.githubusercontent.com/142875/229423413-c339f4a8-ef68-41cf-997f-aa1bb96d8c37.png",
+   "file": "gh_duckdb_duckdb_6937_img1.png"
+  },
+  {
+   "where": "c36",
+   "source_url": "https://user-images.githubusercontent.com/142875/233502940-405466a2-cc31-4ad5-8c49-4d67a781dd79.png",
+   "file": "gh_duckdb_duckdb_6937_img2.png"
+  },
+  {
+   "where": "c37",
+   "source_url": "https://user-images.githubusercontent.com/142875/233503042-37a607ff-8d4b-4042-9cda-bb1defe8aeb5.png",
+   "file": "gh_duckdb_duckdb_6937_img3.png"
+  },
+  {
+   "where": "c44",
+   "source_url": "https://user-images.githubusercontent.com/142875/234667360-e7a88daf-dc4b-4c63-9a9d-e2f08d58de8d.png",
+   "file": "gh_duckdb_duckdb_6937_img4.png"
+  }
+ ],
+ "slug": "gh_duckdb_duckdb_6937"
+}

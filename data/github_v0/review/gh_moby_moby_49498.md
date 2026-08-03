@@ -14,7 +14,7 @@ flowchart LR
     N1_x["<b>N1_x DOCKER-USER rule-move aftermath</b><br/><small>info: 8</small>"]
     N2["<b>N2 Tailscale stateful-filtering setting confirmed</b><br/><small>info: 9</small>"]
     N3["<b>N3 configuration interaction reproduced</b><br/><small>info: 10</small>"]
-    N4["<b>N4 Docker 28.0.1 verified on affected hosts</b><br/><small>info: 11</small>"]
+    N4["<b>N4 Docker 28.0.1 verified on affected hosts (fix applied, unverified)</b><br/><small>info: 10</small>"]
     N_terminal["<b>terminal resolved</b><br/><small>info: 13</small>"]
     N0 -.->|"❓ direct_tailscale_ip_traffic_also_fails, affected_containers_use_custom_bridge, docker28_iptables_dump_with_docker_and_ts_forward_counters"| N1
     linkStyle 0 stroke:#3b82f6,stroke-width:2px
@@ -24,10 +24,10 @@ flowchart LR
     linkStyle 2 stroke:#3b82f6,stroke-width:2px
     N2 -.->|"❓ docker28_works_when_tailscale_stateful_filtering_disabled"| N3
     linkStyle 3 stroke:#3b82f6,stroke-width:2px
-    N3 -.->|"❓ docker2801_verified_restores_affected_forwarding_setups"| N4
-    linkStyle 4 stroke:#3b82f6,stroke-width:2px
-    N4 ==>|"⚡ Update to Docker 28.0.1 or later, which restructures Docker's forwarding rules to avoid the Docker 28.0.0 ordering conflict with Tailscale and other pre-existing firewall rules; use disabling Tailscale stateful filtering only as a security-aware temporary workaround."| N_terminal
-    linkStyle 5 stroke:#f97316,stroke-width:2px
+    N3 ==>|"⚡ Update to Docker 28.0.1 or later, which restructures Docker's forwarding rules to avoid the Docker 28.0.0 ordering conflict with Tailscale and other pre-existing firewall rules; use disabling Tailscale stateful filtering only as a security-aware temporary workaround."| N4
+    linkStyle 4 stroke:#f97316,stroke-width:2px
+    N4 -.->|"❓ docker2801_verified_restores_affected_forwarding_setups"| N_terminal
+    linkStyle 5 stroke:#3b82f6,stroke-width:2px
     class N0 start
     class N1 normal
     class N1_x normal
@@ -61,8 +61,8 @@ flowchart LR
 | `e2_N1__N1_x` | solution_only **BLIND** | req_info: direct_tailscale_ip_traffic_also_fails, docker28_iptables_dump_with_docker_and_ts_forward_counters<br>elements: moves_ts_forward_jump_to_docker_user | Move Tailscale's ts-forward jump into DOCKER-USER so Tailscale processes forwarded packets before Docker's other forwarding rules. |
 | `e3_N1_x__N2` | clarification_only | asks: tailscale_stateful_filtering_was_enabled | Yes, stateful filtering was enabled on my node. I did not enable it by hand; this installation had passed thro |
 | `e4_N2__N3` | clarification_only | asks: docker28_works_when_tailscale_stateful_filtering_disabled | I disabled it with `tailscale set --stateful-filtering=false`, upgraded to Docker 28, and everything is runnin |
-| `e5_N3__N4` | clarification_only | asks: docker2801_verified_restores_affected_forwarding_setups | I applied Docker 28.0.1 to an affected host and its container routing works again. On the other affected hosts |
-| `e6_N4__N_terminal` | solution_only | req_info: docker2751_rollback_restores_communication, direct_tailscale_ip_traffic_also_fails, docker28_iptables_dump_with_docker_and_ts_forward_counters, tailscale_stateful_filtering_was_enabled, docker28_works_when_tailscale_stateful_filtering_disabled, docker2801_verified_restores_affected_forwarding_setups<br>elements: identifies_docker28_firewall_rule_ordering_interaction, connects_failure_to_tailscale_stateful_filtering, recommends_update_to_docker_2801_or_later, treats_disabling_stateful_filtering_as_security_sensitive_workaround, does_not_recommend_deleting_docker_drop_rules_as_permanent_fix | Update to Docker 28.0.1 or later, which restructures Docker's forwarding rules to avoid the Docker 28.0.0 ordering conflict with Tailscale and other pre-existing firewall rules; use disabling Tailscale stateful filtering only as a security-aware temporary workaround. |
+| `e5_N3__N4` | solution_only | req_info: docker2751_rollback_restores_communication, direct_tailscale_ip_traffic_also_fails, tailscale_stateful_filtering_was_enabled, docker28_works_when_tailscale_stateful_filtering_disabled, docker28_iptables_dump_with_docker_and_ts_forward_counters<br>elements: identifies_docker28_firewall_rule_ordering_interaction, connects_failure_to_tailscale_stateful_filtering, recommends_update_to_docker_2801_or_later, treats_disabling_stateful_filtering_as_security_sensitive_workaround, does_not_recommend_deleting_docker_drop_rules_as_permanent_fix | Update to Docker 28.0.1 or later, which restructures Docker's forwarding rules to avoid the Docker 28.0.0 ordering conflict with Tailscale and other pre-existing firewall rules; use disabling Tailscale stateful filtering only as a security-aware temporary workaround. |
+| `e6_N4__N_terminal` | clarification_only | asks: docker2801_verified_restores_affected_forwarding_setups | I applied Docker 28.0.1 to an affected host and its container routing works again. On the other affected hosts |
 
 ## Nodes
 
@@ -73,7 +73,7 @@ flowchart LR
 | `N1_x` |  | 1 | 0 | Tailscale communication from the container still fails after I insert a jump to ts-forward in DOCKER-USER and remove the existing FORWARD ju |
 | `N2` |  | 0 | 0 | Container traffic to Tailscale devices still fails with Docker 28 while Tailscale stateful filtering is enabled. |
 | `N3` |  | 0 | 0 | After setting Tailscale stateful filtering to false and upgrading to Docker 28, my containers can communicate over Tailscale normally. The d |
-| `N4` |  | 0 | 0 | After updating an affected host to Docker 28.0.1, container forwarding and internal routing work again without manually rearranging the fire |
+| `N4` |  | 0 | 0 | I've upgraded to Docker 28.0.1; I haven't re-tested the Tailscale forwarding yet. |
 | `N_terminal` | ✓ | 0 | 0 | Containers can communicate over the affected forwarded network paths after updating to Docker 28.0.1. |
 
 ## Machine review (audit pass, adversarially verified)

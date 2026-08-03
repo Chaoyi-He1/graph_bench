@@ -106,13 +106,67 @@ def lint_task(
     out_edges: dict[str, list] = {}
     for e in g.edges:
         out_edges.setdefault(e.from_node, []).append(e)
+    blind_targets = {
+        e.to_node
+        for e in g.edges
+        if e.solution is not None and e.solution.is_known_blind_path
+    }
     for nid in reachable:
         node = g.nodes[nid]
         if node.is_terminal:
             continue
         outs = out_edges.get(nid, [])
-        if not outs:
+        if not outs and nid not in blind_targets:
+            # blind-edge targets get auto-generated rollback escapes at
+            # load time; anything else stranded is a real defect
             problems.append(f'non-terminal node {nid} has no outgoing edge')
+    # Verification-timing heuristic: a terminal solution must not hard-
+    # require an id that smells like a verification result granted by an
+    # upstream clarification (rule 4d) — fix-then-verify, never the inverse.
+    import re as _re
+    _verif = _re.compile(
+        r'retest|_verified_fix|verified_fixed|verified_working'
+        r'|fix_verified|verified_no_recurrence|verified.*resolv'
+        r'|update_verified|verified_restores|works_again'
+    )
+    for e in g.edges:
+        if e.solution is None or not g.nodes[e.to_node].is_terminal:
+            continue
+        upstream_ids = {
+            c.info_id
+            for ue in g.edges
+            if ue.to_node == e.from_node
+            for c in ue.clarifications
+        }
+        for rid in e.solution.required_info.flat():
+            if 'try_build' in rid or 'test_build' in rid or '_rc' in rid:
+                continue  # pre-landing candidate-build tests are rule 4d(i)
+            if rid in upstream_ids and _verif.search(rid):
+                problems.append(
+                    f'terminal solution {e.edge_id} hard-requires '
+                    f'verification-shaped id {rid!r} granted by the '
+                    f'immediately upstream clarification — re-shape to '
+                    f'fix-then-verify (rule 4d)'
+                )
+    # Level consistency: an id required at level X must be declared at the
+    # same level on the clarification that grants it.
+    declared = {
+        c.info_id: c.level
+        for e in g.edges
+        for c in e.clarifications
+        if c.level
+    }
+    lvl_map = {'L1': 'L1_basic', 'L2': 'L2_inferable', 'L3': 'L3_specific'}
+    for e in g.edges:
+        if e.solution is None:
+            continue
+        for bucket, lname in lvl_map.items():
+            for rid in getattr(e.solution.required_info, bucket):
+                if rid in declared and declared[rid] != lname:
+                    problems.append(
+                        f'{e.edge_id}: id {rid!r} required at {bucket} but '
+                        f'declared {declared[rid]} on its clarification'
+                    )
     start_outs = out_edges.get(g.start_node, [])
     if start_outs and all(
         e.solution is not None and e.solution.is_known_blind_path

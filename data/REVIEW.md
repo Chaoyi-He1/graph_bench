@@ -8,6 +8,8 @@ links, and the review checklist (defect catalog from the pilot).
 | [bmo_core_1809151](bugzilla_v0/review/bmo_core_1809151.md) | LLM draft | needs_rework | 🔴1 🟠1 🟡1 | ⬜ |
 | [gh_curl_curl_10936](github_v0/review/gh_curl_curl_10936.md) | LLM draft | minor_issues | — | ⬜ |
 | [gh_curl_curl_11203](github_v0/review/gh_curl_curl_11203.md) | LLM draft | needs_rework | 🔴1 🟠2 🟡2 | ⬜ |
+| [gh_duckdb_duckdb_6937](github_v0/review/gh_duckdb_duckdb_6937.md) | LLM draft | — | — | ⬜ |
+| [gh_duckdb_duckdb_8265](github_v0/review/gh_duckdb_duckdb_8265.md) | LLM draft | — | — | ⬜ |
 | [gh_etcd-io_etcd_20418](github_v0/review/gh_etcd-io_etcd_20418.md) | LLM draft | minor_issues | 🟡2 | ⬜ |
 | [gh_expo_expo_24172](github_v0/review/gh_expo_expo_24172.md) | LLM draft | needs_rework | 🟠1 🟡2 | ⬜ |
 | [gh_flutter_flutter_124205](github_v0/review/gh_flutter_flutter_124205.md) | LLM draft | minor_issues | — | ⬜ |
@@ -15,6 +17,7 @@ links, and the review checklist (defect catalog from the pilot).
 | [gh_flutter_flutter_140504](github_v0/review/gh_flutter_flutter_140504.md) | LLM draft | minor_issues | 🟡1 | ⬜ |
 | [gh_flutter_flutter_154241](github_v0/review/gh_flutter_flutter_154241.md) | LLM draft | minor_issues | 🟠1 🟡2 | ⬜ |
 | [gh_flutter_flutter_178602](github_v0/review/gh_flutter_flutter_178602.md) | LLM draft | needs_rework | 🟠1 🟡1 | ⬜ |
+| [gh_home-assistant_core_88014](github_v0/review/gh_home-assistant_core_88014.md) | LLM draft | — | — | ⬜ |
 | [gh_moby_moby_49498](github_v0/review/gh_moby_moby_49498.md) | LLM draft | needs_rework | 🟡1 | ⬜ |
 | [gh_nodejs_node_59364](github_v0/review/gh_nodejs_node_59364.md) | LLM draft | minor_issues | — | ⬜ |
 | [gh_ollama_ollama_10433](github_v0/review/gh_ollama_ollama_10433.md) | LLM draft | needs_rework | 🟠2 🟡1 | ⬜ |

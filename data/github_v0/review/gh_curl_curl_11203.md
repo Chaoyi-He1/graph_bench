@@ -13,7 +13,7 @@ flowchart LR
     N1["<b>N1 current dependencies and cross-platform reproduction confirmed</b><br/><small>info: 7</small>"]
     N2_x["<b>N2_x initial Hyper polling patch aftermath</b><br/><small>info: 9</small>"]
     N2["<b>N2 protocol trace and packet evidence collected</b><br/><small>info: 12</small>"]
-    N3["<b>N3 HTTP/1.1 fallback verified on current master</b><br/><small>info: 13</small>"]
+    N3["<b>N3 rebuilt with fix, unverified</b><br/><small>info: 12</small>"]
     N_terminal["<b>terminal Hyper minute-long stalls resolved</b><br/><small>info: 16</small>"]
     N0 -.->|"❓ linux_hyper_build_reproduces_slowness"| N1
     linkStyle 0 stroke:#3b82f6,stroke-width:2px
@@ -21,10 +21,10 @@ flowchart LR
     linkStyle 1 stroke:#ef4444,stroke-width:2px
     N2_x -.->|"❓ trace_shows_two_approximately_30_second_idle_periods, packet_capture_shows_repeated_h2_preface_per_request, forcing_http11_completes_in_about_300ms"| N2
     linkStyle 2 stroke:#3b82f6,stroke-width:2px
-    N2 -.->|"❓ master_with_hyper_http2_disabled_finishes_near_one_second"| N3
-    linkStyle 3 stroke:#3b82f6,stroke-width:2px
-    N3 ==>|"⚡ Disable HTTP/2 in curl's Hyper integration and use HTTP/1.1 as the safe temporary path, because curl creates a Hyper client connection per request and sends a new HTTP/2 connection preface on an already reused connection; restoring Hyper HTTP/2 requires connection-scoped lifecycle integration."| N_terminal
-    linkStyle 4 stroke:#f97316,stroke-width:2px
+    N2 ==>|"⚡ Disable HTTP/2 in curl's Hyper integration and use HTTP/1.1 as the safe temporary path, because curl creates a Hyper client connection per request and sends a new HTTP/2 connection preface on an already reused connection; restoring Hyper HTTP/2 requires connection-scoped lifecycle integration."| N3
+    linkStyle 3 stroke:#f97316,stroke-width:2px
+    N3 -.->|"❓ rebuild_benchmark_three_transfers_finish_near_one_second"| N_terminal
+    linkStyle 4 stroke:#3b82f6,stroke-width:2px
     class N0 start
     class N1 normal
     class N2_x normal
@@ -55,8 +55,8 @@ flowchart LR
 | `e1_N0__N1` | clarification_only | asks: linux_hyper_build_reproduces_slowness | I can reproduce it on Linux too. Normal curl takes one or two seconds, while curl with Hyper takes about a min |
 | `e2_N1__N2_x` | solution_only **BLIND** | req_info: hyper_build_three_urls_take_at_least_one_minute<br>elements: mentions_initial_hyper_polling_patch | Apply the initial Hyper polling and wake-handling changes from PR #11344 to make completed Hyper tasks available without waiting for a later transfer-loop poll. |
 | `e3_N2_x__N2` | clarification_only | asks: trace_shows_two_approximately_30_second_idle_periods, packet_capture_shows_repeated_h2_preface_per_request, forcing_http11_completes_in_about_300ms | The first response arrives quickly. Then `Curl_hyper_stream` is called about once per second with `select_res` / In my decrypted capture, normal curl sends one HTTP/2 connection preface, settings/window update, and then req / Yes. The default Hyper run takes more than 60 seconds for this endpoint, while `curl --http1.1` completes the  |
-| `e4_N2__N3` | clarification_only | asks: master_with_hyper_http2_disabled_finishes_near_one_second | After rebuilding the latest Hyper and curl master, it is much faster and no longer takes over a minute. One ru |
-| `e5_N3__N_terminal` | solution_only | req_info: hyper_build_three_urls_take_at_least_one_minute, parallel_mode_does_not_remove_delays, trace_shows_two_approximately_30_second_idle_periods, packet_capture_shows_repeated_h2_preface_per_request, forcing_http11_completes_in_about_300ms, master_with_hyper_http2_disabled_finishes_near_one_second<br>elements: identifies_per_request_hyper_clientconn_as_source_of_repeated_h2_prefaces, disables_http2_for_hyper_as_temporary_fix, uses_http11_fallback, notes_connection_lifecycle_rearchitecture_needed_before_restoring_h2 | Disable HTTP/2 in curl's Hyper integration and use HTTP/1.1 as the safe temporary path, because curl creates a Hyper client connection per request and sends a new HTTP/2 connection preface on an already reused connection; restoring Hyper HTTP/2 requires connection-scoped lifecycle integration. |
+| `e4_N2__N3` | solution_only | req_info: hyper_build_three_urls_take_at_least_one_minute, parallel_mode_does_not_remove_delays, trace_shows_two_approximately_30_second_idle_periods, packet_capture_shows_repeated_h2_preface_per_request, forcing_http11_completes_in_about_300ms<br>elements: identifies_per_request_hyper_clientconn_as_source_of_repeated_h2_prefaces, disables_http2_for_hyper_as_temporary_fix, uses_http11_fallback, notes_connection_lifecycle_rearchitecture_needed_before_restoring_h2 | Disable HTTP/2 in curl's Hyper integration and use HTTP/1.1 as the safe temporary path, because curl creates a Hyper client connection per request and sends a new HTTP/2 connection preface on an already reused connection; restoring Hyper HTTP/2 requires connection-scoped lifecycle integration. |
+| `e5_N3__N_terminal` | clarification_only | asks: rebuild_benchmark_three_transfers_finish_near_one_second | After rebuilding the latest Hyper and curl master, it is much faster and no longer takes over a minute. One ru |
 
 ## Nodes
 
@@ -66,7 +66,7 @@ flowchart LR
 | `N1` |  | 1 | 0 | The long pauses remain after updating Rust, pulling Hyper master, and rebuilding everything. I can also reproduce the roughly one-minute run |
 | `N2_x` |  | 2 | 0 | After rebuilding with the proposed changes, the three-URL command still takes about 61 seconds instead of about 1.5 seconds with the Windows |
 | `N2` |  | 0 | 0 | The first response arrives immediately, followed by pauses of about 30 seconds before the later responses. Forcing HTTP/1.1 makes the same t |
-| `N3` |  | 0 | 0 | With the latest Hyper and curl master, the three requests complete in about one second without the two 30-second pauses. My latest measureme |
+| `N3` |  | 0 | 0 | I've rebuilt curl and Hyper from current git master containing the change; I haven't re-run my three-URL benchmark yet. |
 | `N_terminal` | ✓ | 0 | 0 | The three URLs now complete in about one second with the Hyper-enabled build, all three responses are returned, and the 30-second pauses are |
 
 ## Machine review (audit pass, adversarially verified)

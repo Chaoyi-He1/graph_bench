@@ -11,7 +11,7 @@
 flowchart LR
     N0["<b>N0 Flutter tool exits on old Windows machine</b><br/><small>info: 6</small>"]
     N1_x["<b>N1_x generic MSB8066 troubleshooting aftermath</b><br/><small>info: 7</small>"]
-    N2_x["<b>N2_x SDK reinstall aftermath establishes version boundary</b><br/><small>info: 9</small>"]
+    N2_x["<b>N2 versions swept</b><br/><small>info: 9</small>"]
     N3["<b>N3 verbose cross-platform evidence collected</b><br/><small>info: 12</small>"]
     N4["<b>N4 regression narrowed to July 2023 engine rolls</b><br/><small>info: 13</small>"]
     N5["<b>N5 Dart CPU-instruction probe isolates the crash</b><br/><small>info: 15</small>"]
@@ -19,9 +19,9 @@ flowchart LR
     N_terminal["<b>terminal resolved</b><br/><small>info: 18</small>"]
     N0 ==>|"💥 blind: Treat the failure as a conventional Windows MSBuild MSB8066 project-configuration problem and apply the generic fixes from the linked Stack Overflow thread."| N1_x
     linkStyle 0 stroke:#ef4444,stroke-width:2px
-    N0 ==>|"💥 blind: Reinstall the Flutter SDK to replace a potentially corrupted SDK or cache."| N2_x
-    linkStyle 1 stroke:#ef4444,stroke-width:2px
-    N2_x -.->|"❓ verbose_runs_die_when_dart_frontend_tool_executes, flutter_system_requirements_are_met"| N3
+    N0 -.->|"❓ sdk_reinstalls_did_not_change_failure, flutter_3105_3130_3139_work_but_3160_3164_fail"| N2_x
+    linkStyle 1 stroke:#3b82f6,stroke-width:2px
+    N2_x -.->|"❓ verbose_runs_die_when_dart_frontend_tool_executes, flutter_system_requirements_are_met, affected_old_cpus_include_athlon_ii_phenom_ii_and_core2_quad"| N3
     linkStyle 2 stroke:#3b82f6,stroke-width:2px
     N3 -.->|"❓ flutter_bisects_report_july_2023_engine_rolls_as_first_bad"| N4
     linkStyle 3 stroke:#3b82f6,stroke-width:2px
@@ -62,12 +62,12 @@ flowchart LR
 | edge | type | gates / info | payload |
 |---|---|---|---|
 | `e1_N0__N1_x` | solution_only **BLIND** | req_info: flutter_316_commands_exit_3221225501<br>elements: recommends_generic_msb8066_troubleshooting | Treat the failure as a conventional Windows MSBuild MSB8066 project-configuration problem and apply the generic fixes from the linked Stack Overflow thread. |
-| `e2_N0__N2_x` | solution_only **BLIND** | req_info: failure_often_occurs_after_sky_engine_download<br>elements: recommends_fresh_flutter_sdk_reinstall | Reinstall the Flutter SDK to replace a potentially corrupted SDK or cache. |
-| `e3_N2_x__N3` | clarification_only | asks: verbose_runs_die_when_dart_frontend_tool_executes, flutter_system_requirements_are_met | I created a new project and ran flutter run -v for Android, Windows, and web. The runs get through setup and p / Yes, I checked the linked requirements and my Windows computer meets the documented Flutter system requirement |
+| `e2_N0__N2_x` | clarification_only | asks: sdk_reinstalls_did_not_change_failure, flutter_3105_3130_3139_work_but_3160_3164_fail | Yes — I removed the SDK entirely and re-downloaded it; flutter commands still die the same way. / Tried them side by side: 3.10.5, 3.13.0 and 3.13.9 all work; 3.16.0 and 3.16.4 both fail with the same exit co |
+| `e3_N2_x__N3` | clarification_only | asks: verbose_runs_die_when_dart_frontend_tool_executes, flutter_system_requirements_are_met, affected_old_cpus_include_athlon_ii_phenom_ii_and_core2_quad | I created a new project and ran flutter run -v for Android, Windows, and web. The runs get through setup and p / Yes, I checked the linked requirements and my Windows computer meets the documented Flutter system requirement / The others hitting this posted their hardware: Athlon II X2, Phenom II X4/X6, and a Core2 Quad — all of us are |
 | `e4_N3__N4` | clarification_only | asks: flutter_bisects_report_july_2023_engine_rolls_as_first_bad | We completed the bisects. One run printed '47ba59c762919d66811b72acab9732d6aa2a93c9 is the first bad commit' f |
 | `e5_N4__N5` | clarification_only | asks: dart_floor_program_crashes_normally_but_prints_42_with_unknown_cpu, cpuid_reports_sse41_absent_on_affected_processors | With floor.dart containing `main() { print(42.0.floor()); }`, the normal `dart floor.dart` command crashes wit / The trace output identifies our AMD Phenom II, AMD Athlon II, and Intel Core 2 Quad processors and prints `sse |
 | `e6_N5__N6` | clarification_only | asks: flutter_3195_dart_333_verified_on_old_cpus | I tested Flutter 3.19.5 with Dart 3.3.3 on the affected old CPU. Windows builds successfully and the applicati |
-| `e7_N6__N_terminal` | solution_only | req_info: flutter_3105_3130_3139_work_but_3160_3164_fail, reporter_cpu_amd_phenom_ii_x4_965, affected_old_cpus_include_athlon_ii_phenom_ii_and_core2_quad, verbose_runs_die_when_dart_frontend_tool_executes, flutter_bisects_report_july_2023_engine_rolls_as_first_bad, dart_floor_program_crashes_normally_but_prints_42_with_unknown_cpu, cpuid_reports_sse41_absent_on_affected_processors, flutter_3195_dart_333_verified_on_old_cpus<br>elements: identifies_unsupported_sse41_instruction_as_the_crash_cause, explains_that_the_fault_is_in_dart_jit_cpu_feature_restriction_handling, recommends_flutter_3195_or_later_with_dart_333_or_later, requires_verification_on_the_affected_old_cpu | Update to Flutter 3.19.5 or later, which includes Dart 3.3.3 and the CPU-feature restriction fix preventing the Flutter tool's JIT compiler from emitting unsupported SSE4.1 rounding instructions on older x86-64 CPUs. |
+| `e7_N6__N_terminal` | solution_only | req_info: reporter_cpu_amd_phenom_ii_x4_965, affected_old_cpus_include_athlon_ii_phenom_ii_and_core2_quad, flutter_bisects_report_july_2023_engine_rolls_as_first_bad, dart_floor_program_crashes_normally_but_prints_42_with_unknown_cpu, cpuid_reports_sse41_absent_on_affected_processors, flutter_3195_dart_333_verified_on_old_cpus, flutter_3105_3130_3139_work_but_3160_3164_fail, verbose_runs_die_when_dart_frontend_tool_executes<br>elements: identifies_unsupported_sse41_instruction_as_the_crash_cause, explains_that_the_fault_is_in_dart_jit_cpu_feature_restriction_handling, recommends_flutter_3195_or_later_with_dart_333_or_later, requires_verification_on_the_affected_old_cpu | Update to Flutter 3.19.5 or later, which includes Dart 3.3.3 and the CPU-feature restriction fix preventing the Flutter tool's JIT compiler from emitting unsupported SSE4.1 rounding instructions on older x86-64 CPUs. |
 
 ## Nodes
 
@@ -75,8 +75,8 @@ flowchart LR
 |---|---|---|---|---|
 | `N0` |  | 2 | 0 | After upgrading from Flutter 3.10 to 3.16, flutter create and flutter pub get finish part of their work and then exit with code 3221225501,  |
 | `N1_x` |  | 1 | 0 | After trying the suggestions from the linked MSB8066 thread, Flutter commands still exit with code 3221225501 and new projects still do not  |
-| `N2_x` |  | 3 | 0 | Fresh installations of Flutter 3.10.5, 3.13.0, and 3.13.9 create and run projects, while fresh installations of 3.16.0 and 3.16.4 exit and f |
-| `N3` |  | 1 | 0 | Verbose runs on Android, Windows, and web stop while Flutter's cached Dart SDK is executing the frontend tooling, without a useful Flutter e |
+| `N2_x` |  | 1 | 0 | Fresh installations of Flutter 3.10.5, 3.13.0, and 3.13.9 create and run projects, while fresh installations of 3.16.0 and 3.16.4 exit and f |
+| `N3` |  | 0 | 0 | Verbose runs on Android, Windows, and web stop while Flutter's cached Dart SDK is executing the frontend tooling, without a useful Flutter e |
 | `N4` |  | 0 | 0 | The Flutter tool continues to terminate on the affected processors; separate git-bisect runs print first-bad engine-roll commits from July 1 |
 | `N5` |  | 0 | 0 | Running a one-line Dart program containing 42.0.floor() with the Flutter SDK's normal dart command crashes with -1073741795, but the same co |
 | `N6` |  | 0 | 0 | With Flutter 3.19.5 and Dart 3.3.3, projects build and run successfully on the affected older processors. The Windows test application start |

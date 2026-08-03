@@ -15,7 +15,7 @@ flowchart LR
     N2["<b>N2 symbolic dimension failure reproduced</b><br/><small>info: 7</small>"]
     N2_x["<b>N2_x integer-specialization hack aftermath</b><br/><small>info: 8</small>"]
     N3["<b>N3 correctness restored but performance still poor</b><br/><small>info: 9</small>"]
-    N4["<b>N4 reporter verifies dynamic training speedup</b><br/><small>info: 10</small>"]
+    N4["<b>N4 reporter verifies dynamic training speedup (fix applied, unverified)</b><br/><small>info: 9</small>"]
     N_terminal["<b>terminal resolved</b><br/><small>info: 13</small>"]
     N0 -.->|"❓ benchmark_is_training_with_old_triton_backend"| N1
     linkStyle 0 stroke:#3b82f6,stroke-width:2px
@@ -27,10 +27,10 @@ flowchart LR
     linkStyle 3 stroke:#ef4444,stroke-width:2px
     N2_x -.->|"❓ april_latest_stack_runs_inductor_but_is_slower"| N3
     linkStyle 4 stroke:#3b82f6,stroke-width:2px
-    N3 -.->|"❓ may_neighborloader_retest_reports_twenty_percent_speedup"| N4
-    linkStyle 5 stroke:#3b82f6,stroke-width:2px
-    N4 ==>|"⚡ Use a current PyTorch/Triton/PyG stack with torch.compile(..., dynamic=True) for NeighborLoader training, retain the upstream dynamic-shape fixes rather than the failed local specialization hacks, and validate performance with synchronized, warmed-up end-to-end measurements."| N_terminal
-    linkStyle 6 stroke:#f97316,stroke-width:2px
+    N3 ==>|"⚡ Use a current PyTorch/Triton/PyG stack with torch.compile(..., dynamic=True) for NeighborLoader training, retain the upstream dynamic-shape fixes rather than the failed local specialization hacks, and validate performance with synchronized, warmed-up end-to-end measurements."| N4
+    linkStyle 5 stroke:#f97316,stroke-width:2px
+    N4 -.->|"❓ may_neighborloader_retest_reports_twenty_percent_speedup"| N_terminal
+    linkStyle 6 stroke:#3b82f6,stroke-width:2px
     class N0 start
     class N1 normal
     class N1_x normal
@@ -61,12 +61,12 @@ flowchart LR
 | edge | type | gates / info | payload |
 |---|---|---|---|
 | `e1_N0__N1` | clarification_only | asks: benchmark_is_training_with_old_triton_backend | This is training, including loss.backward(). I wasn't initially sure how to identify the backend, but our Febr |
-| `e2_N1__N1_x` | solution_only **BLIND** | req_info: neighborloader_gcn_has_dynamic_minibatch_shapes, dynamo_cache_limit_logs_show_size_and_stride_mismatches<br>elements: mentions_testing_pr93059 | Patch in PyTorch PR 93059 and rebuild PyTorch, without first changing the container's old Triton backend. |
+| `e2_N1__N1_x` | solution_only **BLIND** | req_info: neighborloader_gcn_has_dynamic_minibatch_shapes, dynamo_cache_limit_logs_show_size_and_stride_mismatches<br>elements: mentions_testing_pr93059_on_the_old_ptca_container | Patch in PyTorch PR 93059 and rebuild PyTorch, without first changing the container's old Triton backend. |
 | `e3_N1_x__N2` | clarification_only | asks: new_triton_dynamic_true_fails_on_symint_dimension | I rebuilt from the PR branch, installed the latest Triton source, and updated the shared script to call torch. |
 | `e4_N2__N2_x` | solution_only **BLIND** | req_info: new_triton_dynamic_true_fails_on_symint_dimension<br>elements: mentions_specialize_int_float_true_patch | Temporarily force specialize_int_float=True inside Dynamo's dynamic-shape context to bypass the SymInt dimension error. |
 | `e5_N2_x__N3` | clarification_only | asks: april_latest_stack_runs_inductor_but_is_slower | Using the latest PyTorch, Triton, PyG, and pyg-lib, Inductor now runs through the benchmark. Eager averages 0. |
-| `e6_N3__N4` | clarification_only | asks: may_neighborloader_retest_reports_twenty_percent_speedup | I tested torch.compile with PyG again using my NeighborLoader GCN script, and I now get about a 20% speedup wi |
-| `e7_N4__terminal` | solution_only | req_info: neighborloader_gcn_has_dynamic_minibatch_shapes, compiled_training_initially_slower_than_eager, dynamo_cache_limit_logs_show_size_and_stride_mismatches, new_triton_dynamic_true_fails_on_symint_dimension, specialize_int_float_hack_fails_in_compiled_backward, april_latest_stack_runs_inductor_but_is_slower, may_neighborloader_retest_reports_twenty_percent_speedup<br>elements: attributes_early_failures_to_incomplete_dynamic_shape_support, recommends_current_compiler_stack_with_dynamic_true, requires_warmup_and_cuda_synchronized_benchmarking, uses_reporter_verified_neighborloader_result, does_not_present_failed_specialization_patch_as_the_fix | Use a current PyTorch/Triton/PyG stack with torch.compile(..., dynamic=True) for NeighborLoader training, retain the upstream dynamic-shape fixes rather than the failed local specialization hacks, and validate performance with synchronized, warmed-up end-to-end measurements. |
+| `e6_N3__N4` | solution_only | req_info: neighborloader_gcn_has_dynamic_minibatch_shapes, compiled_training_initially_slower_than_eager, dynamo_cache_limit_logs_show_size_and_stride_mismatches, specialize_int_float_hack_fails_in_compiled_backward, april_latest_stack_runs_inductor_but_is_slower, new_triton_dynamic_true_fails_on_symint_dimension<br>elements: attributes_early_failures_to_incomplete_dynamic_shape_support, recommends_current_compiler_stack_with_dynamic_true, requires_warmup_and_cuda_synchronized_benchmarking, uses_reporter_verified_neighborloader_result, does_not_present_failed_specialization_patch_as_the_fix | Use a current PyTorch/Triton/PyG stack with torch.compile(..., dynamic=True) for NeighborLoader training, retain the upstream dynamic-shape fixes rather than the failed local specialization hacks, and validate performance with synchronized, warmed-up end-to-end measurements. |
+| `e7_N4__terminal` | clarification_only | asks: may_neighborloader_retest_reports_twenty_percent_speedup | I tested torch.compile with PyG again using my NeighborLoader GCN script, and I now get about a 20% speedup wi |
 
 ## Nodes
 
@@ -78,7 +78,7 @@ flowchart LR
 | `N2` |  | 0 | 0 | With the newer Triton source build and dynamic=True, training raises an error because size() receives a SymInt dimension instead of an int. |
 | `N2_x` |  | 1 | 0 | With the specialize_int_float patch and the suggested PR branch, the forward pass gets farther but loss.backward() fails with "'int' object  |
 | `N3` |  | 0 | 0 | On the latest PyTorch, Triton, PyG, and pyg-lib, Inductor completes training but reports that split reduction could not be used for dynamic  |
-| `N4` |  | 0 | 0 | My NeighborLoader training script now completes with torch.compile and runs about 20% faster than eager using the Triton backend. |
+| `N4` |  | 0 | 0 | I've moved to the May nightly with current Triton; I haven't re-run the NeighborLoader benchmark yet. |
 | `N_terminal` | ✓ | 0 | 0 | The NeighborLoader GCN trains successfully with dynamic compilation and the measured compiled run is about 20% faster than eager. |
 
 ## Machine review (audit pass, adversarially verified)

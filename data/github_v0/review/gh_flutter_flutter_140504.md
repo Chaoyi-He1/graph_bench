@@ -16,13 +16,13 @@ flowchart LR
     N4["<b>N4 network JPEG trigger isolated</b><br/><small>info: 13</small>"]
     N4_x["<b>N4_x canvas rasterization flag aftermath</b><br/><small>info: 14</small>"]
     N5["<b>N5 browser image decoding workaround verified</b><br/><small>info: 14</small>"]
-    N6["<b>N6 Chrome-side correction verified</b><br/><small>info: 15</small>"]
+    N6["<b>N6 Chrome-side correction verified (fix applied, unverified)</b><br/><small>info: 14</small>"]
     N_terminal["<b>terminal resolved</b><br/><small>info: 17</small>"]
     N0 -.->|"❓ failure_specific_to_chrome_beta_121_x86_64, other_browsers_work, chrome_stable_120_and_canary_122_work, canvaskit_only"| N1
     linkStyle 0 stroke:#3b82f6,stroke-width:2px
     N1 -.->|"❓ flutter_master_build_has_same_failure"| N2
     linkStyle 1 stroke:#3b82f6,stroke-width:2px
-    N2 -.->|"❓ about_gpu_hardware_webgl_and_intel_workarounds, raw_console_context_loss_and_circle_texture_shader"| N3
+    N2 -.->|"❓ about_gpu_hardware_webgl_and_intel_workarounds, raw_console_context_loss_and_circle_texture_shader, reduced_example_still_fails_with_circle_avatars"| N3
     linkStyle 2 stroke:#3b82f6,stroke-width:2px
     N3 -.->|"❓ network_jpeg_triggers_while_png_webp_gif_work"| N4
     linkStyle 3 stroke:#3b82f6,stroke-width:2px
@@ -30,10 +30,10 @@ flowchart LR
     linkStyle 4 stroke:#3b82f6,stroke-width:2px
     N4 ==>|"💥 blind: Enable Chrome's Out-of-process 2D canvas rasterization flag and relaunch the browser to avoid the rendering failure."| N4_x
     linkStyle 5 stroke:#ef4444,stroke-width:2px
-    N5 -.->|"❓ chrome_122_0_6261_129_update_verified_working"| N6
-    linkStyle 6 stroke:#3b82f6,stroke-width:2px
-    N6 ==>|"⚡ Treat this as a Chromium ANGLE-on-Metal regression on Intel macOS, not a Flutter shader defect; have affected users update to a Chrome build containing the Chrome-side rollback or fix. Use disabled browser image decoding only as a temporary application-controlled workaround."| N_terminal
-    linkStyle 7 stroke:#f97316,stroke-width:2px
+    N5 ==>|"⚡ Treat this as a Chromium ANGLE-on-Metal regression on Intel macOS, not a Flutter shader defect; have affected users update to a Chrome build containing the Chrome-side rollback or fix. Use disabled browser image decoding only as a temporary application-controlled workaround."| N6
+    linkStyle 6 stroke:#f97316,stroke-width:2px
+    N6 -.->|"❓ chrome_122_0_6261_129_update_verified_working"| N_terminal
+    linkStyle 7 stroke:#3b82f6,stroke-width:2px
     class N0 start
     class N1 normal
     class N2 normal
@@ -67,12 +67,12 @@ flowchart LR
 |---|---|---|---|
 | `e1_N0__N1` | clarification_only | asks: failure_specific_to_chrome_beta_121_x86_64, other_browsers_work, chrome_stable_120_and_canary_122_work, canvaskit_only | It fails in Chrome Beta 121.0.6167.16, the x86_64 build, on my 2020 Intel MacBook Pro. / I tried all my other browsers and the site works there. I only see this failure in the affected Chrome build. / On the same Intel Mac, Chrome Stable 120 works, Chrome Beta 121 does not work, and Chrome Canary 122 works. / Yes, I only see it with CanvasKit rendering. |
 | `e2_N1__N2` | clarification_only | asks: flutter_master_build_has_same_failure | I tested Flutter master 3.18.0-18.0.pre.39 with engine afd214dccc, and I get the same result. |
-| `e3_N2__N3` | clarification_only | asks: about_gpu_hardware_webgl_and_intel_workarounds, raw_console_context_loss_and_circle_texture_shader | My Chrome Beta `about:gpu` output says Canvas, compositing, rasterization, WebGL, and WebGL2 are hardware acce / The console prints `CONTEXT_LOST_WEBGL: loseContext: context lost`, `INVALID_OPERATION: delete: object does no |
+| `e3_N2__N3` | clarification_only | asks: about_gpu_hardware_webgl_and_intel_workarounds, raw_console_context_loss_and_circle_texture_shader, reduced_example_still_fails_with_circle_avatars | My Chrome Beta `about:gpu` output says Canvas, compositing, rasterization, WebGL, and WebGL2 are hardware acce / The console prints `CONTEXT_LOST_WEBGL: loseContext: context lost`, `INVALID_OPERATION: delete: object does no / I cut the page down to basically just the circle avatars — the reduced example still crashes the same way. |
 | `e4_N3__N4` | clarification_only | asks: network_jpeg_triggers_while_png_webp_gif_work | I tested network images separately. JPG and JPEG make the app fail, while PNG, WebP, and GIF work. Changing th |
 | `e5_N4__N5` | clarification_only | asks: disabling_browser_image_decoding_avoids_failure | This works for me. The release build compiled with `--dart-define=BROWSER_IMAGE_DECODING_ENABLED=false` render |
 | `e6_N4__N4_x` | solution_only **BLIND** | req_info: published_canvaskit_release_blank_with_shader_error, about_gpu_hardware_webgl_and_intel_workarounds<br>elements: mentions_enabling_out_of_process_canvas_rasterization | Enable Chrome's Out-of-process 2D canvas rasterization flag and relaunch the browser to avoid the rendering failure. |
-| `e7_N5__N6` | clarification_only | asks: chrome_122_0_6261_129_update_verified_working | I can confirm it is working for me after the corrected Chrome rollout. The hosted example renders again, and o |
-| `e8_N6__N_terminal` | solution_only | req_info: published_canvaskit_release_blank_with_shader_error, chrome_stable_120_and_canary_122_work, canvaskit_only, network_jpeg_triggers_while_png_webp_gif_work, about_gpu_hardware_webgl_and_intel_workarounds, raw_console_context_loss_and_circle_texture_shader, disabling_browser_image_decoding_avoids_failure, chrome_122_0_6261_129_update_verified_working<br>elements: identifies_chromium_angle_metal_regression_on_intel_macos, explains_that_the_failure_is_not_fixed_by_updating_flutter, recommends_a_chrome_build_with_the_chromium_correction, labels_disabled_browser_image_decoding_as_temporary_with_performance_cost | Treat this as a Chromium ANGLE-on-Metal regression on Intel macOS, not a Flutter shader defect; have affected users update to a Chrome build containing the Chrome-side rollback or fix. Use disabled browser image decoding only as a temporary application-controlled workaround. |
+| `e7_N5__N6` | solution_only | req_info: published_canvaskit_release_blank_with_shader_error, chrome_stable_120_and_canary_122_work, canvaskit_only, about_gpu_hardware_webgl_and_intel_workarounds, raw_console_context_loss_and_circle_texture_shader, disabling_browser_image_decoding_avoids_failure, network_jpeg_triggers_while_png_webp_gif_work<br>elements: identifies_chromium_angle_metal_regression_on_intel_macos, explains_that_the_failure_is_not_fixed_by_updating_flutter, recommends_a_chrome_build_with_the_chromium_correction, labels_disabled_browser_image_decoding_as_temporary_with_performance_cost | Treat this as a Chromium ANGLE-on-Metal regression on Intel macOS, not a Flutter shader defect; have affected users update to a Chrome build containing the Chrome-side rollback or fix. Use disabled browser image decoding only as a temporary application-controlled workaround. |
+| `e8_N6__N_terminal` | clarification_only | asks: chrome_122_0_6261_129_update_verified_working | I can confirm it is working for me after the corrected Chrome rollout. The hosted example renders again, and o |
 
 ## Nodes
 
@@ -81,11 +81,11 @@ flowchart LR
 | `N0` |  | 1 | 0 | My published CanvasKit website does not work and the Chrome console reports a shader compilation error, while the same app works in debuggin |
 | `N1` |  | 0 | 0 | The deployed app fails in Chrome Beta 121 on my Intel Mac, but it works in the other browsers I tried, including Chrome Stable 120 and Chrom |
 | `N2` |  | 0 | 0 | The same deployed CanvasKit example still fails in the affected Chrome browser when built with Flutter master. |
-| `N3` |  | 1 | 0 | The failing browser reports `CONTEXT_LOST_WEBGL`, invalid WebGL operations, and a shader compilation error for a fragment shader that sample |
+| `N3` |  | 0 | 0 | The failing browser reports `CONTEXT_LOST_WEBGL`, invalid WebGL operations, and a shader compilation error for a fragment shader that sample |
 | `N4` |  | 0 | 0 | Loading a JPG or JPEG image from the network makes the release app go blank with the shader error on affected Intel Macs, while equivalent P |
 | `N4_x` |  | 1 | 0 | After enabling Out-of-process 2D canvas rasterization and relaunching Chrome, the same hosted example still throws the exception on my affec |
 | `N5` |  | 0 | 0 | The default release build still fails with network JPEG images, but a profile or release build compiled with `--dart-define=BROWSER_IMAGE_DE |
-| `N6` |  | 0 | 0 | After receiving the corrected Chrome rollout, the hosted CanvasKit example works again on my Intel Mac with its JPG images, and other affect |
+| `N6` |  | 0 | 0 | I've updated Chrome to 122.0.6261.129; I haven't re-run the avatar page yet. |
 | `N_terminal` | ✓ | 0 | 0 | The published Flutter CanvasKit website renders normally in the corrected Chrome version on Intel macOS, including its network JPEG images,  |
 
 ## Machine review (audit pass, adversarially verified)
