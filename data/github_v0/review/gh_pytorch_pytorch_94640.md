@@ -61,7 +61,7 @@ flowchart LR
 | edge | type | gates / info | payload |
 |---|---|---|---|
 | `e1_N0__N1` | clarification_only | asks: benchmark_is_training_with_old_triton_backend | This is training, including loss.backward(). I wasn't initially sure how to identify the backend, but our Febr |
-| `e2_N1__N1_x` | solution_only **BLIND** | req_info: neighborloader_gcn_has_dynamic_minibatch_shapes, dynamo_cache_limit_logs_show_size_and_stride_mismatches<br>elements: mentions_testing_pr93059_on_the_old_ptca_container | Patch in PyTorch PR 93059 and rebuild PyTorch, without first changing the container's old Triton backend. |
+| `e2_N1__N1_x` | solution_only **BLIND** | req_info: neighborloader_gcn_has_dynamic_minibatch_shapes, dynamo_cache_limit_logs_show_size_and_stride_mismatches<br>elements: mentions_testing_pr93059_on_the_frozen_2302_container | Patch in PyTorch PR 93059 and rebuild PyTorch, without first changing the container's old Triton backend. |
 | `e3_N1_x__N2` | clarification_only | asks: new_triton_dynamic_true_fails_on_symint_dimension | I rebuilt from the PR branch, installed the latest Triton source, and updated the shared script to call torch. |
 | `e4_N2__N2_x` | solution_only **BLIND** | req_info: new_triton_dynamic_true_fails_on_symint_dimension<br>elements: mentions_specialize_int_float_true_patch | Temporarily force specialize_int_float=True inside Dynamo's dynamic-shape context to bypass the SymInt dimension error. |
 | `e5_N2_x__N3` | clarification_only | asks: april_latest_stack_runs_inductor_but_is_slower | Using the latest PyTorch, Triton, PyG, and pyg-lib, Inductor now runs through the benchmark. Eager averages 0. |
@@ -78,7 +78,7 @@ flowchart LR
 | `N2` |  | 0 | 0 | With the newer Triton source build and dynamic=True, training raises an error because size() receives a SymInt dimension instead of an int. |
 | `N2_x` |  | 1 | 0 | With the specialize_int_float patch and the suggested PR branch, the forward pass gets farther but loss.backward() fails with "'int' object  |
 | `N3` |  | 0 | 0 | On the latest PyTorch, Triton, PyG, and pyg-lib, Inductor completes training but reports that split reduction could not be used for dynamic  |
-| `N4` |  | 0 | 0 | I've moved to the May nightly with current Triton; I haven't re-run the NeighborLoader benchmark yet. |
+| `N4` |  | 0 | 0 | Re-ran the NeighborLoader benchmark in May: torch.compile is now about 20% faster than eager for me. |
 | `N_terminal` | ✓ | 0 | 0 | The NeighborLoader GCN trains successfully with dynamic compilation and the measured compiled run is about 20% faster than eager. |
 
 ## Machine review (audit pass, adversarially verified)

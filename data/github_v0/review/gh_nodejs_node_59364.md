@@ -66,7 +66,7 @@ flowchart LR
 | `N0` |  | 0 | 0 | Our CI builds consistently fail on Node.js 22.18.0 even though they worked on 22.17. The builds run again when I add `--no-experimental-stri |
 | `N1` |  | 0 | 0 | In my project, `__dirname` suddenly becomes undefined on Node.js 22.18 even though our package.json files do not specify a module type and w |
 | `N2` |  | 0 | 0 | The test suite still fails on Node.js 22.18 with its existing Mocha 10 setup, while disabling type stripping lets it run. |
-| `N2_x` |  | 1 | 0 | The reproducer still fails in a Node build where PR #58657 is reverted. |
+| `N2_x` |  | 1 | 0 | My Mocha/ts-node repro still fails exactly as before on my side. |
 | `N3` |  | 0 | 0 | After upgrading from Mocha 10 to the latest Mocha, the original tests pass on Node.js 22.18 and I no longer need `--no-experimental-strip-ty |
 | `N_terminal` | ✓ | 0 | 0 | The project test suite runs successfully on Node.js 22.18 with the current Mocha version and without disabling Node's type-stripping feature |
 

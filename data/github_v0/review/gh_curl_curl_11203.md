@@ -56,7 +56,7 @@ flowchart LR
 | `e2_N1__N2_x` | solution_only **BLIND** | req_info: hyper_build_three_urls_take_at_least_one_minute<br>elements: mentions_initial_hyper_polling_patch | Apply the initial Hyper polling and wake-handling changes from PR #11344 to make completed Hyper tasks available without waiting for a later transfer-loop poll. |
 | `e3_N2_x__N2` | clarification_only | asks: trace_shows_two_approximately_30_second_idle_periods, packet_capture_shows_repeated_h2_preface_per_request, forcing_http11_completes_in_about_300ms | The first response arrives quickly. Then `Curl_hyper_stream` is called about once per second with `select_res` / In my decrypted capture, normal curl sends one HTTP/2 connection preface, settings/window update, and then req / Yes. The default Hyper run takes more than 60 seconds for this endpoint, while `curl --http1.1` completes the  |
 | `e4_N2__N3` | solution_only | req_info: hyper_build_three_urls_take_at_least_one_minute, parallel_mode_does_not_remove_delays, trace_shows_two_approximately_30_second_idle_periods, packet_capture_shows_repeated_h2_preface_per_request, forcing_http11_completes_in_about_300ms<br>elements: identifies_per_request_hyper_clientconn_as_source_of_repeated_h2_prefaces, disables_http2_for_hyper_as_temporary_fix, uses_http11_fallback, notes_connection_lifecycle_rearchitecture_needed_before_restoring_h2 | Disable HTTP/2 in curl's Hyper integration and use HTTP/1.1 as the safe temporary path, because curl creates a Hyper client connection per request and sends a new HTTP/2 connection preface on an already reused connection; restoring Hyper HTTP/2 requires connection-scoped lifecycle integration. |
-| `e5_N3__N_terminal` | clarification_only | asks: rebuild_benchmark_three_transfers_finish_near_one_second | After rebuilding the latest Hyper and curl master, it is much faster and no longer takes over a minute. One ru |
+| `e5_N3__N_terminal` | clarification_only | asks: rebuild_benchmark_three_transfers_finish_near_one_second | Rebuilt from current master and re-ran my three-URL script (responses discarded to NUL): much better — 1.137s  |
 
 ## Nodes
 
@@ -67,7 +67,7 @@ flowchart LR
 | `N2_x` |  | 2 | 0 | After rebuilding with the proposed changes, the three-URL command still takes about 61 seconds instead of about 1.5 seconds with the Windows |
 | `N2` |  | 0 | 0 | The first response arrives immediately, followed by pauses of about 30 seconds before the later responses. Forcing HTTP/1.1 makes the same t |
 | `N3` |  | 0 | 0 | I've rebuilt curl and Hyper from current git master containing the change; I haven't re-run my three-URL benchmark yet. |
-| `N_terminal` | ✓ | 0 | 0 | The three URLs now complete in about one second with the Hyper-enabled build, all three responses are returned, and the 30-second pauses are |
+| `N_terminal` | ✓ | 0 | 0 | The rebuilt curl finishes my three-URL script in about a second — the minute-long pauses are gone (the Windows-bundled curl remains somewhat |
 
 ## Machine review (audit pass, adversarially verified)
 

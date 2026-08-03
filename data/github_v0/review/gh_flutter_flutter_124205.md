@@ -31,6 +31,10 @@ flowchart LR
     linkStyle 5 stroke:#3b82f6,stroke-width:2px
     N4 ==>|"⚡ Update to a Flutter release containing the mobile-web viewport geometry fix from PR 179581, first shipped on stable in 3.38.6, and verify keyboard opening and dismissal on the affected physical devices."| N_terminal
     linkStyle 6 stroke:#f97316,stroke-width:2px
+    N1_x ==>|"⚡ Abandon this direction and return to the investigation."| N0
+    linkStyle 7 stroke:#f97316,stroke-width:2px
+    N2_x ==>|"⚡ Abandon this direction and return to the investigation."| N2
+    linkStyle 8 stroke:#f97316,stroke-width:2px
     class N0 start
     class N1 normal
     class N1_x normal
@@ -67,6 +71,8 @@ flowchart LR
 | `e5_N2__N3` | clarification_only | asks: keyboard_control_dismissal_triggers_bad_geometry | With the keyboard active, I logged MediaQuery size Size(412.0, 770.0) and bottom view inset 312.0. After dismi |
 | `e6_N3__N4` | clarification_only | asks: fixed_flutter_build_verified_on_physical_pixel_and_master | I tested the latest published Flutter on Chrome on a physical Pixel 8 and the issue is resolved for me. I also |
 | `e7_N4__N_terminal` | solution_only | req_info: physical_ios_and_android_devices_reproduce, raw_metrics_show_reduced_height_and_negative_bottom_inset, issue_affects_fields_that_browser_must_move, fixed_flutter_build_verified_on_physical_pixel_and_master, html_renderer_also_reproduces<br>elements: identifies_incorrect_mobile_web_viewport_geometry_as_root_cause, mentions_negative_or_stale_bottom_inset_after_keyboard_transition, recommends_flutter_3_38_6_or_newer_containing_pr_179581, requires_retesting_on_an_affected_physical_mobile_browser, does_not_present_resize_to_avoid_bottom_inset_as_the_root_fix | Update to a Flutter release containing the mobile-web viewport geometry fix from PR 179581, first shipped on stable in 3.38.6, and verify keyboard opening and dismissal on the affected physical devices. |
+| `rb_N1_x__N0` | solution_only | req_info: <br>elements: mentions_rollback_or_abandon_direction | Abandon this direction and return to the investigation. |
+| `rb_N2_x__N2` | solution_only | req_info: <br>elements: mentions_rollback_or_abandon_direction | Abandon this direction and return to the investigation. |
 
 ## Nodes
 

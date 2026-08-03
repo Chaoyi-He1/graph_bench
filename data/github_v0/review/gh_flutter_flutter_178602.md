@@ -15,6 +15,7 @@ flowchart LR
     N3["<b>N3 stale simulator native asset isolated</b><br/><small>info: 12</small>"]
     N4["<b>N4 workaround and fixed toolchain verified</b><br/><small>info: 14</small>"]
     N_terminal["<b>terminal resolved</b><br/><small>info: 14</small>"]
+    N0b["<b>N0b opening evidence gathered</b><br/><small>info: 6</small>"]
     N0 ==>|"💥 blind: Treat the failure as stale build output that can be resolved by updating Flutter to 3.38.2 and running flutter clean before rebuilding."| N1_x
     linkStyle 0 stroke:#ef4444,stroke-width:2px
     N1_x -.->|"❓ project_dependencies_include_sqlite3_native_assets, complete_content_delivery_log_has_same_validation_error, validate_app_fails_independently_of_distribution"| N2
@@ -25,14 +26,17 @@ flowchart LR
     linkStyle 3 stroke:#3b82f6,stroke-width:2px
     N4 ==>|"⚡ Use a Flutter toolchain containing the native-assets embedding fix so device archives include only frameworks selected for the current build; until then, generate a clean config-only device archive without first running a simulator build."| N_terminal
     linkStyle 4 stroke:#f97316,stroke-width:2px
-    N0 -.->|"❓ project_dependencies_include_sqlite3_native_assets, complete_content_delivery_log_has_same_validation_error"| N2
+    N0 -.->|"❓ project_dependencies_include_sqlite3_native_assets, complete_content_delivery_log_has_same_validation_error"| N0b
     linkStyle 5 stroke:#3b82f6,stroke-width:2px
+    N0b -.->|"❓ validate_app_fails_independently_of_distribution"| N2
+    linkStyle 6 stroke:#3b82f6,stroke-width:2px
     class N0 start
     class N1_x normal
     class N2 normal
     class N3 normal
     class N4 normal
     class N_terminal terminal
+    class N0b normal
     classDef start fill:#fee2e2,stroke:#b91c1c,color:#000
     classDef terminal fill:#dcfce7,stroke:#15803d,color:#000
     classDef normal fill:#fef3c7,stroke:#a16207,color:#000
@@ -60,7 +64,8 @@ flowchart LR
 | `e3_N2__N3` | solution_only | req_info: complete_content_delivery_log_has_same_validation_error, project_dependencies_include_sqlite3_native_assets, validate_app_fails_independently_of_distribution<br>elements: checks_for_simulator_only_sqlite_framework_in_device_archive, compares_archive_after_simulator_build_with_clean_device_archive | Reproduce and inspect the archive to isolate whether a simulator-only sqlite3 native framework is being retained and embedded in a device archive. |
 | `e4_N3__N4` | clarification_only | asks: clean_config_only_before_archive_verified_workaround, fixed_main_channel_build_verified_by_affected_user | That option works for me. After flutter clean and flutter build ios --config-only, I archived in Xcode and val / I tested the fixed main channel and it does the trick; I was able to validate and deploy my app. |
 | `e5_N4__N_terminal` | solution_only | req_info: app_store_validation_lc_encryption_error_after_flutter_3381, project_dependencies_include_sqlite3_native_assets, validate_app_fails_independently_of_distribution, clean_config_only_before_archive_verified_workaround, fixed_main_channel_build_verified_by_affected_user<br>elements: identifies_stale_simulator_native_framework_as_reporter_case_root_cause, explains_flutter_embedded_all_assets_instead_of_only_current_device_assets, recommends_a_flutter_build_with_the_native_assets_fix, allows_clean_config_only_sequence_as_temporary_workaround | Use a Flutter toolchain containing the native-assets embedding fix so device archives include only frameworks selected for the current build; until then, generate a clean config-only device archive without first running a simulator build. |
-| `e0_N0__N2` | clarification_only | asks: project_dependencies_include_sqlite3_native_assets, complete_content_delivery_log_has_same_validation_error | The project pulls in sqlite3 via native assets; I attached the complete content-delivery log — it shows the sa / The complete log shows the same validation error, only for that framework. |
+| `e0_N0__N0b` | clarification_only | asks: project_dependencies_include_sqlite3_native_assets, complete_content_delivery_log_has_same_validation_error | My pubspec includes sqflite_sqlcipher, sqflite, and an override for sqlite3 version 3.0.1, along with the rest / The complete log shows the same validation error, only for that framework. |
+| `e0b_N0b__N2` | clarification_only | asks: validate_app_fails_independently_of_distribution | I originally saw it while distributing. I then tried Validate App directly, and I still get the same errors. |
 
 ## Nodes
 
@@ -72,6 +77,7 @@ flowchart LR
 | `N3` |  | 0 | 0 | The upload still fails with the same App Store validation error for the sqlite3 framework; nothing in my project changed. |
 | `N4` |  | 0 | 0 | After running flutter clean and flutter build ios --config-only immediately before archiving, my archive validates successfully. An affected |
 | `N_terminal` | ✓ | 0 | 0 | The iOS device archive contains only the native frameworks needed by that build and passes App Store Connect validation without the LC_ENCRY |
+| `N0b` |  | 0 | 0 | After upgrading to Flutter 3.38.1, App Store Connect rejects my iOS archive because LC_ENCRYPTION_INFO is missing or invalid and says the bi |
 
 ## Machine review (audit pass, adversarially verified)
 
