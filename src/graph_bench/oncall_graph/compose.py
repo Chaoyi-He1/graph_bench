@@ -352,14 +352,14 @@ def _compose_conflicting(
             system_state_id='S_a_fixed_b_worse',
             info_state=sorted(baseline),
             symptoms_visible=spec.worsened_after_a
-            or ['A 的症状消失了，但 B 的问题更明显了'],  # noqa: RUF001
+            or ["A's symptoms are gone, but B's problem is now worse"],
             label='A fixed, B worse',
         ),
         'N_B_fixed_A_worse': Node(
             system_state_id='S_b_fixed_a_worse',
             info_state=sorted(baseline),
             symptoms_visible=spec.worsened_after_b
-            or ['B 的症状消失了，但 A 的问题更明显了'],  # noqa: RUF001
+            or ["B's symptoms are gone, but A's problem is now worse"],
             label='B fixed, A worse',
         ),
         'NT_composed': Node(
@@ -391,7 +391,7 @@ def _compose_conflicting(
     )
     rollback = Solution(
         intent='revert the last change',
-        approach_keywords=['rollback', 'revert', '回滚'],
+        approach_keywords=['rollback', 'revert', 'undo'],
     )
     composite = _restrict_required_info(composite, baseline).model_copy(
         update={'is_composite': True}

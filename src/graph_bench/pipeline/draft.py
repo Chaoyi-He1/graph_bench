@@ -253,6 +253,8 @@ def draft_task(
             data['metadata']['hitl_reviewed'] = False
             data['metadata'].setdefault('graph_version', 'v1')
             data['metadata']['created_from'] = created_from
+            if thread.get('base_commit'):
+                data['metadata']['repo_snapshot'] = thread['base_commit']
             task = Task.model_validate(data)
         except Exception as exc:  # noqa: BLE001 - feed back to the model
             if attempt == max_repairs:

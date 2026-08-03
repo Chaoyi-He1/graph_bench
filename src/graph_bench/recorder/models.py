@@ -146,7 +146,7 @@ class TestcaseMetrics(BaseModel):
     # were shortcut calls / one-turn mixed clarify+solve calls.
     shortcut_usage_rate: float | None = None
     mixed_usage_rate: float | None = None
-    # §8.11 难题 B: did clarification chains eventually cash in on a
+    # §8.11 problem B: did clarification chains eventually cash in on a
     # solution attempt, and did the agent get stuck only-asking?
     info_utilization_rate: float | None = None
     max_consecutive_clarifications: int = 0

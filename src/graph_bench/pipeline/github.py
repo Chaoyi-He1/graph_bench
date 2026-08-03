@@ -122,11 +122,40 @@ def download_image(url: str, dest_stem: Path) -> Path | None:
         return None
 
 
+def resolve_base_commit(repo: str, until_iso: str) -> dict | None:
+    """Latest default-branch commit at/before ``until_iso`` (ISO-8601).
+
+    Anchors the repo-grounded track: the code state a maintainer would have
+    checked out when the issue was opened. Returns None on any API failure —
+    snapshot resolution must never fail a harvest.
+    """
+    try:
+        meta, _ = _get_json(f'{_API}/repos/{repo}')
+        branch = meta.get('default_branch', 'master')  # type: ignore[union-attr]
+        commits, _ = _get_json(
+            f'{_API}/repos/{repo}/commits?sha={urllib.parse.quote(branch)}'
+            f'&until={urllib.parse.quote(until_iso)}&per_page=1'
+        )
+        if not commits:
+            return None
+        return {
+            'provider': 'github',
+            'repo': repo,
+            'default_branch': branch,
+            'commit_sha': commits[0]['sha'],  # type: ignore[index]
+            'as_of': until_iso,
+            'method': 'github_commits_until',
+        }
+    except Exception:  # noqa: BLE001 - non-fatal enrichment
+        return None
+
+
 def harvest_case(
     repo: str, number: int, raw_dir: Path, images_dir: Path
 ) -> dict:
     """Fetch a full thread, archive its images, save raw JSON, return it."""
     thread = fetch_thread(repo, number)
+    thread['base_commit'] = resolve_base_commit(repo, thread['created_at'])
     slug = f'gh_{repo.replace("/", "_")}_{number}'
     images: list[dict] = []
     texts = [('opening', thread['body'])] + [

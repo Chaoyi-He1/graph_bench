@@ -666,7 +666,7 @@ def select_advancing_match(
 ) -> MatchResult:
     """
     Pick the advancing match: eligible (match_pct >= threshold) proposal
-    whose target node is closest to a terminal ('推进最远'). Below threshold
+    whose target node is closest to a terminal (advances furthest). Below threshold
     falls to a 'partial' on the best proposal; nothing matched -> 'none'.
     """
     unreachable = 1 << 30

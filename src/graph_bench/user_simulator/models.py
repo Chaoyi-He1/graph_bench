@@ -28,7 +28,7 @@ Satisfaction = Literal['none', 'premature', 'resolved']
 class SimulatorConfig(BaseModel):
     stall_reveal_threshold: int = 4
     bm25_top_k: int = 3
-    bm25_corpus_name: str = 'llm_0612_built'
+    bm25_corpus_name: str = 'user_style'
     online: bool = False
     advance_match_threshold: float = 0.8
     # When True, an exact solution match that lands back on an

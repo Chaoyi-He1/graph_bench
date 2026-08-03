@@ -63,7 +63,7 @@ def reconstruct_canonical_conversation(
             question = (
                 clar.question_patterns[0]
                 if clar.question_patterns
-                else f'请确认一下 {clar.info_id}？'  # noqa: RUF001
+                else f'Could you confirm {clar.info_id}?'
             )
             answer = overrides.get(
                 clar.info_id, clar.user_answer_in_this_oncall
@@ -77,9 +77,9 @@ def reconstruct_canonical_conversation(
             lines.append(f'engineer: {proposal}')
             to_node = graph.nodes[edge.to_node]
             reply = (
-                '解决了，谢谢！'  # noqa: RUF001
+                'That fixed it, thanks!'
                 if to_node.is_terminal
-                else '; '.join(to_node.symptoms_visible) or '我试了。'
+                else '; '.join(to_node.symptoms_visible) or 'I tried it.'
             )
             lines.append(f'user: {reply}')
         node_id = edge.to_node

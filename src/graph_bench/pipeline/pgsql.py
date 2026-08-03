@@ -142,6 +142,16 @@ def to_thread_dict(bug_no: str, subject: str, root: str, msgs: list[dict]) -> di
 
 
 def save_raw(thread: dict, raw_dir: Path) -> None:
+    # Repo-grounded track: pgsql-bugs cases anchor to the postgres/postgres
+    # GitHub mirror at report time.
+    if 'base_commit' not in thread:
+        from graph_bench.pipeline.github import (  # noqa: PLC0415
+            resolve_base_commit,
+        )
+
+        snap = resolve_base_commit('postgres/postgres', thread['created_at'])
+        if snap is not None:
+            thread['base_commit'] = snap
     (raw_dir / f'{thread["slug"]}.json').write_text(
         json.dumps(thread, ensure_ascii=False, indent=1)
     )

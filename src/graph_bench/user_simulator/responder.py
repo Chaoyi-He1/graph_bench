@@ -23,55 +23,77 @@ if TYPE_CHECKING:
 # §10.1 neutral follow-ups: each points only at what the agent said and
 # adds no new info (§10.3). missing_elements is NEVER rendered.
 _PARTIAL_TEMPLATES: dict[str, str] = {
-    'direction_correct_method_missing': '嗯，具体怎么做？',  # noqa: RUF001
-    'method_correct_target_unclear': '你说的是改哪个？',  # noqa: RUF001
-    'concept_correct_tool_different': '这个是什么意思，要怎么用？',  # noqa: RUF001
-    'multi_step_partial': '按你说的改了，第一个好点了，但好像还有别的问题。',  # noqa: RUF001
-    'keyword_correct_direction_wrong': '试了，没看出什么变化。',  # noqa: RUF001
+    'direction_correct_method_missing': 'OK — how exactly do I do that?',
+    'method_correct_target_unclear': 'Which one do you mean I should change?',
+    'concept_correct_tool_different': (
+        'What does that mean, and how do I use it?'
+    ),
+    'multi_step_partial': (
+        'I made the change you described; the first part looks better, '
+        'but something still seems off.'
+    ),
+    'keyword_correct_direction_wrong': (
+        "I tried that; I don't see any difference."
+    ),
 }
-_PARTIAL_DEFAULT = '你说的具体怎么做？'  # noqa: RUF001
+_PARTIAL_DEFAULT = 'How exactly would I do that?'
 # Corrective escalation (A + C-light): used when the agent is stuck on a
 # wrong-direction edge or has lingered below the advance bar, in place of the
 # soft §10.3 follow-up.
-_CORRECTIVE_PARTIAL = '我按这个方向试了几次，没看到明显改善，要不换个思路排查？'  # noqa: RUF001
+_CORRECTIVE_PARTIAL = (
+    "I've tried along these lines a few times without any visible "
+    'improvement — should we take a different angle?'
+)
 
 # Leak-safe per-case reply intents for the 3 non-advancing cases. These
 # instruct the online Speaker's LLM what the reply should accomplish; they
 # contain NO graph/answer/missing-element/dead-end facts.
 _INTENT_NOMATCH_SOLUTION = (
-    '你照对方说的试了，但现象没变化。表达"没改善"、可以继续观望或追问；'  # noqa: RUF001
-    '不要给出根因或具体方案。'
+    'You tried what the agent suggested and the symptoms did not change. '
+    "Say it didn't help; you may keep observing or ask what to try next. "
+    'Do NOT name a root cause or propose a concrete fix yourself.'
 )
 _INTENT_NOMATCH_CLARIFICATION = (
-    '对方问的信息你这边对不上、不像当前最关键的点。礼貌表示对不上、'
-    '建议换个方向；不要替它指出正确方向或答案。'  # noqa: RUF001
+    "What the agent asks about doesn't line up with anything on your side "
+    "and doesn't feel like the key point right now. Politely say it "
+    "doesn't match and suggest trying a different angle. Do NOT point out "
+    'the correct direction or the answer for them.'
 )
 _INTENT_PARTIAL_RIGHT = (
-    '对方方向对但没说清具体怎么做。顺着追问"具体怎么做/改哪儿"，'  # noqa: RUF001
-    '鼓励但不要替它补全缺失的方法或点名答案。'
+    "The agent's direction is right but they haven't said concretely how "
+    'to do it. Follow up asking for the concrete step ("how exactly? '
+    'change which part?"). Be encouraging, but do NOT fill in the missing '
+    'method or name the answer for them.'
 )
 # Right direction, but the agent keeps stalling without a concrete step.
 # Press harder for the actionable next step — must NOT tell it to change
 # direction (that's the blind/dead-end case). Still leak-free.
 _INTENT_PARTIAL_RIGHT_STALLED = (
-    '对方方向是对的，但追问几轮了还是没落到可执行的具体步骤。'  # noqa: RUF001
-    '这次更坚持地表达"方向我信，但请直接说下一步到底改哪块、怎么改、'  # noqa: RUF001
-    '改完看哪个数据来验证"，语气可以带点着急；'  # noqa: RUF001
-    '不要让它换方向，也不要替它补全缺失的方法或点名答案。'  # noqa: RUF001
+    'The direction is right, but after several rounds of asking there is '
+    'still no actionable step. Push harder this time: "I trust the '
+    'direction — just tell me exactly which part to change, how, and what '
+    'data to check afterwards to verify." A slightly impatient tone is '
+    'fine. Do NOT tell them to change direction, and do NOT fill in the '
+    'missing method or name the answer.'
 )
 _INTENT_PARTIAL_BLIND = (
-    '你按对方这个方向试了几次，没看到明显改善。表达没效果、建议换个思路；'  # noqa: RUF001
-    '不要说明为什么错、不要透露这是已知死路或根因所在。'
+    'You tried a few times along the direction the agent suggested and '
+    "saw no clear improvement. Say it isn't working and suggest a "
+    'different line of thinking. Do NOT explain why it is wrong, and do '
+    'NOT reveal that it is a known dead end or where the root cause is.'
 )
 # Escalated form: the agent keeps circling the same unhelpful direction.
 # Fed when the node's stall count is past the first corrective, so the LLM
 # generates a more direct / slightly impatient reply instead of repeating
 # the gentle line. Still leak-free.
 _INTENT_PARTIAL_BLIND_ESCALATED = (
-    '这条方向你之前已经试过、也说过没改善了，对方却还在原地打转。'  # noqa: RUF001
-    '这次更直接地表达"这条线刚才就走过、还是不行"，请它别再绕回老方向、'  # noqa: RUF001
-    '换一条完全不同的思路；语气可以带点不耐烦/着急。'  # noqa: RUF001
-    '仍然不要说明为什么错、不要透露这是已知死路或根因所在。'
+    'You already tried this direction earlier and said it did not help, '
+    'yet the agent keeps circling back to it. Be more direct this time: '
+    '"we already went down this path and it still did not work" — ask '
+    'them to stop returning to the old direction and take a genuinely '
+    'different approach. An impatient tone is fine. Still do NOT explain '
+    'why it is wrong, and do NOT reveal the known dead end or the root '
+    'cause.'
 )
 
 
@@ -90,9 +112,9 @@ def partial_followup_draft(match: MatchResult) -> str:
         else None
     )
     if term and match.subtype == 'method_correct_target_unclear':
-        return f'{term} 哪个？我这边有好几个。'  # noqa: RUF001
+        return f'{term} — which one? I have several here.'
     if term and match.subtype == 'concept_correct_tool_different':
-        return f'{term} 是什么意思，要怎么用？'  # noqa: RUF001
+        return f'What is {term}, and how do I use it?'
     return _PARTIAL_TEMPLATES.get(match.subtype or '', _PARTIAL_DEFAULT)
 
 
@@ -242,7 +264,7 @@ class Responder:
         completion_prefix = ''
         if self.session.pending_completion:
             items = self.session.pending_completion
-            completion_prefix = '对了，补充一下：' + '；'.join(items) + '。'  # noqa: RUF001
+            completion_prefix = 'Oh, one more thing: ' + '; '.join(items) + '.'
             self.session.pending_completion = []
         base, event = self._dispatch(match, agent_turn)
         if completion_prefix:
@@ -332,7 +354,10 @@ class Responder:
         # granted via cascade info_state), answers is [] and payload is ''.
         # Emit a brief acknowledgement instead of an empty turn.
         if not payload:
-            payload = '这个我前面应该说过了，你接着往下看就行。'  # noqa: RUF001
+            payload = (
+                'I think I already mentioned that earlier — please go on '
+                'from there.'
+            )
         base = BaseResponse(
             directive='answer',
             payload=payload,
@@ -587,12 +612,15 @@ class Responder:
         self.session.hitl_queue.append(hitl)
 
         _OFF_TARGET_HINT = (  # noqa: N806
-            '嗯…你问的这些我这边对不上，'  # noqa: RUF001
-            '感觉不是现在最关键的点，要不换个方向？'  # noqa: RUF001
+            "Hmm… what you're asking about doesn't match anything on my "
+            "side; it doesn't feel like the key point right now. Could we "
+            'try a different angle?'
         )
         is_clar = match.edge_type == 'clarification_only'
         phrasing = (
-            _OFF_TARGET_HINT if is_clar else '试了，好像没什么变化'  # noqa: RUF001
+            _OFF_TARGET_HINT
+            if is_clar
+            else 'I tried that; nothing seems to have changed.'
         )
         intent = (
             _INTENT_NOMATCH_CLARIFICATION

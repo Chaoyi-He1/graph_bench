@@ -24,7 +24,7 @@ _REACHED_TERMINAL = frozenset(
     {'terminal_resolved', 'forced_walk_to_terminal'},
 )
 
-# §8.11 难题 B diminishing-returns trigger: this many consecutive
+# §8.11 problem-B diminishing-returns trigger: this many consecutive
 # clarification-attempt turns marks the agent as stuck in an asking loop.
 CLARIFICATION_LOOP_THRESHOLD = 4
 

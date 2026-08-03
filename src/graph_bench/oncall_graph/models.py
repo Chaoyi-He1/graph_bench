@@ -264,6 +264,11 @@ class Metadata(BaseModel):
     graph_version: str = 'v1'
     created_from: str | None = None
     hitl_reviewed: bool = False
+    # Repo-grounded track: the default-branch commit of the (mirror) repo
+    # at issue-creation time, so an agent can be given a read-only checkout
+    # of what the codebase looked like when the user reported the problem.
+    # Keys: provider, repo, default_branch, commit_sha, as_of, method.
+    repo_snapshot: dict | None = None
 
 
 class Task(BaseModel):

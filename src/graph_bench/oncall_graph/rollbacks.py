@@ -28,8 +28,14 @@ from graph_bench.oncall_graph.models import Edge, Graph
 
 ROLLBACK_COMMENT = 'Auto-generated rollback: undo blind path'
 
-_ROLLBACK_INTENT = '撤销/放弃刚才这个方向的尝试，回到之前的排查状态再换思路。'  # noqa: RUF001
-_ROLLBACK_EXAMPLE = '"刚才那个改动先撤掉/这个方向先放下，我们回头看其他线索。"'  # noqa: RUF001
+_ROLLBACK_INTENT = (
+    'Undo/abandon the change just attempted and return to the previous '
+    'investigation state to take a different angle.'
+)
+_ROLLBACK_EXAMPLE = (
+    '"Let\'s revert that change for now / park this direction and look '
+    'at other leads."'
+)
 
 
 def is_rollback_edge(edge: Edge) -> bool:
@@ -73,10 +79,9 @@ def autogen_rollback_edges(graph: Graph) -> list[Edge]:
                     'approach_keywords': [
                         'rollback',
                         'undo',
-                        '回退',
-                        '撤销',
-                        '换个思路',
-                        '放弃这个方向',
+                        'revert',
+                        'different approach',
+                        'abandon this direction',
                     ],
                     'concrete_example': _ROLLBACK_EXAMPLE,
                     'required_elements_for_full_match': [

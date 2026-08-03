@@ -114,6 +114,17 @@ def harvest_case(bug_id: int, raw_dir: Path, images_dir: Path) -> dict:
             continue
     thread['images'] = images
     thread['slug'] = slug
+    # Repo-grounded track: Bugzilla (mozilla.org) cases anchor to the
+    # Firefox git mirror at bug-creation time.
+    from graph_bench.pipeline.github import (  # noqa: PLC0415
+        resolve_base_commit,
+    )
+
+    for mirror in ('mozilla-firefox/firefox', 'mozilla/gecko-dev'):
+        snap = resolve_base_commit(mirror, thread['created_at'])
+        if snap is not None:
+            thread['base_commit'] = snap
+            break
     (raw_dir / f'{slug}.json').write_text(
         json.dumps(thread, ensure_ascii=False, indent=1)
     )

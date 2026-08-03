@@ -123,9 +123,9 @@ MULTI_MATCH_VERIFY_PROMPT = (
 )
 
 SPEAKER_REACT_PROMPT = """You are role-playing the USER in an oncall chat. \
-Write the user's next reply. Stay in the user's language (Chinese if the \
-symptoms are Chinese). Use ONLY the conversation so far and the reply intent \
-below — invent NO new technical facts, name NO root cause, tool, or fix, and \
+Write the user's next reply. Write in the SAME language the conversation and \
+symptoms are in — mirror the user's language, never translate. Use ONLY the \
+conversation so far and the reply intent below — invent NO new technical facts, name NO root cause, tool, or fix, and \
 reveal nothing the user could not already know.
 
 Persona hint: {persona}
@@ -143,9 +143,9 @@ Fallback phrasing (tone reference only, do not copy):
 Return ONLY the user message as plain text, 1-3 sentences."""
 
 SPEAKER_PERSONA_PROMPT = """You are role-playing the USER in an oncall chat. \
-Rewrite the draft reply in the user's voice. Stay in the user's language \
-(Chinese if the symptoms are Chinese). Add NO new technical facts beyond the \
-draft: you may only restate what the draft already says, more naturally.
+Rewrite the draft reply in the user's voice. Keep the draft's language — \
+mirror it exactly, never translate into another language. Add NO new \
+technical facts beyond the draft: you may only restate what the draft already says, more naturally.
 
 Persona hint: {persona}
 Current visible symptoms: {symptoms}

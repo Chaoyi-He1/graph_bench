@@ -34,13 +34,13 @@ _PASSTHROUGH: frozenset[str] = frozenset(
 
 # Neutral follow-up that points ONLY at the agent's own words and adds
 # no new information (anti-leakage: never names a tool/method).
-_NEUTRAL_FOLLOWUP: str = '你说的具体怎么做？'  # noqa: RUF001
+_NEUTRAL_FOLLOWUP: str = 'How exactly would I do that?'
 
 # Default 'nothing changed' reply for a failed solution attempt.
-_NEUTRAL_NOCHANGE: str = '我试了，好像没什么变化。'  # noqa: RUF001
+_NEUTRAL_NOCHANGE: str = 'I tried it; nothing seems to have changed.'
 
 # Persona-appropriate satisfaction close.
-_SATISFIED: str = '好像 OK 了，谢谢。'  # noqa: RUF001
+_SATISFIED: str = 'Looks OK now, thanks!'
 
 
 class Speaker:
@@ -186,18 +186,19 @@ class Speaker:
         """§13.5 A/B experiment block appended to the online prompt."""
         leak = self._leak_context or {}
         parts = [
-            f'\n\n[泄漏实验设置 {leak.get("profile")}]'
-            ' 你其实完整经历过这次排障，下面是你额外知道的信息'  # noqa: RUF001
-            '（仅实验用；正式评测不会提供）。'  # noqa: RUF001
-            '你可以像看过全程的用户那样自然地利用这些知识：',  # noqa: RUF001
+            f'\n\n[Leakage-experiment setting {leak.get("profile")}]'
+            ' You actually lived through this entire troubleshooting case;'
+            ' below is the extra knowledge you hold (experiment only — never'
+            ' provided in real evaluation). You may use it naturally, like a'
+            ' user who has already seen the whole story:',
         ]
         conditions = leak.get('satisfaction_conditions') or []
         if conditions:
-            parts.append('满足条件：')  # noqa: RUF001
+            parts.append('Satisfaction conditions:')
             parts.extend(f'- {c}' for c in conditions)
         conversation = leak.get('original_conversation') or []
         if conversation:
-            parts.append('原始对话：')  # noqa: RUF001
+            parts.append('Original conversation:')
             parts.extend(f'- {line}' for line in conversation)
         return '\n'.join(parts)
 
