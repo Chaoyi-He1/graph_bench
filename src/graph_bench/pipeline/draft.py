@@ -100,6 +100,28 @@ def lint_task(
         problems.append('terminal unreachable from start_node')
     if not any(e.edge_type in ('clarification_only', 'mixed') for e in g.edges):
         problems.append('no clarification edge')
+    # Every non-terminal node needs a way forward, and the start node
+    # needs at least one canonical (non-blind) exit — otherwise every run
+    # is forced through a scored dead end, or strands entirely.
+    out_edges: dict[str, list] = {}
+    for e in g.edges:
+        out_edges.setdefault(e.from_node, []).append(e)
+    for nid in reachable:
+        node = g.nodes[nid]
+        if node.is_terminal:
+            continue
+        outs = out_edges.get(nid, [])
+        if not outs:
+            problems.append(f'non-terminal node {nid} has no outgoing edge')
+    start_outs = out_edges.get(g.start_node, [])
+    if start_outs and all(
+        e.solution is not None and e.solution.is_known_blind_path
+        for e in start_outs
+    ):
+        problems.append(
+            'start node has no canonical (non-blind) outgoing edge — '
+            'an agent making the correct first move has nothing to match'
+        )
     opening_refs = list(task.opening_images)
     other_refs: list[str] = []
     for n in g.nodes.values():

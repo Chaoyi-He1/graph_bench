@@ -36,12 +36,18 @@ def load_task(json_path: str | Path) -> Task:
     recorder, agent adapters — sees openable files.
     """
     from graph_bench.oncall_graph import Task  # noqa: PLC0415
+    from graph_bench.oncall_graph.rollbacks import (  # noqa: PLC0415
+        expand_graph_with_rollbacks,
+    )
     from graph_bench.oncall_graph.shortcuts import (  # noqa: PLC0415
         expand_graph_with_shortcuts,
     )
 
     text = Path(json_path).read_text(encoding='utf-8')
     task = Task.model_validate_json(text)
+    # Rollbacks first (escape hatches off blind aftermaths), then
+    # shortcuts; both are idempotent.
+    task.graph = expand_graph_with_rollbacks(task.graph)
     task.graph = expand_graph_with_shortcuts(task.graph)
     task.opening_images = _resolve_images(task.opening_images)
     for node in task.graph.nodes.values():

@@ -66,8 +66,12 @@ Solution: {{intent, approach_keywords[], concrete_example,
       inference_hint:null}}
 
 SEMANTIC RULES (violations make the task unusable):
-1. Node = (system_state_id, info_state). system_state_id stays "S1" while
-   the world is unchanged; the terminal node after the fix ships is "S2".
+1. Node = (system_state_id, info_state). system_state_id changes on
+   EVERY persistent change to the user's system — each version
+   installed, each landed attempt kept (S1, S1b, S1c, ...) — and the
+   terminal node after the fix ships gets its own final state.
+   Measurement-only steps (running a probe, testing a build in a throwaway
+   profile/directory that the user does not keep) do NOT change it.
    info_state grows monotonically along the canonical path, and every id
    in any node's info_state must be INTRODUCED somewhere: the start
    node's seed, a clarification on some edge, a node's volunteered_info,
@@ -105,6 +109,22 @@ SEMANTIC RULES (violations make the task unusable):
    inference, in that solution's inference_hint. This is the single most
    damaging leak class: a bisection answer that names the culprit hands
    the agent the answer key.
+4d. VERIFICATION-TIMING RULE: distinguish two kinds of verification.
+   (i) A pre-landing test of a candidate build (try build, patched
+   binary, rc) IS a legitimate measurement clarification upstream of the
+   final solution edge. (ii) A retest of a build that ALREADY CONTAINS
+   the landed fix belongs terminal-side: it must NEVER be a
+   clarification upstream of the solution edge that proposes the fix,
+   its result must NEVER appear in that solution's required_info, and
+   verification is scored via a required_element like
+   "asks_user_to_verify_on_a_build_containing_the_fix" plus a
+   satisfaction condition. Verification question patterns must not name
+   the fix ("the Nightly containing the backout" gives the answer away —
+   write "please retest in today's build and tell me what you see").
+   Never list the same id in BOTH required_info and
+   info_inferred_by_engineer (machine-validated): engineer conclusions
+   are not demandable evidence. satisfaction_conditions may only demand
+   facts the graph actually surfaces.
 4b. USER-VOICE RULE: every user_answer_in_this_oncall is in the
    reporter's own FIRST-PERSON voice — words they actually typed or
    could type. Never third-person narration ("the reporter provided...",
@@ -128,7 +148,14 @@ SEMANTIC RULES (violations make the task unusable):
    info_state gains a volunteered id recording the falsification. Never
    invent failures.
 6. The canonical path may run THROUGH aftermath nodes when the real
-   thread reached the fix only after failures.
+   thread reached the fix only after failures. EVERY non-terminal node
+   must keep a way forward (machine-linted): an aftermath node continues
+   via the canonical spine or a recovery clarification; the START node
+   must have at least one canonical (non-blind) out-edge — if the
+   thread's first move was itself the falsified attempt, also author the
+   case's real answer as an is_shortcut=true copy from the start node
+   (with shortcut_skipped_info listing the evidence it skips) so a
+   correct first proposal has an edge to match.
 7. The final solution edge targets the terminal node (is_terminal=true,
    user_perceives_resolved=true). Its required_info lists the info ids it
    depends on, graded L1 (any user states it), L2 (inferable), L3
@@ -146,11 +173,17 @@ SEMANTIC RULES (violations make the task unusable):
     evidencing that state; clarification images = attachments delivered
     with that answer. Reference each attachment at most once. Do not
     reference attachments that are not in the provided list.
-11. Keep the graph focused: 5-9 nodes. body = the opening report in the
-    reporter's voice (no future knowledge). persona_hint reflects the
-    reporter's actual expertise and style. Add 1-3
-    counterfactual_candidates on the most decision-relevant
-    clarifications.
+11. Keep the graph focused: 5-9 nodes. body = ONLY facts from the
+    opening post (and same-author follow-ups posted before anyone
+    engaged), in the reporter's voice — a fact first stated in a later
+    comment must enter via a clarification or volunteered_info instead,
+    ESPECIALLY facts the graph itself models as clarifications (a body
+    that pre-answers a clarification destroys that edge). Conversely,
+    every substantive fact the body does state must appear in
+    N0.info_state. persona_hint reflects the reporter's actual expertise
+    and style. Add 1-3 counterfactual_candidates on the most
+    decision-relevant clarifications, and attach each image to the exact
+    hook whose question it answers.
 
 Study the two example tasks (Mozilla threads annotated and leak-repaired
 by hand), then produce the SAME shape for the new thread. Example B shows

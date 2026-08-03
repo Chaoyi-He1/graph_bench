@@ -213,6 +213,20 @@ class Graph(BaseModel):
                     f'info_inferred_by_engineer)'
                 )
                 raise ValueError(msg)
+            # Engineer-inferred conclusions are not demandable evidence:
+            # an id must not be simultaneously hard-required and declared
+            # engineer-inferred, or the judge asks the agent for facts the
+            # simulated user cannot provide.
+            overlap = sorted(need & set(sol.info_inferred_by_engineer))
+            if overlap:
+                msg = (
+                    f'edge {edge.edge_id}: ids {overlap} appear in BOTH '
+                    f'required_info and info_inferred_by_engineer — '
+                    f'engineer conclusions belong only in '
+                    f'info_inferred_by_engineer/inference_hint, never in '
+                    f'hard required_info'
+                )
+                raise ValueError(msg)
         # Orphan-info check: information cannot be hand-placed into a
         # node's info_state — every id must be introduced somewhere: the
         # start node's seed, a clarification on some edge, a node's
