@@ -13,7 +13,7 @@ flowchart LR
     N1["<b>N1 concrete failures collected</b><br/><small>info: 6</small>"]
     N2["<b>N2 Mocha 10 loader interaction isolated</b><br/><small>info: 8</small>"]
     N2_x["<b>N2_x Node handler-change revert aftermath</b><br/><small>info: 9</small>"]
-    N3["<b>N3 Mocha upgrade verified (fix applied, unverified)</b><br/><small>info: 8</small>"]
+    N3["<b>N3 Mocha 11 installed (unverified)</b><br/><small>info: 8</small>"]
     N_terminal["<b>terminal resolved</b><br/><small>info: 12</small>"]
     N0 -.->|"❓ reporter_saw_dirname_undefined_in_commonjs_expected_project, affected_mocha_run_throws_err_internal_assertion"| N1
     linkStyle 0 stroke:#3b82f6,stroke-width:2px
@@ -66,7 +66,7 @@ flowchart LR
 | `N0` |  | 0 | 0 | Our CI builds consistently fail on Node.js 22.18.0 even though they worked on 22.17. The builds run again when I add `--no-experimental-stri |
 | `N1` |  | 0 | 0 | In my project, `__dirname` suddenly becomes undefined on Node.js 22.18 even though our package.json files do not specify a module type and w |
 | `N2` |  | 0 | 0 | The test suite still fails on Node.js 22.18 with its existing Mocha 10 setup, while disabling type stripping lets it run. |
-| `N2_x` |  | 1 | 0 | My Mocha/ts-node repro still fails exactly as before on my side. |
+| `N2_x` |  | 1 | 0 | Nothing has changed on my side — my repro still fails exactly as before. |
 | `N3` |  | 0 | 0 | I've upgraded Mocha to 11 in the project; I haven't re-run the full suite yet. |
 | `N_terminal` | ✓ | 0 | 0 | The project test suite runs successfully on Node.js 22.18 with the current Mocha version and without disabling Node's type-stripping feature |
 
