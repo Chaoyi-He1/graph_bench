@@ -76,6 +76,31 @@ flowchart LR
 | `N5` |  | 0 | 0 | With a 5 GB memory limit and the temporary directory set to the current directory, the 240-row probe query completes, but averages about 161 |
 | `N_terminal` | ✓ | 2 | 0 | With DuckDB v1.5.0-dev2458, the 240-row `ASOF JOIN` completes without an out-of-memory exception in about 88 seconds on average. The origina |
 
+## Machine review (audit pass, adversarially verified)
+
+Auditor verdict: **minor_issues** · 2 of 3 findings survived independent refutation.
+
+_The case is a 2.5-year DuckDB ASOF JOIN out-of-memory saga: spilling/memory_limit did not help, a DOUBLE→DECIMAL narrowing shrank the DB but then exhausted disk, an arg_max/nested-loop rewrite worked as a workaround, a small-probe native plan fixed the original 21-row probe but blew up at 240 rows, and the real fix was the 1.5-era ASOF rewrite (lower-memory sort + fine-grained parallel sorted scans), verified by the reporter at v1.5.0-dev2458. The graph is a faithful and unusually well-sequenced rendering of that arc: every node symptom, every reveal number (16 GB, 12 GB, 25%, 21 s, 32 s / 45 MB, 240 rows, 1610.677 s, 88 s) is traceable to a specific comment, the single blind path (DECIMAL) is correctly labeled, and the root cause matches the maintainer's own profiling. Defects found are fidelity-level, not scoring-inverting: one engineer-inferred plan fact is carried in hard required_info, and two approaches the thread explicitly falsified/rejected (lateral join, sorted-input hint) are not modeled as blind paths._
+
+### Confirmed findings
+
+- [ ] 🟡 **fabricated_blind_path** (low) — `graph.edges (missing blind edge out of N3 for the LATERAL-join rewrite)`
+  - claim: The reporter tried a LATERAL-join formulation of the ASOF join — the other obvious rewrite an agent would propose alongside arg_max — and it failed, but the graph contains no blind path for it.
+  - thread evidence: c21 (reporter): "Running an adapted version of my ASOF join query that instead uses a lateral join, DuckDB v1.1.2-dev38 (45559f5eeb) unfortunately runs out of temporary disk space 'memory'." (full LATERAL query quoted in that comment).
+  - suggested fix: Model a sibling blind solution edge from N3 (lateral-join rewrite, approach_keywords lateral_join/correlated_subquery/order_by_limit_1) landing on an aftermath node whose symptoms report the temporary-disk exhaustion on v1.1.2-dev38.
+  - verifier: Confirmed against c21: in the same comment where the reporter reports the arg_max rewrite ran 'in just under 21 s', he also reports running an adapted LATERAL/ORDER BY ... LIMIT 1 formulation on DuckDB v1.1.2-dev38 (45559f5eeb) that 'unfortunately runs out of temporary disk space', with the full query quoted. Unlike finding 1 this is textbook blind-path material: an attempt actually executed by th
+- [ ] 🟡 **required_but_ungettable** (low) — `e4_N3__N4.solution.required_info.L2[0] and e6_N5__N_terminal.solution.required_info.L2[0] — "arg_max_rewrite_uses_small_probe_nested_loop"`
+  - claim: A fact the graph itself declares to be engineer inference (why the arg_max rewrite works: it becomes a nested-loop join with the small table inside) is carried as hard required_info on two later solutions, even though the simulated user never states it — no clarification asks for it, it is not in N0.info_state, and it is not in any node's volunteered_info.
+  - thread evidence: The fact originates only in the maintainer's own plan analysis, c17: "The reason this is so effective is that it converts the join into a nested loop join with the small table on the inside" (followed by the physical plan). The reporter's only report back is c21: "your solution using arg_max ran in just under 21 s" — he never describes the plan. The graph agrees: e3 lists this id under info_inferred_by_engineer with inference_hint "The reporter only supplied the observed runtime."
+  - suggested fix: Drop the id from e4 and e6 required_info.L2 and list it in each edge's info_inferred_by_engineer instead (as e3 already does). Runtime grounding happens to pass via N3/N5 info_state, so this is a semantic cleanup rather than a scoring blocker.
+  - verifier: Every factual assertion checks out. 'arg_max_rewrite_uses_small_probe_nested_loop' sits in e4.solution.required_info.L2 and e6.solution.required_info.L2; the only clarification info_ids in the whole graph are sixteen_gb_vm_default_temp_spill_still_oom (e1) and expanded_probe_completes_in_1611_seconds_with_5gb_and_temp_directory (e5); N0.info_state is the three-item seed; and no node lists it in vo
+
+### Refuted claims (auditor was wrong — do not act on these)
+
+- ~~fabricated_blind_path~~: The thread's most-repeated user proposal — requiring/hinting that the reference table is already sorted so the sort can be skipped — was explicitly rejected twice by the maintainer, but the graph models no blind path for
+  - why refuted: The quotes are verbatim-accurate (c11/c12, c28/c29, plus c23 'In the future we hope to be able to leverage existing ordering metadata'), and it is true the graph never mentions ordering hints. But this does not meet the blind-path definition. is_known_blind_path marks an attempt ACTUALLY FALSIFIED in the thread (tried,
+
+
 ## Review checklist
 
 > The graph is the case's ANSWER KEY, not a transcript: edge order need

@@ -79,6 +79,20 @@ flowchart LR
 | `N4` |  | 1 | 0 | After changing the pyatv timeout from 4 seconds to 10 seconds, my initial tests play on all of my HomePods and minis. |
 | `N_terminal` | ✓ | 1 | 0 | After updating to Home Assistant 2023.5.4, scheduled playback is working on my HomePods without the manual container modification. |
 
+## Machine review (audit pass, adversarially verified)
+
+Auditor verdict: **minor_issues** · 0 of 2 findings survived independent refutation.
+
+_The case tests a long HA/apple_tv thread where scheduled MP3/TTS playback to HomePods intermittently fails with "no response to ANNOUNCE", and the true root cause is that HomePod (esp. from Standby) answers the RTSP ANNOUNCE after ~7-8s, exceeding pyatv's hard-coded 4-second HTTP timeout; the durable fix arrived via pyatv 0.11.0 landing in HA 2023.5.4. The graph is a faithful rendering of that chain: root cause, evidence ladder (entity-state screenshot -> 16.3.2 scoping -> Standby/every-other-try pattern -> 10s timeout measurement -> container workaround -> official update), and both genuinely falsified moves (stop+volume pre-steps, HomePod OS downgrade) are correctly tagged as blind paths with in-thread rejections. No mislabeled blind path, no ungettable required_info, no future-knowledge leak in the opening body, and the c1 screenshot is hooked to the right clarification. Remaining issues are fidelity-level only: a version-pinned release element on the final edge and a redundant re-proposal created by the multi-user fold._
+
+### Refuted claims (auditor was wrong — do not act on these)
+
+- ~~logistics_gate~~: [logistics_gate / low] at graph.edges[e7_N4__N_terminal].solution.required_elements_for_full_match[0] ("recommends_home_assistant_2023_5_4_or_later") — Full match on the terminal solution is gated on naming a specific Ho
+  - why refuted: The reviewer applies the gettability rule to the wrong field. The contract constrains required_info (must be a clarification info_id, in the start info_state, or volunteered) and says engineer-only inference belongs in info_inferred_by_engineer / inference_hint. That is exactly what the graph does: e7.required_info is 
+- ~~graph_shape~~: [graph_shape / low] at graph.edges[e6_N3__N4].solution vs graph.edges[e4_N2_x__N3].clarifications[1] / e5 clarifications[2] — After the multi-user fold, the canonical path forces the assistant to propose the exact contai
+  - why refuted: This is the textbook case the contract's MEASUREMENT-CLASS RULE was written for: handler-initiated probes the user executes are clarification edges 'even when the probed toggle doubles as a workaround'. So the 10-second timeout trial is correctly e4/e5 clarification (knowledge, S1 unchanged), and adopting/persisting it
+
+
 ## Review checklist
 
 > The graph is the case's ANSWER KEY, not a transcript: edge order need

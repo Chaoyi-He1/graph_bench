@@ -81,31 +81,32 @@ flowchart LR
 
 ## Machine review (audit pass, adversarially verified)
 
-Auditor verdict: **needs_rework** · 2 of 5 findings survived independent refutation.
+Auditor verdict: **minor_issues** · 3 of 4 findings survived independent refutation.
 
-_The case tests whether an agent, given an App Store Connect LC_ENCRYPTION_INFO validation failure after a Flutter 3.38.1 upgrade, can get past the folk remedy (upgrade to 3.38.2 + flutter clean) and reach the real cause: Flutter's xcode_backend `_embedNativeAssets` copies the whole build/native_assets/ios directory, so a stale simulator-only sqlite3arm64ios_sim.framework lands in the device archive. On the core answer key the graph is faithful — the blind path is genuinely falsified in the thread (c9), the root cause matches participant5's analysis (c19) confirmed by participant6 (c21) and participant4's Issue-1 classification (c71), and the reporter's own workaround confirmation (c72) is correctly modeled as verification rather than resolution. The defects are in the encoding: one satisfaction condition demands knowledge the conversation never surfaces, the engineer-side reproduction is encoded so a handler who asks the user to run it stalls, and one node's symptoms speak with engineer knowledge the reporter never had._
+_The case tests whether an agent can drive a Flutter/iOS App Store validation failure (LC_ENCRYPTION_INFO) past the seductive "just upgrade + flutter clean" brush-off to the real native-assets root cause: a simulator-only sqlite3arm64ios_sim.framework left in build/native_assets/ios and then blanket-copied into the device archive by xcode_backend.dart's _embedNativeAssets. The graph is substantively faithful: the one blind edge (3.38.2 + flutter clean) is exactly the attempt the reporter reported as still failing in c9; the root cause, the accepted workaround, and the "don't confuse this with the second, non-native-assets AOT bug" scoping all match participant4's and participant5's conclusions. Defects found are fidelity-level, not scoring-inverting: one clarification answer on the round-3 canonical branch reveals framework-specific knowledge the reporter never had at that point, and N2's info_state carries a fact that is only surfaced on the blind side branch._
 
 ### Confirmed findings
 
-- [ ] 🟠 **required_but_ungettable** (medium) — `n/a`
-  - claim: [required_but_ungettable / high] satisfaction_conditions[4] requires distinguishing the reporter's native-assets failure from the separate empty-native-assets LC_ENCRYPTION_INFO bug, which is never surfaced in the graph's info_state, clarifications, symptoms, or volunteered_info.
+- [ ] 🟠 **unfaithful_reveal** (medium) — `n/a`
+  - claim: [unfaithful_reveal / medium] e0_N0__N0b.clarifications[1].user_answer_in_this_oncall (complete_content_delivery_log_has_same_validation_error) = 'The complete log shows the same validation error, only for that framework' — dangling reference to a framework the reporter never identified, known only later from an engineer's reproduction.
   - thread evidence: None
   - suggested fix: None
-  - verifier: Confirmed against both files. The graph's complete info_id inventory is the 14 ids listed in N_terminal.info_state; none of them touches an empty build/native_assets/ios directory, a counter-app repro, the 4b6e0bdc bisect, or a second AOT/App.framework defect. The three clarification answers on e2 and the two on e4 likewise never mention it. The only place the second bug appears anywhere in the gr
-- [ ] 🟡 **symptom_contains_diagnosis** (low) — `n/a`
-  - claim: [symptom_contains_diagnosis / medium] N3.symptoms_visible[0] states the causal trigger and the archive's internal contents as a user-visible symptom, but this is an engineer's reproduction finding, not something the reporter observed.
+  - verifier: Confirmed against the thread. The reporter's only log post is c9 (2025-11-20): 'Hmmm... I am still having the same issue after updated to Flutter 3.38.2 and after do `flutter clean`' plus the raw 'Validation failed / LC_ENCRYPTION_INFO ... (ID: b9bbf70b-...)' text and a ContentDelivery.log link — no framework is named anywhere in it. participant2's earlier log (c4) likewise names none. The string 
+- [ ] 🟡 **provenance_request_vs_volunteer** (low) — `n/a`
+  - claim: [measurement_class_violation / low] N2.volunteered_info -> 'project_support_files_shared': the support files were handed over only after an explicit handler request (c13), so modeling them as volunteered gives the agent the evidence without asking.
   - thread evidence: None
   - suggested fix: None
-  - verifier: Confirmed on the text. N3.symptoms_visible[0] reads 'The archived device app contains sqlite3arm64ios_sim.framework after a simulator build has been run, and App Store validation rejects that archive.' Naming the framework and the causal precondition is not in the reporter's words: at that point in the thread his knowledge is c14 ('I am surprised you didn't get the sqlite3 error like I did... Mayb
+  - verifier: Confirmed verbatim. c13 (participant4): 'Also, could you provide your `Info.plist`, `Runner.xcodeproj`, and `pubspec.lock` to help us debug?'; the reporter complies only in c14: 'Here are the files you requested... [sup-files.zip]'. There is no unprompted disclosure of these files anywhere in the thread, so 'volunteered' misstates provenance and lets the simulated user push the archive out proacti
+- [ ] 🟡 **level_inconsistency** (low) — `n/a`
+  - claim: [level_inconsistency / low] project_dependencies_include_sqlite3_native_assets is graded L1_basic on e2_N1_x__N2 but L2_inferable on e0_N0__N0b, while e3 and e5 both list it under L2.
+  - thread evidence: None
+  - suggested fix: None
+  - verifier: Confirmed in the graph: e2.clarifications[0].level = 'L1_basic', e0.clarifications[0].level = 'L2_inferable', and both e3.required_info.L2 and e5.required_info.L2 contain the id. Confirmed in the thread that there is exactly one disclosure event behind both edges — participant1's c0 ('please share your pubspec.yaml as well') answered by the reporter in c1 with the full pubspec including sqflite_sq
 
 ### Refuted claims (auditor was wrong — do not act on these)
 
-- ~~measurement_class_violation~~: [measurement_class_violation / medium] edges[2] (e3_N2__N3): the simulator-then-device build comparison and archive inspection is a user-executable measurement but is typed solution_only, so an agent asking the user to r
-  - why refuted: The MEASUREMENT-CLASS rule covers 'handler-initiated measurements that the USER executes'. In this thread nobody asked the reporter to run that sequence, and the reporter never ran it. c15 is participant4 reporting his OWN reproduction ('Okay I was able to reproduce your issue'), and c17 is participant5 reporting his O
-- ~~graph_shape~~: [graph_shape / low] edges[0] (e1_N0__N1_x): the chain inverts thread order — N0's only out-edge is the falsified 3.38.2 + clean solution, while the thread's first handler action was the pubspec/error-log request.
-  - why refuted: The chronology in the citation is right (c0/c1 on 11-17, the 3.38.2 attempt at c8/c9 on 11-19/20), but chronological fidelity is not what the contract asks for: a task graph is a state machine answer key, not a transcript, and nothing requires out-edges to be ordered by the thread's clock. The encoding is also better s
-- ~~unfaithful_reveal~~: [unfaithful_reveal / low] edges[3].clarifications[1].user_answer_in_this_oncall: the merged user claims in the first person to have tested fixed main and 'validate and deploy my app', but the reporter never left the clea
-  - why refuted: This is the declared multi-user fold working as specified. The contract says multi-user threads are folded into ONE simulated user side and that the merge must be declared in an edge comment — e4's comment states it verbatim: 'The first answer is the original reporter's verification of the clean/config-only workaround.
+- ~~graph_shape~~: [graph_shape / medium] N2.info_state carries upgrade_3382_and_flutter_clean_still_same_error although on the canonical path N0 -> N0b -> N2 it is never asked for or volunteered; it is granted only on the blind branch, so
+  - why refuted: The mechanical observation is accurate (N0b lacks the id, e0b asks only validate_app_fails_independently_of_distribution, and N2.volunteered_info lists only project_support_files_shared), but the conclusion and the proposed fix are wrong. In the thread the reporter VOLUNTEERED that result unprompted at c9 (2025-11-20) 
 
 
 ## Review checklist

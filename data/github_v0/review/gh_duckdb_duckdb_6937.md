@@ -70,6 +70,22 @@ flowchart LR
 | `N4_x` |  | 1 | 2 | After updating to a build containing PR 6977, the conversion commands complete, but read_parquet fails with 'No magic bytes found at end of  |
 | `N_terminal` | ✓ | 1 | 1 | With v0.7.2-dev2675, the compressed CSV converts to Parquet in about 2 minutes 57 seconds, and read_parquet successfully reports all 212,363 |
 
+## Machine review (audit pass, adversarially verified)
+
+Auditor verdict: **minor_issues** · 0 of 3 findings survived independent refutation.
+
+_The case tests a long, evidence-heavy upstream performance thread: DuckDB 0.7.1 writes VARCHAR Parquet slowly, a current master build plus preserve_insertion_order=false gives a large speedup, the experimental parallel CSV reader silently drops rows on gzip input (30,559,373 vs 212,363,079), PR 6977 fixes the row loss but leaves unreadable Parquet, and #7253 (high memory / OOM) finally produces a fast, correct one-pass conversion verified by the reporter. The graph is unusually faithful: node/system-state boundaries, measurement-class edges, the blind PR-6977 attempt, all numbers, and the terminal verification all match the thread. The defects found are fidelity gaps, not scoring inversions: the last handler clarification round (c40: table-first control, parallel=False control, dataset sharing) is dropped, N4_x's symptom overgeneralizes a compressed-only failure, and one satisfaction condition mandates a query form the verified terminal run did not use._
+
+### Refuted claims (auditor was wrong — do not act on these)
+
+- ~~graph_shape~~: The thread's final evidence-gathering round is missing: the maintainer explicitly asked for two controls and for the dataset before the OOM root cause was found, but the graph jumps from the magic-bytes aftermath straigh
+  - why refuted: c40 is quoted accurately, but the thread contains NO answer to it. Between c40 (2023-04-21) and c41 (2023-04-26) the reporter posts nothing; c41's 'thanks again for the investigative work and sharing the files' shows the dataset changed hands off-thread and the maintainer debugged it himself. Encoding a clarification e
+- ~~unfaithful_reveal~~: The aftermath symptom states flatly that after the PR 6977 build 'the conversion commands complete, but read_parquet fails with No magic bytes found at end of file', dropping the diagnostically important fact — visible i
+  - why refuted: The underlying observation checks out: img3 shows -18/-14/-16/-12 (uncompressed source) each returning 212363079 while -26/-22/-24/-20 (compressed source) each error with 'No magic bytes', and img2's lower table marks exactly those four compressed rows 'can't select'. But this is not a defect under the contract. sympto
+- ~~wrong_root_cause~~: The satisfaction condition makes the SELECT-over-read_csv_auto/all_varchar form part of 'the complete fix', but the run that the terminal node encodes and that the reporter actually verified used the plain direct COPY of
+  - why refuted: The factual observation is correct — c43 verifies read_parquet('ccaed182-20.parquet')=212363079 and 2:57, and c44 shows -20 is the plain `copy 'ccaed182.csv.gz' to ...` with preserve_insertion_order=false at 2:57.35 — so the terminal timing does come from the plain form. But the condition is still a legitimate encoding
+
+
 ## Review checklist
 
 > The graph is the case's ANSWER KEY, not a transcript: edge order need
