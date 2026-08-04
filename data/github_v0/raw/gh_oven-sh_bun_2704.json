@@ -1,0 +1,203 @@
+{
+ "repo": "oven-sh/bun",
+ "number": 2704,
+ "url": "https://github.com/oven-sh/bun/issues/2704",
+ "title": "Some async code doesn't produce stack trace on error",
+ "state": "closed",
+ "labels": [
+  "bug",
+  "jsc"
+ ],
+ "reporter": "reporter",
+ "created_at": "2023-04-20T21:12:52Z",
+ "closed_at": "2025-09-15T02:01:32Z",
+ "body": "### What version of Bun is running?\n\n0.5.9\n\n### What platform is your computer?\n\nLinux\n\n### What steps can reproduce the bug?\n\n```ts\nasync function aBroken() {\n}\n\nasync function bBroken() {\n    await aBroken();\n    throw new Error(\"Oops\"); // <-- no stack trace for this throw\n}\n\nasync function cBroken() {\n    await bBroken();\n}\n\nasync function aOkay() {\n}\n\nasync function bOkay() {\n    throw new Error(\"Oops\");\n    await aOkay();\n}\n\nasync function cOkay() {\n    await bOkay();\n}\n\nasync function main() {\n    try {\n        await cBroken();\n    }\n    catch (e) {\n        console.log(e);\n\n        // >>>(bun)\n        // 1 | async function aBroken() {\n        // 2 | }\n        // 3 | \n        // 4 | async function bBroken() {\n        // 5 |     await aBroken();\n        // 6 |     throw new Error(\"Oops\");\n        //               ^\n        // error: Oops\n        //       at /.../throwy.ts:6:10\n\n        // >>>(node)\n        // Error: Oops\n        //     at bBroken (/.../throwy.js:6:11)\n        //     at async cBroken (/.../throwy.js:10:5)\n        //     at async main (/.../throwy.js:27:9)\n    }\n    try {\n        await cOkay();\n    }\n    catch (e) {\n        console.log(e);\n        // \n        // >>>(bun)\n        // 12 | \n        // 13 | async function aOkay() {\n        // 14 | }\n        // 15 | \n        // 16 | async function bOkay() {\n        // 17 |     throw new Error(\"Oops\");\n        //               ^\n        // error: Oops\n        //       at /.../throwy.ts:17:10\n        //       at bOkay (/.../throwy.ts:16:20)\n        //       at /.../throwy.ts:22:10\n        //       at cOkay (/.../throwy.ts:21:20)\n        //       at /.../throwy.ts:50:14\n\n        // >>>(node)\n        // Error: Oops\n        //     at bOkay (/.../throwy.js:17:11)\n        //     at cOkay (/.../throwy.js:22:11)\n        //     at main (/.../throwy.js:50:15)\n    }\n}\n\nmain();\n```\n\n### What is the expected behavior?\n\nExpect stack trace for the first case.\n\n### What do you see instead?\n\nStack trace is missing.\n```ts\n        // error: Oops\n        //       at /.../throwy.ts:6:10\n```\n\n### Additional information\n\nThanks!! :) (Thought that maybe this should be a feature - but the bug reporting template was more useful, so I picked that.)",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2023-10-20T13:10:11Z",
+   "body": "It seems this is a JavaScriptCode bug, if the function is async, JSC cannot produce the full stack trace.\r\n\r\nFor example:\r\n\r\n```js\r\nasync function foo() {\r\n    await Promise.resolve(null);\r\n    throw new Error(\"something went wrong\");\r\n}\r\n\r\nasync function bar() {\r\n    await foo();\r\n}\r\n\r\n(async () => {\r\n    try {\r\n        await bar();\r\n    } catch (err) {\r\n        console.log(err);\r\n    }\r\n})();\r\n```\r\n\r\nIn Bun, it logs like this:\r\n\r\n```\r\n1 | async function foo() {\r\n2 |     await Promise.resolve(null);\r\n3 |     throw new Error(\"something went wrong\");\r\n              ^\r\nerror: something went wrong\r\n      at /Users/<user>/Workspace/try-out/log.js:3:10\r\n```\r\n\r\nAnd in Safari (Console Snippets), it logs like this:\r\n\r\n```\r\nError: something went wrong\r\n(anonymous function)\r\n```\r\n\r\nThe stack trace of the async functions are all lost."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-04-01T03:19:52Z",
+   "body": "> It seems this is a JavaScriptCode bug, if the function is async, JSC cannot produce the full stack trace.\r\n\r\nThis is a significant annoyance for my application that runs using Bun. I assume this is a pretty deep issue seeing as it comes from JSC, but if someone could point towards a potential fix I'd like to help work on/support this feature. If it seems intractable due to structural reasons in JSC, that's also helpful to know and I can just workaround by adding more try/catches in userspace.\r\n\r\n"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-04-24T12:09:35Z",
+   "body": "+1 pretty annoying"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-05-14T06:27:24Z",
+   "body": "+1\r\n"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2024-06-19T03:08:00Z",
+   "body": "Here is an attempt at helping with this #11948. I don't think we will end up merging that PR though\r\n\r\nThis is something that will need to be addressed in JavaScriptCore. The TLDR is: promises don't have a way of propagating exceptions from a parent promise."
+  },
+  {
+   "author": "participant6",
+   "created_at": "2024-07-29T10:21:23Z",
+   "body": "NodeJS has the same issue of not resolving stack traces across async calls. It makes debugging a lot harder than it needs to be. But in NodeJS you can use the `bluebird` library to replace the Promise implementation with one that does allow for stack traces to include promises. Unfortunately bluebird doesn't work in bun.\r\n\r\n#11948 seems to do something similar to what bluebird does. What is the reasoning for not merging it? Would it be possible to implement this as a library for bun, similar to what bluebird does for NodeJS?"
+  },
+  {
+   "author": "ghost",
+   "created_at": "2024-08-05T18:56:46Z",
+   "body": "I don't understand, exactly, how you're supposed to develop with a webserver without this.  I think there must be something I'm missing because this doesn't have a lot of upvotes.\r\n\r\nI'm just doing a simple try/catch in my fetch method of bun.serve.  But I found even removing that try/catch didn't fix it.  There still was no stack trace."
+  },
+  {
+   "author": "participant7",
+   "created_at": "2024-09-26T10:56:28Z",
+   "body": "This needs more upvotes"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-09-26T10:57:37Z",
+   "body": "I agree\r\n"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2024-09-26T11:12:52Z",
+   "body": "We’ve actually spent a bunch of time thinking about how to fix this \r\n\r\nit’s a JSC thing\r\n\r\nthere are a few different approaches. we can’t exactly copy what v8 did for zero cost async stacktraces because JSC’s implementation of async functions is different (there’s no lingering reference to the AsyncFunction object, just the generator which has no way to get what the function name calling it was)\r\n\r\nwe could make this work for just the immediate top level task that started the current run. For example, awaiting a Bun.file(path).text() call. It would be missing any promises between that call and the previous microtask run (the previous await). This would be pretty cheap to track because it would only work for natively implemented functions, not user code. So you’d know that the error came from code that read a file, you would know where it threw before that promise maybe, but not much else in between \r\n\r\nWe could also make it only work in —inspect. we already wired up async stack traces to the inspector. It’s too expensive to do at runtime normally, but if you use the web inspector it should track everything "
+  },
+  {
+   "author": "ghost",
+   "created_at": "2024-10-19T17:23:28Z",
+   "body": "Ok I will add a design thought here:\n\nMaking it work only in inspect may be a good way to do it for now.\n\nBut having run production code, if you get some weird crash somewhere... you're going to be pretty frustrated if you can't get a stack trace if mission critical code is having crazy crashes.  Sometimes you only get a crash every once in a while so those are kind of hard to reproduce.\n\nSo even if it's on the backburner till somebody figures out how to do it, I think it will be worth the effort. I would guess there's somebody on the JSC team who could do it without too much effort? Maybe somebody could get in touch?"
+  },
+  {
+   "author": "participant8",
+   "created_at": "2024-11-19T18:43:44Z",
+   "body": "Agree that this should be a critical fix. My program is much harder for debug due to the lost context of stack trace"
+  },
+  {
+   "author": "participant9",
+   "created_at": "2024-12-13T15:07:52Z",
+   "body": "Does anyone know of a workaround while this is being internally discussed?"
+  },
+  {
+   "author": "participant10",
+   "created_at": "2025-01-05T17:36:05Z",
+   "body": "@UnexDev a lot of `console.log`s :)"
+  },
+  {
+   "author": "participant11",
+   "created_at": "2025-02-26T11:54:28Z",
+   "body": "Do we have a rough timeline on resolution for this issue? +1 on finding this pretty significant."
+  },
+  {
+   "author": "participant12",
+   "created_at": "2025-03-12T23:55:26Z",
+   "body": "I've just tested with bun 1.2.5, copy paste the reproduce code and run, the errors were thrown with correct stack trace as expected"
+  },
+  {
+   "author": "participant13",
+   "created_at": "2025-03-21T10:45:01Z",
+   "body": "> @participant12  I've just tested with bun 1.2.5, copy paste the reproduce code and run, the errors were thrown with correct stack trace as expected\n\nWhat do you mean by \"correct stack trace\"? You mean the stack trace expected from this issue (with the bug)? Because with Bun 1.2.5 too it still has the bug.\n\n![Image](https://github.com/user-attachments/assets/49f6cfc2-4175-4c15-a988-d95237d71ae1)"
+  },
+  {
+   "author": "participant14",
+   "created_at": "2025-05-05T19:23:46Z",
+   "body": "I found a small workaround for getting 1 more stack layer. Just get the stack **before** the `await` happens to see what called the function.\n\n```ts\n// this function is used in many places\nasync function mySharedFunction() {\n  console.log(\"start\", new Error().stack);\n  await Promise.resolve();\n  console.log(\"end\", new Error().stack); // index.js:5\n}\n\nasync function myRoutine() {\n  await Promise.resolve();\n  await mySharedFunction();\n}\n\nasync function main() {\n  await Promise.resolve();\n  await myRoutine();\n}\n\nmain();\n```\n\nBun output\n```\nstart Error\n    at mySharedFunction (/Users/<user>/index.js:3:28)\n    at mySharedFunction (/Users/<user>/index.js:2:32)\n    at myRoutine (/Users/<user>/index.js:10:9)\nend Error\n    at mySharedFunction (/Users/<user>/index.js:5:26)\n```\n\n\nRuntime | Engine | Do traces work after `await`? | Does the workaround work?\n-- | -- | -- | --\nBun | JavaScriptCore | ❌ No | ✅ Yes\nSafari | JavaScriptCore | ❌ No | ✅ Yes\nFirefox | SpiderMonkey | ❌ No | ✅ Yes\nChrome | V8 | ✅ Yes | Not needed\nNodeJS | V8 | ✅ Yes | Not needed\nDeno | V8 | ✅ Yes | Not needed\n\nFor context, this is the V8 output in NodeJS\n```\nstart Error\n    at mySharedFunction (file:///Users/<user>/index.js:3:24)\n    at myRoutine (file:///Users/<user>/index.js:10:9)\n    at async main (file:///Users/<user>/index.js:15:3)\nend Error\n    at mySharedFunction (file:///Users/<user>/index.js:5:22)\n    at async myRoutine (file:///Users/<user>/index.js:10:3)\n    at async main (file:///Users/<user>/index.js:15:3)\n```"
+  },
+  {
+   "author": "participant14",
+   "created_at": "2025-05-05T19:24:13Z",
+   "body": "I would love for this to get fixed in [Bun's fork of Webkit](https://github.com/oven-sh/WebKit) which contains JavaScriptCore. I'd imagine this gets in the way of bun's goal of having [100% Node.js API compatibility](https://bun.sh/docs/runtime/nodejs-apis#:~:text=100%25%20Node.js%20API%20compatibility)"
+  },
+  {
+   "author": "participant15",
+   "created_at": "2025-05-20T21:29:28Z",
+   "body": "Is this related at all to the lack of stack trace in the sql module? e.g.,\n\n```ts\nimport { sql } from 'bun';\n\nawait sql`select * from test;`;\n```\n\n```bash\n➜  bun run index.ts\nPostgresError: relation \"test\" does not exist\n    errno: \"42P01\",\n position: 15,\n     code: \"ERR_POSTGRES_SERVER_ERROR\"\n\n\nBun v1.2.12 (macOS arm64)\n```"
+  },
+  {
+   "author": "participant14",
+   "created_at": "2025-06-04T21:35:48Z",
+   "body": "@participant15 Yes, absolutely, and it makes debugging traces with drizzle more difficult too. I would invite everyone to try to see the difference between drizzle errors in bun vs node. (bun omits the entire stack trace)"
+  },
+  {
+   "author": "participant15",
+   "created_at": "2025-06-04T22:05:12Z",
+   "body": "To be honest I don't really understand how Bun was released with this behavior, considering how ubiquitous async code is now. Is anyone actually running a non-trivial production app on Bun? Unless you put try/catches literally everywhere, troubleshooting production bugs/issues in a non-trivial application with this behavior would be a bit of a nightmare. I don't understand why addressing this wouldn't be a top priority, regardless of how many upvotes it has."
+  },
+  {
+   "author": "participant16",
+   "created_at": "2025-06-05T06:21:08Z",
+   "body": "There is zero chance to avoid that issue in any bigger application. My conclusion is that enterprise developers silently quit on bun not even bothering to report it. It is enough for them to see this thread to conclude that this deal breaking feature is not going to get fixed in predictable future. I deleted my previous rant about this and switched to node a month before release because I cannot afford lack of error stack in commercial platform. The performance doesn't matter as much as maintainability. For one hour of programmers work we can run another VPS for a month - in other words it's cheaper for us to scale slow but reliable solution than to assign a dev to investigate traceless error."
+  },
+  {
+   "author": "participant14",
+   "created_at": "2025-06-07T04:47:29Z",
+   "body": "Google's [Zero-cost async stack traces design doc](https://docs.google.com/document/d/13Sy_kBIJGP0XT34V1CV3nkWya4TwYx9L3Yv45LdGB6Q/edit?tab=t.0#heading=h.9ss45aibqpw2) could be extremely useful when attempting to fix this.\n\nStephen Haberman cites it in his [excellent write-up of stack traces](https://www.draconianoverlord.com/2025/04/17/fixing-async-stack-traces.html)\n\nEdit: I'm blind and didn't see that [Jarred Sumner had already brought this up](https://github.com/oven-sh/bun/issues/2704#issuecomment-2376649456).\n> there are a few different approaches. we can’t exactly copy what v8 did for zero cost async stacktraces because JSC’s implementation of async functions is different (there’s no lingering reference to the AsyncFunction object, just the generator which has no way to get what the function name calling it was)"
+  },
+  {
+   "author": "participant14",
+   "created_at": "2025-07-09T21:52:11Z",
+   "body": "While not ideal, storing the stack in the AsyncLocalStorage works. I made a prototype to demonstrate how this can be done automatically using a `Bun.build` plugin.\n\nAdd these files to a new `bun init` root dir. We won't need `index.ts`\n<details>\n\n<summary> build-stack.ts </summary>\n\n```ts\nimport { functionStackPlugin } from './function-stack-plugin-simple';\n\n// Build the stack example with the AsyncLocalStorage plugin\nconst result = await Bun.build({\n  entrypoints: ['./stack-example.ts'],\n  outdir: './dist',\n  plugins: [functionStackPlugin],\n  target: 'bun',\n  format: 'esm',\n});\n\nif (result.success) {\n  console.log('✅ Stack example build successful!');\n  console.log('Generated files:');\n  for (const output of result.outputs) {\n    console.log(`  - ${output.path}`);\n  }\n} else {\n  console.error('❌ Stack example build failed!');\n  console.error(result.logs);\n} \n```\n</details>\n\n<details>\n\n<summary> function-stack-plugin-simple.ts </summary>\n\n```ts\nimport type { BunPlugin } from \"bun\";\n\n// Plugin to add AsyncLocalStorage-based function stack tracking\nexport const functionStackPlugin: BunPlugin = {\n  name: \"function-stack-tracker\",\n  setup(build) {\n    // Transform JavaScript/TypeScript files\n    build.onLoad({ filter: /\\.(js|ts|jsx|tsx)$/ }, async (args) => {\n      const source = await Bun.file(args.path).text();\n      \n      // Add AsyncLocalStorage setup and helper functions\n      const transformed = addFunctionStackSetup(source);\n      \n      return {\n        contents: transformed,\n        loader: args.path.endsWith('.tsx') || args.path.endsWith('.jsx') ? 'tsx' : \n                args.path.endsWith('.ts') || args.path.endsWith('.js') ? 'ts' : 'js'\n      };\n    });\n  }\n};\n\nfunction addFunctionStackSetup(source: string): string {\n  // Add AsyncLocalStorage import and setup at the top\n  const asyncLocalStorageSetup = `\n// AsyncLocalStorage for function stack tracking\nimport { AsyncLocalStorage } from 'node:async_hooks';\n\nconst functionStackStorage = new AsyncLocalStorage();\n\n// Helper function to get current stack\nexport function getFunctionStack() {\n  return [...(functionStackStorage.getStore() || [])];\n}\n\n// Helper function to print current stack\nexport function printFunctionStack() {\n  const stack = getFunctionStack();\n  console.log('Function call stack:');\n  stack.forEach((func, index) => {\n    console.log(\\`  \\${index + 1}. \\${func}\\`);\n  });\n}\n\n// Helper function to clear stack\nexport function clearFunctionStack() {\n  functionStackStorage.enterWith([]);\n}\n\n// Helper function to get stack as string\nexport function getFunctionStackString() {\n  const stack = getFunctionStack();\n  return stack.join(' -> ');\n}\n\n// Helper function to wrap a function with stack tracking\nexport function withStackTracking(funcName, fn) {\n  return async (...args) => {\n    const currentStack = functionStackStorage.getStore() || [];\n    const newStack = [...currentStack, funcName];\n    return functionStackStorage.run(newStack, () => fn(...args));\n  };\n}\n\n// Helper function to track function entry\nexport function trackFunctionEntry(funcName) {\n  const currentStack = functionStackStorage.getStore() || [];\n  const newStack = [...currentStack, funcName];\n  functionStackStorage.enterWith(newStack);\n}\n\n// Helper function to track function exit\nexport function trackFunctionExit() {\n  const currentStack = functionStackStorage.getStore() || [];\n  if (currentStack.length > 0) {\n    const newStack = currentStack.slice(0, -1);\n    functionStackStorage.enterWith(newStack);\n  }\n}\n\n`;\n\n  return asyncLocalStorageSetup + source;\n} \n```\n</details>\n\n<details>\n\n<summary> stack-example.ts </summary>\n\n```ts\n// Example showing how to use AsyncLocalStorage stack tracking\n\n// The plugin will automatically add the helper functions\n// We can use them to track function calls manually\n\nasync function mySharedFunction() {\n  // Track function entry\n  trackFunctionEntry('mySharedFunction');\n  \n  console.log(\"start\", new Error().stack);\n  await Promise.resolve();\n  console.log(\"end\", new Error().stack);\n  \n  // Print current stack\n  printFunctionStack();\n  \n  // Track function exit\n  trackFunctionExit();\n}\n\nasync function myRoutine() {\n  // Track function entry\n  trackFunctionEntry('myRoutine');\n  \n  await Promise.resolve();\n  await mySharedFunction();\n  \n  // Print current stack\n  printFunctionStack();\n  \n  // Track function exit\n  trackFunctionExit();\n}\n\nasync function main() {\n  // Track function entry\n  trackFunctionEntry('main');\n  \n  await Promise.resolve();\n  await myRoutine();\n  \n  // Print final stack\n  console.log('Final stack:', getFunctionStackString());\n  \n  // Track function exit\n  trackFunctionExit();\n}\n\n// Example with wrapped functions\nconst wrappedFunction = withStackTracking('wrappedFunction', async () => {\n  console.log(\"Inside wrapped function\");\n  printFunctionStack();\n  await Promise.resolve();\n});\n\nasync function runExamples() {\n  console.log('=== Manual tracking example ===');\n  await main();\n  \n  console.log('\\n=== Wrapped function example ===');\n  await wrappedFunction();\n  \n  console.log('\\n=== Current stack after all examples ===');\n  printFunctionStack();\n}\n\nrunExamples(); \n```\n</details>\n\nOnce the files are in the root dir, run the following commands\n\n```sh\nbun run build-stack.ts\nbun run dist/stack-example.js \n```\n\nThe output displays that it tracked the functions like this, after awaiting it didn't lose track of the stack.\n```\nFunction call stack:\n  1. main\n  2. myRoutine\n  3. mySharedFunction\nFunction call stack:\n  1. main\n  2. myRoutine\n  3. mySharedFunction\nFinal stack: main -> myRoutine\n```\n\nThe standard output shows that Error.stack is\n```\nstart Error\n    at mySharedFunction (/Users/<user>/development/symplsoft/experiments/bun-promise-plugin/hello/dist/stack-example.js:43:33)\n    at mySharedFunction (/Users/<user>/development/symplsoft/experiments/bun-promise-plugin/hello/dist/stack-example.js:41:33)\n    at myRoutine (/Users/<user>/development/symplsoft/experiments/bun-promise-plugin/hello/dist/stack-example.js:52:25)\nend Error\n    at mySharedFunction (/Users/<user>/development/symplsoft/experiments/bun-promise-plugin/hello/dist/stack-example.js:45:31)\n```\n"
+  },
+  {
+   "author": "participant17",
+   "created_at": "2025-07-09T22:13:33Z",
+   "body": "@participant5 do you have a better idea? cause otherwise I'm gonna run with this ☝️ "
+  },
+  {
+   "author": "participant5",
+   "created_at": "2025-07-22T23:28:20Z",
+   "body": "This will be fixed soon by https://github.com/WebKit/WebKit/pull/48314"
+  },
+  {
+   "author": "participant18",
+   "created_at": "2025-07-25T11:41:26Z",
+   "body": "Very timely.\n\nLanded here after spending a week investigating Deno→Bun migration for our production app, and very narrowly escaping debugging hell for an app bug, because of an adapter layer which made it easy to switch between engines and debug in Deno.\n\n(The problem involved an async / await chain. Deno traces the precise 15 lines of JS code, while Bun traces 2, with little hope of finding the cause.)\n\nVery glad to hear that a fix is coming. Would be nice to know an ETA."
+  },
+  {
+   "author": "participant19",
+   "created_at": "2025-07-27T18:11:29Z",
+   "body": "Ok, I have an idea.\n\nBased on my understanding, Bun has a fork of JavascriptCore where they are adding cool new features.\n\nBut I think for version 2, we need to have our own Javascript interpreter. There are three key things it would need:\n\n- static type optimization (for typescript - free performance)\n- goroutines (would require a bit more syntax but necessary for any modern backend)\n- python compatibility\n\nI have started an experimental repo to create a JIT for typescript that is faster than V8 due to the ability to use raw TS types. I think also we need it to support slice syntax so that JS can stay relevant in the age of AI.\n\nPlease take a look at this repo and let me know if you think that it would be something you all would be interested in applying to Bun.\n\nhttps://github.com/participant19/ultrascript\n\nI haven't started python compatibility, but I think it should be able to import python files and pip modules for max compatibility.\n\nI wrote it in a couple weeks using Claude Code, so it's pretty easy to keep going and update.\n"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2025-09-15T02:01:32Z",
+   "body": "Fixed in #22517 \n```js\n❯ bun a.js\n1 | async function aBroken() {\n2 | }\n3 |\n4 | async function bBroken() {\n5 |     await aBroken();\n6 |     throw new Error(\"Oops\"); // <-- no stack trace for this throw\n                  ^\nerror: Oops\n      at bBroken (/Users/<user>/Code/site/a.js:6:15)\n      at async cBroken (/Users/<user>/Code/site/a.js:10:11)\n      at async main (/Users/<user>/Code/site/a.js:27:15)\n\n12 |\n13 | async function aOkay() {\n14 | }\n15 |\n16 | async function bOkay() {\n17 |     throw new Error(\"Oops\");\n                   ^\nerror: Oops\n      at bOkay (/Users/<user>/Code/site/a.js:17:15)\n      at bOkay (/Users/<user>/Code/site/a.js:16:21)\n      at cOkay (/Users/<user>/Code/site/a.js:22:11)\n      at cOkay (/Users/<user>/Code/site/a.js:21:21)\n      at main (/Users/<user>/Code/site/a.js:50:15)\n```"
+  },
+  {
+   "author": "ghost",
+   "created_at": "2025-09-15T02:32:22Z",
+   "body": "@participant5 ... my favorite programmer!"
+  },
+  {
+   "author": "participant18",
+   "created_at": "2025-09-15T14:12:41Z",
+   "body": "The fix in 1.2.22 is nice and very helpful, but still slightly incomplete: it doesn't show callsites in module root. Repro:\n\n```js\nasync function one() {await two()}\n\nasync function two() {await three()}\n\nasync function three() {\n  await four()\n  throw Error(`some_error`)\n}\n\nasync function four() {}\n\nawait one()\n```\n\nOutput in Bun 1.2.22; module root line is missing:\n\n```\n2 |\n3 | async function two() {await three()}\n4 |\n5 | async function three() {\n6 |   await four()\n7 |   throw Error(`some_error`)\n            ^\nerror: some_error\n      at three (<path>:7:9)\n      at async two (<path>:3:29)\n      at async one (<path>:1:29)\n```\n\nOutput in Deno; module root line is present:\n\n```\nerror: Uncaught (in promise) Error: some_error\n  throw Error(`some_error`)\n        ^\n    at three (file://<path>:7:9)\n    at async two (file://<path>:3:23)\n    at async one (file://<path>:1:23)\n    at async file://<path>:12:1\n```\n\nThis has a small effect on testing. Admittedly the severity is minor."
+  },
+  {
+   "author": "participant20",
+   "created_at": "2025-09-15T14:16:09Z",
+   "body": "@participant18 if you have an actual awaited thing it should work (ie `await Bun.sleep(1)`)"
+  },
+  {
+   "author": "participant18",
+   "created_at": "2025-09-15T14:24:48Z",
+   "body": "@participant20 Apologies but I don't get what you mean by that. You can see in the repro that we do await in module root (`await one()`). Deno successfully registers that line, and Bun does not."
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "oven-sh/bun",
+  "default_branch": "main",
+  "commit_sha": "6d5378566afc723e9c32b8059320fe1a8c91d354",
+  "as_of": "2023-04-20T21:12:52Z",
+  "method": "github_commits_until"
+ },
+ "images": [
+  {
+   "where": "c16",
+   "source_url": "https://github.com/user-attachments/assets/49f6cfc2-4175-4c15-a988-d95237d71ae1",
+   "file": "gh_oven-sh_bun_2704_img0.png"
+  }
+ ],
+ "slug": "gh_oven-sh_bun_2704"
+}

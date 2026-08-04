@@ -1,0 +1,302 @@
+{
+ "repo": "micropython/micropython",
+ "number": 7479,
+ "url": "https://github.com/micropython/micropython/issues/7479",
+ "title": "USB transmission gradually slowing down (in sawtooth pattern)",
+ "state": "closed",
+ "labels": [
+  "port-rp2"
+ ],
+ "reporter": "reporter",
+ "created_at": "2021-07-01T10:46:17Z",
+ "closed_at": "2021-07-08T03:34:58Z",
+ "body": "I am trying to (mis)use Rpi Pico as a scientific data acquisition platform, imagine a 500 kSpS cheap oscilloscope. It is easy to set up communication with μPython: writing data to stdout on the Rpi Pico, and reading data from /dev/ttyACM0 (or other quasi-serial port)  in the computer. \r\n\r\nIts direct USB support would promise decent speed up to 1 MB/s, which would be just fine for the task. In practice, there are tighter bottlenecks described below. I made a little script for Rpi Pico, flooding the USB with data, and measuring the speed.\r\n\r\nMy code for μPython in Rpi Pico:\r\n\r\n```python\r\n    from machine import Pin\r\n    import time, machine, usys, gc, micropython \r\n    machine.freq(125000000*2)\r\n\r\n    LED = machine.Pin(25, machine.Pin.OUT)\r\n    LED.value(1); time.sleep(.5); LED.value(0) # no resets detected\r\n\r\n    while True:\r\n        for a in range(1000):\r\n            try:\r\n                usys.stdout.buffer.write('x'*10000)  \r\n            except:\r\n                LED.value(1); time.sleep(.2); LED.value(0) # no errors detected\r\n        time.sleep(1) # try allowing USB stack to flush (no effect on later speed)\r\n```\r\n\r\n\r\n\r\n\r\nMy code to receive the data in the computer:\r\n\r\n```python\r\n    #!/usr/bin/python3  \r\n    import sys, serial, time\r\n    port = serial.Serial('/dev/ttyACM0') \r\n    c = 0\r\n    while True: \r\n        t0=time.time()\r\n        raw = port.read(10000)\r\n        t1= time.time()\r\n        tooktime = t1-t0\r\n        print(f'{c:5d} receiving 10 kB now took', tooktime )\r\n        c+=1\r\n```\r\n\r\n**First observation** is that on Rpi Pico clocked at 250 MHz, one has to avoid using ```print()``` as it is slow (some 30−50 kB/s). Calling ```usys.stdout.write()``` is better (up to 200 kB/s), but ```usys.stdout.buffer.write()``` can initially transmit 10kB in 0.015 s, getting close to the USB \"Full Speed\" throughput limit (i.e. ~600 kB/s). So I happily use the latter function for data. \r\n\r\n**Second observation**: The trouble is that this speed drops continously - after few seconds of transmission, transmitting 10kB takes 0.050 s (i.e. only 200 kB/s). Then suddenly the transmit time returns to its initial value and starts growing linearly again. This repeats with the transmit times forming a sawtooth pattern.\r\n\r\nHere I paste part of the printout on my computer where the drop in transmit time happened:\r\n\r\n    ...\r\n    116 receiving 10 kB now took 0.051924705505371094\r\n    117 receiving 10 kB now took 0.05239605903625488\r\n    118 receiving 10 kB now took 0.05241680145263672\r\n    119 receiving 10 kB now took 0.05560755729675293\r\n    120 receiving 10 kB now took 0.04527783393859863\r\n    121 receiving 10 kB now took 0.015183687210083008\r\n    122 receiving 10 kB now took 0.015230655670166016\r\n    123 receiving 10 kB now took 0.01515960693359375\r\n    124 receiving 10 kB now took 0.015021562576293945\r\n    125 receiving 10 kB now took 0.015263795852661133\r\n    ...\r\n\r\n\r\nComplementary observations: \r\n\r\n**2a)** Without overclocking, Rpi Pico  running at 125 MHz, the transmit speeds are roughly half of what I wrote above, so the Rpi Pico is the bottleneck here. \r\n\r\n**2b)** When transmit speed goes high, I thought the chip resets, but it is not the case (LED does not blink). \r\n\r\n**2c)** If I put a random ```time.sleep(1)``` after some hundreds of transmission cycles, the transmit speed does not change much after the delay and continues to grow steadily when delay expires (so it is probably not a USB buffer error).\r\n\r\n**2d)** Between transmitting cycles, I observed no significant changes in the ```micropython.mem_info()``` printout. So it is probably not a memory issue either.\r\n\r\n**2e)** The period of main transmission loop (as measured on oscilloscope) is proportional to the time required to receive data in computer. So no packets are probably dropped. \r\n\r\nAchieving fast USB transmission is a generally useful task and micropython on Rpi Pico does surprisingly well. At least initially. Can anybody give me a hint to get constantly high USB throughput, please?",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2021-07-01T11:06:10Z",
+   "body": "Have you measured the temperatur of your pico while doing so? Is it more steady when not overclocked?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2021-07-01T11:09:52Z",
+   "body": "@participant1 Thanks for the tip, but surface temperature is well below 35 °C all the time. No throttling expected, even when overclocking. "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2021-07-01T11:14:50Z",
+   "body": "I could also plot the sawtooth pattern... \r\n\r\n![image](https://user-images.githubusercontent.com/511950/124115561-3d9eb100-da6e-11eb-82c6-179dcc7295a2.png)\r\n"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2021-07-01T11:24:05Z",
+   "body": "One critical line slowing down the process is this one:\r\n```\r\n                usys.stdout.buffer.write('x'*10000)  \r\n```\r\nIt creates the data object to be sent every time it is called. That will lead to garbage collectikon after a few iterations. It is more effective to create that data buffer beforehand. like:\r\n```\r\n    data = b'x'*10000\r\n    while True:\r\n        for a in range(1000):\r\n            try:\r\n                usys.stdout.buffer.write(data)  \r\n            except:\r\n                LED.value(1); time.sleep(.2); LED.value(0) # no errors detected\r\n        time.sleep(1) # try allowing USB stack to flush (no effect on later speed)"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2021-07-01T12:00:25Z",
+   "body": "@participant2 Thanks, this improved speed by few %. \r\n\r\nInterestingly, the speed cycling occurs at the same period with regards to amount of data. I am now quite confident the cycling occurs at each 418 chunks, i.e. 4180 kB transmitted. \r\n\r\n![beforehand_image_by chunk](https://user-images.githubusercontent.com/511950/124120996-a9841800-da74-11eb-9671-00d5f6ef301c.png)\r\n"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2021-07-01T12:09:23Z",
+   "body": "At least there seems not much difference between sys.stdout and sys.stdout.buffer any more, unless you changed the plotting style. Can you test, whether these delays are caused by the RP2 or by your PC?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2021-07-01T12:20:25Z",
+   "body": "@participant2 Sorry for confusing you. In the second picture above, both datasets used ```usys.stdout.buffer.write()```, but the red was with a string prepared beforehand as you suggested. ```usys.stdout.write()``` is rather slow and I don't try it any more. \r\n\r\nNow I compared clock speeds. The delays are roughly doubled when Rpi runs at 125 MHz: \r\n\r\n![clockspeed_by-chunk](https://user-images.githubusercontent.com/511950/124124101-5744f600-da78-11eb-8dfa-a41c0540bd9a.png)\r\n\r\n\r\nSo I guess the bottleneck is somewhere in Rpi - not sure whether it is micropython or the USB interface. \r\n\r\nWhat puzzles me the most is that we can see a repeated, almost fractal-like pattern on the speed curves. Like a function of data transmitted modulo 4180 kB. But this pattern does *not* scale exactly with the clock speed, though some features are maintained between 125 and 250 MHz."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2021-07-01T12:56:03Z",
+   "body": "I also noticed that the transmission speed does not depend on the size of ```data```, be it 100 bytes or 10 kB. (Naturally there is some limit that entirely clogs USB of Rpi Pico and requires ```flash_nuke.uf2```, so I didn't test larger chunks than 50 kB.)"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2021-07-02T13:30:48Z",
+   "body": "It might be worth trying this with the latest (stable) pico-sdk and tinyusb, see #7474."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2021-07-02T14:24:37Z",
+   "body": "@participant3 I agree - either I could report the bug persists in the latest μP version (which is good), or I would find that it is no more there (which is even better). \r\n\r\nSo far I used ```rp2-pico-20210618-v1.16.uf2```, but on the [download page](https://micropython.org/download/rp2-pico/) I can see there is a fresh version. Cannot wait to try it out!"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2021-07-02T14:40:51Z",
+   "body": "No change here with MicroPython v1.16-48-g0b3332c8e. Times between 0.0126 and 0.084 seconds."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2021-07-02T15:15:06Z",
+   "body": "@participant2 I can confirm, no change whatsoever. \r\n\r\n![image](https://user-images.githubusercontent.com/511950/124294581-26d48900-db58-11eb-95ee-2a223ba59e58.png)\r\n\r\nWhy is the sawtooth repeated each 418 or 419 chunks? Why are there 10 steps? \r\n\r\nNote these curves were measured today on a different computer, and they sligtly differ in shape from the previous ones."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2021-07-02T15:57:49Z",
+   "body": "I also changed the computer script so that it receives 1kB chunks instead of 10kB. To make it comparable, I normalized the time to 10kB also in this case. \r\n\r\nWe can see finer structure of the delays, perhaps some mismatch of RP2 and computer loops. But the general trend of transmission slowing down in still obvious. \r\n\r\n![finer](https://user-images.githubusercontent.com/511950/124300946-6652a380-db5f-11eb-972f-d8176c2529d6.png)\r\n"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2021-07-02T16:04:28Z",
+   "body": "> I am trying to (mis)use Rpi Pico as a scientific data acquisition platform, imagine a 500 kSpS cheap oscilloscope.\r\n\r\nHave you looked at https://github.com/raspberrypi/pico-examples/tree/master/pio/logic_analyser ?\r\nUsing a compiled language (like C) instead of an interpreted language (like MicroPython) will be faster, and you should also see more \"consistent\" performance, as there's no memory garbage-collection being done in the background."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2021-07-02T16:14:42Z",
+   "body": "@participant4 Sure I did. It would be interesting to see if the problem persists - AFAIK the logic analyser uses the ```tinyusb``` for communication, doesn't it? And it uses ```printf()``` for transmission of results over USB, so perhaps it could be burdened by similar trouble as the (C-compiled) micropython code. \r\n\r\nThere are many options to do the job. Every project is a tradeoff between spending time to try out different ways, and between spending time to fix one chosen way. \r\n\r\nFor example, this week I thought micropython on RP2 could be the right choice. Maybe it is not. \r\n\r\nThe previous two weeks I wasted time almost finishing my project in compiled C for ESP32 -- only to find out its USB communication is slow (limited to 921600 baud or less on some modules) and not reliable (spitting random 0xFF bytes in the data stream). Too bad I found it so late, now I believe that ESP32 is not suitable for serious projects involving USB connection. \r\n"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2021-07-02T16:46:09Z",
+   "body": "I'm sure @kilograham and @participant7 would be very appreciative of any stress-testing you can give to the USB stack :grinning: \r\n\r\nAnd as a bonus, you get to narrow down whether the problem is with MicroPython or with TinyUSB :wink: \r\nHopefully at least _some_ of your C code that you wrote for ESP32 will be usable (with tweaks) on RP2040? Good luck."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2021-07-02T17:33:09Z",
+   "body": "Now I must admit that the problem seems to be beyond my hacking skills, and beyond my time dedicated for making the RP2/computer communication fast. \r\n\r\nAnyway, initial data rate is 10kB in 0.012 s, that is, 830 kB/s. This is very promising, but after transmitting 320 kB, the speed starts dropping as shown above. This must be some software trouble and I still believe more skilled coders will be able to find its cause. \r\n\r\nWhile currently I cannot dig through micropython + TinyUSB codebase, I have few ideas that might inspire somebody:\r\n \r\n * Since we observe some unknown event that makes the speed high again every 4180 kB transmitted, couldn't this mysterious event be activated more often? For instance, is there an equivalent of ```sys.stdout.flush()``` in micropython? (I observed ```sys.stdout.close()``` after ```write()``` changed nothing.)\r\n * Similar issue is mentioned here: https://github.com/participant7/tinyusb/issues/920 Is the call to ```usys.stdout.buffer.write()``` making any data copy?\r\n * Does the slowdown manifest itself in the TinyUSB speed tests proposed here: https://github.com/participant7/tinyusb/issues/189 ?\r\n\r\n   "
+  },
+  {
+   "author": "participant5",
+   "created_at": "2021-07-02T17:43:33Z",
+   "body": "I have seen things run slower due to the heap filling up and finding a free block taking longer. Once garbage collection happens, the cycle starts over. Here is a non-USB example of an analogous situation: https://github.com/adafruit/circuitpython/issues/2602. Also see a PR that ameliorated this to some extent: https://github.com/adafruit/circuitpython/pull/2614, with comments by @jimmo."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2021-07-02T18:12:24Z",
+   "body": "@participant5 I also guessed this will be the correct explanation, but ...\r\n * it is not clear to me why speed cycling occurs each 4180 kB transmitted (i.e. 20× more data than the RAM in RP2 is), rather than being dependent on the _number_ of calls instead,\r\n * why calling ```gc.collect()``` in each cycle has no effect on the speed cycling (only slows the transmission down by a constant, as I checked now),\r\n * why would any extra object be accumulated on heap, even in the following code which still shows the trouble:\r\n\r\n```python\r\ndata = b'x'*1000\r\nbuf = usys.stdout.buffer\r\nwhile True:\r\n    buf.write(data)  \r\n    gc.collect()\r\n```\r\n \r\nStill, while this example allocates no extra object on heap explicitly, this garbage would have to be created somewhere in the implementation of ```usys.stdout.buffer.write()```. \r\n\r\nIs it correct? Can anybody more knowledgeable than me review the code for garbage-prone allocation?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2021-07-03T07:46:44Z",
+   "body": "I experimented further, changing the size of ```data``` down to few bytes. Like this. \r\n\r\n```python\r\nfrom machine import Pin\r\nimport time, machine, usys, gc, micropython \r\nmachine.freq(125000000*2)\r\n\r\ndata = b'x'*14\r\nbuf = usys.stdout.buffer\r\nwhile True:\r\n    buf.write(data)  \r\n```\r\n\r\nNaturally transmitting in such short bursts slows the transmission down due to overhead of the program loop. What interested me more is its impact on the sawtooth function. \r\n\r\n1. Transmitting byte arrays of 13bytes or shorter makes the sawtooth repeat more frequently (w r t the total amount of bytes transmitted). \r\n2. Transmitting byte arrays between 14 and some 30 bytes shows a very similar sawtooth as previously used large chunks of 10kB, but there are no more steps.\r\n\r\n![image-1](https://user-images.githubusercontent.com/511950/124347192-917ed680-dbe3-11eb-9219-3dfee897b918.png)\r\n\r\n\r\nCan this inspire somebody? "
+  },
+  {
+   "author": "participant4",
+   "created_at": "2021-07-03T09:40:53Z",
+   "body": "@reporter Do you have an FTDI232 or PL2303 or similar USB-UART adaptor? Might be interesting to repeat your experiment, but sending the data over the RP2040's UART instead of USB? Obviously the maximum data-rate will be _much_ reduced, but it would be interesting to see if it stays constant or shows a similar slowdown over time?"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2021-07-03T10:40:32Z",
+   "body": "Using UART, the pattern looks different. For a 10000 byte block at 921600 baud it oscillates between 0,10767 and  0,1131 seconds. Doubling the baud rate reduces the time by two, but the pattern stays.\r\nEdit. The peak appears at every 6 transmissions.\r\n\r\n![uart_send](https://user-images.githubusercontent.com/12476868/124351589-8b94ef80-dbfb-11eb-88f3-53b9c56281c4.png)\r\n\r\nEdit2: Changing the data block size to 100 or 10 and removing the sleep(1) does not change the times or pattern at all."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2021-07-03T20:40:28Z",
+   "body": "Using [online tips](https://www.tomshardware.com/how-to/program-raspberry-pi-pico-with-arduino-ide) and getting inspired from the \"Adafruit TinyUSB/CDC/cdc_multi\" example in Arduino studio, it is not hard to flood TinyUSB from C, either:\r\n\r\n```C\r\n#include <Adafruit_TinyUSB.h>\r\n#include \"pico/stdlib.h\"\r\n\r\nvoid setup() {\r\n  set_sys_clock_khz(250000, false);\r\n  Serial.begin(115200);\r\n}\r\n\r\nvoid loop() {\r\n  Serial.printf(\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\");\r\n}\r\n```\r\n\r\nAnd the result is beatiful, sustained throughput at 770 kB/s for this simple C program:\r\n\r\n![image-3](https://user-images.githubusercontent.com/511950/124366326-3b477d00-dc4f-11eb-8995-38cc1681bd5b.png)\r\n\r\n\r\nSo there is either a bug in micropython, its interface to TinyUSB, or in the way I am using it to transmit data to computer. "
+  },
+  {
+   "author": "participant6",
+   "created_at": "2021-07-03T21:54:15Z",
+   "body": "Does MicroPython have any profiling tools we could use to figure out where it’s spending time?"
+  },
+  {
+   "author": "participant7",
+   "created_at": "2021-07-04T16:44:17Z",
+   "body": "Could you try to increase `CFG_TUD_CDC_EP_BUFSIZE` to larger value such as 128/256 to see if it improves the speed. The latest tinyusb has also implemented USB double buffered for rp2040 (IN only) so it may help as well https://github.com/participant7/tinyusb/pull/891 . There is more approach mentioned in my github issue, though, it may need to take a bit of time to write it in portable way to work with all mcus (therefore takes time).\r\n\r\nNote CFG_TUD_CDC_RX_BUFSIZE/CFG_TUD_CDC_TX_BUFSIZE` may also need to be increased as well. "
+  },
+  {
+   "author": "participant2",
+   "created_at": "2021-07-04T20:18:16Z",
+   "body": "`CFG_TUD_CDC_RX_BUFSIZE/CFG_TUD_CDC_TX_BUFSIZE` were already at 256. Setting `CFG_TUD_CDC_EP_BUFSIZE`to 256 as well improves the speed, in that the 10kB times then vary between 0.09 and 0.19 seconds. Setting all buffer sizes to 512 moves the range further down to 0.08 to 0.13 seconds.\r\nThe PR you mention seems not merged into MicroPyhton."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2021-07-05T05:22:19Z",
+   "body": "Using the Pico & PC code in the first post of this issue, I was able to reproduce the \"saw tooth\" plots.\r\n\r\nUsing PR #7474 seems to fix the problem completely, I can get a sustained ~7Mbits/sec transfer rate from Pico to PC.  I'll merge that PR shortly."
+  },
+  {
+   "author": "participant7",
+   "created_at": "2021-07-05T05:52:43Z",
+   "body": "> Using the Pico & PC code in the first post of this issue, I was able to reproduce the \"saw tooth\" plots.\r\n> \r\n> Using PR #7474 seems to fix the problem completely, I can get a sustained ~7Mbits/sec transfer rate from Pico to PC. I'll merge that PR shortly.\r\n\r\nThat is great to hear :tada: :tada: "
+  },
+  {
+   "author": "participant3",
+   "created_at": "2021-07-05T05:57:41Z",
+   "body": "> That is great to hear\r\n\r\nI'm not sure where the issue was and what the fix was but it should be somewhere in the pico-sdk and-or tinyusb.  I don't have time to do a git-bisect on these to find out :slightly_smiling_face: "
+  },
+  {
+   "author": "participant7",
+   "created_at": "2021-07-05T06:10:05Z",
+   "body": "yeah, to be honest, tinyusb isn't speed optimized at the moment. Since I am more focused on the portability. I am glad that micropython could pull off a great throughput 7Mbps which will give me a lot more time to work on the speed feature :) "
+  },
+  {
+   "author": "participant2",
+   "created_at": "2021-07-05T08:14:23Z",
+   "body": "Data rate confirmed. Setting CFG_TUD_CDC_EP_BUFSIZE to 256 as suggested by @participant7 increases the data rate further by 35% to about 9.5 Mbit/sec."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2021-07-05T08:28:34Z",
+   "body": "> Setting CFG_TUD_CDC_EP_BUFSIZE to 256 as suggested by @participant7 increases the data rate further by 35% to about 9.5 Mbit/sec.\r\n\r\nSince the rp2040 has quite a bit of RAM it's probably worth making this the default (or at least bump it to 128)."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2021-07-05T08:33:24Z",
+   "body": "> > Setting CFG_TUD_CDC_EP_BUFSIZE to 256 as suggested by @participant7 increases the data rate further by 35% to about 9.5 Mbit/sec.\r\n> \r\n> Since the rp2040 has quite a bit of RAM it's probably worth making this the default (or at least bump it to 128).\r\n\r\nActually, testing this (using 256 for CFG_TUD_CDC_EP_BUFSIZE) shows no difference in data rate (for Pico -> PC) for me.  @participant2 what test script to you use to get 9.5Mbit/sec?"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2021-07-05T09:01:15Z",
+   "body": "I'm using stripped down versions of the initial script:\r\nSend:\r\n```\r\nimport time, machine, usys\r\nmachine.freq(250_000_000)\r\n\r\ndata = b'x'*10000\r\nwhile True:\r\n    for a in range(1000):\r\n        usys.stdout.buffer.write(data)  \r\n```\r\nReceive:\r\n```\r\n#!/usr/bin/python3  \r\nimport sys, serial, time\r\nport = serial.Serial('/dev/ttyACM0')\r\nc = 0\r\nwhile True: \r\n    t0=time.time()\r\n    raw = port.read(10000)\r\n    t1= time.time()\r\n    tooktime = t1-t0\r\n    print(f'{c:5d} receiving 10 kB now took', tooktime )\r\n    c+=1\r\n```"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2021-07-05T19:00:47Z",
+   "body": "Good job, everybody! The remaining task is to provide micropython newbies (like me) an official tutorial for interfacing with the computer over USB. As a matter of fact, the popular and seemingly preferred way, ```print()```, is lamentably slow. \r\n\r\nRemember the words of a prophet:\r\n\r\n    There should be one-- and preferably only one --obvious way to do it.\r\n    Explicit is better than implicit.\r\n    In the face of ambiguity, refuse the temptation to guess.\r\n"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2021-07-06T00:43:43Z",
+   "body": "> I'm using stripped down versions of the initial script:\r\n\r\nOk, thanks.  Using that I can also achieve around 9MBit/sec (with 256 endpoint size).  And I get a similar rate using the same test on a PYBD-SF2."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2021-07-06T01:33:33Z",
+   "body": "> As a matter of fact, the popular and seemingly preferred way, `printf()`, is lamentably slow.\r\n\r\n`print()` was slow because it was not optimised.  #7491 makes it much faster, almost as fast as `sys.stdout.buffer.write`.\r\n\r\nBut note that `print()` is only going to be fast for printing strings (ascii and/or utf8).  If you need to print raw byte data then `sys.stdout.buffer.write` is the way to do it (even in CPython)."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2021-07-06T01:37:59Z",
+   "body": "> Since the rp2040 has quite a bit of RAM it's probably worth making this the default\r\n\r\nSee #7492 for this."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2021-07-06T09:55:00Z",
+   "body": "> But note that print() is only going to be fast for printing strings (ascii and/or utf8). If you need to print raw byte data then sys.stdout.buffer.write is the way to do it (even in CPython).\r\n\r\nThere's also the obvious difference that `print` has to do any variable interpolations that might be necessary (e.g. `print(\"Value is %d\" % value)`) whereas `sys.stdout.buffer.write` can just squirt out the raw data as fast as possible without having to check for special-characters first.\r\n\r\nBut good to hear that you've managed to speed up `print()` anyway :slightly_smiling_face: "
+  },
+  {
+   "author": "participant3",
+   "created_at": "2021-07-07T01:21:46Z",
+   "body": "> There's also the obvious difference that `print` has to do any variable interpolations that might be necessary\r\n\r\nThat's not technically true: `print()` itself doesn't do the interpolations, it's just passed a pre-formatted string.  And one could actually do `sys.stdout.buffer.write(b\"%d\" % 123)`.  The main difference is that `print()` renders objects (which for strings is converting `\\n` to `\\r\\n`) while `sys.stdout.buffer.write()` just writes out a bytes object."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2021-07-07T08:52:24Z",
+   "body": "Ahh, I must have been muddling up Python's `print` with C's `printf` :wink: "
+  },
+  {
+   "author": "participant3",
+   "created_at": "2021-07-08T03:34:58Z",
+   "body": "This issues should be fully resolved now.  See related commits 20a6044952281a4f55a5ee83bcaca88ec1b870f9 and 0613d3e3561a82fffa36594647ef916b19bc912b"
+  },
+  {
+   "author": "participant8",
+   "created_at": "2022-08-16T07:45:02Z",
+   "body": "Is there also a possibility to use this in C?\r\nprintf is too slow for me"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2022-08-16T11:05:16Z",
+   "body": "@participant8 For questions regarding the C SDK, you ought to be asking at https://github.com/raspberrypi/pico-sdk/issues"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2022-08-16T15:00:11Z",
+   "body": "@participant8 Without questioning the note of participant4, I would like to point you to https://github.com/reporter/rp2daq/blob/main/rp2daq.c#L157 where I commented the issue. Do not forget to set ```stdio_set_translate_crlf(&stdio_usb, false);``` to transmit binary data correctly."
+  },
+  {
+   "author": "participant9",
+   "created_at": "2022-08-18T11:01:40Z",
+   "body": "@reporter Are you able to read data from you COM Port? Or where is fwrite printing to?"
+  },
+  {
+   "author": "participant10",
+   "created_at": "2024-02-20T09:34:21Z",
+   "body": "@participant8 \r\n> Is there also a possibility to use this in C? printf is too slow for me\r\n\r\nUse:\r\n```\r\n#include <unistd.h>\r\n\r\nwrite(1, &image, 108800);\r\n```\r\n\r\nand:\r\n```\r\nread(0, &image, 1600);\r\n```\r\nto read. This:\r\n```\r\nstdio_set_translate_crlf(&stdio_usb, false);\r\n```\r\nwill keet binary data safe from changing 0x0D to 0x0D0A. But you need make change in https://github.com/raspberrypi/pico-sdk/blob/master/src/rp2_common/pico_stdio_usb/include/tusb_config.h bike presented above here in the thread."
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "micropython/micropython",
+  "default_branch": "master",
+  "commit_sha": "0b3332c8e14db8a229070224955062f143b138cc",
+  "as_of": "2021-07-01T10:46:17Z",
+  "method": "github_commits_until"
+ },
+ "images": [
+  {
+   "where": "c2",
+   "source_url": "https://user-images.githubusercontent.com/511950/124115561-3d9eb100-da6e-11eb-82c6-179dcc7295a2.png",
+   "file": "gh_micropython_micropython_7479_img0.png"
+  },
+  {
+   "where": "c4",
+   "source_url": "https://user-images.githubusercontent.com/511950/124120996-a9841800-da74-11eb-9671-00d5f6ef301c.png",
+   "file": "gh_micropython_micropython_7479_img1.png"
+  },
+  {
+   "where": "c6",
+   "source_url": "https://user-images.githubusercontent.com/511950/124124101-5744f600-da78-11eb-8dfa-a41c0540bd9a.png",
+   "file": "gh_micropython_micropython_7479_img2.png"
+  },
+  {
+   "where": "c11",
+   "source_url": "https://user-images.githubusercontent.com/511950/124294581-26d48900-db58-11eb-95ee-2a223ba59e58.png",
+   "file": "gh_micropython_micropython_7479_img3.png"
+  },
+  {
+   "where": "c12",
+   "source_url": "https://user-images.githubusercontent.com/511950/124300946-6652a380-db5f-11eb-972f-d8176c2529d6.png",
+   "file": "gh_micropython_micropython_7479_img4.png"
+  },
+  {
+   "where": "c19",
+   "source_url": "https://user-images.githubusercontent.com/511950/124347192-917ed680-dbe3-11eb-9219-3dfee897b918.png",
+   "file": "gh_micropython_micropython_7479_img5.png"
+  },
+  {
+   "where": "c21",
+   "source_url": "https://user-images.githubusercontent.com/12476868/124351589-8b94ef80-dbfb-11eb-88f3-53b9c56281c4.png",
+   "file": "gh_micropython_micropython_7479_img6.png"
+  },
+  {
+   "where": "c22",
+   "source_url": "https://user-images.githubusercontent.com/511950/124366326-3b477d00-dc4f-11eb-8995-38cc1681bd5b.png",
+   "file": "gh_micropython_micropython_7479_img7.png"
+  }
+ ],
+ "slug": "gh_micropython_micropython_7479"
+}

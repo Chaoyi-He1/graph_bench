@@ -1,0 +1,241 @@
+{
+ "repo": "micropython/micropython",
+ "number": 6866,
+ "url": "https://github.com/micropython/micropython/issues/6866",
+ "title": "rp2 More USB woes",
+ "state": "closed",
+ "labels": [
+  "port-rp2"
+ ],
+ "reporter": "reporter",
+ "created_at": "2021-02-09T09:31:26Z",
+ "closed_at": "2021-03-31T02:54:36Z",
+ "body": "I raise this in case it sheds any more light on the USB issues.\r\nI am using `rp2-pico-20210209-unstable-v1.14-11-gc7aaee2b2.uf2`.\r\n\r\nI have a substantial `uasyncio` application developed on Pyboards and ported to the Pico. The test script outputs regular messages via print statements. The application maintains a heartbeat LED via a coroutine on the Pico.\r\n\r\nIt runs fine if I suppress all print output.\r\n\r\nWith print statements enabled it also runs so long as I periodically press a key on the keyboard (in rshell or in miniterm). If I don't, it runs for a while then stops. The heartbeat stops flashing until I press a key, when running resumes. The code has evidently stalled.\r\n\r\nUnfortunately my attempts to create a trivial test case have so far failed. I have never encountered this behaviour on Pyboards, ESP8266 or ESP32.",
+ "comments": [
+  {
+   "author": "reporter",
+   "created_at": "2021-02-09T11:27:35Z",
+   "body": "I should add that this application, while fairly involved, uses no \"advanced\" features of the chip. It communicates with an ESP8266 by bit banging, so doesn't use UART, I2C, SPI. It uses the Pin object but not interrupts. There is no use of native or viper emitters.\r\n\r\nHere are the MicroPython modules imported by the various code modules:\r\n```python\r\nimport uasyncio as asyncio\r\nfrom utime import localtime, time\r\nimport sys  # sys.platform disables import of pyb and access to pyb.RTC\r\nfrom micropython import const\r\nimport ujson\r\nfrom machine import Pin  # The only \"hardware\" object\r\n```"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2021-02-09T12:01:29Z",
+   "body": "I should also add what happens when I press a key as I think this must provide a clue.\r\n\r\nThe print statements comprise complete lines of text terminated with newlines. These are emitted at a low rate, a line every few seconds.\r\n\r\nWhen the heartbeat stops flashing and I press Enter, the program resumes and many lines of text are emitted. Given the number of lines output it's clear that the program continued to run for several minutes before it stalled, with the text accumulating in a buffer. On receipt of a character the buffer emptied and the program resumed."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2021-02-09T12:28:39Z",
+   "body": "Is there are fixed time (always the same) for how long it takes before it pauses?  It may be that your PC is suspending the USB device so it goes to sleep, and only wakes when you type a key."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2021-02-09T13:03:38Z",
+   "body": "We had a similar-sounding problem in CircuitPython recently. Copying multiple large files to the MSC drive would stall, then there would be a 30-second timeout, and USB would re-enumerate. The problem did not occur if there was a CDC REPL connection open to the board, even if there was no activity on that connection.\r\n\r\nThe problem was that `tud_task()` was not being scheduled to be called. [EDIT in bold] We used to **schedule a** call **to** `tud_task()` on every 1ms tick . Usually there was no work to do, but it got called promptly all the time. (It's cheap to call.) Then we started enqueuing an event to call it only after servicing a USB interrupt. If we were idle, we would do `WFI` to save power and just wait for an interrupt to trigger more work. This scheme worked most of the time, but we missed scheduling a `tud_task()` call in a particular circumstance. The [details](https://github.com/adafruit/circuitpython/pull/4122) are not really relevant to MicroPython because they have to do with our auto-reload mechanism. But they are related to scheduling `tud_task()`  properly when there is work to do, as is being discussed in #6835."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2021-02-09T13:07:42Z",
+   "body": "Thanks @participant2 , that's very interesting info (and relates to calling `tud_task()` from the USB IRQ handler).  Currently our rp2 port calls `tud_task()` all the time (eg every 1ms) so not sure that is the issue here."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2021-02-09T13:08:37Z",
+   "body": "> It may be that your PC is suspending the USB device so it goes to sleep, and only wakes when you type a key.\r\n\r\n@participant1 I think this is unlikely as I have used this PC extensively with other MicroPython targets and never seen this before.\r\n\r\nIt also doesn't explain the symptoms (in my opinion).\r\n\r\nWhile the program is running, no output is printed until I press Enter (or another key). Then, whatever output is pending is printed. Aside from the heartbeat, there is other evidence that the program is running normally while producing no printed output. If I don't press a key, it eventually stalls after nearly three minutes. Then pressing a key releases a torrent of (correct) output and the program resumes.\r\n\r\nAnother observation. The first time this happened I assumed my code had hung so I hit ctrl-c. To my surprise the Pico emitted many lines of output before producing a prompt. The code doesn't trap the keyboard interrupt. Presumably the code stopped immediately with the data being output by the underlying runtime."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2021-02-09T13:28:53Z",
+   "body": "I spoke too casually and perhaps misleadingly. In CircuitPython 5.x and before, we used to _schedule_ a call to `tud_task()` on every 1ms tick. We did not call it from the IRQ handler. We use `MICROPY_VM_HOOK_LOOP` to run background tasks, and running `tud_task()` (and many other background tasks) happened if 1ms had passed.\r\n\r\nWe subsequently revised the mechanism so that not every background task was called when 1ms had passed. Instead the tasks are enqueued when there is work to do. We no longer have a 1ms tick scheduling the overall set of background task. We still use `MICROPY_VM_HOOK_LOOP` (renamed to `RUN_BACKGROUND_TASKS`) and it does the queue checking, but only runs what is enqueued.\r\n\r\n(Perhaps I should be repeating this in #6835.)"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2021-02-09T13:49:36Z",
+   "body": "OK, here is a trivial test case. Paste at the REPL. I left this running for many minutes before going back to examine progress,\r\n```python\r\nimport time\r\nwhile True:\r\n    print('got here')\r\n    time.sleep(30)\r\n```\r\nIt printed output once only, only emitting queued output when I press a key. The slow rate seems to be crucial, my other attempts at test cases emitted output at high speed. These ran without error.\r\n\r\n[EDIT]\r\nJust to nail the possibility of a PC issue I ran the same script on a Pyboard. It did not exhibit this behaviour, working as expected even when I left it unattended for some time.\r\n\r\nOn the rp2 it behaves like my application. If I press a key, any pending output is emitted. Until I do it is silent. "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2021-02-09T14:42:41Z",
+   "body": "This test case (run on the rp2) behaves in exactly the same way as my application. I added the obligatory LED flasher:\r\n```python\r\nimport time\r\nfrom machine import Pin\r\nled = Pin(25, Pin.OUT)\r\nwhile True:\r\n    print('got here')\r\n    led(not led())\r\n    time.sleep(30)\r\n```\r\nwhich shows that the script continues to run while producing no output, but it eventually stalls. Pressing a key causes it to emit output and to resume running."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2021-02-09T16:06:03Z",
+   "body": "How long usually until it gets stuck? I'm now at 123 iterations."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2021-02-09T16:13:53Z",
+   "body": "The script produces only one line. If I hit a key, it produces as many lines as are buffered at that time. I didn't time how long it took to actually stall, I'd guess at about 15 minutes (30 iterations).\r\n\r\nI've tried reducing the delay. At 2 seconds or below it works perfectly. At 3 seconds it behaves as described, emitting only one line until I press a key."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2021-02-09T16:21:21Z",
+   "body": "At my set-up, the script produces a line every 30 seconds. It goes on and on."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2021-02-09T16:34:11Z",
+   "body": "What I noticed and verified again now: the RP2040 does not work at a USB2 port of my debian 10 computer, which is like 7 years old (time flies). It needs a USB3 port. Same on a small windows computer. Same on an old MAC. No device pops up."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2021-02-09T16:39:47Z",
+   "body": "@reporter Do you use an USB hub? I tried once but only had problems."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2021-02-09T16:43:43Z",
+   "body": "OK, this prompted me to try other PC's. On my three other machines the fault does not appear even with 30s timing. The two desktops are elderly so USB2. The other laptop is USB3. One of the desktops uses a hub. All run fairly recent Ubuntu or Mint.\r\n\r\nSo it's just this laptop.\r\n\r\nThere must be something odd about the USB implementation on this laptop. It's a two year old Dell Precision 5530 Core i5-8300H - a fairly high-end machine. It runs Ubuntu 20.04. I use it heavily for MicroPython on Pyboards, ESP8266 and ESP32 and have had no issues with USB. I have changed nothing in its setup and the same script ran with this machine on a Pyboard 1.1.\r\n\r\nI therefore do believe there is an issue with the rp2 USB, but I've clearly struck unlucky with my usual PC."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2021-02-09T16:49:57Z",
+   "body": "I agree that the rp2 USB interface needs rework. It should work an any USB2 or USB3 port. "
+  },
+  {
+   "author": "participant3",
+   "created_at": "2021-02-09T20:11:10Z",
+   "body": "I re-checked. Using the Circuitpython firmware the device will be detected on USB2 ports."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2021-02-09T22:05:52Z",
+   "body": "This sounds _very_ similar to the buffering / flow-control issues seen with RP2040 in #6803 ?\r\nI'll mention it to the team tomorrow to see if anyone has some ideas :slightly_smiling_face: \r\n\r\n> I've clearly struck unlucky with my usual PC.\r\n\r\nPerhaps it's specific to the different USB controller chipsets on the motherboard? :shrug: "
+  },
+  {
+   "author": "participant1",
+   "created_at": "2021-02-10T01:00:12Z",
+   "body": "I ran the led-blink-sleep-30-seconds test above on rp2 via a USB 2.0 hub, and it seems to work ok for me.  It has been running for about 2 hours and the LED is still blinking every 30 seconds.\r\n\r\nBut the USB 2.0 hub did fail after about 1 hour.  The pico board is still powered via the hub and running but the serial output is gone.  Probably this is a problem with the USB 2.0 hub (it's seen a lot of activity...)."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2021-02-10T12:49:58Z",
+   "body": "I also can't reproduce this. What program are you using to view the serial console?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2021-02-10T13:12:41Z",
+   "body": "On this PC you don't need to wait long: failure occurs after the first delay. It outputs one message and then stays silent until you press a key.\r\n\r\nIt looks as if there is some subtlety in USB implementations: if so what's needed is to try a number of PC's.\r\n\r\nIn my testing the outcome was the same using rshell or miniterm."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2021-02-10T13:46:38Z",
+   "body": "@reporter can you try and capture a usb trace on the failing pc with https://desowin.org/usbpcap/ It should be viewable in wireshark. Please submit it here"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2021-02-10T16:47:41Z",
+   "body": "Sorry but I don't own a Windows PC: all Linux here. I'm also a total wireshark n00b... \r\n\r\n@participant3 has a Windows box which sounds as if it's failing.\r\n"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2021-02-10T16:50:31Z",
+   "body": "I think @participant3 is actually hitting a USB errata (RP2040-E5) where RP2040 can fail to enumerate if you have a serial port open. CircuitPython compiles this fix in but nobody else does by default. Would explain the difference between the two. \r\n\r\nI didn't realise it was Linux specific... @participant4 can replicate on his Linux machine so we can investigate from there."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2021-02-10T17:36:31Z",
+   "body": "As far as I can tell, I do not have a serial port open on my Windows device. It is the difference between USB2 and USB3."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2021-02-10T18:05:50Z",
+   "body": "In case this is of any help, here is the relevant output of **lshw** on my failing machine.\r\n```\r\n        *-usb\r\n             description: USB controller\r\n             product: Cannon Lake PCH USB 3.1 xHCI Host Controller\r\n             vendor: Intel Corporation\r\n             physical id: 14\r\n             bus info: pci@0000:00:14.0\r\n             version: 10\r\n             width: 64 bits\r\n             clock: 33MHz\r\n             capabilities: pm msi xhci cap_list\r\n             configuration: driver=xhci_hcd latency=0\r\n             resources: irq:126 memory:cc400000-cc40ffff\r\n           *-usbhost:0\r\n                product: xHCI Host Controller\r\n                vendor: Linux 5.4.0-65-generic xhci-hcd\r\n                physical id: 0\r\n                bus info: usb@1\r\n                logical name: usb1\r\n                version: 5.04\r\n                capabilities: usb-2.00\r\n                configuration: driver=hub slots=16 speed=480Mbit/s\r\n              *-usb:0\r\n                   description: Bluetooth wireless interface\r\n                   vendor: Intel Corp.\r\n                   physical id: 4\r\n                   bus info: usb@1:4\r\n                   version: 0.02\r\n                   capabilities: bluetooth usb-2.00\r\n                   configuration: driver=btusb maxpower=100mA speed=12Mbit/s\r\n              *-usb:1\r\n                   description: Video\r\n                   product: Integrated_Webcam_HD\r\n                   vendor: CN0VGCNHLOG008C4A4TFA00\r\n                   physical id: c\r\n                   bus info: usb@1:c\r\n                   version: 81.31\r\n                   capabilities: usb-2.01\r\n                   configuration: driver=uvcvideo maxpower=500mA speed=480Mbit/s\r\n           *-usbhost:1\r\n                product: xHCI Host Controller\r\n                vendor: Linux 5.4.0-65-generic xhci-hcd\r\n                physical id: 1\r\n                bus info: usb@2\r\n                logical name: usb2\r\n                version: 5.04\r\n                capabilities: usb-3.10\r\n                configuration: driver=hub slots=10 speed=10000Mbit/s\r\n```"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2021-03-07T14:31:31Z",
+   "body": "This problem keeps cropping up in the forum, with people thinking their script has failed when in fact it is the USB communication which has stopped. \r\n\r\nThe defining characteristic is that increasing the message rate makes the fault go away. [This](https://forum.micropython.org/viewtopic.php?f=21&t=9988) is the most recent instance."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2021-03-07T18:30:35Z",
+   "body": "I'm afraid this dropped off the bottom of my priority-list, but now that the latest pico-sdk release is done I'll make sure to do those Wireshark-captures next week :+1: "
+  },
+  {
+   "author": "participant4",
+   "created_at": "2021-03-30T13:52:54Z",
+   "body": "@reporter Turns out there was a slight bug in the USB device-descriptor, and some computers were suspending the bus (based on that misinformation) and some computers weren't, which was why the problem seemed so sporadic. Please test the fix in #7085 and let us know if it doesn't fix your problem.\r\n\r\n@participant2 I guess you'll probably want to include a similar fix into CircuitPython too?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2021-03-31T02:54:36Z",
+   "body": "Should be fixed by ca3d51f12206a88463f2b2a2d27756a1b519cb6a.  Please reopen if not."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2021-03-31T06:23:04Z",
+   "body": "Still no response on an USB2 port."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2021-03-31T07:07:38Z",
+   "body": "@participant3 looking at past comments I think this is because you are hitting the USB enumeration errata (RP2040-E5). You said CircuitPython works, and CircuitPython compiles in a workaround to handle this. MicroPython could potentially do the same. Usually the issue is triggered by having a serial port open connected to the same hub Pico is plugged into but a similarly busy USB device on the same hub could cause it."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2021-03-31T08:15:36Z",
+   "body": "I do no know what you count as serial device, but at both systems I tested the only other USB devices were keyboard and Mouse on a different hub. Even when pulling off both Keyboard & Mouse, the RP2 did not show up.\r\nAlso, on the Linux system, the directory /dev/serial was not displayed."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2021-03-31T08:56:23Z",
+   "body": "@participant3 I agree with Liam that your issue sounds different to the one that was being discussed here. Please open a separate issue and include as much detail as you can. Also, does this only affect MicroPython or does it also affect the \"'Hello World' over a USB serial connection.\" UF2 at https://www.raspberrypi.org/documentation/rp2040/getting-started/#getting-started-with-c ?"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2021-03-31T08:57:55Z",
+   "body": "@participant4 @participant3 an even easier test would be if the bootsel mode works or not"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2021-03-31T10:25:51Z",
+   "body": "bootsel mode also does not work on the USB2 port."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2021-03-31T10:26:53Z",
+   "body": "Okay, so can you try CircuitPython and see if that works on the USB2 port?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2021-03-31T10:27:22Z",
+   "body": "This has fixed the problem in my initial reports."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2021-03-31T10:40:41Z",
+   "body": "adafruit-circuitpython-raspberry_pi_pico-en_US-6.2.0-beta.4 works\r\nadafruit-circuitpython-raspberry_pi_pico-en_US-6.2.0-beta.1 does not work\r\n\r\nBut bootsel mode fails. So I used the USB3 port for loading the firmware."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2021-03-31T10:56:31Z",
+   "body": "@tannewt @participant2  I have no familiarity with the CircuitPython codebase - do you have any idea what might be going on here?\r\n\r\n@participant3 Your report that it works in a USB3 port but not a USB2 port is quite strange, because Pico doesn't implement the [extra connectors](https://en.wikipedia.org/wiki/USB_3.0#Connectors) used by USB3, and RP2040 itself only supports USB1.1, so regardless of whether it's plugged into a USB2 port or a USB3 port, Pico should appear identically to your computer :confused: \r\n\r\nAs I mentioned above, it's probably better to create a new issue for this, rather than continuing discussion in this now-closed issue."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2021-03-31T10:57:49Z",
+   "body": "Does a pico work in the USB2 port without any hub connected?"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2021-03-31T12:01:44Z",
+   "body": "> @tannewt @participant2 I have no familiarity with the CircuitPython codebase - do you have any idea what might be going on here?\r\n\r\nWe have a couple of recent TinyUSB-related PR's that may or may not be relevant. We are ahead of MPy in terms of TinyUSB fixes:\r\nhttps://github.com/adafruit/circuitpython/pull/4365\r\nhttps://github.com/adafruit/circuitpython/pull/4327"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2021-03-31T12:04:33Z",
+   "body": "@participant5 : There is no external hub connected. I made a new PR at #7089."
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "micropython/micropython",
+  "default_branch": "master",
+  "commit_sha": "c7aaee2b2ba0cb19d3b3deb6092e0bfe55d79052",
+  "as_of": "2021-02-09T09:31:26Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_micropython_micropython_6866"
+}

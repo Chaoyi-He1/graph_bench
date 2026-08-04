@@ -16,11 +16,14 @@ links, and the review checklist (defect catalog from the pilot).
 | [bmo_core_1909219](bugzilla_v0/review/bmo_core_1909219.md) | LLM draft | — | — | ⬜ |
 | [bmo_core_1910991](bugzilla_v0/review/bmo_core_1910991.md) | LLM draft | minor_issues | 🟠1 🟡3 | ⬜ |
 | [bmo_core_1934271](bugzilla_v0/review/bmo_core_1934271.md) | LLM draft | — | — | ⬜ |
+| [gh_ClickHouse_ClickHouse_54483](github_v0/review/gh_ClickHouse_ClickHouse_54483.md) | LLM draft | — | — | ⬜ |
 | [gh_containerd_containerd_11817](github_v0/review/gh_containerd_containerd_11817.md) | LLM draft | — | — | ⬜ |
 | [gh_curl_curl_10936](github_v0/review/gh_curl_curl_10936.md) | LLM draft | minor_issues | 🟡1 | ⬜ |
 | [gh_curl_curl_11203](github_v0/review/gh_curl_curl_11203.md) | LLM draft | good_enough | — | ⬜ |
 | [gh_curl_curl_12327](github_v0/review/gh_curl_curl_12327.md) | LLM draft | — | — | ⬜ |
 | [gh_curl_curl_13126](github_v0/review/gh_curl_curl_13126.md) | LLM draft | minor_issues | 🟠3 🟡2 | ⬜ |
+| [gh_denoland_deno_13608](github_v0/review/gh_denoland_deno_13608.md) | LLM draft | — | — | ⬜ |
+| [gh_denoland_deno_16899](github_v0/review/gh_denoland_deno_16899.md) | LLM draft | — | — | ⬜ |
 | [gh_denoland_deno_19766](github_v0/review/gh_denoland_deno_19766.md) | LLM draft | — | — | ⬜ |
 | [gh_denoland_deno_20594](github_v0/review/gh_denoland_deno_20594.md) | LLM draft | — | — | ⬜ |
 | [gh_denoland_deno_23656](github_v0/review/gh_denoland_deno_23656.md) | LLM draft | needs_rework | 🟠3 🟡5 | ⬜ |
@@ -41,14 +44,22 @@ links, and the review checklist (defect catalog from the pilot).
 | [gh_ggml-org_llama.cpp_12946](github_v0/review/gh_ggml-org_llama.cpp_12946.md) | LLM draft | needs_rework | 🔴1 🟡3 | ⬜ |
 | [gh_ggml-org_llama.cpp_1571](github_v0/review/gh_ggml-org_llama.cpp_1571.md) | LLM draft | — | — | ⬜ |
 | [gh_home-assistant_core_101291](github_v0/review/gh_home-assistant_core_101291.md) | LLM draft | — | — | ⬜ |
+| [gh_home-assistant_core_54144](github_v0/review/gh_home-assistant_core_54144.md) | LLM draft | — | — | ⬜ |
+| [gh_home-assistant_core_61551](github_v0/review/gh_home-assistant_core_61551.md) | LLM draft | — | — | ⬜ |
+| [gh_home-assistant_core_78163](github_v0/review/gh_home-assistant_core_78163.md) | LLM draft | — | — | ⬜ |
 | [gh_home-assistant_core_88014](github_v0/review/gh_home-assistant_core_88014.md) | LLM draft | minor_issues | — | ⬜ |
+| [gh_micropython_micropython_10335](github_v0/review/gh_micropython_micropython_10335.md) | LLM draft | — | — | ⬜ |
 | [gh_micropython_micropython_13471](github_v0/review/gh_micropython_micropython_13471.md) | LLM draft | — | — | ⬜ |
 | [gh_micropython_micropython_14430](github_v0/review/gh_micropython_micropython_14430.md) | LLM draft | — | — | ⬜ |
 | [gh_micropython_micropython_15846](github_v0/review/gh_micropython_micropython_15846.md) | LLM draft | minor_issues | 🟠1 🟡2 | ⬜ |
+| [gh_micropython_micropython_7479](github_v0/review/gh_micropython_micropython_7479.md) | LLM draft | — | — | ⬜ |
+| [gh_micropython_micropython_9013](github_v0/review/gh_micropython_micropython_9013.md) | LLM draft | — | — | ⬜ |
 | [gh_moby_moby_46699](github_v0/review/gh_moby_moby_46699.md) | LLM draft | — | — | ⬜ |
 | [gh_moby_moby_48144](github_v0/review/gh_moby_moby_48144.md) | LLM draft | needs_rework | 🔴2 🟡3 | ⬜ |
 | [gh_moby_moby_49498](github_v0/review/gh_moby_moby_49498.md) | LLM draft | needs_rework | 🟡1 | ⬜ |
 | [gh_moby_moby_50129](github_v0/review/gh_moby_moby_50129.md) | LLM draft | — | — | ⬜ |
+| [gh_nodejs_node_47207](github_v0/review/gh_nodejs_node_47207.md) | LLM draft | — | — | ⬜ |
+| [gh_nodejs_node_47457](github_v0/review/gh_nodejs_node_47457.md) | LLM draft | — | — | ⬜ |
 | [gh_nodejs_node_59364](github_v0/review/gh_nodejs_node_59364.md) | LLM draft | minor_issues | 🟡2 | ⬜ |
 | [gh_ollama_ollama_10433](github_v0/review/gh_ollama_ollama_10433.md) | LLM draft | minor_issues | 🟡3 | ⬜ |
 | [gh_ollama_ollama_12618](github_v0/review/gh_ollama_ollama_12618.md) | LLM draft | — | — | ⬜ |

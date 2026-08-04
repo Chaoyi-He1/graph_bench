@@ -1,0 +1,292 @@
+{
+ "repo": "oven-sh/bun",
+ "number": 158,
+ "url": "https://github.com/oven-sh/bun/issues/158",
+ "title": "Implement Node-API in bun.js (napi)",
+ "state": "closed",
+ "labels": [
+  "tracking"
+ ],
+ "reporter": "reporter",
+ "created_at": "2022-05-05T01:52:48Z",
+ "closed_at": "2026-04-12T21:20:53Z",
+ "body": "[Node-API](https://nodejs.org/api/n-api.html) is Node.js' native addon API. Bun implements Node-API so that native addons built for Node.js work in Bun without modification or recompilation.\n\nIf a native addon crashes or misbehaves in Bun, please **[open a new issue](https://github.com/oven-sh/bun/issues/new?labels=napi)** with a reproduction rather than commenting here.\n\n## Status: API surface complete\n\nEvery `napi_*` and `node_api_*` function is implemented and exported. Bun runs Node.js' own [`js-native-api`](https://github.com/nodejs/node/tree/main/test/js-native-api) and [`node-api`](https://github.com/nodejs/node/tree/main/test/node-api) test suites in CI on every commit (see [`test/napi/node-napi-tests/`](https://github.com/oven-sh/bun/tree/main/test/napi/node-napi-tests)).\n\n| Suite | Pass | Todo | % |\n|---|---|---|---|\n| `js-native-api` (engine-agnostic core) | 53 | 0 | **100%** |\n| `node-api` (Node.js-runtime-specific) | 21 | 23 | **47.7%** |\n| **Combined** | **74** | **23** | **76.3%** |\n\n<sub>Counted on Linux. macOS/Windows each have one extra platform-specific todo (73/97, 75.3%).</sub>\n\nThe `node-api` todos are concentrated in `async_hooks` integration, `uv_*` loop/threadpool semantics, worker-terminate finalization, and fatal-error reporting — see the `todoIf` entries in `test/napi/node-napi-tests/test/node-api/*/do.test.ts` for the live list.\n\nRemaining work is behavioral parity in those areas and edge-case compatibility with specific packages, not missing API surface. \n\n## Implementation\n\n| Where | What |\n|---|---|\n| [`src/bun.js/bindings/napi.cpp`](https://github.com/oven-sh/bun/blob/main/src/bun.js/bindings/napi.cpp) | Most `napi_*` functions, JSC integration |\n| [`src/napi/napi.zig`](https://github.com/oven-sh/bun/blob/main/src/napi/napi.zig) | Threadsafe functions, async work, event loop, handle scopes |\n| [`src/bun.js/bindings/v8/`](https://github.com/oven-sh/bun/tree/main/src/bun.js/bindings/v8) | V8 C++ API shim (for addons that bypass N-API) |\n| [`src/symbols.txt`](https://github.com/oven-sh/bun/blob/main/src/symbols.txt) | Exported symbol list |\n\n## Known gaps & caveats\n\n- **`async_hooks` integration** — `napi_async_init`, `napi_async_destroy`, `napi_make_callback`, `napi_open_callback_scope`, and `napi_close_callback_scope` all work, but do not emit `async_hooks` lifecycle events. **We don't plan to implement this.** Node.js itself [marks `async_hooks` as Experimental and discourages its use](https://nodejs.org/api/async_hooks.html#async-hooks): *\"Please migrate away from this API, if you can. We do not recommend using the `createHook`, `AsyncHook`, and `executionAsyncResource` APIs as they have usability issues, safety risks, and performance implications.\"* Bun implements the stable [`AsyncLocalStorage`](https://nodejs.org/api/async_context.html#class-asynclocalstorage) API instead, which is what Node recommends migrating to.\n- **libuv** — a subset of `uv_*` symbols is exported for addons that link against libuv directly. On Linux/macOS, Bun does not run on libuv, so `uv_default_loop()` is not the runtime's event loop — addons must use `napi_get_uv_event_loop` (#23192). **We don't currently plan to implement all of libuv inside Bun**, but we may revisit if enough bug reports show it's needed in practice — tracked in #18546.\n- **Worker termination** — finalizer and buffer-callback ordering during `Worker.terminate()` doesn't fully match Node. Tracked as part of #15964 alongside other `worker_threads` stability work.\n- `napi_adjust_external_memory` reports to JSC's GC heuristic but does not behave identically to V8.\n\n<details>\n<summary><b>Full function list</b> — 156/156 implemented</summary>\n\n### `napi_*`\n\n- [x] `napi_acquire_threadsafe_function`\n- [x] `napi_add_async_cleanup_hook`\n- [x] `napi_add_env_cleanup_hook`\n- [x] `napi_add_finalizer`\n- [x] `napi_adjust_external_memory`\n- [x] `napi_async_destroy`\n- [x] `napi_async_init`\n- [x] `napi_call_function`\n- [x] `napi_call_threadsafe_function`\n- [x] `napi_cancel_async_work`\n- [x] `napi_check_object_type_tag`\n- [x] `napi_close_callback_scope`\n- [x] `napi_close_escapable_handle_scope`\n- [x] `napi_close_handle_scope`\n- [x] `napi_coerce_to_bool`\n- [x] `napi_coerce_to_number`\n- [x] `napi_coerce_to_object`\n- [x] `napi_coerce_to_string`\n- [x] `napi_create_array`\n- [x] `napi_create_array_with_length`\n- [x] `napi_create_arraybuffer`\n- [x] `napi_create_async_work`\n- [x] `napi_create_bigint_int64`\n- [x] `napi_create_bigint_uint64`\n- [x] `napi_create_bigint_words`\n- [x] `napi_create_buffer`\n- [x] `napi_create_buffer_copy`\n- [x] `napi_create_dataview`\n- [x] `napi_create_date`\n- [x] `napi_create_double`\n- [x] `napi_create_error`\n- [x] `napi_create_external`\n- [x] `napi_create_external_arraybuffer`\n- [x] `napi_create_external_buffer`\n- [x] `napi_create_function`\n- [x] `napi_create_int32`\n- [x] `napi_create_int64`\n- [x] `napi_create_object`\n- [x] `napi_create_promise`\n- [x] `napi_create_range_error`\n- [x] `napi_create_reference`\n- [x] `napi_create_string_latin1`\n- [x] `napi_create_string_utf16`\n- [x] `napi_create_string_utf8`\n- [x] `napi_create_symbol`\n- [x] `napi_create_threadsafe_function`\n- [x] `napi_create_type_error`\n- [x] `napi_create_typedarray`\n- [x] `napi_create_uint32`\n- [x] `napi_define_class`\n- [x] `napi_define_properties`\n- [x] `napi_delete_async_work`\n- [x] `napi_delete_element`\n- [x] `napi_delete_property`\n- [x] `napi_delete_reference`\n- [x] `napi_detach_arraybuffer`\n- [x] `napi_escape_handle`\n- [x] `napi_fatal_error`\n- [x] `napi_fatal_exception`\n- [x] `napi_get_all_property_names`\n- [x] `napi_get_and_clear_last_exception`\n- [x] `napi_get_array_length`\n- [x] `napi_get_arraybuffer_info`\n- [x] `napi_get_boolean`\n- [x] `napi_get_buffer_info`\n- [x] `napi_get_cb_info`\n- [x] `napi_get_dataview_info`\n- [x] `napi_get_date_value`\n- [x] `napi_get_element`\n- [x] `napi_get_global`\n- [x] `napi_get_instance_data`\n- [x] `napi_get_last_error_info`\n- [x] `napi_get_named_property`\n- [x] `napi_get_new_target`\n- [x] `napi_get_node_version`\n- [x] `napi_get_null`\n- [x] `napi_get_property`\n- [x] `napi_get_property_names`\n- [x] `napi_get_prototype`\n- [x] `napi_get_reference_value`\n- [x] `napi_get_threadsafe_function_context`\n- [x] `napi_get_typedarray_info`\n- [x] `napi_get_undefined`\n- [x] `napi_get_uv_event_loop`\n- [x] `napi_get_value_bigint_int64`\n- [x] `napi_get_value_bigint_uint64`\n- [x] `napi_get_value_bigint_words`\n- [x] `napi_get_value_bool`\n- [x] `napi_get_value_double`\n- [x] `napi_get_value_external`\n- [x] `napi_get_value_int32`\n- [x] `napi_get_value_int64`\n- [x] `napi_get_value_string_latin1`\n- [x] `napi_get_value_string_utf16`\n- [x] `napi_get_value_string_utf8`\n- [x] `napi_get_value_uint32`\n- [x] `napi_get_version`\n- [x] `napi_has_element`\n- [x] `napi_has_named_property`\n- [x] `napi_has_own_property`\n- [x] `napi_has_property`\n- [x] `napi_instanceof`\n- [x] `napi_is_array`\n- [x] `napi_is_arraybuffer`\n- [x] `napi_is_buffer`\n- [x] `napi_is_dataview`\n- [x] `napi_is_date`\n- [x] `napi_is_detached_arraybuffer`\n- [x] `napi_is_error`\n- [x] `napi_is_exception_pending`\n- [x] `napi_is_promise`\n- [x] `napi_is_typedarray`\n- [x] `napi_make_callback`\n- [x] `napi_module_register`\n- [x] `napi_new_instance`\n- [x] `napi_object_freeze`\n- [x] `napi_object_seal`\n- [x] `napi_open_callback_scope`\n- [x] `napi_open_escapable_handle_scope`\n- [x] `napi_open_handle_scope`\n- [x] `napi_queue_async_work`\n- [x] `napi_ref_threadsafe_function`\n- [x] `napi_reference_ref`\n- [x] `napi_reference_unref`\n- [x] `napi_reject_deferred`\n- [x] `napi_release_threadsafe_function`\n- [x] `napi_remove_async_cleanup_hook`\n- [x] `napi_remove_env_cleanup_hook`\n- [x] `napi_remove_wrap`\n- [x] `napi_resolve_deferred`\n- [x] `napi_run_script`\n- [x] `napi_set_element`\n- [x] `napi_set_instance_data`\n- [x] `napi_set_named_property`\n- [x] `napi_set_property`\n- [x] `napi_strict_equals`\n- [x] `napi_throw`\n- [x] `napi_throw_error`\n- [x] `napi_throw_range_error`\n- [x] `napi_throw_type_error`\n- [x] `napi_type_tag_object`\n- [x] `napi_typeof`\n- [x] `napi_unref_threadsafe_function`\n- [x] `napi_unwrap`\n- [x] `napi_wrap`\n\n### `node_api_*`\n\n- [x] `node_api_create_buffer_from_arraybuffer`\n- [x] `node_api_create_external_string_latin1`\n- [x] `node_api_create_external_string_utf16`\n- [x] `node_api_create_property_key_latin1`\n- [x] `node_api_create_property_key_utf16`\n- [x] `node_api_create_property_key_utf8`\n- [x] `node_api_create_syntax_error`\n- [x] `node_api_get_module_file_name`\n- [x] `node_api_post_finalizer`\n- [x] `node_api_symbol_for`\n- [x] `node_api_throw_syntax_error`\n\n</details>\n\n## Related tracking\n\n- V8 C++ API compatibility: #4290\n- libuv functions: #18546\n- Worker / `worker_threads` stability: #15964\n- Open `napi`-labeled bugs: [issue list](https://github.com/oven-sh/bun/issues?q=is%3Aissue+is%3Aopen+label%3Anapi)\n",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2022-05-14T03:11:39Z",
+   "body": "I made a test repo that exercises a number of things that are currently having problems with the bun napi interface:\r\nhttps://github.com/participant1/bun-test-apw\r\nClone that, `npm install` it, and then you can compare `node index.js` to `bun index.js`:\r\n\r\n- Occasional segfaults in calls through `napi_call_threadsafe_function`\r\n- `napi_release_threadsafe_function` not triggering `thread_finalize_cb`\r\n- `NAPI_MODULE` macro fails with `symbol 'napi_register_module_v1' not found in native module` (easy workaround, since NAPI_MODULE_INIT works fine)\r\n- If you get through those, I think the Callback().Call() ends up triggering escapable scopes, but that's not that important.\r\n\r\nYou will have uncomment NAPI_MODULE from apw.cpp (and comment NODE_MODULE_INIT) when you want to test that, figured the other things were more important.\r\n\r\nHope that helps, thanks for the great work!"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2022-05-15T12:48:27Z",
+   "body": "I also wanted to check to see if this is roughly the right approach loading a module for napi + ffi usage. I think the hybrid strategy is good: use napi for general purpose stuff like building objects, async work, and use ffi for \"hot\" functions that need to be fast. Here is an example from my code where I am loading the platform's binary with the napi loading package, and then, if running in bun, loading it through the FFI loader. But, I think this raises a couple points:\r\n* I assume calling dlopen twice (once through the napi loader, once through the ffi loader) is cached at some level of the OS and doesn't result in duplicate binary footprints in memory\r\n* `require.resolve` doesn't seem to exist in bun, and this seems challenging for loading a platform-specific package with a binary, which is direction that we are going with node-gyp-build: https://github.com/prebuild/node-gyp-build/pull/45/files#diff-e727e4bdf3657fd1d798edcd6b099d6e092f8573cba266154583a746bba0f346R50\r\n\r\nAnyway, here is my loading sequence right now:\r\n\r\n```\r\nimport { dirname, join, default as pathModule } from 'path';\r\nimport { fileURLToPath } from 'url';\r\nimport loadNAPI from 'node-gyp-build'; // loads the correct napi binary, using the current OS/arch\r\n\r\nlet dirName = (typeof __dirname == 'string' ? __dirname : // for bun, which doesn't have fileURLToPath\r\n\tdirname(fileURLToPath(import.meta.url))).replace(/dist$/, ''); // for node, which doesn't have __dirname in ESM\r\n\r\nexport let nativeAddon = loadNAPI(dirName);\r\nif (process.isBun) {\r\n\tconst { dlopen, FFIType } = require('bun:ffi');\r\n\t// load the same napi module as above, but use bun's ffi\r\n\t// ideally we should use require.resolve to find a package, but here just hoping it is a sibling package in node_modules\r\n\tlet libPath = join(dirName, '..', 'lmdb-linux-' + process.arch, 'node.napi.node');\r\n\tlet lmdbLib = dlopen(libPath, {\r\n\t\tgetByBinary: { args: [FFIType.f64, FFIType.u32], returns: FFIType.u32},\r\n\t\titerate: { args: [FFIType.f64], returns: FFIType.i32},\r\n\t\tposition: { args: [FFIType.f64, FFIType.u32, FFIType.u32, FFIType.u32, FFIType.f64], returns: FFIType.i32},\r\n\t\twrite: { args: [FFIType.f64, FFIType.f64], returns: FFIType.i32},\r\n\t\tresetTxn: { args: [FFIType.f64], returns: FFIType.u8},\r\n\t});\r\n\tObject.assign(nativeAddon, lmdbLib.symbols);\r\n}\r\n```\r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2022-05-15T12:58:08Z",
+   "body": "> let dirName = (typeof __dirname == 'string' ? __dirname : // for bun, which doesn't have fileURLToPath\r\n\r\nFor bun you can also do `import.meta.dir` and/or `import.meta.path`, which at least saves you from the `typeof` check\r\n\r\n> I assume calling dlopen twice (once through the napi loader, once through the ffi loader) is cached at some level of the OS and doesn't result in duplicate binary footprints in memory\r\n\r\nThis is a good point. I don't know either, but worth checking. \r\n\r\n> require.resolve doesn't seem to exist in bun, and this seems challenging for loading a platform-specific package with a binary, which is direction that we are going with node-gyp-build: https://github.com/prebuild/node-gyp-build/pull/45/files#diff-e727e4bdf3657fd1d798edcd6b099d6e092f8573cba266154583a746bba0f346R50\r\n\r\nThis is an oversight – require.resolve should exist but does not currently. There are at least 5 other ways you can resolve without loading modules though:\r\n- `Bun.resolve(path, fromPath)` (async)\r\n- `Bun.resolveSync(path, fromPath)`\r\n- `import.meta.resolve(path)` (async)\r\n- `import.meta.resolveSync(path)` (sync)\r\n- Loader.resolveSync (lower-level, uses JSC builtin ModuleLoader and may be disabled at some point)"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2022-05-15T13:10:47Z",
+   "body": ">  assume calling dlopen twice (once through the napi loader\r\n\r\nMy evidence is that when I set the value of a static C variable from a NAPI call, that value was accessible/correct from an FFI call, so I think working correctly, but I am not claiming this as absolute proof.\r\n\r\n> This is an oversight – require.resolve should exist but does not currently\r\n\r\nOk, so you plan on adding require.resolve? I think in node-gyp-build it would either need to go through `createRequire(libraryPath)`, or use the two arg version (`require.resolve(id, { path: [ libraryPath ] }`). `node-gyp-build` is CJS module, so unfortunately `import.meta.resolve` can't be used there (and can't even be mentioned, `if (false) import.meta.resolve('test')` will even fail in Node in CJS mode).\r\n\r\nAnyway, thanks for the progress here, I know these are probably annoying details of the napi/node machinery, but I think node-gyp-build is pretty commonly used. "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2022-05-17T09:17:03Z",
+   "body": "> Ok, so you plan on adding require.resolve? I think in node-gyp-build it would either need to go through createRequire(libraryPath), or use the two arg version (require.resolve(id, { path: [ libraryPath ] }). node-gyp-build is CJS module, so unfortunately import.meta.resolve can't be used there (and can't even be mentioned, if (false) import.meta.resolve('test') will even fail in Node in CJS mode).\r\n\r\nSupport for both of these was added in Bun v0.0.83 (released today) "
+  },
+  {
+   "author": "participant2",
+   "created_at": "2022-07-06T02:48:49Z",
+   "body": "FYI, I tried to run [parcel-css](https://github.com/parcel-bundler/parcel-css) with Bun, but got the following error (logging with `DYLD_PRINT_APIS`). Not sure if this is useful. I tried to debug with lldb but wasn't able to due to macOS code signing. I guess I'd have to compile bun myself to debug further.\r\n\r\n```\r\ndyld[50777]: dlopen(\"/Users/<user>/dev/parcel-css/parcel-css.darwin-arm64.node\", 0x00000001)\r\ndyld[50777]:       dlopen(parcel-css.darwin-arm64.node) => 0x2089957e0\r\ndyld[50777]: dlsym(0x2089957e0, \"napi_register_module_v1\")\r\ndyld[50777]:      dlsym(\"napi_register_module_v1\") => 0x110ab41b0\r\ndyld[50777]: dlsym(0xfffffffffffffffe, \"getentropy\")\r\ndyld[50777]:      dlsym(\"getentropy\") => 0x183fd8f5c\r\n```\r\n\r\nExample:\r\n\r\n```js\r\nconst parcelCss  = require('./parcel-css.darwin-arm64.node');\r\nparcelCss.transform({\r\n  filename: 'test.css',\r\n  code: Buffer.from('.foo { color: red }'),\r\n  minify: true\r\n});\r\n```"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2022-07-07T19:56:04Z",
+   "body": "If I attempt to load a native module that uses Node-API, I get a crash on missing symbols. Additionally, I don't see any of the Node-API symbols in the bun binary (0.1.1, macOS x86_64).\r\n\r\nIs there something additional that needs to be done to load these symbols or was this possibly optimized out in the latest release?\r\n\r\n```\r\n$ symbols $(which bun) | grep napi\r\n```\r\n\r\n**Edit**: It appears to be only the macOS release where they are missing. The symbols are present in linux."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2022-07-10T17:13:47Z",
+   "body": "What do you mean by `async_hooks resource tracking will not be supported, it will just ignore them.`\r\n\r\nAs bluebird uses async_hooks and requires it explicitly like this for example:\r\n```\r\nvar AsyncResource = util.isNode && util.nodeSupportsAsyncResource ?\r\n    require(\"async_hooks\").AsyncResource : null;\r\n```\r\n\r\nWhich then results into:\r\n```\r\nCould not resolve: \"async_hooks\". Maybe you need to \"bun install\"?\r\n```"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2022-07-10T17:19:57Z",
+   "body": "async_hooks will need to be polyfilled but initially just disabled so it is\na no-op rather than failure on require()\n\nAlso in bun at least, you should try to avoid Bluebird. It’s a many X\nslowdown\n\nOn Sun, Jul 10, 2022 at 10:13 AM Laurens Lavaert ***@***.***>\nwrote:\n\n> What do you mean by async_hooks resource tracking will not be supported,\n> it will just ignore them.\n>\n> As bluebird uses async_hooks and requires it explicitly like this for\n> example:\n>\n> var AsyncResource = util.isNode && util.nodeSupportsAsyncResource ?\n>     require(\"async_hooks\").AsyncResource : null;\n>\n> Which then results into:\n>\n> Could not resolve: \"async_hooks\". Maybe you need to \"bun install\"?\n>\n> —\n> Reply to this email directly, view it on GitHub\n> <https://github.com/oven-sh/bun/issues/158#issuecomment-1179765632>, or\n> unsubscribe\n> <https://github.com/notifications/unsubscribe-auth/AAFNGSZC646YQEGC6NGCNRTVTMAFNANCNFSM5VDV6N3Q>\n> .\n> You are receiving this because you authored the thread.Message ID:\n> ***@***.***>\n>\n"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2022-07-24T13:35:27Z",
+   "body": "> Also in bun at least, you should try to avoid Bluebird. It’s a many X slowdown\r\n\r\nWhat would you say is recommended to use (instead)? Par example,\r\n```js\r\n(async () => { for (let i=0; i<800000; i++) { await functionCall(i); } })();\r\n```\r\n...would work, but only one execution at a time.\r\n(And without limitation program will produce errors.)\r\n`(Promise.map([...Array(800000).keys()], functionCall, {concurrency: 8});)`\r\n\r\n_P. S. http://bluebirdjs.com/docs/benchmarks.html claims to be faster (in node) than async-await.\r\nP. S. If I am not mistaken, another problem rises with big arrays: bun took 7 GB (and counting) of RAM for 800 000 keys. Speaking of slowdowns._"
+  },
+  {
+   "author": "participant6",
+   "created_at": "2022-07-27T03:49:22Z",
+   "body": "PrismaJS also requires async_hook"
+  },
+  {
+   "author": "participant7",
+   "created_at": "2022-08-17T06:22:40Z",
+   "body": "Hey folks! Is there any progress on `napi_create_external`?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2022-11-10T23:12:12Z",
+   "body": "> Hey folks! Is there any progress on `napi_create_external`?\r\n\r\nAdded in https://github.com/oven-sh/bun/commit/dddbce8a41aa266af106b19e583c152126900730\r\n"
+  },
+  {
+   "author": "participant8",
+   "created_at": "2023-01-23T22:43:37Z",
+   "body": "When running [@parcel/watcher](https://github.com/parcel-bundler/watcher), even just trying to import it with `import watcher from '@parcel/watcher'` bun fails with `Segmentation fault: 11` (that's all it outputs). Since that module is written in C++ I figured it might be NAPI-related, might be related to this issue?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-01-23T23:11:29Z",
+   "body": "> When running [@parcel/watcher](https://github.com/parcel-bundler/watcher), even just trying to import it with import watcher from '@parcel/watcher' bun fails with Segmentation fault: 11 (that's all it outputs). Since that module is written in C++ I figured it might be NAPI-related, might be related to this issue?\r\n\r\nYes, there are at least three issues blocking `@parcel/watcher` from working, of which I just fixed two:\r\n- [x] napi_create_symbol wasn't handling a missing description string - https://github.com/oven-sh/bun/commit/aa456805ddc9fd44152d73888ecb8733b60f34b9\r\n- [x] napi_define_property didn't support symbol properties - 4570ff77807a334f7bcd23e4b69b758d365b82a0\r\n- [ ] napi_type_tag_object is not implemented yet"
+  },
+  {
+   "author": "participant9",
+   "created_at": "2023-04-29T22:58:42Z",
+   "body": "Looks like `napi_set_instance_data()` might be supported (I have seen some cpp impl in the repo) but it's probably not exported. I get this on my macos. Here's repro if anyone wants to have a look.\r\n\r\nhttps://github.com/participant9/zig-napigen/tree/main/example\r\n\r\n<img width=\"1089\" alt=\"image\" src=\"https://user-images.githubusercontent.com/3526922/235327422-998b63dc-3dfc-44b8-88a0-7a05db834972.png\">\r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-04-29T23:05:31Z",
+   "body": "@participant9 Yep, that was a mistake. Please try again once the canary build finishes (`bun upgrade --canary`)\r\n\r\n229f5f7770248cee57ee6b9c021c348cca8b6bbb"
+  },
+  {
+   "author": "participant9",
+   "created_at": "2023-04-30T07:36:07Z",
+   "body": "@reporter Either I did something wrong or did not help :-/\r\n\r\n<img width=\"1187\" alt=\"image\" src=\"https://user-images.githubusercontent.com/3526922/235341498-b1a99d9f-aedb-45e9-87c0-f0a3517ffe15.png\">\r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-04-30T07:56:38Z",
+   "body": "Sorry, please try again after 4be3548829d6083cfe7c488eb84e310b952b88e1\r\n\r\nThis time it should work\r\n<img width=\"330\" alt=\"image\" src=\"https://user-images.githubusercontent.com/709451/235342300-d5c734d7-77bc-4cc3-84bd-33856ace8a62.png\">\r\n"
+  },
+  {
+   "author": "participant9",
+   "created_at": "2023-04-30T08:50:52Z",
+   "body": "Works great, thanks!\r\n<img width=\"538\" alt=\"image\" src=\"https://user-images.githubusercontent.com/3526922/235344352-74972bd3-1d9b-4182-bce1-c319386c8b4a.png\">\r\n"
+  },
+  {
+   "author": "participant10",
+   "created_at": "2023-06-01T09:03:00Z",
+   "body": "Hello,\r\nI'm doing some examples of add-ons with ziglang.\r\nBun works wonderfully with the following examples:\r\n- [https://github.com/participant10/node-addon-example-function-call-zig](https://github.com/participant10/node-addon-example-function-call-zig)\r\n- [https://github.com/participant10/node-addon-example-buffer-zig](https://github.com/participant10/node-addon-example-buffer-zig)\r\n\r\nIt breaks, 'core dumped', with the following equivalent examples:\r\n- [https://github.com/participant10/node-addon-example-async-work-thread-safe-function-zig](https://github.com/participant10/node-addon-example-async-work-thread-safe-function-zig)\r\n\r\n```bash\r\ncd node-addon-example-async-work-thread-safe-function-zig\r\n# Bun\r\nbun example.js \r\nSegmentation fault (core dumped)\r\n\r\n# With nodejs\r\nnode example.js\r\nReceived prime from secondary thread: 7919\r\nReceived prime from secondary thread: 17389\r\nReceived prime from secondary thread: 27449\r\n...\r\n```\r\n\r\n- [https://github.com/nodejs/node-addon-examples/tree/main/async_work_thread_safe_function/napi](https://github.com/nodejs/node-addon-examples/tree/main/async_work_thread_safe_function/napi)\r\n\r\n```bash\r\ncd node-addon-examples/async_work_thread_safe_function/napi\r\n# Bun\r\nbun: ../binding.c:231: napi_register_module_v1: Assertion `status == napi_ok' failed.\r\nAborted (core dumped)\r\n\r\n# With nodejs\r\nnode index.js \r\nReceived prime from secondary thread: 7919\r\nReceived prime from secondary thread: 17389\r\nReceived prime from secondary thread: 27449\r\n...\r\n```\r\n\r\nBun version\r\n```bash\r\nbun --version\r\n0.6.5\r\n```\r\nNodejs version\r\n```bash\r\nnode --version\r\nv20.2.0\r\n```\r\n\r\nDoes it have a known cause?\r\nMany thanks for your work."
+  },
+  {
+   "author": "participant11",
+   "created_at": "2023-07-22T20:31:49Z",
+   "body": "NPM module `sodium-native` is not working due to undefined exports. My understanding of C and N-Api is too limited to understand what is really happening, but the module seems to use only n-api features that are marked as supported in the support list at the head of this issue.\r\nBug demonstrated here #3652 "
+  },
+  {
+   "author": "participant10",
+   "created_at": "2023-07-23T17:08:36Z",
+   "body": "This is not working yet:\r\n- [https://github.com/participant10/node-addon-example-async-work-thread-safe-function-zig](https://github.com/participant10/node-addon-example-async-work-thread-safe-function-zig)\r\n\r\nBut this other new version works with bun:\r\n\r\n- [https://github.com/participant10/node-addon-example-async-work-thread-safe-function-multiple-zig](https://github.com/participant10/node-addon-example-async-work-thread-safe-function-multiple-zig)\r\n\r\nBun version\r\n```bash\r\nbun --version\r\n0.7.0\r\n```\r\nNodejs version\r\n```bash\r\nnode --version\r\nv20.5.0\r\n```\r\n"
+  },
+  {
+   "author": "participant12",
+   "created_at": "2023-08-23T12:37:49Z",
+   "body": "Having a napi_register_module_v1 related error with [ganache](https://github.com/trufflesuite/ganache) as well:\r\n\r\n```\r\n> bun src/gabacge_test.ts\r\nbigint: Failed to load bindings, pure JS will be used (try npm run rebuild?)\r\nThis version of µWS is not compatible with your Node.js build:\r\n\r\nTypeError: symbol 'napi_register_module_v1' not found in native module. Is this a Node API (napi) module?\r\nFalling back to a NodeJS implementation; performance may be degraded.\r\n\r\n(stack trace)\r\n          ^\r\nerror: Premature close\r\n code: \"ERR_STREAM_PREMATURE_CLOSE\"\r\n\r\n      at new NodeError (node:stream:2:5616)\r\n      at node:stream:2:48388\r\n      at emitCloseNT (node:stream:2:72318)\r\n```\r\nExample:\r\n\r\n```js\r\nimport ganache from 'ganache';\r\n\r\nconst options = {\r\n    fork: 'https://bsc-dataseed.binance.org'\r\n}\r\n\r\nconst server = ganache.server(options);\r\n\r\nserver.listen(port, async (err) => {\r\n\tif (err) throw err;\r\n\tconsole.log(`ganache listening on port ${port}...`);\r\n});\r\n```\r\n"
+  },
+  {
+   "author": "participant13",
+   "created_at": "2023-09-19T21:48:02Z",
+   "body": "The above mention from an issue in keccak is interesting:\r\n\r\n1. In keccak, we detect if the NAPI native build succeeded with node-gyp-build.\r\n2. If it fails, we try-catch the node-gyp-build require failure and fallback to a JS implementation.\r\n\r\nBut using bun:\r\n\r\nThe build succeeds and the node-gyp-build require succeeds...... returning an empty object `{}` instead of a function like it should.\r\n\r\nSo our fallback mechanism doesn't work with bun and users get cryptic errors (see the issue).\r\n\r\nIt would be nice if bun could at least throw an error when it tries to build / run something it can't support, that way our existing mechanism would have caught the issue.\r\n\r\nLet me know if this should be a separate issue. Thanks."
+  },
+  {
+   "author": "participant14",
+   "created_at": "2023-09-26T12:59:55Z",
+   "body": "Bun as of v1.0.3 imports Napi functions as object (in node: typeof x -> 'function', in bun: typeof x -> 'object'). \r\nThis renders the imported Napi function useless.\r\nFor me it worked to recompile myNapi code with an object returned:\r\n`exports.Set('myfunc`, ....)`  insted of `exports = ...`.\r\nOf course such a recompile (actually involving a small redesign) is not always feasable.\r\nIt should be treated as bug and eventually fixed.\r\n\r\n"
+  },
+  {
+   "author": "participant15",
+   "created_at": "2023-10-11T23:18:42Z",
+   "body": "Another compatibility request: `cpu-features`, which is used transitively by libraries like `dockerode` and `node-ssh` via `ssh2`. Importing `cpu-features` currently fails with the following error about missing symbols:\r\n\r\n```\r\ndyld[60820]: missing symbol called\r\n[1]    60820 killed     bun index.mjs\r\n```\r\n\r\nAFAICT this is an NAPI issue; let me know if that's not the case. This is blocking us from adopting Bun in a variety of our projects."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-10-12T16:19:22Z",
+   "body": "@participant15 `cpu-features` [appears to use](https://github.com/mscdex/cpu-features/blob/master/src/binding.cc#L3) [`nan`](https://www.npmjs.com/package/nan) which links directly to the V8 headers instead of the Node-API stable C headers.\r\n\r\nThe `cpu-features` maintainers would need to update their library to use Node-API in order to be compatible with `bun`."
+  },
+  {
+   "author": "participant15",
+   "created_at": "2023-10-12T17:01:30Z",
+   "body": "@participant3 ah, that's unfortunate, thanks for looking into that!\r\n\r\nThis is probably a difficult ask, but is it possible to make `require('cpu-features')` fail with a Node error instead of crashing the process? Most packages that use `cpu-features` wrap its require in `try`/`catch` so they can proceed even if it isn't available. This would allow Bun to continue executing, albeit without access to `cpu-features`, which is tolerable in a lot of cases."
+  },
+  {
+   "author": "participant16",
+   "created_at": "2023-11-01T09:33:16Z",
+   "body": "Hey guys! Any plans to support `napi_env` and `napi_callback_info`? I'm trying to use [`@elgato-stream-deck/node`](https://www.npmjs.com/package/@elgato-stream-deck/node), but I'm receiving a segfault.\r\n\r\n<details>\r\n  <summary>gdb output</summary>\r\n\r\n```\r\n  (gdb) run run src/index.ts\r\nStarting program: /home/<user>/.bun/bin/bun run src/index.ts\r\n[Thread debugging using libthread_db enabled]\r\nUsing host libthread_db library \"/usr/lib/libthread_db.so.1\".\r\n[New Thread 0x7fffefc6a6c0 (LWP 144824)]\r\n[New Thread 0x7fffa93e66c0 (LWP 144825)]\r\n[New Thread 0x7fffa8be56c0 (LWP 144826)]\r\n[New Thread 0x7fffa83e46c0 (LWP 144827)]\r\n[New Thread 0x7fffa7be36c0 (LWP 144828)]\r\n[New Thread 0x7fffa73e26c0 (LWP 144829)]\r\n[New Thread 0x7fffa6be16c0 (LWP 144830)]\r\n[New Thread 0x7fffa63e06c0 (LWP 144831)]\r\n[New Thread 0x7fffa5bdf6c0 (LWP 144832)]\r\n[New Thread 0x7fff9ffff6c0 (LWP 144833)]\r\n[New Thread 0x7fff9effe6c0 (LWP 144834)]\r\n[New Thread 0x7fffa4bde6c0 (LWP 144835)]\r\n[New Thread 0x7fff9dffd6c0 (LWP 144836)]\r\n[New Thread 0x7fff9d7fc6c0 (LWP 144837)]\r\n\r\n(process:144821): VIPS-WARNING **: 06:26:08.031: unable to load \"/usr/lib/vips-modules-8.14/vips-openslide.so\" -- libopenslide.so.0: cannot open shared object file: No such file or directory\r\n[New Thread 0x7fff87fff6c0 (LWP 144877)]\r\n[New Thread 0x7fff86ffe6c0 (LWP 144879)]\r\n[New Thread 0x7fff85ffd6c0 (LWP 144880)]\r\n[Detaching after vfork from child process 144882]\r\n[New Thread 0x7fff8cbff6c0 (LWP 144883)]\r\n[New Thread 0x7fff84ffc6c0 (LWP 144884)]\r\n[New Thread 0x7fff77fff6c0 (LWP 144885)]\r\n[New Thread 0x7fff76ffe6c0 (LWP 144886)]\r\n[New Thread 0x7fff75ffd6c0 (LWP 144887)]\r\n[New Thread 0x7fff63fff6c0 (LWP 144889)]\r\n[New Thread 0x7fff62ffe6c0 (LWP 144891)]\r\n[New Thread 0x7fff61ffd6c0 (LWP 144893)]\r\n[New Thread 0x7fff4ffff6c0 (LWP 144895)]\r\n[New Thread 0x7fff4effe6c0 (LWP 144899)]\r\n[New Thread 0x7fff4dffd6c0 (LWP 144905)]\r\n[New Thread 0x7fff3ffff6c0 (LWP 144908)]\r\n[New Thread 0x7fff74ffc6c0 (LWP 144909)]\r\n[New Thread 0x7fff60ffc6c0 (LWP 144911)]\r\n[New Thread 0x7fff4cffc6c0 (LWP 144912)]\r\n[New Thread 0x7fff3effe6c0 (LWP 144913)]\r\n[New Thread 0x7fff3e7fd6c0 (LWP 144914)]\r\n[New Thread 0x7fff3dffc6c0 (LWP 144915)]\r\n[New Thread 0x7fff3d7fb6c0 (LWP 144916)]\r\n[New Thread 0x7fff3cffa6c0 (LWP 144917)]\r\n[New Thread 0x7fff1ffff6c0 (LWP 144918)]\r\n[New Thread 0x7fff1f7fe6c0 (LWP 144919)]\r\n[New Thread 0x7fff1effd6c0 (LWP 144920)]\r\n[New Thread 0x7fff1e7fc6c0 (LWP 144921)]\r\n[New Thread 0x7fff1dffb6c0 (LWP 144922)]\r\n[New Thread 0x7fff1d7fa6c0 (LWP 144923)]\r\n[New Thread 0x7fff1cff96c0 (LWP 144924)]\r\n[New Thread 0x7fff03fff6c0 (LWP 144925)]\r\n[New Thread 0x7fff037fe6c0 (LWP 144926)]\r\nvips_image_dispose: temp-231 icc_transform computed 132%\r\n[New Thread 0x7fff02ffd6c0 (LWP 144927)]\r\n[New Thread 0x7fff027fc6c0 (LWP 144929)]\r\nvips_image_dispose: temp-201 icc_transform computed 132%\r\n\r\nThread 1 \"bun\" received signal SIGSEGV, Segmentation fault.\r\n0x0000000000000000 in ?? ()\r\n(gdb) bt\r\n#0  0x0000000000000000 in  ()\r\n#1  0x00007fff8f39c1a9 in Napi::InstanceWrap<HID>::InstanceMethodCallbackWrapper(napi_env__*, napi_callback_info__*)::{lambda()#1}::operator()() const (this=<synthetic pointer>) at /home/<user>/projects/node/node-hid/node_modules/node-addon-api/napi-inl.h:3565\r\n#2  Napi::details::WrapCallback<Napi::InstanceWrap<HID>::InstanceMethodCallbackWrapper(napi_env__*, napi_callback_info__*)::{lambda()#1}>(Napi::InstanceWrap<HID>::InstanceMethodCallbackWrapper(napi_env__*, napi_callback_info__*)::{lambda()#1}) (callback=...)\r\n    at /home/<user>/projects/node/node-hid/node_modules/node-addon-api/napi-inl.h:74\r\n#3  Napi::InstanceWrap<HID>::InstanceMethodCallbackWrapper(napi_env__*, napi_callback_info__*) (env=<optimized out>, info=<optimized out>)\r\n    at /home/<user>/projects/node/node-hid/node_modules/node-addon-api/napi-inl.h:3558\r\n#4  0x00007fffad4741b8 in  ()\r\n#5  0x00007ffffff924e0 in  ()\r\n#6  0x00007fffad47013c in  ()\r\n#7  0x0000000000000000 in  ()\r\n(gdb) exit\r\n```\r\n\r\n</details>\r\n\r\n<details>\r\n  <summary>lldb output</summary>\r\n\r\n```\r\n  (lldb) run run src/index.ts\r\nProcess 142516 launched: '/home/<user>/.bun/bin/bun' (x86_64)\r\n\r\n(process:142516): VIPS-WARNING **: 06:24:36.945: unable to load \"/usr/lib/vips-modules-8.14/vips-openslide.so\" -- libopenslide.so.0: cannot open shared object file: No such file or directory\r\nProcess 142516 stopped and restarted: thread 2 received signal: SIGCHLD\r\nProcess 142516 stopped\r\n* thread #1, name = 'bun', stop reason = signal SIGSEGV: invalid address (fault address: 0x55500e269272)\r\n    frame #0: 0x000055500e269272\r\nerror: memory read failed for 0x55500e269200\r\n(lldb) bt\r\n* thread #1, name = 'bun', stop reason = signal SIGSEGV: invalid address (fault address: 0x55500e269272)\r\n  * frame #0: 0x000055500e269272\r\n    frame #1: 0x00007fff8f39c1a9 HID_hidraw.node`Napi::InstanceWrap<HID>::InstanceMethodCallbackWrapper(napi_env__*, napi_callback_info__*) at napi-inl.h:3565:27\r\n    frame #2: 0x00007fff8f39c0bf HID_hidraw.node`Napi::InstanceWrap<HID>::InstanceMethodCallbackWrapper(napi_env__*, napi_callback_info__*) [inlined] napi_value__* Napi::details::WrapCallback<Napi::InstanceWrap<HID>::InstanceMethodCallbackWrapper(napi_env__*, napi_callback_info__*)::'lambda'()>(callback=<unavailable>) at napi-inl.h:74:20\r\n    frame #3: 0x00007fff8f39c0bf HID_hidraw.node`Napi::InstanceWrap<HID>::InstanceMethodCallbackWrapper(env=<unavailable>, info=<unavailable>) at napi-inl.h:3558:31\r\n    frame #4: 0x00007fffad4741b8\r\n    frame #5: 0x00007fffad47013c\r\n    frame #6: 0x00007fffad4fbb1d\r\n    frame #7: 0x00007fffad50b0f9\r\n    frame #8: 0x0000555558faae71 bun`___lldb_unnamed_symbol31059 + 125729\r\n    frame #9: 0x00007fffad4faf59\r\n    frame #10: 0x00007fffad50b0f9\r\n    frame #11: 0x00007fffad53d7fc\r\n    frame #12: 0x00007fffad4e320d\r\n    frame #13: 0x0000555558f8c9f0 bun`___lldb_unnamed_symbol31059 + 1696\r\n    frame #14: 0x0000555559e31129 bun`___lldb_unnamed_symbol49750 + 1961\r\n    frame #15: 0x000055555a12c944 bun`___lldb_unnamed_symbol52058 + 212\r\n    frame #16: 0x000055555a2d43db bun`___lldb_unnamed_symbol53714 + 379\r\n    frame #17: 0x000055555a4f7bcd bun`___lldb_unnamed_symbol55442 + 285\r\n    frame #18: 0x000055555902c47d bun`___lldb_unnamed_symbol31436 + 13\r\n    frame #19: 0x00007fffad4741b8\r\n    frame #20: 0x00007fffad4fd1c3\r\n    frame #21: 0x0000555558f8c9f0 bun`___lldb_unnamed_symbol31059 + 1696\r\n    frame #22: 0x0000555559e31129 bun`___lldb_unnamed_symbol49750 + 1961\r\n    frame #23: 0x000055555a12c6cb bun`___lldb_unnamed_symbol52054 + 235\r\n    frame #24: 0x00005555590676a3 bun`___lldb_unnamed_symbol31805 + 259\r\n    frame #25: 0x0000555558477ef2 bun`___lldb_unnamed_symbol6403 + 1458\r\n    frame #26: 0x0000555558106887 bun`___lldb_unnamed_symbol2949 + 135\r\n    frame #27: 0x0000555558052087 bun`___lldb_unnamed_symbol2394 + 983\r\n    frame #28: 0x0000555559163574 bun`___lldb_unnamed_symbol32992 + 36\r\n    frame #29: 0x0000555557fc1101 bun`___lldb_unnamed_symbol2154 + 1313\r\n    frame #30: 0x0000555557fc2187 bun`___lldb_unnamed_symbol2155 + 4023\r\n    frame #31: 0x0000555557d3f53f bun`___lldb_unnamed_symbol998 + 3791\r\n    frame #32: 0x0000555557d3e33a bun`___lldb_unnamed_symbol991 + 842\r\n    frame #33: 0x00007ffff7dd4cd0 libc.so.6`___lldb_unnamed_symbol3187 + 128\r\n    frame #34: 0x00007ffff7dd4d8a libc.so.6`__libc_start_main + 138\r\n    frame #35: 0x0000555557d3df2a bun`___lldb_unnamed_symbol990 + 42\r\n(lldb) exit\r\n```\r\n\r\n</details>"
+  },
+  {
+   "author": "participant17",
+   "created_at": "2023-12-02T07:27:53Z",
+   "body": "Any updates on this?"
+  },
+  {
+   "author": "participant18",
+   "created_at": "2024-02-05T18:35:35Z",
+   "body": "`Support resolving .node files` doesn't seem to work with the `--compile` flag, `bun` will report a successful build but no binary will be produced"
+  },
+  {
+   "author": "participant19",
+   "created_at": "2024-02-22T09:59:48Z",
+   "body": "i got the error at uWS.js also \r\n\r\nTypeError: symbol 'napi_register_module_v1' not found in native module. Is this a Node API (napi) module?\r\n\r\n"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-02-22T13:49:59Z",
+   "body": "@participant19 `uWebSockets.js` isn't a Node-API addon."
+  },
+  {
+   "author": "participant19",
+   "created_at": "2024-02-22T19:34:07Z",
+   "body": "> @participant19 `uWebSockets.js` isn't a Node-API addon.\r\n\r\nhmm i know  but i just wanna say uws dint work at bun sadly. throwing me error about \"napi_register_module_v1\" then i google about it XD and it leads me here. "
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-02-22T22:04:49Z",
+   "body": "@participant19 That issue would need to be filed with uWebSockets.js. This isn't an issue with `bun`. It's unlikely that `bun` will support native addons that don't use Node-API since they generally interact directly with V8 (which bun doesn't use)."
+  },
+  {
+   "author": "participant20",
+   "created_at": "2024-04-08T15:16:51Z",
+   "body": "For anyone experiencing NAPI  issues with `bun` and the `sqlite3` `npm` package, there is a built-in package available:\r\n\r\nhttps://bun.sh/docs/api/sqlite"
+  },
+  {
+   "author": "participant17",
+   "created_at": "2024-04-08T15:53:08Z",
+   "body": "My issue regarding `napi-nanoid` or any other rust based napi packages"
+  },
+  {
+   "author": "participant21",
+   "created_at": "2024-07-19T18:31:31Z",
+   "body": "Hey,\r\n\r\nExcuse me ignorance but I am working with OpenCV, I see that the NAPI Register module is indeed complete but at the same time I am running into an issue with [@u4/opencv4nodejs](https://github.com/UrielCh/opencv4nodejs) where by I run into a node API error:\r\n\r\n```\r\nTypeError: symbol 'napi_register_module_v1' not found in native module. Is this a Node API (napi) module?\r\n```\r\n\r\nAs mentioned by @participant3, I will also ask `opencv4nodejs` repo to see if there is a solution other than needing the make `.mjs` files to run scripts using the shell from bun and pipe the result back to bun. Any suggestions welcome."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-07-20T00:01:28Z",
+   "body": "@participant21 that addon looks like it's built with NAN and not Node-API. It won't be portable."
+  },
+  {
+   "author": "participant22",
+   "created_at": "2024-08-08T23:10:33Z",
+   "body": "One thing I've noticed is that Node can handle null `napi_value` in a reasonable manner whereas Bun would crash. For example, I have the following code:\r\n\r\n```c\r\n        if (napi_get_reference_value(env, md->js_env, &js_env) == napi_ok\r\n          && napi_get_boolean(env, true, &released) == napi_ok) {\r\n            napi_set_named_property(env, js_env, \"released\", released);\r\n        }\r\n```\r\n\r\n`md->js_env` is a weak reference so `js_env` can be null if the object has been gc'ed. Node doesn't have a problem with this. Preseumbly, the call to `napi_set_named_property` would just return a error code. `napi_create_function` in Node also doesn't have a problem with the callback returning null."
+  },
+  {
+   "author": "participant23",
+   "created_at": "2024-08-21T07:20:44Z",
+   "body": "It seems that `napi_type_tag_object` is the latest that's not supported in this list. Is there any chance it gets supported sometimes?"
+  },
+  {
+   "author": "participant24",
+   "created_at": "2024-09-11T15:49:09Z",
+   "body": "> It seems that `napi_type_tag_object` is the latest that's not supported in this list. Is there any chance it gets supported sometimes?\r\n\r\n+1\r\n\r\ntrying to run [tree-sitter](https://github.com/tree-sitter/node-tree-sitter) binding for node\r\n\r\nget:\r\n```\r\nwarning: Node-API function \"napi_type_tag_object\" is not implemented yet.\r\n Track the status of Node-API in Bun: https://github.com/oven-sh/bun/issues/158\r\n17 | var uv = (process.versions.uv || '').split('.')[0]\r\n18 | \r\n19 | module.exports = load\r\n20 | \r\n21 | function load (dir) {\r\n22 |   return runtimeRequire(load.resolve(dir))\r\n              ^\r\nerror: ENOENT: No such file or directory\r\n      at load (/Users/<user>/node_modules/node-gyp-build/node-gyp-build.js:22:10)\r\n      at /Users/<user>/node_modules/tree-sitter-javascript/bindings/node/index.js:3:8\r\n\r\nBun v1.1.27 (macOS arm64)\r\n```"
+  },
+  {
+   "author": "participant25",
+   "created_at": "2024-09-11T16:33:45Z",
+   "body": "Hey everyone! I've been following this issue for over a year and am very excited to see progress. Is it possible to slightly extend the list?\r\n\r\nNAPI doesn't provide a single good interface to inspect the contents of strings and other buffers without copying them, which makes writing high-performance native extensions for binary data a complete nightmare. I was stuck with this while working on [StringZilla](https://github.com/participant25/stringzilla) JS bindings and can't afford to copy a string if the operation in question is something like substring search, fuzzy matching, hashing, or something else lightweight.\r\n\r\nAssuming Bun's focus on performance and development velocity, I felt it's wiser to propose such extensions here rather than to NAPI directly. I'm happy to open a separate issue if it makes sense 🤗\r\n\r\nThanks to everyone involved!"
+  },
+  {
+   "author": "participant26",
+   "created_at": "2024-12-16T19:57:28Z",
+   "body": "There's a [TODO](https://github.com/oven-sh/bun/blob/7633f3cc35accfaca2f822cb47a52e06894bb996/src/napi/napi.zig#L1035) in the code regarding the `lossless` out parameter of `napi_get_value_bigint_int64` and `napi_get_value_bigint_uint64`, but these functions are marked as \"done\" in the list above. Is there a plan to implement this parameter? Is that tracked anywhere (other than this issue)?\n\n(The fact that this parameter is not implement likely leads to this [issue](https://github.com/duckdb/duckdb-node-neo/issues/69) with the DuckDB Node \"Neo\" bindings.)"
+  },
+  {
+   "author": "participant27",
+   "created_at": "2024-12-16T20:10:56Z",
+   "body": "Thanks for bringing this up. `napi_get_value_bigint_{int,uint}64` have been implemented more correctly in PR #14501, but it'll take a bit of time to merge that PR completely as it's a very extensive rewrite of almost all of our Node-API layer. But since the BigInt issue is affecting a package and the change is much more scoped, I can cherry-pick the fixes onto a new PR which we can ship sooner."
+  },
+  {
+   "author": "participant28",
+   "created_at": "2025-01-07T19:11:44Z",
+   "body": "pleaseeeee fix `napi_type_tag_object`"
+  },
+  {
+   "author": "participant27",
+   "created_at": "2025-01-07T19:15:56Z",
+   "body": "@participant28, I'm not aware of any current problems with `napi_type_tag_object`. We've supported that since Bun v1.1.34.\n\nIf you're encountering a bug in that function on the latest version of Bun, could you open a separate issue describing the error?"
+  },
+  {
+   "author": "participant29",
+   "created_at": "2025-02-18T13:18:01Z",
+   "body": "Hello, I do use the napi API (thanks for creating it) but `napi_create_function` seems to be buggy @reporter - the created functions get refered as \"Anonymous Class\" inside of Bun. \n\nThey still work, thought. But I would wish that they are \"Anonymous Function\" as they should"
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "oven-sh/bun",
+  "default_branch": "main",
+  "commit_sha": "7b125c9731815452c62fbfb69b241dc9e4eb7c29",
+  "as_of": "2022-05-05T01:52:48Z",
+  "method": "github_commits_until"
+ },
+ "images": [
+  {
+   "where": "c15",
+   "source_url": "https://user-images.githubusercontent.com/3526922/235327422-998b63dc-3dfc-44b8-88a0-7a05db834972.png",
+   "file": "gh_oven-sh_bun_158_img0.png"
+  },
+  {
+   "where": "c17",
+   "source_url": "https://user-images.githubusercontent.com/3526922/235341498-b1a99d9f-aedb-45e9-87c0-f0a3517ffe15.png",
+   "file": "gh_oven-sh_bun_158_img1.png"
+  },
+  {
+   "where": "c18",
+   "source_url": "https://user-images.githubusercontent.com/709451/235342300-d5c734d7-77bc-4cc3-84bd-33856ace8a62.png",
+   "file": "gh_oven-sh_bun_158_img2.png"
+  },
+  {
+   "where": "c19",
+   "source_url": "https://user-images.githubusercontent.com/3526922/235344352-74972bd3-1d9b-4182-bce1-c319386c8b4a.png",
+   "file": "gh_oven-sh_bun_158_img3.png"
+  }
+ ],
+ "slug": "gh_oven-sh_bun_158"
+}

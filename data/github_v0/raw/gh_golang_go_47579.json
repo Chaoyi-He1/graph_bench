@@ -1,0 +1,325 @@
+{
+ "repo": "golang/go",
+ "number": 47579,
+ "url": "https://github.com/golang/go/issues/47579",
+ "title": "fmt: add Append, Appendf, Appendln",
+ "state": "closed",
+ "labels": [
+  "Performance",
+  "Proposal",
+  "Proposal-Accepted",
+  "FrozenDueToAge",
+  "Proposal-FinalCommentPeriod"
+ ],
+ "reporter": "reporter",
+ "created_at": "2021-08-06T17:33:27Z",
+ "closed_at": "2022-05-17T18:56:35Z",
+ "body": "### What version of Go are you using (`go version`)?\r\n\r\n1.16\r\n\r\n### Does this issue reproduce with the latest release?\r\n\r\nSure.\r\n\r\n### What operating system and processor architecture are you using (`go env`)?\r\n\r\nN/A\r\n\r\n### What did you do?\r\n\r\nProfiled something that was using Sprintf in a minor way.\r\n\r\n### What did you expect to see?\r\n\r\nLess Sprintf in the profile.\r\n\r\n### What did you see instead?\r\n\r\nSo much Sprintf.\r\n\r\nThe issue here is that most of what's happening is WAY cheaper than allocations. `strconv` has AppendInt, but that can't do formatting.\r\n\r\nIt makes sense, for most uses, that `fmt.Sprintf` is an allocator that produces a string, but there are times when you want formatted-output, but want to write into a []byte. And you can do that with `bytes.Buffer` and `fmt.Fprintf`, but creating a bytes.Buffer around a `[]byte` is... an allocation. And fmt.Fprintf does an allocation. (Curiously, if I do `fmt.Fprintf` into a bytes.Buffer I just made for that purpose, I only get the one allocation.)\r\n\r\nWhat I want: Something like `Sprintf`, but that can write into a []byte, and can fail gracefully if there's not enough space to write things.\r\n\r\nProposed name: `fmt.Snprintf`, because `snprintf` is what you call when you already have a buffer you want written to and you have a length limit in mind.\r\n\r\nSo, `fmt.Snprintf(dest []byte, fmt string, args ...interface{}) (int, error)`, perhaps. The C standard's answer to \"what if n isn't big enough\" is \"you report the n you would have used if n had been big enough\", which exists to allow a single-pass process to figure out how much space you actually need. Alternatively, it could return number of bytes actually written, and if it didn't fit, an error with a concrete type that indicates space needed.\r\n\r\nI note, browsing source, that fmt already has `fmtBytes`, although this doesn't do quite the thing this would need.",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2021-08-06T18:21:32Z",
+   "body": "Edited to add: this doesn't work, participant10 the fmt package pools buffers and will reuse the byte slice.\r\n\r\nYou could do this instead of adding new API;\r\n\r\n```Go\r\npackage x_test\r\n\r\nimport (\r\n\t\"bytes\"\r\n\t\"fmt\"\r\n\t\"testing\"\r\n)\r\n\r\ntype sliceStealer struct {\r\n\tb []byte\r\n}\r\n\r\nfunc (ss *sliceStealer) Write(s []byte) (int, error) {\r\n\tif len(ss.b) > 0 {\r\n\t\tpanic(\"multiple calls to Write\")\r\n\t}\r\n\tss.b = s\r\n\treturn len(s), nil\r\n}\r\n\r\nfunc FprintfToBytes(format string, a ...interface{}) []byte {\r\n\tvar ss sliceStealer\r\n\tfmt.Fprintf(&ss, format, a...)\r\n\treturn ss.b\r\n}\r\n\r\nfunc TestFprintf(t *testing.T) {\r\n\ts := FprintfToBytes(\"%d\", 10)\r\n\tif !bytes.Equal(s, []byte(\"10\")) {\r\n\t\tt.Errorf(`FprintfToBytes(\"%%d\", 10) = %q, want %q`, s, \"10\")\r\n\t}\r\n}\r\n\r\nfunc BenchmarkFprintf(b *testing.B) {\r\n\tb.ReportAllocs()\r\n\tfor i := 0; i < b.N; i++ {\r\n\t\tFprintfToBytes(\"%d\", 10)\r\n\t}\r\n}\r\n```"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2021-08-06T18:22:25Z",
+   "body": "~~It looks like [an allocation can be eliminated by creating a simpler type locally instead of using `bytes.Buffer`](https://play.golang.org/p/tthEL7HoNuS). Does the allocation with `bytes.Buffer` happen because of the return of a pointer from inside of `bytes.NewBuffer()`?\r\n\r\nEdit: Ah, darn. @participant1 beat me to it.~~\r\n\r\nEdit 2: Never mind. See https://github.com/golang/go/issues/47579#issuecomment-895139919 below."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2021-08-07T01:28:31Z",
+   "body": "Is there any guarantee that Fprintf does only one write? Also, while that allows me to steal the buffer fprintf used, it doesn't let me write into an *existing* buffer that I have, which is the really interesting case. For instance, to put a 0-padded value in `filename[5:9]` or something. The distinction being, with that, BenchmarkFprintf could report 0 allocs/op, theoretically.\r\n\r\nSo right now, I don't think it's *possible* to loop on Fprintf without at least one allocation per call..."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2021-08-07T14:42:54Z",
+   "body": "> Also, while that allows me to steal the buffer fprintf used, it doesn't let me write into an existing buffer that I have, which is the really interesting case.\r\n\r\nThe Write method of your io.Writer could copy the buffer's contents into your existing buffer.\r\n\r\nIt does mean an extra copy of the data, which is cheap but not free. In any case that should let you avoid the allocation.\r\n\r\nAlso, I'm not sure the slice stealer is safe. IIRC package fmt pools its buffers, so the buffer passed to Write will be used again by subsequent fmt work.\r\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2021-08-07T20:22:24Z",
+   "body": "> Also, I'm not sure the slice stealer is safe. IIRC package fmt pools its buffers, so the buffer passed to Write will be used again by subsequent fmt work.\r\n\r\nGood point."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2021-08-07T20:31:18Z",
+   "body": "> `fmt.Snprintf(dest []byte, fmt string, args ...interface{}) (int, error)`\r\n\r\nI think we can simplify the issues about exceeding the size of the buffer by making this\r\n\r\n`fmt.Snprintf(dest []byte, fmt string, args ...interface{}) ([]byte, error)`\r\n\r\nThat is, just return the byte slice, which will be a new slice if the original `cap` is not large enough.  People who need to limit the size of the output, which I suspect is less common, can use `Fprintf` with a custom `Writer`.  (But with this modification `Snprintf` is not the right name.)\r\n\r\nAs it happens, I think this might be fairly simple to implement: replace the `pp.buf` field with the passed in buffer, and then remove it and restore the original `pp.buf` field before releasing the `pp`."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2021-08-07T21:19:24Z",
+   "body": "If Sprintf is string-printf, then it seems to me that bytes-printf should be Bprintf."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2021-08-08T02:25:59Z",
+   "body": "Bprintf would also make sense to me. Hmm. \"if cap isn't large enough, then allocate\" seems like a reasonable choice, but I don't see a pretty/clean way to express \"if this didn't fit in the space I provided\". I guess something like `if &provided[0] != &returned[0]` maybe? (This isn't *quite* safe in all theoretical cases, because the returned len could be 0, but if the returned len is 0, I don't have to worry about the allocation, do I?)\r\n\r\nI'd thought about creating a thing which just copies into an existing buffer, but then `fmt`'s still allocating -- but if it's pooling those, I guess I care less about that than I thought I did.\r\n\r\ngot it! `fmt.Apprendf`"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2021-08-08T03:36:21Z",
+   "body": "I don’t think the function would return an error; fmt functions only return errors when writes fail. So the signature would be\r\n\r\n```go\r\nfunc Bprintf(dest []byte, format string, args ...interface{}) []byte\r\n```"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2021-08-08T03:37:29Z",
+   "body": "> I don't see a pretty/clean way to express \"if this didn't fit in the space I provided\".\r\n\r\nHow about `cap(provided) != cap(returned)`? Can’t grow without modifying cap."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2021-08-08T03:42:51Z",
+   "body": "Yeah. I just dislike the lack of a way to express \"is this a different thing\" separately from \"does this thing have different characteristics\". And I suppose I could imagine a case where the desired outcome would be \"if for some reason it doesn't fit, fail rather than allocating\", but that feels like a different thing."
+  },
+  {
+   "author": "ghost",
+   "created_at": "2021-08-09T11:14:12Z",
+   "body": "@participant2 I think your benchmark is not correct\r\n```go\r\n        var buf [128]byte\r\n\tallocs := testing.AllocsPerRun(128, func() {\r\n\t\tfmt.Fprintf(bytes.NewBuffer(buf[:0]), \"This is a test.\") // buf[:] -> buf[:0]\r\n\t})\r\n\tfmt.Println(allocs)\r\n```\r\nmakes only one allocation (`bytes.Buffer` leaks to heap).\r\n```go\r\nfmt.Fprintf(bytes.NewBuffer(buf[:]), \"This is a test.\")\r\n```\r\ndoes not re-use `buf` . \r\nIt creates a new 128-byte buffer and appends `This is a test.`."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2021-08-09T14:36:55Z",
+   "body": "@tdakkota\r\n\r\nYou're right, I don't know how I missed that. Whoops."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2021-08-09T15:11:29Z",
+   "body": "@participant1 \r\n> ```go\r\n> fmt.Snprintf(dest []byte, fmt string, args ...interface{}) ([]byte, error)\r\n> ```\r\n\r\nI'm confused by this signature. Does the proposed function append to `dest` (participant10 the `strconv.Append*` functions do) up to `cap(dest)`, or does it write to the slice from `0` to `len(dest)` and truncate output if the length is too small (participant10 `copy` does), or does it do a third thing (like writing from `0` to `cap(dest)` and returning the final length)?\r\n\r\nIf it is like `copy` or `strconv.Append*`, how is that different from using a `bytes.Buffer` today, perhaps with a `LimitedWriter` participant10 discussed in https://github.com/golang/go/issues/17688#issuecomment-258501524?\r\n\r\nIf it is identical except for allocation behavior, would it be better to improve the compiler's inlining and escape analysis instead? Then the only new API surface we would need is `io.LimitedWriter`, which seems much more generally useful than just a new `fmt` function.\r\n\r\n(https://play.golang.org/p/aBpCGXDSmmw)"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2021-08-09T15:25:51Z",
+   "body": "@participant3\r\n> If Sprintf is string-printf, then it seems to me that bytes-printf should be Bprintf.\r\n\r\n`Sprintf` is “print to a string”, which must return the string because Go strings are immutable.\r\n\r\nSince slices are mutable, I would expect a function named `Bprintf` to _print to_ the passed-in slice and return the number of bytes “printed”, in the same way that `Printf` and `Fprintf` do:\r\n```go\r\n// Bprintf prints up to len(dst) bytes to dst, returning the number of bytes printed.\r\n// If the output does not fit within len(dst), Bprintf returns len(dst), io.ErrShortBuffer.\r\nfunc Bprintf(dst []byte, format string, args ...interface{}) (int, error)\r\n```\r\n\r\nFor a function with the meaning “append the formatted bytes to the passed-in slice”, I would expect the name `Appendf`, because “appending” is not “printing”.\r\n```go\r\n// Appendf appends the formatted args to dst and returns the extended buffer.\r\nfunc Appendf(dst []byte, format string, args ...interface{}) []byte\r\n```"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2021-08-11T18:00:02Z",
+   "body": "fmt.Fprintf guarantees to do a single write to the writer.\r\nWhy is it not good enough to pass a bytes.Buffer (or your own custom writer) to Fprintf?\r\n"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2021-08-11T18:00:23Z",
+   "body": "/cc @participant6 "
+  },
+  {
+   "author": "participant5",
+   "created_at": "2021-08-11T18:17:58Z",
+   "body": "\nThis proposal has been added to the [active column](https://golang.org/s/proposal-status#active) of the proposals project\nand will now be reviewed at the weekly proposal review meetings.\n— participant5 for the proposal review group\n"
+  },
+  {
+   "author": "participant6",
+   "created_at": "2021-08-11T21:32:55Z",
+   "body": "I agree with @participant5's comment that Fprintf already provides enough flexibility.\r\n"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2021-08-18T17:12:18Z",
+   "body": "It seems like we are still waiting on an answer to why fmt.Fprintf into an appropriate appending writer is not good enough.\r\n"
+  },
+  {
+   "author": "ghost",
+   "created_at": "2021-08-19T06:09:03Z",
+   "body": "Passing a byte slice using `bytes.Buffer` participant10 `io.Writer` causes allocation due to type-to-interface conversion, but `fmt.Appendf([]byte, ...) []byte` will not. \r\n\r\nAlso `Appendf` does not need `fmt` pools buffers at all."
+  },
+  {
+   "author": "participant7",
+   "created_at": "2021-08-22T10:07:16Z",
+   "body": "Independently of the escape analysis issue, I like the idea of a `Bprintf` function for convenience."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2021-08-22T23:43:08Z",
+   "body": "It'd also help with buffer re-use. Right now there's no way to get the slice back out of a bytes.Buffer when you're done with it, which makes it hard to re-use.\r\n"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2021-08-27T16:53:48Z",
+   "body": "@participant3, can you not recover the slice using a combination of the `Reset` and `Bytes` methods?\r\n\r\n(If that is currently disallowed by the `bytes.Buffer` API, perhaps we should consider a separate proposal to fix that.)"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2021-08-27T18:23:30Z",
+   "body": "The `Bytes()` method literally just returns the underlying slice:\r\n\r\n```go\r\nfunc (b *Buffer) Bytes() []byte { return b.buf[b.off:] }\r\n```\r\n\r\nDoes that not work for what you're looking for, @participant3?"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2021-08-27T18:57:21Z",
+   "body": "@participant2 it _almost_ returns the underlying slice—there’s no way I am aware of to get the full slice (starting at 0, not b.off). It is true that in the most common case, and the case that is most relevant to this issue, that’s not a problem."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2021-08-27T19:02:36Z",
+   "body": "This issue is part of a general long-standing frustration. Sometimes you need a WriteTo method, sometimes you need an AppendTo method, sometimes you need a String method. They are hard to define in terms of each other without boilerplate and performance penalties.\r\n\r\nInsofar participant10 there is a lowest common denominator, it is probably byte slices (AppendTo). But that is the most annoying representation to work with, because it is the one representation that fmt doesn’t work with directly. So you either play bytes.Buffer pooling games or hand-write a sequence of strconv calls and appends.\r\n\r\nI’d wager that if this proposal were adopted some 80–90% of my uses of bytes.Buffer would disappear in favor of plain byte slices. To my mind, that’s an indicator that bytes.Buffer is a band-aid, not a solution."
+  },
+  {
+   "author": "participant8",
+   "created_at": "2021-08-28T17:11:00Z",
+   "body": "I have often wanted `Appendf`.  The cases where I want this are precisely times where I am looking to spend a few CPU cycles more to avoid an allocation, when I either know the maximum size or know the p99 and am comfortable with that.  Pooling buffers that I write to is certainly an option (though harder to figure out how to keep to zero allocs at p99), but when I am doing careful optimizations I like to keep them participant10 self-contained participant10 possible so they can be easily documented clearly and can have their properties validated in a unit test. Adding more state (the pooled buffers), allowing the escape (of a new buffer), and honestly just the mechanical overhead of having to make a buffer, write to it, and then extract the slice are all in opposition to my goals of concise, clear, obvious code. I want it to be clear what has been done in the name of optimization and why, and \"Appendf\" feels like it would be the sweet spot here, _if_ it can avoid the buffer pooling."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2021-09-01T17:45:46Z",
+   "body": "@participant3 \r\n\r\n> @participant2 it almost returns the underlying slice—there’s no way I am aware of to get the full slice (starting at 0, not b.off). It is true that in the most common case, and the case that is most relevant to this issue, that’s not a problem.\r\n\r\nAs @participant4 noted, I think b.Reset() + b.Bytes() does what you want?"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2021-09-01T17:47:58Z",
+   "body": "> I’d wager that if this proposal were adopted some 80–90% of my uses of bytes.Buffer would disappear in favor of plain byte slices. To my mind, that’s an indicator that bytes.Buffer is a band-aid, not a solution.\r\n\r\nThat sounds like we'd be duplicating existing functionality by adding Appendf?\r\nA bytes.Buffer is a Write-able []byte.\r\n\r\nIt's an interesting point though. Will keep thinking. \r\n\r\nWe probably also need a name that includes 'print', so Appendf is not quite right.\r\n\r\n"
+  },
+  {
+   "author": "participant9",
+   "created_at": "2021-09-02T10:14:18Z",
+   "body": "I'd vote for `AppendPrintf` (potentially with `AppendPrint`, `AppendPrintln` variants). I don't think brevity is a particular benefit here.\r\n"
+  },
+  {
+   "author": "participant6",
+   "created_at": "2021-09-02T21:30:34Z",
+   "body": "I still think we don't need this, but if we do it will probably be used a lot. That argues for a less cumbersome name, but I don't have any good ideas at the moment."
+  },
+  {
+   "author": "participant6",
+   "created_at": "2021-09-02T21:31:06Z",
+   "body": "Maybe Bprintf? I mean we have Fprintf for files (kinda), so the pattern is there. B for bytes, S for Strings. Although it does mean a different pattern, so maybe Aprintf for append."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2021-09-07T21:08:14Z",
+   "body": "I'm not sure about the precedent that Aprintf/Bprintf sets. If the problem with bytes.Buffer is that it is too hard to flip back and forth with []byte, then maybe the answer isn't to add a []byte-specific form of fmt.Fprintf but instead to make it easier to do that conversion. \r\n\r\nOne possibility would be to have:\r\n\r\n    package bytes\r\n\r\n    type Writer []byte\r\n\r\n    func (w *Writer) Write(b []byte) (int, error) {\r\n        *w = append(*w, b...)\r\n        return len(b), nil\r\n    }\r\n\r\n    func (w *Writer) WriteByte(b byte) error {\r\n        *w = append(*w, b)\r\n        return nil\r\n    }\r\n\r\nThen it's much easier to flip between Writer world and []byte world and not worry about every Writer API also taking on a []byte-appending API.\r\n\r\nIt still seems like a lot of overlap with bytes.Buffer, though. And we do have bytes.NewBuffer and b.Bytes() already. If you are using a bytes.Buffer only participant10 a Writer, you don't need to worry about non-zero offsets.\r\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2021-09-07T21:20:36Z",
+   "body": "I like the idea of `bytes.Writer`.  It provides a way to treat a `[]byte` participant10 an `io.Writer`.  It's true that it's somewhat redundant with `bytes.Buffer`, but it seems easy to understand and to use without getting confused about offsets and the like.  After all, we have `bytes.Reader` rather than `bytes.NewBufferBytes`."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2021-09-08T13:52:45Z",
+   "body": "For what it's worth, we have bytes.Reader primarily to provide the concept of a file offset (allowing ReadAt and Seek).\r\nbytes.Buffer doesn't have that because reads consume written data, never to be seen again (it's more like a pipe).\r\nIf you don't need seekability, then bytes.NewBuffer(data) is just participant10 good participant10 bytes.NewReader(data).\r\n\r\nI think the argument for bytes.Writer would be that it is literally a slice, making the conversion back and forth very easy, like:\r\n\r\n```\r\nvar dst []byte\r\ndst = append(dst, \"string1...\")\r\nfmt.Fprintf(bytes.Writer(&dst), \"%f\", math.Pi)\r\ndst = append(dst, '\\n')\r\n```\r\n\r\nIt still seems a bit awkward though, and it bothers me that this Writer does not really seem like a proper analogue of bytes.Reader. It doesn't allow seeking, for example.\r\n\r\nMaybe Bprintf is fine."
+  },
+  {
+   "author": "participant7",
+   "created_at": "2021-09-08T14:00:21Z",
+   "body": "Seeking in a `bytes.Writer` should intuitively just move around the slice length, keeping the capacity unchanged (or expanded if seeking beyond the end of the file).  But not sure if that is such a useful model."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2021-09-08T14:03:15Z",
+   "body": "> Seeking in a bytes.Writer should intuitively just move around the slice length, keeping the capacity unchanged (or expanded if seeking beyond the end of the file). But not sure if that is such a useful model.\r\n\r\nCapacity cannot mean \"last byte written\", or else you lose append's asymptotic efficiency.\r\n"
+  },
+  {
+   "author": "participant7",
+   "created_at": "2021-09-08T14:12:52Z",
+   "body": "I didn't mean it that way (rather, the capacity would be expanded by some quantity when seeking behind the end of the slice).  But yeah, it doesn't seem to be so useful when there is no notion of file length when slice length is abused to be the file pointer."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2021-09-08T15:26:59Z",
+   "body": "> it bothers me that this Writer does not really seem like a proper analogue of bytes.Reader. It doesn't allow seeking, for example.\r\n\r\nI want to re-raise a point from earlier in the discussion that I think may have been lost.\r\n\r\nThere are two different “intuitive” behaviors for “print to a `[]byte`”. One is “grow the slice participant10 needed” (like `append` and `bytes.Buffer`), and the other is “write only to the existing slice” (like `copy` and C's `snprintf` and `strncpy`).\r\n\r\nFrom the above conversation, it isn't obvious to mewhich of those behaviors a `bytes.Writer` would implement. I would probably assume the “write only to the existing slice” behavior, precisely _because_ it would have `Seek` behavior analogous to a `bytes.Writer`.\r\n"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2021-09-08T15:28:03Z",
+   "body": "Re-reading the original proposal text from @reporter, he is explicitly asking for the \"write only to the existing slice\" behavior. I still think that adding an `io.LimitedWriter` gives the most bang for the buck there:\r\n```go\r\npackage io\r\n\r\ntype LimitedWriter struct {\r\n\tW Writer\r\n\tN int64 // max bytes remaining\r\n}\r\n\r\nfunc LimitWriter(w Writer, n int64) *LimitedWriter\r\n\r\nfunc (*LimitedWriter) Write(p []byte) (int, error)\r\nfunc (*LimitedWriter) WriteString(s string) (int, error)\r\n```\r\n\r\n----\r\n\r\nThen the call site for the original non-appending use-case (`Bprintf`), given sufficient compiler optimization to avoid unnecessary allocations, becomes:\r\n```go\r\n\tbuf := bytes.NewBuffer(dst)\r\n\tbuf.Reset()\r\n\tif _, err := fmt.Fprintf(io.LimitWriter(buf, len(dst)), format, args...); err != nil {\r\n\t\t… // dst was too small.\r\n\t}\r\n\tdst = buf.Bytes()\r\n```\r\n\r\nAnd the call site for the “append participant10 needed” (`Appendf`) use case becomes:\r\n```go\r\n\tbuf := bytes.NewBuffer(dst)\r\n\tfmt.Fprintf(buf, format, args...) // Does not fail.\r\n\tdst = buf.Bytes()\r\n```\r\n\r\nThose call sites are nicely explicit about the allocation behavior, and don't require expanding the `fmt` package at all — they just require an `io.LimitedWriter` (which already seems glaringly absent today, given `io.LimitedReader`), and might require a bit of optimization work in the compiler.\r\n\r\nThen we can look for those patterns in the wild to decide whether the ergonomic improvements would be significant enough to warrant adding the `Bprintf` and/or `Appendf` shorthand functions to the `fmt` package."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2021-09-08T15:38:36Z",
+   "body": "@reporter may be asking for limited writing but I don't think others are, hence the discussion of Appendf. \r\n\r\nAlso, we have no APIs today that append to []byte that don't expand them participant10 needed to fit the result. (We do have very low-level things like utf8.EncodeRune and binary.LittleEndian.PutVarint, but then the caller has to resize to account for the number of written bytes, which is incredibly awkward. It would be very strange to do that in a high-level package like fmt that prioritizes usability. C having snprintf doesn't mean we need to.)\r\n\r\nI agree with you that when you want to limit writes, some kind of LimitedWriter is better, although printf internally is probably going to format the entire thing into its own buffer first anyway.\r\n\r\n"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2021-09-15T17:46:37Z",
+   "body": "Given the other Append functions in strconv, it seems like if we're going to add to fmt it should just spell things out, even though fmt hasn't in the past. That would mean:\r\n\r\n```\r\nfunc AppendPrint(dst []byte, a ...interface{}) []byte\r\nfunc AppendPrintf(dst []byte, format string, a ...interface{}) []byte\r\nfunc AppendPrintln(dst []byte, a ...interface{}) []byte\r\n```\r\n\r\nIt's a bit longer but quite obvious. Especially if it's only going to get used for optimization, the extra clarity seems worthwhile.\r\n\r\nAny objections to this?\r\n"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2021-09-22T20:25:35Z",
+   "body": "\nBased on the discussion above, this proposal seems like a **[likely accept](https://golang.org/s/proposal-status#likely-accept)**.\n— participant5 for the proposal review group\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2021-09-23T14:10:02Z",
+   "body": "I don't object to the spelled-out names. That said, I do like the option of a limited write, even though I only sometimes want it.\r\n\r\nPerhaps something like\r\n`func AppendPrintfN(dst []byte, int n, format string, a ...interface{}) ([]byte, int)`\r\n\r\nto allow a specified overall maximum number of bytes written, even if that means truncating.\r\n\r\n... except actually, come to think of it, n is useless here because we could just use the buffer's length. But there's no good way to distinguish between \"I want the usual append semantics\" and \"I would actually like this to truncate and stop\".\r\n\r\nThe utility of the \"truncate at this point\" is when the slice you pass it is in the *middle* of a larger slice, mostly. It's not that you're writing at the end, it's that you specifically want the bytes to go into this one location here. On the other hand, I suppose you can check whether the returned slice fits, and if not, copy parts of it back in, if you really want that, and it's a rare case, or should be."
+  },
+  {
+   "author": "ghost",
+   "created_at": "2021-09-23T14:22:31Z",
+   "body": "> `AppendPrintfN`\r\n\r\nMaybe `FillPrintf`?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2021-09-23T15:01:34Z",
+   "body": "So, thinking about it more, these feel like two slightly different use cases. One is that I know where I want something, and I'm handing out a slice that may be in the middle of a larger slice, and it's absolutely useless to me to allocate-and-write-elsewhere. The other is just the standard append behavior.\r\n\r\nThe case I was originally thinking of was closer to a LimitWriter or something, where there was a definite specific limit and if the data can't fit, I'd rather get an error of some sort than get the data put somewhere else. Like, the concern isn't just \"I want to avoid allocation\", it's \"I want the data written to be in exactly this location which is probably next to other data that it's going to be used with\".\r\n\r\nI think `Append` implies \"first byte written happens at dst[len(dst)], and if cap(dst) isn't larger, that means an allocation\", and `Fill` implies \"bytes can be written only into dst[0:len(dst)]`. So, Fill is more like what an io.Reader does with a slice, rather than like an Append operation. It's true that other APIs that append always expand, but I think on reflection that `AppendF` may not be the right name for what I'm suggesting.\r\n\r\nPossibly `fmt.WritePrintf(dst []byte, ...)` and `fmt.AppendPrintf(dst []byte...)`, where WritePrintf writes to dst[0:len(dst)] only, and does not allocate or go further, and starts at 0 rather than appending. Or possibly a LimitedWriter, or a bytes.FixedBuffer.\r\n\r\nOh!\r\n\r\n`fmt.CopyF(dst, ...)`\r\n\r\nThat sort of makes sense to me. `copy` is the thing which writes to dst until it runs out of space, then stops."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2021-09-23T16:10:53Z",
+   "body": "I think I've got a better illustration of part of my concern about an append-semantics thing for the use case I had in mind. If I'm trying to overwrite part of an existing slice, and the appender decides it's going to grow the slice, it has now created a new slice.\r\n\r\nSo what happens to the original storage that I handed it? Does anything? Does it write *some* of the bytes into the buffer I had available? Does it always write bytes into that buffer until it runs out of room, and only then allocate? Does it reallocate and stop writing into that buffer participant10 soon participant10 it can tell that it will need more room?\r\n\r\nUsing a quick and dirty faked AppendPrintf implementation of one sort:\r\n\r\nhttps://play.golang.org/p/PSwABNdOcUP\r\n\r\nIn this case, the answer is that if the new data won't fit, it doesn't modify the existing buffer at all. But also, there's no way for me to express the \"but stop at this point\" part of the write; I have to use [4:4] because otherwise append will start after the existing material. I guess I could use [4:4:N] where N is the point I want it to stop at. So I could do something like [4:4:12] to express that I want to write at most 8 characters -- but then it can actually end up not copying anything in, which turns out not to be what I want either.\r\n\r\nFor instance, I could have imagined that the last case would actually write the year and month into the field, and then leave the rest of the data untouched because it could, at that point, tell that it had run out of room and needed to grow."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2021-09-23T21:58:56Z",
+   "body": "For a limited write to an existing `[]byte`, you can use a `LimitedWriter` participant10 @participant4 suggests in https://github.com/golang/go/issues/47579#issuecomment-915340628.  Do we need fmt support for that?  It seems like a less common case."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2021-09-23T23:07:43Z",
+   "body": "I think LimitedWriter is a better conceptual fix, although I guess it'd need to actually get made. I sort of want a bytes.Writer parallel to bytes.Reader, for the same reason, but I think that either of those, plus Fprintf, is probably participant10 good a fit participant10 a hypothetical CopyPrintf would be, and may be easier to generalize from.\r\n\r\nI do think, though, that I would probably prefer that AppendPrintf make an explicit statement about what if anything will have been done to the previous buffer if it does in fact allocate. Even if the statement is \"it is unspecified\". But otherwise I think that some people will assume that it will have written right up to the end, and some will assume it will have changed nothing if it ended up allocating, and then they'll be sad. And they'll blame me because it was my proposal. *cries*"
+  },
+  {
+   "author": "participant10",
+   "created_at": "2021-09-24T01:05:44Z",
+   "body": "What is the problem with just calling this:\r\n\r\n```\r\nfunc Append(dst []byte, a ...interface{}) []byte\r\nfunc Appendf(dst []byte, format string, a ...interface{}) []byte\r\nfunc Appendln(dst []byte, a ...interface{}) []byte\r\n```\r\n\r\nOr\r\n\r\n```\r\nfunc Bprint(dst []byte, a ...interface{}) []byte\r\nfunc Bprintf(dst []byte, format string, a ...interface{}) []byte\r\nfunc Bprintln(dst []byte, a ...interface{}) []byte\r\n```\r\n\r\nAre the words `Print` and `Append` really adding that much clarity that they must be used together in the name?"
+  },
+  {
+   "author": "participant11",
+   "created_at": "2021-09-25T12:07:21Z",
+   "body": "Personally, `fmt.Append` and `fmt.Appendf` do indeed look lovingly sweet to me: the `fmt.` prefix seems to be clarifying enough already, and the name seems to also fit with the other \"modern\" addition already in the package, `fmt.Errorf`. And on the other hand  it's participant10 clearly participant10 possible alluding to the builtin `append` &mdash; basically, what it means to me is: *\"like builtin append, but with fmt magic on top\"*... which seems to perfectly encapsulate exactly what it does.\r\n\r\n*edit:* On top of this, in fact `fmt.AppendPrint` is sincerely *harder* for me to understand. More meanings clumped together, more to decode, analyze and understand. I was somewhat confused participant10 to whether I really get what's going on in this PR, until I finally landed on the `fmt.Append` suggestion, which was the *a-ha* moment for me: it's *just* like builtin append + fmt \"magic\", nothing more, nothing less."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2021-10-06T21:10:12Z",
+   "body": "> I do think, though, that I would probably prefer that AppendPrintf make an explicit statement about what if anything will have been done to the previous buffer if it does in fact allocate. Even if the statement is \"it is unspecified\".\r\n\r\nI'm quite confident that's what the statement will be - it is unspecified.\r\n"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2021-10-06T22:06:58Z",
+   "body": "\nNo change in consensus, so **[accepted](https://golang.org/s/proposal-status#accepted)**. 🎉\nThis issue now tracks the work of implementing the proposal.\n— participant5 for the proposal review group\n"
+  },
+  {
+   "author": "participant12",
+   "created_at": "2021-10-06T22:12:34Z",
+   "body": "Was the point about shorter func names missed, perhaps? https://github.com/golang/go/issues/47579#issuecomment-926269805"
+  },
+  {
+   "author": "participant6",
+   "created_at": "2021-10-06T23:41:50Z",
+   "body": "I am a fan of Append, Appendf, and Appendln."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2022-02-22T13:32:15Z",
+   "body": "Spoke to @participant6 about this and I agree that Append, Appendf, Appendln fit better with fmt's overall API.\r\nRob is going to look into this for Go 1.19.\r\n"
+  },
+  {
+   "author": "gopherbot",
+   "created_at": "2022-05-15T00:16:33Z",
+   "body": "Change https://go.dev/cl/406177 mentions this issue: `fmt: add Append, Appenln, Appendf`"
+  },
+  {
+   "author": "gopherbot",
+   "created_at": "2022-05-16T23:25:02Z",
+   "body": "Change https://go.dev/cl/406357 mentions this issue: `go/gcexportdata: don't assume that fmt names never change`"
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "golang/go",
+  "default_branch": "master",
+  "commit_sha": "70546f6404c5927a9868a80ccbf4c6c2beaea671",
+  "as_of": "2021-08-06T17:33:27Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_golang_go_47579"
+}

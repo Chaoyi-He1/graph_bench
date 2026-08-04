@@ -1,0 +1,278 @@
+{
+ "repo": "nodejs/node",
+ "number": 46262,
+ "url": "https://github.com/nodejs/node/issues/46262",
+ "title": "AsyncLocalStorage and deferred promises",
+ "state": "closed",
+ "labels": [
+  "async_hooks",
+  "stale",
+  "async_local_storage"
+ ],
+ "reporter": "reporter",
+ "created_at": "2023-01-18T22:42:33Z",
+ "closed_at": "2026-07-23T01:43:21Z",
+ "body": "Take the following case:\r\n\r\n```js\r\nconst { AsyncLocalStorage } = require('async_hooks');\r\nconst als = new AsyncLocalStorage();\r\n\r\nprocess.on('unhandledRejection', () => {\r\n  console.log(als.getStore());\r\n});\r\n\r\nlet reject;\r\nals.run(123, () => { new Promise((a,b) =>reject = b); });\r\nals.run(321, () => reject('boom'));\r\n```\r\n\r\nWhat value should the `console.log(als.getStore())` print to the console?\r\n\r\nCurrently, it prints `123` because the async context is captured as associated with the Promise at the moment it is created (in the kInit event).\r\n\r\nI'd argue, however, that it *should* print `321` -- or, more concretely, that it should capture the async context at the moment the promise is resolved, not at the moment the promise is created, but the current behavior could also be correct. \r\n\r\n/cc @nodejs/async_hooks @bmeck @bengl @participant9 ",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2023-01-18T22:46:57Z",
+   "body": "It seems easier for me to wrap my head around the context being the one at promise creation: this is the originative event that creates the async task 🤔 "
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-01-18T22:47:07Z",
+   "body": "My intuition was `123` but probably that is infected by me thinking too much about current internals recently... If a rejection is generated outside of any `als.run` call, or by Node Core itself instead of other JS code, then would you want it to log `undefined` or `123`? This is sort of a case where I thought stashing the async context in kInit is useful."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-01-18T22:54:10Z",
+   "body": "I would argue that for promises it is more correct to capture the context at the moment `reject()` or `resolve()` is called. For instance,\r\n\r\n```js\r\nclass Foo {\r\n  constructor() {\r\n    this.deferred = createDeferredPromise();\r\n  }\r\n\r\n  void resolve() { this.deferred.resolve(); }\r\n  void reject() { this.deferred.resolve(); }\r\n}\r\n\r\nconst foo = new Foo();\r\n\r\nals.run(123, () => foo.resolve());\r\n```\r\n\r\nIf I specifically wanted to capture the context when the `Foo` was created, then what I should do is extend `AsyncResource` and use `runInAsyncScope` inside both `foo.resolve()` and `foo.reject()` ... otherwise, this case should be similar to `EventEmitter.emit(...)`."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-01-18T23:07:59Z",
+   "body": "It's really hard to think about this stuff abstractly. How about in terms of use cases? Has anyone come across a case where they need to look at AsyncLocalStorage from inside the `unhandledRejection` event?\r\n\r\n(Bloomberg definitely has an analogous internal case where we currently depend on restoring the AsyncLocalStorage from kInit in `unhandledRejection`, but this is a code path based on our custom V8 embedding, not Node.js. Probably our usage pattern is not representative of a typical Node app, and maybe we could adopt this AsyncResource pattern; I'm not sure.)"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-01-18T23:20:19Z",
+   "body": "Main use case for ALS till now was context propagation. e.g. consider following\r\n```js\r\nfunction myWebRequestHandler(req, res) {\r\n  const span = startSpan(\"myWebRequest\");\r\n  als.run(span, () => {\r\n    await callSomeDb(query);\r\n    await callSomeDb(other query);\r\n    const activeSpan = als.getStore(); // getting anything else then active span here woudl be strange. \r\n  });\r\n}\r\n```\r\nThe resolve of above promise happens in some unrelated code, maybe even some native callback.\r\n\r\nI think the correct place to capture the context would be when `promise.then()` is called. In above code this is the same as when the promise is created.\r\n\r\n`123` in unhandledReject handler seems to be also correct to me as it referes to the context where the failing operation happens belongs to.\r\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-01-18T23:22:06Z",
+   "body": "> It's really hard to think about this stuff abstractly. How about in terms of use cases? Has anyone come across a case where they need to look at AsyncLocalStorage from inside the unhandledRejection event?\r\n\r\ngood point, in my cases, I want to associate an unhandled rejection with the http request the server was working on. Or at least whatever network transaction the rejection is part of."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-01-18T23:23:13Z",
+   "body": "@reporter I see your point and now I am not certain of anything anymore 😅 "
+  },
+  {
+   "author": "participant4",
+   "created_at": "2023-01-18T23:32:18Z",
+   "body": "> I think the correct place to capture the context would be when `promise.then()` is called. In above code this is the same as when the promise is created.\r\n\r\nNote that this isn't quite correct. Yes, the context is captured when `promise.then()` is called, but for `async`/`await`, it's when the `await` happens:\r\n\r\n```js\r\nlet resolve;\r\nconst deferred = new Promise((r) => {\r\n  resolve = r;\r\n});\r\n\r\nconst p = als.run(123, async () => {\r\n  await deferred;\r\n  console.log(\"123\", als.getStore());\r\n});\r\nals.run(321, async () => {\r\n  await p;\r\n  console.log(\"321\", als.getStore());\r\n});\r\n\r\nresolve(\"abc\");\r\n```\r\n\r\nIf there is no `then` or `await`, then I think it's reasonable to assume the context at the time `resolve`/`reject` is called. It also means that Promises will be cheaper to implement, because they don't need to carry their initialization context _only for `unhandledrejection`_."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-01-18T23:34:18Z",
+   "body": "I think we all agree that, in the case where a `.then()` or `await` exists, that's the place to capture the context for the callback arguments to `then` or the statement immediately after the `await`. The question is just, what to do if no then/await occurs? (This includes the unhandled rejection case.) The current solution in Node.js is to say that the capture occurs at the *previous* `then`/`await`, which is where the Promise was created. The alternative, to capture where the resolve/reject is called, is a lot more non-local IMO."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2023-01-18T23:45:57Z",
+   "body": "In general it makes sense to propagate a context from promise subscription being added (then/await) to execution of reactions.\r\n\r\nIn this case we don't have either. However I would argue than more often than not, the context that subscribes to the promise is the same as the context that creates the promise, but I'm not sure it justifies capturing and using that context.\r\n\r\nPropagation of context is also done with the explicit intent to disconnect the resolving context from the reaction execution context. I really don't see why the rejecting context should be the one used in the unhandled event.\r\n\r\nMy question is, why is the context in which the event handler was added not the one used?\r\n\r\nWhat should the following example produce?\r\n\r\n```js\r\nconst { AsyncLocalStorage } = require('async_hooks');\r\nconst als = new AsyncLocalStorage();\r\n\r\nals.run(0, () => {\r\n  process.on('unhandledRejection', () => {\r\n    console.log(als.getStore());\r\n  });\r\n});\r\n\r\nconst panic = als.run(123, () =>Promise.reject(Error('panic')));\r\npanic.catch(() => {});\r\n\r\nals.run(321, () => Promise.resolve(panic));\r\n```"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-01-19T00:02:10Z",
+   "body": "The more I go through this, the more I'm convinced that `321` is the right answer and that the current behavior implemented by Node.js is wrong."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2023-01-19T00:12:22Z",
+   "body": "> My question is, why is the context in which the event handler was added not the one used?\r\n> What should the following example produce?\r\n\r\nThat is an option, but it means you must also remember to unregister your handler or you're going to get multiple logs:\r\n\r\n```js\r\nfunction handleRequest(req, res) {\r\n  als.run({}, () => {\r\n    const unhandled = () => {\r\n\t  console.log(als.getStore());\r\n\t};\r\n\tprocess.on('unhandledRejection', unhandled);\r\n\r\n    try {\r\n      // work work work…\r\n    } finally {\r\n      process.off('unhandledRejection', unhandled);\r\n    }\r\n  });\r\n}\r\n```\r\n\r\nBut your example actually won't log anything (the promise is handled, and `Promsie.resolve(rejected) === rejected`, it won't create a new promise). If we did `new Promise(r => r(panic))`, then it'd log `321` by the internal `.then()` registration.\r\n\r\n"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2023-01-19T00:36:31Z",
+   "body": "> But your example actually won't log anything (the promise is handled, and `Promsie.resolve(rejected) === rejected`, it won't create a new promise). If we did `new Promise(r => r(panic)`, then it'd log `321` by the internal `.then()` registration.\r\n\r\nOops, ugh promise adoption is tricky.\r\n\r\nOk so this seem to be really limited to the deferred use case and unhandled rejections?\r\n\r\n> That is an option, but it means you must also remember to unregister your handler\r\n\r\nI don't think that'd work if the work is async since there is no way to know when that async flow is done, right?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-01-19T01:09:47Z",
+   "body": "> Ok so this seem to be really limited to the deferred use case and unhandled rejections?\r\n\r\nYes, very much so."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2023-01-19T01:15:22Z",
+   "body": "> Ok so this seem to be really limited to the deferred use case and unhandled rejections?\r\n\r\nYes, it's just this one case that is weird.\r\n\r\n\r\n\r\n\r\n> > That is an option, but it means you must also remember to unregister your handler\r\n> \r\n> I don't think that'd work if the work is async since there is no way to know when that async flow is done, right?\r\n\r\nOh yah, that's even worse. You never know when a unhandled promise would be created, and you can't do any to figure out which unhandled handler should be called."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-01-19T08:18:07Z",
+   "body": "If I summarize above the proposed solution would be like this:\r\n\r\n* capture/propagate context for the registered handler at the time `then`/`catch` is called (is often the same as promise create, e.g. in case of `await` of an `async` function call)\r\n* capture/propagate context at the time `reject` is called and use it for unhandled reject handler. This should not override the context captured above\r\n\r\nAre we sure that this is also possible in all sorts of promise chaining?\r\n"
+  },
+  {
+   "author": "participant6",
+   "created_at": "2023-01-19T12:26:31Z",
+   "body": "> The more I go through this, the more I'm convinced that 321 is the right answer and that the current behavior implemented by Node.js is wrong.\r\n\r\nCan you reproduce the behavior you don't like without using the promise constructor?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-01-19T16:11:34Z",
+   "body": "@participant6:\r\n> Can you reproduce the behavior you don't like without using the promise constructor?\r\n\r\nThe case is pretty specific to the deferred promise pattern using the promise constructor, calling `reject()` from a different context, and using the unhandled rejection handler."
+  },
+  {
+   "author": "participant7",
+   "created_at": "2023-01-19T16:11:40Z",
+   "body": "For me, unhandled promise rejections are coding bugs.  Someone somewhere forgot to add a rejection handler.\r\n\r\nThe most useful information when trying to debug an unhandled promise rejection is where the promise passed through before being unhandled.  This is why async stack traces you get with async/await are great.  The place the rejection originated really is inconsequential.\r\n\r\nWhat do people actually do in their `unhandledRejection` handlers?  Here's an albeit wonky example that would be a use-case for `123`, not `321`:\r\n\r\n```js\r\nconst http = require('http');\r\n\r\nconst db = require('my-db-library');\r\n\r\nconst { AsyncLocalStorage } = require('async_hooks');\r\nconst als = new AsyncLocalStorage();\r\n\r\nprocess.on('unhandledRejection', () => {\r\n  const store = als.getStore();\r\n  store.res.writeHead(500);\r\n  store.res.end();\r\n});\r\n\r\nconst dbConnectionP = db.connect();\r\n  // returns a promise, rejected if the connection can't be established\r\n\r\nconst server = http.createServer((req, res) => {\r\n  als.run({ res }, async () => {\r\n    const dbConnection = await dbConnectionP;\r\n    const response = dbConnection.process(req);\r\n    res.writeHead(200);\r\n    res.end(response);\r\n  });\r\n});\r\nserver.listen(80);\r\n```"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-01-19T16:18:45Z",
+   "body": "@participant7 that case works as is in either case because the rejection is still happening within the scope the context created by the one `als.run(...)`. Where things get a bit tricky is specifically in the case of a deferred reject that is called from a different context. This could be the case, for example, in an API like ReadableStream in which a deferred promise is created when the stream or reader is created but rejected later when a particular error occurs in the stream processing. Which context would be important in that case? The context for when the stream was created (which might have been before any `als.run(...)` was entered, or the context for when the rejection happened? I'd argue it's the latter in this case.\r\n\r\nEven if we did switch the model to yield `321` by default, it would still be possible to produce `123` as a result if that's what you actually want. One would simply need to wrap the deferred `reject` function using `AsyncResource.bind(reject)` when the Promise is created so that no matter when it is called it propagates that context. The reverse, however, is not possible. In the current implementation, it is not possible to yield `321` at all since the unhandled rejection handler always enters the context captured when the promise was created."
+  },
+  {
+   "author": "participant7",
+   "created_at": "2023-01-19T17:00:43Z",
+   "body": "> @participant7 that case works as is in either case because the rejection is still happening within the scope the context created by the one `als.run(...)`.\r\n\r\nIt's not is it?  The rejection is from within the `db.connect()` call which isn't in an `als.run(...)`.\r\n\r\nCan you give an example for `ReadableStream`?  Rather than the context where the `reject` happens, isn't it the context where you consume the stream that's more important?  I don't know enough about Node's Stream API to know where and when `Promise`s would be created and rejected.\r\n\r\n`let read = fs.createReadStream('in.txt')` will create a deferred `Promise`?\r\n\r\nIf I do `pipeline(read, fs.createWriteStream('out.txt'))`, will `pipeline` internally `.then()` on `read`'s deferred `Promise`?\r\n\r\nWhere would a rejection then originate?"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2023-01-19T22:07:17Z",
+   "body": "> It's not is it? The rejection is from within the `db.connect()` call which isn't in an `als.run(...)`.\r\n\r\nIt will run correctly. Any rejection which is scoped inside _any nested call_ from a `als.run()` inherits the context of that run. The only case that will change with this is if `als.run(...)` returns a deferred promise:\r\n\r\n```js\r\nconst als = new AsyncLocalStorage();\r\n\r\nprocess.on('unhandledRejection', () => {\r\n  assert.equal(als.getStore(), undefined);\r\n});\r\n\r\nconst deferred = als.run(123, () => {\r\n  const deferred = {};\r\n  deferred.promise = new Promise((_, rej) => {\r\n    deferred.reject = rej;\r\n  });\r\n  return deferred;\r\n});\r\n\r\n// The reject escaped the run\r\ndeferred.reject();\r\n\r\n// 1. deferred.promise has not been handled\r\n// 2. reject escaped ctx\r\n// 3. unhandledRejection will see undefined.\r\n```\r\n\r\nImportantly, if you were to chain of that deferred inside a ALS context and have those promises be unhandled, those promises will have the correct context:\r\n\r\n```js\r\nconst als = new AsyncLocalStorage();\r\n\r\nprocess.on('unhandledRejection', () => {\r\n  assert.equal(als.getStore(), 123);\r\n});\r\n\r\nconst deferred = als.run(123, () => {\r\n  const deferred = {};\r\n  deferred.promise = new Promise((_, rej) => {\r\n    deferred.reject = rej;\r\n  });\r\n\r\n  // Create the unhandled promise here.\r\n  // The .then() guarantees that the unhandled's internal reject will\r\n  // inherit the 123 context.\r\n  const unhandled = deferred.promise.then();\r\n\r\n  return deferred;\r\n});\r\n\r\n// The reject escaped the run\r\ndeferred.reject();\r\n\r\n// 1. deferred.promise was been handled\r\n// 2. unhandled called `deferred.promsie.then()`, capturing 123 context\r\n// 3. reject escaped ctx\r\n// 4. unhandled becomes rejected using its restored 123 context\r\n// 5. unhandledRejection will see 123.\r\n```\r\n"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-01-19T22:29:28Z",
+   "body": "@participant4 Your first sample actually gets `123` in the `unhandledRejection` handler with node 19.4.0 because the promise picks up the context at creation time.\r\n\r\nWith the proposed change it would receive `undefined` as `reject` runs with no store active."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2023-01-19T22:29:31Z",
+   "body": "> For me, unhandled promise rejections are coding bugs.\r\n\r\nOff-topic, but this is really only a bug if the promise doesn't get handled before it gets dropped on the floor. IMO Node is way too aggressive in reporting these, and should only report and fail for unhandled rejected promises when the promise is collected or at program exit."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2023-01-19T22:54:19Z",
+   "body": "> Your first sample actually gets `123` in the `unhandledRejection` handler with node 19.4.0 because the promise picks up the context at creation time.\r\n> \r\n> With the proposed change it would receive `undefined` as `reject` runs with no store active.\r\n\r\nCorrect, I was trying to explain the difference if we accepted the proposal. Case 1 is the only difference, and Case 2 will continue to work the same as it does now. The only way to trigger the difference is to:\r\n\r\n1. Create an unhandled promise\r\n2. Return the unhandled promise's `reject` from the `const reject = als.run(…)` (or nested in a deferred object, etc)\r\n3. Call that `reject` in a another ALS context (or the root context)\r\n\r\nIf the `reject` is not returned by `als.run(…)`, then there is no difference between current and proposed semantics."
+  },
+  {
+   "author": "participant8",
+   "created_at": "2023-01-23T21:22:22Z",
+   "body": "The `AsyncResource.bind(resolve)` example is interesting as it actually corresponds fairly directly to what `AsyncResource` was created for in the first place which is to bind a function to a context different from where it will run. This is mainly used for situations like connection pooling where the point a function is _given_ to an API is different from where it is used. In Promises the places where the behaviour would be strange are basically all due to the `resolve` or `reject` not being called directly in the executor. The resolve path probably _is_ in fact the most \"correct\" path, though changing that behaviour may produce some very unexpected results for users. There's a lot of code out there currently that would probably need `AsyncResource.bind(...)` calls added."
+  },
+  {
+   "author": "participant7",
+   "created_at": "2023-01-25T03:04:16Z",
+   "body": "> > It's not is it? The rejection is from within the `db.connect()` call which isn't in an `als.run(...)`.\r\n> \r\n> It will run correctly. Any rejection which is scoped inside _any nested call_ from a `als.run()` inherits the context of that run. The only case that will change with this is if `als.run(...)` returns a deferred promise:\r\n> \r\n> <details>\r\n>   <summary>Code Snippet</summary>\r\n>\r\n> ```js\r\n> const als = new AsyncLocalStorage();\r\n> \r\n> process.on('unhandledRejection', () => {\r\n>   assert.equal(als.getStore(), undefined);\r\n> });\r\n> \r\n> const deferred = als.run(123, () => {\r\n>   const deferred = {};\r\n>   deferred.promise = new Promise((_, rej) => {\r\n>     deferred.reject = rej;\r\n>   });\r\n>   return deferred;\r\n> });\r\n> \r\n> // The reject escaped the run\r\n> deferred.reject();\r\n> \r\n> // 1. deferred.promise has not been handled\r\n> // 2. reject escaped ctx\r\n> // 3. unhandledRejection will see undefined.\r\n> ```\r\n> </details> \r\n>\r\n> Importantly, if you were to chain of that deferred inside a ALS context and have those promises be unhandled, those promises will have the correct context:\r\n> \r\n> <details>\r\n>   <summary>Code Snippet</summary>\r\n>\r\n> ```js\r\n> const als = new AsyncLocalStorage();\r\n> \r\n> process.on('unhandledRejection', () => {\r\n>   assert.equal(als.getStore(), 123);\r\n> });\r\n> \r\n> const deferred = als.run(123, () => {\r\n>   const deferred = {};\r\n>   deferred.promise = new Promise((_, rej) => {\r\n>     deferred.reject = rej;\r\n>   });\r\n> \r\n>   // Create the unhandled promise here.\r\n>   // The .then() guarantees that the unhandled's internal reject will\r\n>   // inherit the 123 context.\r\n>   const unhandled = deferred.promise.then();\r\n> \r\n>   return deferred;\r\n> });\r\n> \r\n> // The reject escaped the run\r\n> deferred.reject();\r\n> \r\n> // 1. deferred.promise was been handled\r\n> // 2. unhandled called `deferred.promsie.then()`, capturing 123 context\r\n> // 3. reject escaped ctx\r\n> // 4. unhandled becomes rejected using its restored 123 context\r\n> // 5. unhandledRejection will see 123.\r\n> ```\r\n> </details>\r\n\r\nI see what you're saying.  In the case you have an escaped `reject` that you invoke outside of any `als.run(...)`, I would expect to get the context of the created promise.  `.then(...)` is really just creating a new promise and assuming the resolution status.\r\n\r\n```js\r\nconst als = new AsyncLocalStorage();\r\nconst makeDeferred = () => {\r\n  const deferred = {};\r\n  deferred.promise = new Promise((_, rej) => {\r\n    deferred.reject = rej;\r\n  });\r\n  return deferred;\r\n};\r\n\r\nprocess.on('unhandledRejection', () => {\r\n  console.log(als.getStore());\r\n});\r\n\r\nconst deferred1 = als.run(123, makeDeferred);\r\nconst deferred2 = als.run(123, makeDeferred);\r\nconst deferred3 = als.run(123, makeDeferred);\r\n\r\nconst follow2 = als.run(234, () => deferred2.then(() => {}));\r\nconst follow3 = als.run(234, () => deferred3.then(() => {}));\r\n\r\nals.run(345, () => follow3.then(() => {}));\r\n\r\nals.run(456, () => {\r\n  deferred3.reject();  // prints 345\r\n  deferred2.reject();  // prints 234\r\n  deferred1.reject();  // prints ???\r\n});\r\n```\r\n\r\nI think `123` is the most logical choice.  I don't think it really make sense for `deferred1.reject()` to cause `456` to be printed if `deferred2.reject()` and `deferred3.reject()` don't."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-01-25T06:57:12Z",
+   "body": "I don't see the point why resolution/reject location is the \"more correct\" propagation source.\r\n\r\nconsider a simple web server using a database, reusing the connection like this:\r\n\r\n```js\r\nconst http = require(\"http\");\r\nconst db = require(\"my-fancy-db\");\r\n\r\nconst dbCon = db.connect(dbSettings); // returns a promise\r\n\r\nhttp.createServer((req, res) => {\r\n  als.run(myRequestContext, () => {\r\n    db.then(() => {\r\n      // I would expect myRequestContext here not undefined inherited from db.connect\r\n    }).catch((e) => {\r\n      // I would expect myRequestContext here not undefined inherited from db.connect\r\n    });\r\n  });\r\n});\r\n```\r\n\r\nIn case of `unhandledRejection` this might be different because there is no `myRequestContext` therefore a fallback to `undefined` (or whatever was active at db.connect`) sounds ok.\r\n\r\nIf you adapt above sample to create the db connection lazy on first request the context of first request would be kept forever."
+  },
+  {
+   "author": "participant7",
+   "created_at": "2023-01-25T12:47:31Z",
+   "body": "Both of those would be `myRequestContext` because you used `.then()` and `.catch()`."
+  },
+  {
+   "author": "participant9",
+   "created_at": "2023-01-26T10:11:40Z",
+   "body": "The current behavior is correct.\r\n\r\nLet's imagine a case where we store the request identifier in AsyncLocalStorage. \r\nif somebody calls `reject()` _outside_ of the current chain, the unhandledRejection handler would not have that data, making it impossible for the user to track down what request created the asynchronous operation that rejected. \r\n\r\n\r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-01-26T14:59:46Z",
+   "body": "> if somebody calls reject() outside of the current chain, the unhandledRejection handler would not have that data, making it impossible for the user to track down what request created the asynchronous operation that rejected.\r\n\r\nThis is what makes this a tricky case. Presumably the user needs to have *both*. In some deferred promise flows, it's going to be more important to propagate the context associated with the task resolution. In other cases, it's going to be more important to propagate the context associated with the task creation. In the overwhelming majority of cases you're going to get exactly what you want here. In the deferred promise resolution case, however, if what you really want is to propagate the task creation context, we always have the `bind()` option.\r\n\r\n```js\r\nlet resolve, reject;\r\nconst p = new Promise((a,b) => {\r\n  resolve = AsyncResource.bind(a);\r\n  reject = AsyncResource.bind(b);\r\n});\r\n```\r\n\r\nWith the current behavior, I do not have the flexibility to capture the context at task resolution, which is a problem. I think we should support both and the current model forces us into only one."
+  },
+  {
+   "author": "participant8",
+   "created_at": "2023-01-26T18:29:06Z",
+   "body": "I mostly agree, but promises are not easy to modify so we'd want to do some validation that all the cases are reasonable. Perhaps we should write a doc enumerating possibly problematic promise patterns and identifying how they would behave in that context.\r\n\r\nFor example:\r\n\r\n```js\r\nconst storedPromise = asyncThing()\r\n\r\nasync function something() {\r\n  await storedPromise\r\n  // What will the store contain here?\r\n}\r\n\r\nstorage.run('foo', something)\r\n```"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-01-26T18:45:58Z",
+   "body": "> Perhaps we should write a doc enumerating possibly problematic promise patterns\r\n\r\nGood idea."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-01-26T19:17:56Z",
+   "body": "> if what you really want is to propagate the task creation context, we always have the `bind()` option.\r\n\r\nThe bind option effects all `AsyncLocalStorage` instances. If one tool requires reject/resolve path and another tool requires the init (or .then time) this is not really a solution.\r\n\r\nI think a better solution is to add a configuration option to `AsyncLocalStorage` to let the user decide which sort of propagation path it wants.\r\n\r\nThis strongly remembers me to discussions if [trigger_id](https://nodejs.org/dist/latest-v19.x/docs/api/async_hooks.html#triggerasyncid) should be used to propagate context of current async_id.\r\n\r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-01-26T19:40:12Z",
+   "body": "> I think a better solution is to add a configuration option to AsyncLocalStorage to let the user decide which sort of propagation path it wants.\r\n\r\nI'd hesititate to add new API surface area to cover a single edge case, especially since that would likely need to carry over into the `AsyncContext` tc-39 proposal, but the limitation is well noted.\r\n\r\nTo illustrate the issue, if we have two separate ALS instances,\r\n\r\n```js\r\nconst als1 = new AsyncLocalStorage();\r\nconst als2 = new AsyncLocalStorage();\r\n\r\nfunction deferredPromiseWithBind() {\r\n\tlet resolve, reject;\r\n\tconst p = new Promise((a,b) => {\r\n\t  resolve = AsyncResource.bind(a);\r\n\t  reject = AsyncResource.bind(b);\r\n\t});\r\n}\r\n\r\nconst { promise, reject } = als1.run(123, () => {\r\n  return als2.run(321, () => deferredPromiseWithBind());\r\n});\r\n\r\naddEventListener('unhandledrejection', () = {\r\n  console.log(als1.getStore()); // prints 123\r\n  console.log(als2.getStore()); // prints 321\r\n});\r\n\r\nals1.run('abc', () => reject());\r\n```\r\n\r\nPersonally I consider this an acceptable limitation in that it's easy to reason about. I don't want to have to think about different `AsyncLocalStorage` instances have different propagation semantics depending on how they are created.\r\n"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-01-26T19:48:46Z",
+   "body": "> Personally I consider this an acceptable limitation in that it's easy to reason about. I don't want to have to think about different `AsyncLocalStorage` instances have different propagation semantics depending on how they are created.\r\n\r\nIf both variants are needed within a single application then we need either an option to `AsyncLocalStorage` or maybe some other thing which does the different sort of propagation. But using an option to configure the exact behavior sounds more natural to me.\r\n\r\nI agree that in above code this looks strange but in a real world app the two store instance would never met. One is internal to module foo and the other to module bar and they use it for independent concerns.\r\n\r\n\r\n\r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-01-26T20:09:14Z",
+   "body": "Keep in mind that the 'unhandledrejection' event listener *itself* can be bound to a specific context if you really want that."
+  },
+  {
+   "author": "participant8",
+   "created_at": "2023-01-26T20:09:32Z",
+   "body": "The path wanted will vary by use case, but also could vary by the code. For example one may want promises from the resolve path but event emitters from the place handlers are added. Thinking about it, what _could_ be reasonable is to have configuration per-source. Something like:\r\n\r\n```js\r\nconst store = new AsyncLocalStorage({\r\n  bindPromiseOnInit: true,\r\n  bindEmitterOnInit: true\r\n})\r\n```\r\n\r\nThe nice thing with following the resolve/reject path is that because it can be manually patched back to the other path via a `bind(...)` method we gain a natural upgrade path to directly replace the manual binds with the configuration. We could implement this initially with just the one path and consider adding the configurability later."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-01-26T20:45:25Z",
+   "body": "> Keep in mind that the 'unhandledrejection' event listener _itself_ can be bound to a specific context if you really want that.\r\n\r\nIt's of no help to overwrite the context. All participants here want async context propagation. Some want to find the resolver/rejected others the creator. And both should fit into a single application."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2023-01-26T20:46:17Z",
+   "body": "> Thinking about it, what _could_ be reasonable is to have configuration per-source. Something like:\r\n> \r\n> ```js\r\n> const store = new AsyncLocalStorage({\r\n>   bindPromiseOnInit: true,\r\n>   bindEmitterOnInit: true\r\n> })\r\n> ```\r\n\r\nI would suggest we consider what the future will look like when we have `AsyncContext`, and the likelihood any of these changes will pass the committee. I've gotten extremely positive committee feedback so far, and I expect that we'll have something similar to the current `AsyncContext` API in JS. The more host-customisability we allow on the API, the more pushback this is going to get in the committee. The committee may never accept these changes.\r\n\r\nIn a future where we have a simple `AsyncContext` implementation, code is naturally going to move from using Node's `AsyncLocalStorage` to the standardized one. I want us to think of a single set of semantics that we can use for both implementations, and minimize these differences.\r\n\r\nIf Node requires the current `AsyncLocalStorage` semantics, then we'll figure out how to work it into the spec. If not, then then let's change Node to use `AsyncContext`'s semantics. But let's not fall into designing two separate interfaces for the core functionality."
+  },
+  {
+   "author": "participant8",
+   "created_at": "2023-01-26T20:58:40Z",
+   "body": "Well, that's where the bind/wrap function comes in. Having a friendly configuration pattern allows simplifying use of these different patterns in the future if we so choose, but they're really just simplifications of the manual bind so we can just continue using those too if pushback would be too much. I'm also not advocating we include that in the initial proposal. What I'm saying is that if we go the resolve/reject path we can use bind to map that back to what Node.js might expect, but we can't do the reverse so we should take that into consideration."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2023-01-26T21:47:34Z",
+   "body": "> Having a friendly configuration pattern allows simplifying use of these different patterns in the future if we so choose, but they're really just simplifications of the manual bind so we can just continue using those too if pushback would be too much.\r\n\r\nThis is going to hit the same performance constraints I commented in https://github.com/nodejs/node/issues/46374#issuecomment-1405644182. In short, I want us to design an API that does not impact the performance of running code. Adding this configuration requires that we change the wrap algorithm from O(1) to O(n) (n for all AsyncContexts currently allocated). Adding even the potential for configuration will really hurt all code that uses promsies, every time a continuation is created.\r\n\r\n> What I'm saying is that if we go the resolve/reject path we can use bind to map that back to what Node.js might expect, but we can't do the reverse so we should take that into consideration.\r\n\r\nAgreed."
+  },
+  {
+   "author": "participant10",
+   "created_at": "2023-01-26T21:57:05Z",
+   "body": "In my humble opinion, the premise of this discussion is invalid. Neither `New Promise`, `reject`, or `resolve` is an actual async operation, they don't involve any microtask. `New Promise` should never have created an `AsyncResource` to begin with, that was a design mistake.\r\n\r\nAs I suggested in https://github.com/nodejs/diagnostics/issues/389, `.then()` should be what creates the `AsyncResource` since it creates a microtask. Using [`promise_hooks`](https://nodejs.org/dist/latest-v18.x/docs/api/v8.html#promise-hooks), which is now a public API, you can do extra work to capture the context you think is correct. Although, my personal opinion would still be that capturing context for `AsyncLocalStorage` at `New Promise`, `reject`, or `resolve` is incorrect."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-01-26T22:10:36Z",
+   "body": "@participant10 ... first off, great to \"see\" you! It's been a while since we've talked!\r\n\r\n> Neither New Promise, reject, or resolve is an actual async operation, they don't involve any microtask. New Promise should never have created an AsyncResource to begin with, that was a design mistake... .then() should be what creates the AsyncResource since it creates a microtask.\r\n\r\nI think we're all generally in agreement on this particular point! However: with an unhandled rejection there explicitly is no then we can use to propagate the context. This case is really about *that* particular issue.\r\n\r\nWhat I'm suggesting in this conversation is *not* that `resolve()` or `reject()` capture the context, but that, internally, the act of scheduling the `'unhandledrejection'` event to be fired is itself an async resource that should capture the current context (which just so happens to be the context that is current when `reject()` is called). It's a subtle detail but important for the semantics here.\r\n"
+  },
+  {
+   "author": "participant8",
+   "created_at": "2023-01-26T23:58:28Z",
+   "body": "> This is going to hit the same performance constraints I commented in [#46374 (comment)](https://github.com/nodejs/node/issues/46374#issuecomment-1405644182). In short, I want us to design an API that does not impact the performance of running code. Adding this configuration requires that we change the wrap algorithm from O(1) to O(n) (n for all AsyncContexts currently allocated). Adding even the potential for configuration will really hurt all code that uses promsies, every time a continuation is created.\r\n\r\nThat's not exactly true. If we keep the configuration variety low you can bucket same configurations together and just pick which context bucket to copy at each viable connection point. You see a promise construction and you copy the promise construction flowing bucket. You see a promise resolve and you copy the promise resolve flowing bucket. The configuration would not change for the lifetime of that storage so it's easily optimizable into behaviour buckets."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2023-01-27T09:27:14Z",
+   "body": "> What I'm suggesting in this conversation is _not_ that `resolve()` or `reject()` capture the context, but that, internally, the act of scheduling the `'unhandledrejection'` event to be fired is itself an async resource that should capture the current context (which just so happens to be the context that is current when `reject()` is called). It's a subtle detail but important for the semantics here.\r\n\r\nI think this is the clearest way to frame the problem as it's exactly what is happening. The spec has a host hook to inform the host when a promise becomes rejected and is unhandled, and when it becomes handled afterwards. These hooks are \"called\" synchronously but obviously the host doesn't trigger a program visible event from them immediately as that would be very noisy (and re-entrant), and instead waits  for either the end of the current promise job, or the draining of the promise job queue depending on the host implementation (I'd still argue the host should wait for the finalization of the promise and simply trigger an uncaught error event, but that's another story).\r\n\r\nIn any case, the host schedules a new job that will execute later when the engine synchronously informs it of an unhandled rejection. Capturing the current async context at the time of rejection is the natural and logical behavior."
+  },
+  {
+   "author": "participant9",
+   "created_at": "2023-01-27T13:43:42Z",
+   "body": "> As I suggested in https://github.com/nodejs/diagnostics/issues/389, .then() should be what creates the AsyncResource since it creates a microtask. Using [promise_hooks](https://nodejs.org/dist/latest-v18.x/docs/api/v8.html#promise-hooks), which is now a public API, you can do extra work to capture the context you think is correct. Although, my personal opinion would still be that capturing context for AsyncLocalStorage at New Promise, reject, or resolve is incorrect.\r\n\r\n+1. This seems significantly better and would solve quite a lot of the problems."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-01-27T14:19:12Z",
+   "body": "@participant10 :\r\n> my personal opinion would still be that capturing context for AsyncLocalStorage at New Promise, reject, or resolve is incorrect.\r\n@participant9 :\r\n> +1. This seems significantly better and would solve quite a lot of the problems.\r\n\r\nWe're in agreement here. Just different ways of saying the same thing.\r\n\r\nCapturing the context at `New Promise` is not actually necessary or helpful in the typical case.\r\n\r\nFor instance, consider the following cases:\r\n\r\n```js\r\n// This example creates two separate promises.\r\nconst als = new AsyncLocalStorage();\r\nconst p = als.run(123, () => new Promise((res) => {\r\n  // This runs in a synchronous scope. The promise does not need\r\n  // to capture the async scope here.\r\n\r\n  // This schedules async activity, the setTimeout captures the async\r\n  // scope...\r\n  setTimeout(() => {\r\n    console.log(als.getStore());\r\n    res();\r\n  }, 1000);\r\n\r\n  // Using the init promise hook to capture the async context here,\r\n  // especially the way we do it currently in Node.js where context\r\n  // is propagated for every new promise, is unnecessary because\r\n  // it will *never* be used\r\n}));\r\n\r\n// The then here captures the async context on the continuation.\r\n// The promise *itself* does not *need* the async context attached\r\n// because it is only relevant to the continuation.\r\n\r\nals.run(321, () => p.then(() => {\r\n  console.log(als.getStore());\r\n}));\r\n```\r\n\r\nOr this, which might be clearer:\r\n\r\n```js\r\n// This example creates two separate promises.\r\nconst als = new AsyncLocalStorage();\r\n\r\n// Capturing the context at this New Promise is obviously pointless.\r\n// It won't ever be used and is a very wasteful operation the way we have\r\n// things currently implemented. There's just simply no reason to\r\n// capture the context for new Promise.\r\nconst p = als.run(123, () => Promise.resolve());\r\n\r\nals.run(321, () => p.then(() => {\r\n  console.log(als.getStore());\r\n}));\r\n```\r\n\r\n"
+  },
+  {
+   "author": "github-actions[bot]",
+   "created_at": "2026-06-22T02:00:25Z",
+   "body": "This issue has been marked as stale due to 210 days of inactivity.\nIt will be automatically closed in 30 days if no further activity occurs. If this is still relevant, please leave a comment or update it to keep it open."
+  },
+  {
+   "author": "github-actions[bot]",
+   "created_at": "2026-07-23T01:43:21Z",
+   "body": "This issue has been automatically closed after 30 days of inactivity following its stale status (no activity for a total of 120 days).\nIf this is still relevant, feel free to reopen it or leave a comment with additional details so we can continue the discussion."
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "nodejs/node",
+  "default_branch": "main",
+  "commit_sha": "d896f5befdf4dd9c3782a0d79940fbf5ca06ed01",
+  "as_of": "2023-01-18T22:42:33Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_nodejs_node_46262"
+}

@@ -1,0 +1,232 @@
+{
+ "repo": "oven-sh/bun",
+ "number": 2489,
+ "url": "https://github.com/oven-sh/bun/issues/2489",
+ "title": "fetch signal abortcontroller does not work",
+ "state": "closed",
+ "labels": [
+  "bug",
+  "web-api"
+ ],
+ "reporter": "reporter",
+ "created_at": "2023-03-26T19:57:44Z",
+ "closed_at": "2024-07-11T03:29:56Z",
+ "body": "### What version of Bun is running?\n\n0.5.8\n\n### What platform is your computer?\n\nDarwin 22.3.0 arm64 arm\n\n### What steps can reproduce the bug?\n\n```ts\r\ninterface FetchWithTimeoutOptions extends Omit<FetchRequestInit, 'timeout'> {\r\n  timeout: number;\r\n}\r\nexport async function fetchWithTimeout(resource: string | URL, options?: FetchWithTimeoutOptions) {\r\n  const { timeout = 1000, ...otheroptions } = options || {};\r\n\r\n  const controller = new AbortController();\r\n  const id = setTimeout(() => controller.abort(), timeout);\r\n  let response;\r\n  try {\r\n    response = await fetch(resource, {\r\n      ...otheroptions,\r\n      signal: controller.signal,\r\n    });\r\n  } catch (err) {\r\n    response = {\r\n      ok: false,\r\n      status: 500,\r\n    };\r\n  }\r\n  clearTimeout(id);\r\n  return response;\r\n}\r\n\r\nconst start = Date.now();\r\nawait fetchWithTimeout(\"https://www.custvestor.com/\", { timeout: 100 });\r\nconst end = Date.now();\r\nconsole.log(`It took ${end-start}ms not 100ms`);\r\n\r\n```\r\n\r\n\r\n\n\n### What is the expected behavior?\n\nIt should take 100ms\n\n### What do you see instead?\n\nIt takes a lot longer!\n\n### Additional information\n\n_No response_",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2023-11-29T10:41:40Z",
+   "body": "@Plecra This seems to also apply to plain HTTP connections. If the connection cannot be established (all packets dropped at the destination), signals do nothing. Only the internal HTTP timeout is applied (1 minute?).\r\n\r\nI tested `AbortSignal` and `AbortConroller` on `fetch` from http://127.0.0.7, while nothing was listening there. Both tests result with `Signal failed!` on macOS Darwin 21.6.0 x86_64 with Bun 1.0.14\r\n\r\n```javascript\r\nconst timeout = setTimeout(() => {\r\n\tconsole.error('Signal failed!');\r\n\tprocess.exit();\r\n}, 2e3);\r\n\r\ntry {\r\n\tconsole.log(await fetch('http://127.0.0.7', { signal: AbortSignal.timeout(1e3) }));\r\n}\r\ncatch (e) {\r\n\tclearTimeout(timeout);\r\n\tif (e.name === 'TimeoutError') console.log('Signal worked!');\r\n\telse console.error(e);\r\n}\r\n```\r\n\r\nI'm also pinging @participant9, since he authored https://github.com/oven-sh/bun/pull/6390"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-12-26T06:22:19Z",
+   "body": "I am facing the same issue on `AbortSignal.timeout` as @participant1 on the latest bun canary build (`1.0.20+05984d405`) as well.\r\n\r\nSee also #7512 and #7513."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-12-26T09:04:59Z",
+   "body": "Weirdly if i let this run I get `Aborted!` as the output but it takes the same amount of time to run.\r\n\r\n```\r\n➜  stable-diffusion-discord-bot git:(main) ✗ bun run src/file.ts\r\n[75.02s] fetch\r\nAborted!\r\n➜  stable-diffusion-discord-bot git:(main) ✗ bun run src/file.ts\r\n[75.02s] fetch\r\nConnectionRefused: Unable to connect. Is the computer able to access the url?\r\n path: \"http://192.168.1.134/\"\r\n```\r\n\r\n```ts\r\n// abort in 1 second\r\nlet controller = new AbortController();\r\nsetTimeout(() => controller.abort(), 1000);\r\nconsole.time('fetch');\r\n\r\ntry {\r\n  let response = await fetch('http://192.168.1.134', {\r\n    signal: controller.signal,\r\n  });\r\n  // @ts-expect-error abc\r\n} catch (err: Error) {\r\n  console.timeEnd('fetch');\r\n  if (err.name == 'AbortError') {\r\n    // handle abort()\r\n    console.info('Aborted!');\r\n  } else {\r\n    throw err;\r\n  }\r\n}\r\n```"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-12-26T09:06:15Z",
+   "body": "~~Ah, if I set `timeout: false` it works with the abort handler.~~\r\n\r\nignore me this doesnt work it just instantly times out. 😞 \r\n\r\n```\r\n➜  stable-diffusion-discord-bot git:(main) ✗ bun run src/file.ts\r\n[13.65ms] fetch\r\nFailedToOpenSocket: Was there a typo in the url or port?\r\n path: \"http://192.168.1.134/\"\r\n```"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-01-02T08:46:18Z",
+   "body": "> I am facing the same issue on `AbortSignal.timeout` as @participant1 on the latest bun canary build (`1.0.20+05984d405`) as well.\r\n> \r\n> See also #7512 and #7513.\r\n\r\nI'm in China and the firewall is blocking google.com, in my test code I guess fetch is not handling signal in the DNS resolution stage. I replaced google.com with a URL that is accessible and signal is fine!"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-01-02T13:25:44Z",
+   "body": "> > I am facing the same issue on `AbortSignal.timeout` as @participant1 on the latest bun canary build (`1.0.20+05984d405`) as well.\r\n> > See also #7512 and #7513.\r\n> \r\n> I'm in China and the firewall is blocking google.com, in my test code I guess fetch is not handling signal in the DNS resolution stage. I replaced google.com with a URL that is accessible and signal is fine!\r\n\r\nThe issue happens on GitHub Actions as well, bun just timeout indefinitely even with `AbortSignal.timeout(4000)`."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2024-05-22T09:07:37Z",
+   "body": "Very much needed, please fix this"
+  },
+  {
+   "author": "participant6",
+   "created_at": "2024-06-03T09:39:04Z",
+   "body": "I ran into this issue trying to hook into Twitter's streaming API. It uses a persistent HTTP connection to continuously stream new tweet data. I was unable to use the `AbortController` to kill the connection as part of my graceful shutdown.\r\n\r\nIf anyone is interested, my \"solution\" was to make the connection in a bun child process, ferry the data back to the main process via IPC, and call `proc.kill()` when done. :vomiting_face: :vomiting_face: "
+  },
+  {
+   "author": "participant7",
+   "created_at": "2024-06-04T08:47:10Z",
+   "body": "Ran into this today as well\r\n\r\n```ts\r\n\tconst response = await fetch( url, {\r\n\t\tmethod: 'HEAD',\r\n\t\tredirect: 'manual',\r\n\t\tsignal: AbortSignal.timeout( 3000 ),\r\n\t} );\r\n```\r\n\r\nTemporary, dumb workaround:\r\n\r\n```ts\r\nfunction fetchWithTimeout( input: RequestInfo, init: RequestInit = {} ): Promise< Response > {\r\n\tconst { signal, ...rest } = init;\r\n\r\n\treturn new Promise( ( resolve, reject ) => {\r\n\t\tconst onAbort = () => reject( new Error( `Fetch aborted due to signal for ${ input }` ) );\r\n\r\n\t\tif ( signal ) {\r\n\t\t\tsignal.addEventListener( 'abort', onAbort );\r\n\t\t}\r\n\r\n\t\tfetch( input, { ...rest, signal } )\r\n\t\t\t.then( resolve )\r\n\t\t\t.catch( reject )\r\n\t\t\t.finally( () => {\r\n\t\t\t\tif ( signal ) {\r\n\t\t\t\t\tsignal.removeEventListener( 'abort', onAbort );\r\n\t\t\t\t}\r\n\t\t\t} );\r\n\t} );\r\n}\r\n```"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2024-06-12T12:57:46Z",
+   "body": "@participant7 this does work, but I dont want my code to stop from running after an abort. It must continue with the code but not still wait for a response"
+  },
+  {
+   "author": "participant7",
+   "created_at": "2024-06-14T05:17:00Z",
+   "body": "Then wrap it in a try/catch as you would a real `fetch`"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2024-06-14T06:19:54Z",
+   "body": "@participant7 I did that:\r\n\r\n![image](https://github.com/oven-sh/bun/assets/20114845/e4ddc888-4c75-4576-96e3-de7ecba97f4c)\r\nBut it doesnt stop from fetching"
+  },
+  {
+   "author": "participant7",
+   "created_at": "2024-06-16T05:48:51Z",
+   "body": "Yep - it doesn't stop from fetching - but at least in my situation, that was enough to allow the program move on without waiting for the resolution. However, the chickens will come home to roost eventually and throw those errors. It ain't pretty at the moment 🤷‍♂️"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2024-06-17T06:16:23Z",
+   "body": "Yea so still waiting for this to be fixed. Very much needed!"
+  },
+  {
+   "author": "participant8",
+   "created_at": "2024-06-28T07:48:55Z",
+   "body": "This is so random.. Sometimes it works, most times it doesn't.\r\n\r\n\r\n```ts\r\nlet controller = new AbortController();\r\n\r\nconst res = fetch(`http://192.168.0.25:9090`, {\r\n  signal: controller.signal,\r\n});\r\n\r\nsetTimeout(() => {\r\n  controller.abort();\r\n}, 1000);\r\n\r\nres.then((res) => {\r\n  console.log(res.status, res.statusText, res.headers);\r\n});\r\n\r\ncontroller.signal.addEventListener(\"abort\", () => {\r\n  console.log(\"Aborted\");\r\n});\r\n\r\n```\r\n\r\n\r\nWhen I start this script over and over again I always get a different behaviour...\r\n\r\n\r\n```bash\r\nFailedToOpenSocket: Was there a typo in the url or port?\r\n path: \"http://192.168.0.25:9090/\"\r\n\r\nBun v1.1.17 (macOS arm64)\r\nparticipant8@Nicos-Mac-mini lens % bun run tes.ts\r\nFailedToOpenSocket: Was there a typo in the url or port?\r\n path: \"http://192.168.0.25:9090/\"\r\n\r\nBun v1.1.17 (macOS arm64)\r\nparticipant8@Nicos-Mac-mini lens % bun run tes.ts\r\nFailedToOpenSocket: Was there a typo in the url or port?\r\n path: \"http://192.168.0.25:9090/\"\r\n\r\nBun v1.1.17 (macOS arm64)\r\nparticipant8@Nicos-Mac-mini lens % bun run tes.ts\r\nAborted\r\n^[[A^C\r\nparticipant8@Nicos-Mac-mini lens % bun run tes.ts\r\nAborted\r\n^C\r\nparticipant8@Nicos-Mac-mini lens % bun run tes.ts\r\nFailedToOpenSocket: Was there a typo in the url or port?\r\n path: \"http://192.168.0.25:9090/\"\r\n\r\nBun v1.1.17 (macOS arm64)\r\nparticipant8@Nicos-Mac-mini lens % \r\n```\r\n\r\n"
+  },
+  {
+   "author": "participant8",
+   "created_at": "2024-06-28T07:49:46Z",
+   "body": "When I use `import fetch from \"node-fetch\";`, the behaviour is similar:\r\n\r\n```bash\r\nparticipant8@Nicos-Mac-mini lens % bun run tes.ts\r\nAborted\r\n^C\r\nparticipant8@Nicos-Mac-mini lens % bun run tes.ts\r\nAborted\r\nparticipant8@Nicos-Mac-mini lens % bun run tes.ts\r\nAborted\r\nparticipant8@Nicos-Mac-mini lens % bun run tes.ts\r\nAborted\r\nparticipant8@Nicos-Mac-mini lens % bun run tes.ts\r\nAborted\r\nparticipant8@Nicos-Mac-mini lens % bun run tes.ts\r\nAborted\r\nparticipant8@Nicos-Mac-mini lens % bun run tes.ts\r\nAborted\r\nparticipant8@Nicos-Mac-mini lens % bun run tes.ts\r\nAborted\r\n^C\r\nparticipant8@Nicos-Mac-mini lens % \r\n```\r\n"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2024-06-28T07:51:07Z",
+   "body": "That is indeed very odd"
+  },
+  {
+   "author": "participant8",
+   "created_at": "2024-06-28T07:54:26Z",
+   "body": "It depends on the delta when starting the script.\r\n\r\nWhen I restart the script quickly after it exists, it exits again.\r\nIf I wait some seconds and call it again. It hangs."
+  },
+  {
+   "author": "participant8",
+   "created_at": "2024-06-28T07:57:37Z",
+   "body": "Without the `AbortController`:\r\n\r\n\r\n```ts\r\nconst res = fetch(`http://192.168.0.25:9090`, {});\r\n\r\nres.then((res) => {\r\n  console.log(res.status, res.statusText, res.headers);\r\n});\r\n```\r\n\r\n```bash\r\nparticipant8@Nicos-Mac-mini lens % bun run tes.ts\r\nparticipant8@Nicos-Mac-mini lens % bun run tes.ts\r\nparticipant8@Nicos-Mac-mini lens % bun run tes.ts\r\nparticipant8@Nicos-Mac-mini lens % bun run tes.ts\r\n^[[AFUUUCK%                                                                                                                                                                                     \r\nparticipant8@Nicos-Mac-mini lens % bun run tes.tsFUUUCK\r\n```"
+  },
+  {
+   "author": "participant8",
+   "created_at": "2024-06-28T08:12:16Z",
+   "body": "With `axios` the timeout works and it errors. But sometimes it just hangs after the error...\r\n\r\n```ts\r\nimport axios from \"axios\";\r\n\r\naxios\r\n  .get(\"http://192.168.0.25:9090\", { timeout: 1000 })\r\n  .then((response) => {\r\n    console.log(response.status, response.statusText, response.headers);\r\n  })\r\n  .catch((error) => {\r\n    console.error(\"Error fetching data:\", error.name);\r\n  });\r\n ```\r\n\r\n```bash\r\nparticipant8@Nicos-Mac-mini lens % bun run tes.ts\r\nError fetching data: AxiosError\r\n^C\r\nparticipant8@Nicos-Mac-mini lens % bun run tes.ts\r\nError fetching data: FailedToOpenSocket\r\nparticipant8@Nicos-Mac-mini lens % bun run tes.ts\r\nError fetching data: FailedToOpenSocket\r\nparticipant8@Nicos-Mac-mini lens % bun run tes.ts\r\nError fetching data: FailedToOpenSocket\r\nparticipant8@Nicos-Mac-mini lens % \r\nparticipant8@Nicos-Mac-mini lens % bun run tes.ts\r\nError fetching data: FailedToOpenSocket\r\nparticipant8@Nicos-Mac-mini lens % bun run tes.ts\r\nError fetching data: FailedToOpenSocket\r\nparticipant8@Nicos-Mac-mini lens % bun run tes.ts\r\nError fetching data: FailedToOpenSocket\r\nparticipant8@Nicos-Mac-mini lens % bun run tes.ts\r\nError fetching data: AxiosError\r\nHAAAANGS         \r\n```"
+  },
+  {
+   "author": "participant8",
+   "created_at": "2024-06-28T08:19:00Z",
+   "body": "> The page primarily documents the Bun-native Bun.serve API. Bun also implements [fetch](https://developer.mozilla.org/en-US/docs/Web/API/Fetch_API) and the Node.js [http](https://nodejs.org/api/http.html) and [https](https://nodejs.org/api/https.html) modules.\r\n\r\nSomething in the `http` / `https` implementation must be wrong. Therefore `fetch`, `node-fetch` and `axios` all fail."
+  },
+  {
+   "author": "participant9",
+   "created_at": "2024-07-10T00:23:44Z",
+   "body": "I believe this is already fixed in version `1.1.18+5a0b93523` If you are still running in this Issue please reopen with a code to reproduce it."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2024-07-10T06:14:28Z",
+   "body": "![image](https://github.com/oven-sh/bun/assets/20114845/bbfd4bcf-f620-4e34-a897-6b3ff0292bfd)\r\nDoes not work "
+  },
+  {
+   "author": "participant8",
+   "created_at": "2024-07-10T06:33:34Z",
+   "body": "@participant9. Any ideas on my comments above? This still does not work using the canary version."
+  },
+  {
+   "author": "participant8",
+   "created_at": "2024-07-10T06:37:10Z",
+   "body": "> ![image](https://private-user-images.githubusercontent.com/20114845/347278338-bbfd4bcf-f620-4e34-a897-6b3ff0292bfd.png?jwt=<secret-scrubbed>) Does not work\r\n\r\nI tried to reproduce this. This is my error:\r\n```ts\r\nlet start = performance.now();\r\n\r\nconst res = await fetch(\r\n  \"https://tools.arthurvan1.nl/api/v1/delay/time?duration=6000\",\r\n  {\r\n    method: \"GET\",\r\n    signal: AbortSignal.timeout(3000),\r\n  }\r\n);\r\n\r\nconsole.log(res);\r\n\r\nconsole.log(performance.now() - start);\r\n```\r\n\r\n![image](https://github.com/oven-sh/bun/assets/52858351/a67ddbf5-4a36-447c-98ac-913010229768)\r\n"
+  },
+  {
+   "author": "participant8",
+   "created_at": "2024-07-10T06:42:38Z",
+   "body": "This works now!\r\n\r\n```ts\r\nconst res = await fetch(\"https://httpstat.us/504?sleep=100000\", {\r\n  method: \"GET\",\r\n  signal: AbortSignal.timeout(3000),\r\n});\r\n```"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2024-07-10T07:07:26Z",
+   "body": "Tried your example. Did not work for me"
+  },
+  {
+   "author": "participant8",
+   "created_at": "2024-07-10T07:11:27Z",
+   "body": "Which bun version?\r\nMine is `Bun v1.1.19-canary.1+af6035ce3 (macOS arm64)`"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2024-07-10T07:14:26Z",
+   "body": "1.1.19-canary.1+af6035ce3 on windows\r\n"
+  },
+  {
+   "author": "participant10",
+   "created_at": "2024-07-10T23:35:53Z",
+   "body": "As @participant1 mentioned, my observation is also in the case if, say, 100% of the TCP packets are lost, then the timeout in Bun's `fetch` never triggers. It looks like some tests mentioned in this issue are having the HTTP server hang for a few seconds. In my experience, that case works as expected, i.e. if the TCP connection is made correctly but the HTTP response is slow to come back, the timeout works as expected. The timeout does not trigger when the TCP connection itself isn't able to get established (excluding the cases where it's a clear \"Connection refused\" from remote.)\r\n\r\nTo test, I used \"Network Link Conditioner\" from Xcode tools to easily toggle the simulation of packet loss and have this simple script:\r\n\r\n```javascript\r\nlet start = performance.now();\r\n\r\nconst interval = setInterval(() => {\r\n  console.log(\r\n    `tick: script has been running for ${performance.now() - start}ms`\r\n  );\r\n}, 100);\r\n\r\nawait fetch(\"http://www.google.com\", {\r\n  method: \"GET\",\r\n  signal: AbortSignal.timeout(1000),\r\n});\r\n\r\nconsole.log(`finished fetching after ${performance.now() - start}ms`);\r\nclearInterval(interval);\r\n```\r\n\r\nI ran the script with both Node (`22.4.1`) and Bun (`1.1.19-canary.1+55d59ebf1`), toggling the packet loss on and off.\r\n\r\nWith Node, normal connection vs simulated 100% packet loss show this result:\r\n```shell\r\n❯ node test.mjs\r\ntick: script has been running for 101.6055ms\r\nfinished fetching after 158.71391599999998ms\r\n\r\n❯ node test.mjs\r\ntick: script has been running for 102.055541ms\r\ntick: script has been running for 203.384583ms\r\ntick: script has been running for 304.127458ms\r\ntick: script has been running for 405.789708ms\r\ntick: script has been running for 506.86683300000004ms\r\ntick: script has been running for 607.864541ms\r\ntick: script has been running for 708.853666ms\r\ntick: script has been running for 809.484083ms\r\ntick: script has been running for 910.721958ms\r\n\r\nnode:internal/deps/undici/undici:13178\r\n      Error.captureStackTrace(err);\r\n            ^\r\nDOMException [TimeoutError]: The operation was aborted due to timeout\r\n    at node:internal/deps/undici/undici:13178:13\r\n    at async file:///Users/<user>/test.mjs:9:1\r\n\r\nNode.js v22.4.1\r\n```\r\n\r\nOn Bun, this is the result with normal network and simulated 100% loss, the timeout is never triggered in the latter case:\r\n```shell\r\n❯ bun run test.mjs\r\ntick: script has been running for 101.66695800000001ms\r\nfinished fetching after 152.828375ms\r\n\r\n❯ bun run test.mjs\r\ntick: script has been running for 101.442458ms\r\ntick: script has been running for 201.491083ms\r\ntick: script has been running for 302.519375ms\r\ntick: script has been running for 403.55649999999997ms\r\ntick: script has been running for 504.58087500000005ms\r\ntick: script has been running for 605.4719580000001ms\r\ntick: script has been running for 705.959292ms\r\ntick: script has been running for 806.545958ms\r\ntick: script has been running for 907.446542ms\r\ntick: script has been running for 1007.5729580000001ms\r\ntick: script has been running for 1108.271542ms\r\ntick: script has been running for 1209.293458ms\r\ntick: script has been running for 1310.1782500000002ms\r\ntick: script has been running for 1410.759208ms\r\ntick: script has been running for 1511.780125ms\r\ntick: script has been running for 1612.88775ms\r\ntick: script has been running for 1713.898917ms\r\ntick: script has been running for 1814.1675420000001ms\r\ntick: script has been running for 1915.19975ms\r\ntick: script has been running for 2015.985417ms\r\ntick: script has been running for 2117.0055ms\r\ntick: script has been running for 2217.9091670000003ms\r\ntick: script has been running for 2318.1357080000002ms\r\ntick: script has been running for 2419.150625ms\r\ntick: script has been running for 2519.794042ms\r\ntick: script has been running for 2620.288042ms\r\ntick: script has been running for 2721.102125ms\r\ntick: script has been running for 2821.647292ms\r\ntick: script has been running for 2922.681292ms\r\ntick: script has been running for 3023.352833ms\r\ntick: script has been running for 3123.504125ms\r\ntick: script has been running for 3224.468ms\r\ntick: script has been running for 3325.488625ms\r\ntick: script has been running for 3426.7003330000002ms\r\n^C\r\n```\r\n\r\nHope that helps with getting this bug fixed!"
+  },
+  {
+   "author": "participant10",
+   "created_at": "2024-07-11T20:50:57Z",
+   "body": "@Jarred-Sumner the bug is still reproducible as described [here](https://github.com/oven-sh/bun/issues/2489#issuecomment-2221707982) on `1.1.19-canary.1+8a3f882ef`, which includes #12492 "
+  },
+  {
+   "author": "participant5",
+   "created_at": "2024-08-14T09:16:26Z",
+   "body": "This is fixed in `1.1.23` stable version:\r\n\r\n```ts\r\nconsole.time(\"fetch\");\r\ntry {\r\n  await fetch(\"https://tools.participant5.nl/api/v1/delay/time?duration=6000\", {\r\n    signal: AbortSignal.timeout(1000),\r\n  }).then(async res => console.log(await res.text()));\r\n} finally {\r\n  console.timeEnd(\"fetch\");\r\n}"
+  },
+  {
+   "author": "participant11",
+   "created_at": "2024-09-07T02:13:06Z",
+   "body": "> This is fixed in `1.1.23` stable version:\r\n> \r\n> ```ts\r\n> console.time(\"fetch\");\r\n> try {\r\n>   await fetch(\"https://tools.participant5.nl/api/v1/delay/time?duration=6000\", {\r\n>     signal: AbortSignal.timeout(1000),\r\n>   }).then(async res => console.log(await res.text()));\r\n> } finally {\r\n>   console.timeEnd(\"fetch\");\r\n> }\r\n> ```\r\n\r\nIt does work with your link for me, but I found a link for which it doesn't seem to work, but can't really explain why 🤔 \r\nRunning on `1.1.26` with `https://swish30.myshopify.com`"
+  },
+  {
+   "author": "participant12",
+   "created_at": "2024-11-26T19:31:26Z",
+   "body": "Bun v1.1.26:\nWhen fetching on http://127.0.0.1:3002/endpoint/:test with signal: AbortSignal.timeout(1000) nothing happens, it fails tho after 60s\n\nI made this workaround:\n```js\nconst timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout')), 1000));\n\nconst fetchPromise = fetch(URL).then(v => v.json());\n\nconst ofFetchData = await Promise.race([fetchPromise, timeoutPromise]).catch(() => undefined);\n```"
+  },
+  {
+   "author": "participant13",
+   "created_at": "2024-12-20T04:00:41Z",
+   "body": "I'm noticing that AbortSignal.timeout just doesn't work at all in some cases (v1.1.40), here's a partial log that I have.\n\n```\n  sedlardavid.cz: fail (took 134274.832376)\n  shitter.biscut710.net: fail (took 134746.02396499994)\n  snobunny.net: fail (took 135286.08574500005)\n  social.byucn.fr: fail (took 133757.02139500005)\n  social.unko-pc.tokyo: fail (took 133688.67920899997)\n  social.wienert.me: fail (took 135018.31320700003)\n  surliest.net: fail (took 135153.07812199998)\n  tbsky3.vasco-shot.com: fail (took 134212.13549100002)\n  test837429.ilovecheetos.com: fail (took 133895.49108199996)\n  tokimeki.red: fail (took 135410.26526100002)\n  vanillasky.click: fail (took 134022.00181299995)\n  yeenden.com: fail (took 133404.43266199995)\n  zimbri.cc: fail (took 135274.29569300008)\n```\n\nHere's how I'm doing the requests:\n```\nawait fetch('https://tokimeki.red/xrpc/com.atproto.server.describeServer', { signal: AbortSignal.timeout(2_000) })\n```\n\nAll done with a 2 second abort timeout, yet it's clearly going well into two minutes before failing."
+  },
+  {
+   "author": "participant14",
+   "created_at": "2025-01-21T09:15:05Z",
+   "body": "I confirm the issue still persists one way or the other. We have a productions script that completely hangs once per 3 days on an Axios request with {signal: AbortSignal.timeout(10000)} setup.\nIt's a shame to have to migrate back to NodeJS. :(\n```\nconst response = await axios.get(URL, {\n  timeout: 10000,\n  signal: AbortSignal.timeout(10000)\n});\n```"
+  },
+  {
+   "author": "participant15",
+   "created_at": "2025-05-12T07:35:26Z",
+   "body": "I still got the issue (bun 1.2.12, MacOS 15.3.1 ARM). I'm performing a search in local network by trying to fetch possible IP's. When specified amount of time passes or one of request passed Im aborting all all other requests. Some of the requests do get aborted but not all."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-05-12T08:30:42Z",
+   "body": "@Jarred-Sumner please reopen this issue."
+  },
+  {
+   "author": "participant16",
+   "created_at": "2025-09-19T07:48:30Z",
+   "body": "Still reproducible. Bun v1.2.21 (macOS arm64)\n```\nconsole.time(\"fetch\");\ntry {\n    await fetch(\"http://univ-toulouse.fr\", {\n        signal: AbortSignal.timeout(1000),\n    }).then(async (res) => console.log(await res.text()));\n} finally {\n    console.timeEnd(\"fetch\");\n}\n``` \n\n```\n❯ bun test-bun-abort-signal.ts\n[75.09s] fetch\nTimeoutError: The operation timed out.\nDOMException {\n  stack: \"\",\n  code: 23,\n  name: \"TimeoutError\",\n  message: \"The operation timed out.\",\n  INDEX_SIZE_ERR: 1,\n  DOMSTRING_SIZE_ERR: 2,\n  HIERARCHY_REQUEST_ERR: 3,\n  WRONG_DOCUMENT_ERR: 4,\n  INVALID_CHARACTER_ERR: 5,\n  NO_DATA_ALLOWED_ERR: 6,\n  NO_MODIFICATION_ALLOWED_ERR: 7,\n  NOT_FOUND_ERR: 8,\n  NOT_SUPPORTED_ERR: 9,\n  INUSE_ATTRIBUTE_ERR: 10,\n  INVALID_STATE_ERR: 11,\n  SYNTAX_ERR: 12,\n  INVALID_MODIFICATION_ERR: 13,\n  NAMESPACE_ERR: 14,\n  INVALID_ACCESS_ERR: 15,\n  VALIDATION_ERR: 16,\n  TYPE_MISMATCH_ERR: 17,\n  SECURITY_ERR: 18,\n  NETWORK_ERR: 19,\n  ABORT_ERR: 20,\n  URL_MISMATCH_ERR: 21,\n  QUOTA_EXCEEDED_ERR: 22,\n  TIMEOUT_ERR: 23,\n  INVALID_NODE_TYPE_ERR: 24,\n  DATA_CLONE_ERR: 25,\n  toString: [Function: toString],\n}\n```\n\n"
+  },
+  {
+   "author": "participant12",
+   "created_at": "2025-09-20T12:47:07Z",
+   "body": "@reporter maybe you can reopen the issue?\n"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-10-11T03:36:26Z",
+   "body": "> Still reproducible. Bun v1.2.21 (macOS arm64)\n> \n> ```\n> console.time(\"fetch\");\n> try {\n>     await fetch(\"http://univ-toulouse.fr\", {\n>         signal: AbortSignal.timeout(1000),\n>     }).then(async (res) => console.log(await res.text()));\n> } finally {\n>     console.timeEnd(\"fetch\");\n> }\n> ```\n> \n> ```\n> ❯ bun test-bun-abort-signal.ts\n> [75.09s] fetch\n> TimeoutError: The operation timed out.\n> DOMException {\n>   stack: \"\",\n>   code: 23,\n>   name: \"TimeoutError\",\n>   message: \"The operation timed out.\",\n>   INDEX_SIZE_ERR: 1,\n>   DOMSTRING_SIZE_ERR: 2,\n>   HIERARCHY_REQUEST_ERR: 3,\n>   WRONG_DOCUMENT_ERR: 4,\n>   INVALID_CHARACTER_ERR: 5,\n>   NO_DATA_ALLOWED_ERR: 6,\n>   NO_MODIFICATION_ALLOWED_ERR: 7,\n>   NOT_FOUND_ERR: 8,\n>   NOT_SUPPORTED_ERR: 9,\n>   INUSE_ATTRIBUTE_ERR: 10,\n>   INVALID_STATE_ERR: 11,\n>   SYNTAX_ERR: 12,\n>   INVALID_MODIFICATION_ERR: 13,\n>   NAMESPACE_ERR: 14,\n>   INVALID_ACCESS_ERR: 15,\n>   VALIDATION_ERR: 16,\n>   TYPE_MISMATCH_ERR: 17,\n>   SECURITY_ERR: 18,\n>   NETWORK_ERR: 19,\n>   ABORT_ERR: 20,\n>   URL_MISMATCH_ERR: 21,\n>   QUOTA_EXCEEDED_ERR: 22,\n>   TIMEOUT_ERR: 23,\n>   INVALID_NODE_TYPE_ERR: 24,\n>   DATA_CLONE_ERR: 25,\n>   toString: [Function: toString],\n> }\n> ```\n\nBun 1.3 it works!\n```\n[1001.44ms] fetch\nTimeoutError: The operation timed out.\nDOMException {\n  stack: \"\",\n  code: 23,\n  name: \"TimeoutError\",\n  message: \"The operation timed out.\",\n  INDEX_SIZE_ERR: 1,\n  DOMSTRING_SIZE_ERR: 2,\n  HIERARCHY_REQUEST_ERR: 3,\n  WRONG_DOCUMENT_ERR: 4,\n  INVALID_CHARACTER_ERR: 5,\n  NO_DATA_ALLOWED_ERR: 6,\n  NO_MODIFICATION_ALLOWED_ERR: 7,\n  NOT_FOUND_ERR: 8,\n  NOT_SUPPORTED_ERR: 9,\n  INUSE_ATTRIBUTE_ERR: 10,\n  INVALID_STATE_ERR: 11,\n  SYNTAX_ERR: 12,\n  INVALID_MODIFICATION_ERR: 13,\n  NAMESPACE_ERR: 14,\n  INVALID_ACCESS_ERR: 15,\n  VALIDATION_ERR: 16,\n  TYPE_MISMATCH_ERR: 17,\n  SECURITY_ERR: 18,\n  NETWORK_ERR: 19,\n  ABORT_ERR: 20,\n  URL_MISMATCH_ERR: 21,\n  QUOTA_EXCEEDED_ERR: 22,\n  TIMEOUT_ERR: 23,\n  INVALID_NODE_TYPE_ERR: 24,\n  DATA_CLONE_ERR: 25,\n  toString: [Function: toString],\n}\n\nBun v1.3.0 (macOS arm64)\n```"
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "oven-sh/bun",
+  "default_branch": "main",
+  "commit_sha": "319efe9c7b248e899f75aeca99875542b96a0a2e",
+  "as_of": "2023-03-26T19:57:44Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_oven-sh_bun_2489"
+}

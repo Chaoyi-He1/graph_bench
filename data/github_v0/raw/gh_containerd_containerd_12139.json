@@ -1,0 +1,167 @@
+{
+ "repo": "containerd/containerd",
+ "number": 12139,
+ "url": "https://github.com/containerd/containerd/issues/12139",
+ "title": "containerd leaks many <root>/tmpmounts/ovl-idmapped* mounts until restart",
+ "state": "closed",
+ "labels": [
+  "kind/bug",
+  "area/runtime"
+ ],
+ "reporter": "reporter",
+ "created_at": "2025-07-24T15:00:10Z",
+ "closed_at": "2025-08-20T03:38:39Z",
+ "body": "### Description\n\ncontainerd cleans up everything in tmpmounts when it starts up[0]. Starting with\n1e3d10dc2 `(\"Make ovl idmap mounts read-only\")`, at least on my systems, many more\nmounts end up being leaked during containerd's lifecycle to the point where its a concern\nin periods between restarting containerd.\n```\n# On a system that's been taking quick pods all night and is now empty\n$ ls /tmp/ | grep ovl-idmapped | wc -l\n0\n\n$ ls /mnt/containerd/tmpmounts/ | grep ovl-idmapped | wc -l\n2204\n\n$ mount | grep tmpmounts | wc -l\n2204\n\n$ mount | grep ovl-idmapped | wc -l\n2204\n```\n\nThese are mounts made a part of `WithUserID()` while using user namespace enabled pods and come from containerd proper. The shims also make these sorts of mounts, but they're on `/tmp/` instead and don't end up leaking in my tests.\n\nThe mentioned commit seemed to have some background over [here](https://github.com/containerd/containerd/pull/10955#discussion_r1833247757), where its also reported that @participant1 and @participant3 seemed to have similar issues, whereas @participant2 did not.\n\nI for the life of me (i.e. an hour or two of poking around with bpf tools like opensnoop) can't figure out why *exactly* those mounts are reporting `-EBUSY` on my system, but they are with 2.1 and main. \n\nLeaking these mounts is bad as the mount table gets quite large, which can lead to large systemd slow downs, etc.\n\nI'm wondering if we should prefer to go back to `MNT_DETACH`, or if we should add a retry mechanism on `-EBUSY` similar to other umount's in containerd? It seems hiding issues with `MNT_DETACH` isn't ideal, so maybe the latter is a safer bet.\n\nFor now on my systems I'm setting up a cron to clean up mounts in that folder that are considered \"old enough\", otherwise this would impact us too much.\n\n[0]: https://github.com/containerd/containerd/blob/43f9cdd3bcf168c43ac0a2a3e4cfbd89610478ce/cmd/containerd/command/main.go#L180\n\n### Steps to reproduce the issue\n\n1. Run some user namespace enabled pods on containerd versions containing 1e3d10dc2 \n2. Watch mounts hang around in `<root>/tmpmounts/ovl-idmapped*`\n\n\n### Describe the results you received and expected\n\nVery few if any mounts are leaked\n\n### What version of containerd are you using?\n\nv2.1.0-226-g43f9cdd3b 43f9cdd3bcf168c43ac0a2a3e4cfbd89610478ce\n\n### Any other relevant information\n\n_No response_\n\n### Show configuration if it is related to CRI plugin.\n\n_No response_",
+ "comments": [
+  {
+   "author": "reporter",
+   "created_at": "2025-07-24T15:03:09Z",
+   "body": "Happy to make the PR for this, just looking for some guidance on if we think we should be retrying in the clean up functions, or if we should go back to MNT_DETACH, or add some GC loop, or some other option I'm not thinking of :D "
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-07-24T15:08:14Z",
+   "body": "Thanks for the detailed report @reporter! I was personally in favor of leaving `MNT_DETACH` but I think we'd need consensus / sign-off for that. I'm also in theory interested in pursuing a solution where the idmap mounts are created and handed off to overlayfs without ever appearing in the systemwide mount table, but this requires very new kernels and if this is causing the issue you describe, it's probably worth thinking about a fix for older kernels too -- esp. if it could be as simple as MNT_DETACH.\n\nWe've been running this in production on fairly active hosts and haven't personally experienced this, but I think variability here is to be expected."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-07-24T15:27:01Z",
+   "body": "Well. MNT_DETACH will hide what real problem is.  So, `-10000000000000000000000000` for MNT_DETACH fro my side. \nWe have a lot of discussion about MNT_DETACH and answer is NO. We can consider adding GC component for that.\nHowever, I want to know how to make that mounpoint busy before any action. \nIf there is any process scanning that folder, sorry, please turn it off or add that containerd in the skip-list or allowlist.\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-07-24T15:42:36Z",
+   "body": "@participant2 hear you loud and clear on the dislike for `MNT_DETACH`!\n\nAs for \"who is using this and causing an -EBUSY\", so far my attempts to find anyone opening that file path have not yielded anything. I'll find some more time to try and debug that further, or maybe there's more ways to cause a mount to report -EBUSY than simply having open fd's under the mount point (in which case my current searches would not have found those situations)."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-07-25T09:51:18Z",
+   "body": "@reporter does the leak happen with #12092 and #12114 applied? The idmapped code was very fragile before those two PRs IMHO, hitting some concurrency issues that you point out. It's not obvious why it was happening, but I do wonder now that the logic is way simpler with those two PRs (and the cleanup functions should work fine), if it still happens.\n\nI guess if it happens, it might be slower to accumulate mounts (as we are doing only one mount instead of potentially a lot per rootfs), but I'm curious to know if it still happens.\n\nIf it happens, I think we need to debug to understand why. Furthermore, containerd is adding a garbage collector and mounts that we couldn't clean at the right time is a clear candidate for that."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-07-25T12:17:17Z",
+   "body": "@participant3 \n\n>I guess if it happens, it might be slower to accumulate mounts (as we are doing only one mount instead of potentially a lot per rootfs), but I'm curious to know if it still happens.\n> \n> If it happens, I think we need to debug to understand why. Furthermore, containerd is adding a garbage collector and mounts that we couldn't clean at the right time is a clear candidate for that.\n\nIt does still happen with those applied, but as you highlight we've got less bind mounts going on so the leakage is slower. I've been stress testing with those PRs a lot, and have canaried them to ~15 nodes in our cluster. I haven't hit any real issues outside of this one, and even then it was more of something I noticed at the time but didn't have any performance metric that was failing etc.\n\nI'm sure if the nodes churned thru short lived pods for weeks (which is realistic for me) this could cause issues, hence my comment about adding a cron job for our nodes in the meantime while we sort this out. \n\nI do understand @participant2's point of \"if you're doing something to cause this external of containerd, stop doing it\". At the moment at least it doesn't seem to be anyone opening those paths (at least according to `opensnoop`), but I need to dig in more to see if something else is at play. The VFS code is tricky with the locks in my experience and I'm not exactly sure what all scenarios could cause an -EBUSY."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-07-25T14:56:10Z",
+   "body": "> MNT_DETACH will hide what real problem is.\n\nIf the cause was security software, I don't think we should think of its presence as a problem, better if containerd is compatible with it out of the box."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-07-25T14:57:42Z",
+   "body": "I wonder if [this repro][link] works to repro this issue too. @reporter maybe you have time to try? I'm swamped at the moment. Otherwise I'll get to it next week.\n\n\n[link]: https://github.com/containerd/containerd/issues/10704#issuecomment-2372396341"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-07-25T20:21:25Z",
+   "body": "@participant3 for me anything using user namespaces is repro'ing pretty much in my setup, the question is why is that happening on my system :D "
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-07-29T12:32:37Z",
+   "body": "@reporter yeah, but that is not very actionable to anyone except you. If there is a repro that nothing need your system, that is more interesting for us :)"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-07-29T20:43:48Z",
+   "body": "sorry @participant3 I interpreted that weirdly I get what you mean -- yes, I can try to find time to reproduce with that (or something else) in a \"clean room\" (not the test system that is reproducing easily for *reasons*).\n\nRight now that's looking like maybe the tail end of the week, also wrapping up a few other pressing matters."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-07-30T08:48:00Z",
+   "body": "@reporter no problem! Keep us posted. I'll try a few things and report if I can find something too.\n\nIF it's something specific to your env, I wonder if something is scanning new mounts and adding a sleep of 1/2 seconds to the cleanup function might be enough for that process to stop accessing the mount. Not as a fix, of course, but as debugging to understand the situation better."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-07-30T14:01:48Z",
+   "body": "I also wonder if it happens with all of these: https://github.com/containerd/containerd/pull/11912, https://github.com/containerd/containerd/pull/12092 and https://github.com/containerd/containerd/pull/12114\n\nIf it's something running on the host scanning new mounts, the latter might fix it because it will not be visible in the host mntns"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-08-06T14:14:34Z",
+   "body": "We have an alert based on this PromQL query: `node_filesystem_readonly > 0` which just got triggerd. It complains that `/var/lib/containerd/tmpmounts/ovl-idmapped132317129/17` is read-only. We are already running with many user namespace enabled pods in our cluster and just enabled some more. The node that is affected shows this:\n\n```\n$ mount | grep ovl-idmapped132317129\n/dev/vda1 on /var/lib/containerd/tmpmounts/ovl-idmapped132317129/17 type ext4 (ro,relatime,idmapped,discard,errors=remount-ro,commit=30)\n```\n\nCan we just ignore this? Is the only way to solve this to restart containerd?\n"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-08-07T14:16:55Z",
+   "body": "@participant4 yeah, a mount leaking while we don't want it, it shouldn't be that bad. The gc won't restore the free space until the mount is gone.\n\nworkarounds to remove the mount: restart or a manual unmount should do it.\n\nJust curious, are you using overlayfs or another snapshotter? (the default is overlay)"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-08-07T18:28:59Z",
+   "body": "Okay, I could repro using the great repro from @participant1: https://github.com/containerd/containerd/issues/10704#issuecomment-2371949283. That repro also works to repro this issue :)\n\nThis issue was not happening with this PR applied: https://github.com/containerd/containerd/pull/10721 (the unmount with detach flag also fixes this).  But then PR https://github.com/containerd/containerd/pull/10955/ removed the detach and we started to leak the mounts as reported here.\n\nI'd very much would like to understand why the mount is busy, I tried some things but I didn't manage to understand (see the commit for more details on what I tried). While we understand that, I've added a commit in https://github.com/containerd/containerd/pull/12114 with a retry, that fixes the issue for me. Following @participant2 advise, I've *not* added the detach again.\n\nLong term we probably want to use the upcoming mount manager for this: https://github.com/containerd/containerd/issues/11303\n\n@reporter @participant4 can you try PR #12114 and see if it fixes the problem for you?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-08-07T19:55:46Z",
+   "body": "thanks @participant3 -- I'll try shortly. Sorry for not coming up with a repro sooner between some other obligations and needing to setup a test env outside our normal env (which easily repros) I've been dragging my feet! I need to get more comfy with running containerd outside of our images just for providing easier repros if nothing else.\n\nI too have been trying to debug with with `opensnoop`, `mountsnoop`, `retsnoop`, and some home grown bpftrace. It seems like `propagate_mount_busy()` is [claiming](https://github.com/gregkh/linux/blob/8bbe7c640d76724e9cfd8aa130b8d36ad6db77a9/fs/pnode.c#L439) there still are   some reference still when we try to umount. i.e. see my retsnoop usage here that indicates the `do_refcount_check` is failing:\n```\n# ./retsnoop -x EBUSY -e \"*umount*\" --capture-args --lbr -v\n(...)\nTotal 25 kernel functions attached successfully!\nSuccessfully attached in 86 ms.\nReceiving data...\n15:34:40.608530 -> 15:34:40.608628 TID/PID 1253099/1252773 (containerd/containerd):\n\n[#31] _find_next_bit+0x64       (lib/find_bit.c:134)             ->  mnt_get_count+0x41          (fs/namespace.c:187)\n[#30] _find_next_bit+0x64       (lib/find_bit.c:134)             ->  mnt_get_count+0x41          (fs/namespace.c:187)\n[#29] _find_next_bit+0x64       (lib/find_bit.c:134)             ->  mnt_get_count+0x41          (fs/namespace.c:187)\n[#28] _find_next_bit+0x64       (lib/find_bit.c:134)             ->  mnt_get_count+0x41          (fs/namespace.c:187)\n[#27] _find_next_bit+0x64       (lib/find_bit.c:134)             ->  mnt_get_count+0x41          (fs/namespace.c:187)\n[#26] _find_next_bit+0x64       (lib/find_bit.c:134)             ->  mnt_get_count+0x41          (fs/namespace.c:187)\n[#25] _find_next_bit+0x64       (lib/find_bit.c:134)             ->  mnt_get_count+0x41          (fs/namespace.c:187)\n[#24] _find_next_bit+0x64       (lib/find_bit.c:134)             ->  mnt_get_count+0x41          (fs/namespace.c:187)\n[#23] _find_next_bit+0x64       (lib/find_bit.c:134)             ->  mnt_get_count+0x41          (fs/namespace.c:187)\n[#22] _find_next_bit+0x64       (lib/find_bit.c:134)             ->  mnt_get_count+0x41          (fs/namespace.c:187)\n[#21] _find_next_bit+0x64       (lib/find_bit.c:134)             ->  mnt_get_count+0x41          (fs/namespace.c:187)\n[#20] _find_next_bit+0x64       (lib/find_bit.c:134)             ->  mnt_get_count+0x41          (fs/namespace.c:187)\n[#19] _find_next_bit+0x64       (lib/find_bit.c:134)             ->  mnt_get_count+0x41          (fs/namespace.c:187)\n[#18] mnt_get_count+0x51        (fs/namespace.c:195)             ->  propagate_mount_busy+0x43   (fs/pnode.c:420)\n[#17] propagate_mount_busy+0x39 (fs/pnode.c:443)                 ->  path_umount+0x3ea           (fs/namespace.c:1894)\n                                                                     . do_umount                 (fs/namespace.c:1791)\n[#16] _raw_spin_unlock+0x18     (kernel/locking/spinlock.c:187)  ->  path_umount+0x1ee           (fs/namespace.c:1894)\n                                                                     . do_umount                 (fs/namespace.c:1799)\n[#15] up_write+0x31             (kernel/locking/rwsem.c:1627)    ->  namespace_unlock+0x9b       (fs/namespace.c:1571)\n[#14] shrink_dentry_list+0x13e  (fs/dcache.c:1197)               ->  namespace_unlock+0xa3       (fs/namespace.c:1573)\n      . d_shrink_del            (fs/dcache.c:446)                    . hlist_empty               (include/linux/list.h:891)\n[#13] namespace_unlock+0xc8     (fs/namespace.c:1582)            ->  path_umount+0x1f3           (fs/namespace.c:1897)\n[#12] __cond_resched+0x16       (kernel/sched/core.c:8584)       ->  dput+0x20                   (fs/dcache.c:900)\n                                                                     . fast_dput                 (fs/dcache.c:775)\n[#11] __rcu_read_lock+0x21      (kernel/rcu/tree_plugin.h:408)   ->  dput+0x29                   (fs/dcache.c:900)\n                                                                     . fast_dput                 (fs/dcache.c:775)\n[#10] lockref_put_return+0x39   (lib/lockref.c:121)              ->  dput+0x3b                   (fs/dcache.c:900)\n                                                                     . fast_dput                 (fs/dcache.c:788)\n[#09] __rcu_read_unlock+0x25    (kernel/rcu/tree_plugin.h:433)   ->  path_umount+0x201           (fs/namespace.c:1898)\n[#08] __rcu_read_lock+0x21      (kernel/rcu/tree_plugin.h:408)   ->  mntput_no_expire+0x32       (fs/namespace.c:1281)\n[#07] __rcu_read_unlock+0x25    (kernel/rcu/tree_plugin.h:433)   ->  mntput_no_expire+0x4a       (fs/namespace.c:1341)\n[#06] mntput_no_expire+0x6a     (fs/namespace.c:1341)            ->  path_umount+0x209           (fs/namespace.c:1900)\n[#05] path_umount+0x22f         (fs/namespace.c:1900)            ->  arch_rethook_trampoline+0x0\n\n                   entry_SYSCALL_64_after_hwframe+0x6e  (entry_SYSCALL_64 @ arch/x86/entry/entry_64.S:120)\n                   do_syscall_64+0x3c                   (arch/x86/entry/common.c:80)          \n                   . do_syscall_x64                     (arch/x86/entry/common.c:50)          \n    94us [-EBUSY]  __x64_sys_umount+0x71                (fs/namespace.c:1920)                               regs=&{.r15=0xc0027dc6b0,.r14=0xc001616fc0,.r13=0xc0027dc6b8,.r12=0xc003306800,.bp=0xc0033067e0,.bx=0xc0018f0ec0,.r11=530,.a…\n                   . __se_sys_umount                    (fs/namespace.c:1920)                 \n                   . __do_sys_umount                    (fs/namespace.c:1922)                 \n                   . ksys_umount                        (fs/namespace.c:1917)                 \n!   74us [-EBUSY]  path_umount                                                                              path=&{.mnt=0xffff8ecf0ee54de0,.dentry=0xffff8ecd92655ec0} flags=0\n```\n\nAlso, even without user namespace pods containerd gets -EBUSY for me pretty frequently, i.e.:\n```\n$ sudo /usr/share/bcc/tools/mountsnoop 2>/dev/null | grep EBUSY\ncontainerd       3568866 3574733 4026531841  umount(\"/mnt/containerd/tmpmounts/containerd-mount877204912\", 0x0) = -EBUSY\n```\nbut those are [unmounted](https://github.com/containerd/containerd/blob/ef686423b1418a4840dbaef2696010c06f82d246/core/mount/temp.go#L56) with a retry loop, and subsequent attempts succeed always"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-08-11T19:46:55Z",
+   "body": "@reporter awesome, that makes it even more clear that we just need to retry those unmounts.\n\nI'm not 100% convinced this is the kernel or something containerd is doing, but as this happens with other mounts too, even if it's containerd, I don't think we will want/can to change it."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-08-12T03:22:24Z",
+   "body": "I think I found that root cause. I can reproduce this issue. The systemd monitors that mountpoint in my local dev and it will create cgroup for this path. still trying to figure it out. If you see leaky mountpoint in your local, you can try to check\n\n```\nsudo systemctl --type=mount | grep ovl\n```\n\nIn my local - `Linux participant2 6.14.0-24-generic #24~24.04.3-Ubuntu`, it returns 1 before checking propagation group. That reference shows 3 or 4. \n\n```\nFUNCTION CALLS                         RESULT     DURATION\n------------------------------------   --------  ---------\n→ __x64_sys_umount\n                                       › regs = &{.r15=0xc002206820,.r14=0xc001896700,.r13=128,.r12=0xc002b03200,.bp=0xc00317d790,.bx=0xc002b03200,.r11=530,.ax=0xfffff…\n    → path_umount\n                                       › path = &{.mnt=0xffff8cc686d62120,.dentry=0xffff8ccb746c9500}\n                                       › flags = 0\n        → do_umount\n                                       › mnt = &{.mnt_hash={.next=0xffff8ccb68143c00,.pprev=0xffff8cc68094b8e8},.mnt_parent=0xffff8cc693161800,.mnt_mountpoint=0xffff8…\n                                       › flags = 0\n            → security_sb_umount\n                                       › mnt = &{.mnt_root=0xffff8ccb746c9500,.mnt_sb=0xffff8cc68842a800,.mnt_flags=4128,.mnt_idmap=0xffffffffa947d6a0}\n                                       › flags = 0\n                ↔ hook_sb_umount       [0]         1.173us\n                                       › mnt = &{.mnt_root=0xffff8ccb746c9500,.mnt_sb=0xffff8cc68842a800,.mnt_flags=4128,.mnt_idmap=0xffffffffa947d6a0}\n                                       › flags = 0\n                ↔ apparmor_sb_umount   [0]         0.702us\n                                       › mnt = &{.mnt_root=0xffff8ccb746c9500,.mnt_sb=0xffff8cc68842a800,.mnt_flags=4128,.mnt_idmap=0xffffffffa947d6a0}\n                                       › flags = 0\n            ← security_sb_umount       [0]         4.459us\n            → propagate_mount_busy\n                                       › mnt = &{.mnt_hash={.next=0xffff8ccb68143c00,.pprev=0xffff8cc68094b8e8},.mnt_parent=0xffff8cc693161800,.mnt_mountpoint=0xffff8…\n                                       › refcnt = 2\n                ↔ mnt_get_count        [4]         1.463us\n                                       › mnt = &{.mnt_hash={.next=0xffff8ccb68143c00,.pprev=0xffff8cc68094b8e8},.mnt_parent=0xffff8cc693161800,.mnt_mountpoint=0xffff8…\n            ← propagate_mount_busy     [1]         5.631us\n        ← do_umount                    [-EBUSY]  217.008us\n    ← path_umount                      [-EBUSY]  236.013us\n← __x64_sys_umount                     [-EBUSY]  245.080us\n\n```"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-08-12T14:30:37Z",
+   "body": "@participant2 thanks for investigating! I've tried using PR #11912 so systemd doesn't see this mount and it didn't make a difference (I mentioned it on that commit message, in PR #12114). Now that I think about it, though, I'm not sure it's relevant as I think this mount might not be made by the shim but by the main process. But I'm not sure.\n\nAnyways, this happens with all temp mounts as @reporter mentioned [here][link], so using the helper that other temp mounts use to retry the unmount seems fine. We can later try to see if we can avoid the unmount for ever failing due to containerd behavior, but there can easily be other host processes monitoring the mounts and therefore we will still need to keep the retry IMO.\n\n@participant2 what do you think?\n\n[link]: https://github.com/containerd/containerd/issues/12139#issuecomment-3165535459"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-08-12T15:10:05Z",
+   "body": "> I've tried using PR https://github.com/containerd/containerd/pull/11912 so systemd doesn't see this mount and it didn't make a difference\n\nYou mean you run containerd in new mount namespace and still see it ebusy?\n\nI agree to use Umount with retry. Just want to know what causes this."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-08-12T18:51:16Z",
+   "body": "> You mean you run containerd in new mount namespace and still see it ebusy?\n\nNope, what I tried is the PR I mentioned, that only the shim runs in a new mntns.  That didn't make a difference.\n\nI've now tried running containerd in a mntns with propagation private (just run as root `unshare -m` and then start containerd). Doing that, there are no mount leaks!\n\nSo for sure the issue is not containerd, it's probably systemd or some other host stuff. Confirmed now! =)\n\n> I agree to use Umount with retry. Just want to know what causes this.\n\nIt's definitely not containerd, take a look at https://github.com/containerd/containerd/pull/12114 when you have some time ;)"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-08-12T19:03:35Z",
+   "body": "I wonder if we can explain to systemd to not scan these temp mounts, as it will just overload the system, but I guess it's tricky to do it from the containerd service. We can try `PrivateMounts=true`, but that seems too big of a hammer and we probably don't want to hide those mounts from the rest of the host."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-08-13T16:10:29Z",
+   "body": "Updated @reporter @participant1  @participant3\n\nThe ebusy is caused by race condition during forking ptraced process. The following testcase can reproduce it.\n\n```diff\ndiff --git a/core/mount/mount_idmapped_linux_test.go b/core/mount/mount_idmapped_linux_test.go\nindex abf55200d..14b234c1e 100644\n--- a/core/mount/mount_idmapped_linux_test.go\n+++ b/core/mount/mount_idmapped_linux_test.go\n@@ -29,6 +29,7 @@ import (\n\n        kernel \"github.com/containerd/containerd/v2/pkg/kernelversion\"\n        \"github.com/containerd/continuity/testutil\"\n+       \"github.com/stretchr/testify/assert\"\n        \"github.com/stretchr/testify/require\"\n )\n\n@@ -139,6 +140,18 @@ func testGetUsernsFD(t *testing.T) {\n        }\n }\n\n+func TestIDMapMountConcurrent(t *testing.T) {\n+       var wg sync.WaitGroup\n+       wg.Add(100)\n+       for i := 0; i < 100; i++ {\n+               go func() {\n+                       defer wg.Done()\n+                       testIDMapMount(t)\n+               }()\n+       }\n+       wg.Wait()\n+}\n+\n func testIDMapMount(t *testing.T) {\n        usernsFD, err := getUsernsFD(testUIDMaps, testGIDMaps)\n        require.NoError(t, err)\n@@ -147,7 +160,7 @@ func testIDMapMount(t *testing.T) {\n        srcDir, checkFunc := initIDMappedChecker(t, testUIDMaps, testGIDMaps, true)\n        destDir := t.TempDir()\n        defer func() {\n-               require.NoError(t, UnmountAll(destDir, 0))\n+               assert.NoError(t, unix.Unmount(destDir, 0))\n        }()\n\n        err = IDMapMount(srcDir, destDir, int(usernsFD.Fd()))\n\n``` \n\nEven if we open unix.OpenTree with close_on_exec, but before perform execve syscall, that file decription about unix.OpenTree will be inherited by new ptraced process(es). \n\nhttps://github.com/containerd/containerd/blob/cbe833eb4d664ac898282cce4c478617850f7aec/core/mount/mount_idmapped_linux.go#L96\n\nIt can explain that `mnt_get_count` returns higher number during that test. I think `Unmount` with retry is good strategy here. Hope it can help. \n\n```bash\n$ retsnoop -x EBUSY --config args.fmt-mode=multiline -e \"*umount*\" -v -E -e \"mnt_get_count\" -T -e \"mntget\" -e \"propagate_mount_busy\" -e \"propagation_next\" --config bpf.ringbuf-size=134217728 --config args.fmt-max-arg-width=250\n\n... \n\n11:51:22.240426 -> 11:51:22.240509 TID/PID 555213/555170 (mount.test/mount.test):\n\nFUNCTION CALLS                         RESULT    DURATION\n------------------------------------   --------  --------\n→ __x64_sys_umount\n    → path_umount\n        → do_umount\n            → security_sb_umount\n                ↔ hook_sb_umount       [0]        3.213us\n                ↔ apparmor_sb_umount   [0]        2.793us\n            ← security_sb_umount       [0]       14.528us\n            → propagate_mount_busy\n                ↔ mnt_get_count        [6]        3.353us\n            ← propagate_mount_busy     [1]       10.127us\n        ← do_umount                    [-EBUSY]  51.755us\n    ← path_umount                      [-EBUSY]  67.051us\n← __x64_sys_umount                     [-EBUSY]  76.130us\n\n                   path_umount+0x8c  (fs/namespace.c:2055)\n!   76us [-EBUSY]  __x64_sys_umount\n!   67us [-EBUSY]  path_umount\n!   51us [-EBUSY]  do_umount\n```"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-08-13T23:44:40Z",
+   "body": "Nice find @participant2 thanks for looking into this as well!\n\nAre you saying that the ptraced process as part of `getUsernsFD()`\nhttps://github.com/containerd/containerd/blob/cbe833eb4d664ac898282cce4c478617850f7aec/core/mount/mount_idmapped_utils_linux.go#L39\nis to blame?\n\nI went down that rabbit hole as well, but started to convince myself that because we don't set [ProcAttr::Files](https://pkg.go.dev/os#ProcAttr) that couldn't be it, but your comment makes sense. There's always a gap between fork() and execve(), and until the latter we don't close-on-exec any fd's, so this sounds likely to cause issues for any umounts we have a reference to when we fork for that.\n\nCurious, did you manage to trace your way there, or just reason via looking at code? I failed to trace my way to that so far and would love to see how you did if you managed to, otherwise good catch on the code inspection, I convinced myself otherwise but this is a simple explanation and I'm glad you provided it.\n\nThanks again, this has literally been driving me crazy!"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-08-14T01:00:17Z",
+   "body": "Hi @reporter \n\n> Are you saying that the ptraced process as part of getUsernsFD()\n\nYes. For example,\n\n| Timestamp | Goroutine 1 | Goroutine 2 | New Process X |\n| :------- | :------: | -------: | ---:|\n| T1  | FD = unix.OpenTree with OPEN_TREE_CLOEXEC  |   | | \n| T2 | MountSetAttr with IDMapping | Enter getUsernsFD and fork new process X | |\n| T3 | MoveMount | ... | ...(holding FD) |\n| T4 | close(FD) | ... | ... (holding FD ) |\n| T5 | ... | ... | ... (holding FD) |\n| T6 | umount temp mountpoint | ... | ... (holding FD) |\n| T7 | log warning message - EBUSY | ... | execve |\n\n> There's always a gap between fork() and execve(), and until the latter we don't close-on-exec any fd's, so this sounds likely to cause issues for any umounts we have a reference to when we fork for that.\n\nYeah. I think if we umount mountpoint created by OpenTree between fork() and execve(), it will be EBUSY. I don't know how to avoid it. It seems inevitable 😂  \n\n> Curious, did you manage to trace your way there, or just reason via looking at code?\n\nI used retsnoop as you did. Based on result, it has high reference number ([6]) before checking propagation. \nSo, I think there are processes holding that file description of that mountpoint. \n\n```\n↔ mnt_get_count        [6]        3.353us\n```\n\nI was suspecting systemd. But checking that code, found that systemd only read `/proc/self/mountinfo` without touching any mountpoint. I used bpftrace to check openat/mkdir/mkdirat but nothing. So I decided to use minimal test code to reproduce it. It's so crazy because I could't find anything wrong in code. After using `TestIDMapMountConcurrent` mentioned above, I can confirm that there could be kind of leaking file descriptor. So I spotted that unix.OpenTree fd and use `strace -f -e inject=execve:delay_enter=1000000:when=2` to delay syscall and found that. 😂 \n\nIt's so hard... anyway, we should use retry in whole codebase. \nThanks for filing this issue. Learn so much things in this !\n"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-08-14T20:16:11Z",
+   "body": "@participant2 great finding! And thanks for the table explaining the race! :)\n\nThat seems to be on spot, I've checked my setup and the `watch \"mount | tail\"` was not running inside the mntns, so that is why I wasn't seeing the leaks when running inside a mntns 🤦 . I corrected that and it indeed still leaks mounts when running the containerd daemon inside a mntns.\n\nIf the `mount()` method on Mount in mount_linux.go is called concurrently (I guess it is, but not sure atm), I think it will always be possible that one goroutine is doing the fork() while the other has an openfd that will cause the unmount to fail. It doesn't matter if we switch to `exec()` a new process (so the fd is closed) instead of ptrace it, the window might be smaller but it will still be there.\n\nI agree the retry is the right fix for now (other clone flags don't seem nice), until the mount manager #11303 is merged and can handle this."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-08-20T22:13:23Z",
+   "body": "Backports over here:\n2.0: https://github.com/containerd/containerd/pull/12223\n2.1: https://github.com/containerd/containerd/pull/12222\n"
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "containerd/containerd",
+  "default_branch": "main",
+  "commit_sha": "46325f11416fd365292907775022447379c11365",
+  "as_of": "2025-07-24T15:00:10Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_containerd_containerd_12139"
+}

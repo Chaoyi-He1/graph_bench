@@ -1,0 +1,259 @@
+{
+ "repo": "denoland/deno",
+ "number": 13608,
+ "url": "https://github.com/denoland/deno/issues/13608",
+ "title": "Slow upload speed for http server",
+ "state": "closed",
+ "labels": [
+  "perf",
+  "needs investigation",
+  "ext/http"
+ ],
+ "reporter": "reporter",
+ "created_at": "2022-02-06T15:30:30Z",
+ "closed_at": "2026-06-07T21:39:42Z",
+ "body": "I tested upload speed for varius file sizes: 10M, 100M, 1000M in comparison of `node.js` upload speed in `Deno` is about  2x-3x slower and on 1G file deno is 10x slower and use almost all CPU resources (my ubuntu 20.04 vps server has 2 cpu cores and 2G ram). \r\nWhat I'm doing wrong or how to improve upload speed??\r\n\r\nSend test data to server(localhost) via curl:\r\n```\r\ntime curl -H \"Content-Type:application/octet-stream\" --data-binary @/dir/dev/foo1000M.bin  http://127.0.0.1:8080/upload/foo.bin\r\n```\r\nTest file for uploading was created by command:\r\n```\r\ntruncate -s 10M foo10M.bin\r\n```\r\n\r\n```\r\nimport { serve } from \"https://deno.land/std@0.125.0/http/server.ts\";\r\nimport { config } from \"./modules/config.js\"\r\nimport * as path from \"https://deno.land/std/path/mod.ts\"\r\nimport {\r\n    writableStreamFromWriter,\r\n    readableStreamFromReader,\r\n} from \"https://deno.land/std/streams/mod.ts\";\r\n\r\nconst PORT=8080\r\n\r\nasync function handler(req){\r\n    console.log(`>>>new request: ${req.method}, ${req.url}, path: ${req.pathname} params: ${req.searchParams}`)\r\n    console.log(\"HEADERS:\",req.headers)\r\n\r\n    if (req.body) {\r\n        console.log(\"==>hasBody!\");\r\n        const file = await Deno.open(path.join(config.upload_dir, \"native_deno.bin\"), { create: true, write: true })\r\n        const writableStream = writableStreamFromWriter(file)\r\n        await req.body.pipeTo(writableStream)\r\n    }\r\n    console.log(\">>upload complete!\")\r\n    return new Response(\"upload complete!\");\r\n}\r\n\r\nserve(handler, { port: PORT })\r\nconsole.log(\">>>server listen...\",PORT)\r\n```\r\n\r\nResults:\r\n```\r\nfor 10M file:\r\n   Deno:  60 - 90ms      Node:  35-40ms\r\n\r\nfor 100M file:\r\n    Deno:  500-600ms   Node:  260ms\r\n\r\nfor 1000M file:\r\n    Deno:  20s-5m          Node: 1000-1700ms\r\n```\r\nI repeat upload test multiple times and every time on 1G file `deno` server become slower and slower (for 10M and 100M test file I don't see any performance reduction) but `node` server upload time stay the same avery time.",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2022-02-06T16:55:44Z",
+   "body": "Please include your `node` code too."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2022-02-06T17:08:20Z",
+   "body": "This is my simple test  `node` code:\r\n```\r\nconst express = require('express')\r\nconst morgan = require('morgan')\r\nconst fs = require('fs')\r\nconst path = require('path')\r\nconst stream = require('stream/promises')\r\n\r\nconst app = express()\r\nconst port = 8081\r\n\r\napp.use(morgan('tiny'))\r\n\r\napp.get('/', (req, res) => {\r\n    res.send('Hello World! ' + new Date())\r\n})\r\n\r\napp.post(\"/upload/:filename\", async (req, res) => {\r\n\r\n    //check file name\r\n    if (!req?.params?.filename || !/^[0-9a-zA-Z\\.\\-\\_]+$/.test(req?.params?.filename)) {\r\n        return res.send(\"Invalid file name!\")\r\n    }\r\n\r\n    const fs_stream = fs.createWriteStream(path.join(\"/dir/www/upload\", req.params?.filename), { flags: \"w\" })\r\n\r\n    //stream body to file\r\n    await stream.pipeline(req, fs_stream)\r\n    res.send(\"File successfully uploaded to node server!\")\r\n    fs_stream.close()\r\n})\r\n\r\napp.listen(port, () => {\r\n    console.log(`==>listening on port ${port}`)\r\n})\r\n```"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2022-02-06T18:10:56Z",
+   "body": "Then I test uploading of 1G file multiple times I see performance degrades."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2022-02-06T20:32:23Z",
+   "body": "Duplicate of #10157?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2022-02-06T22:41:13Z",
+   "body": "@participant2 Maybe - I have some stuff to do on Monday, but I'll try to investigate this on Tuesday."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2022-02-06T23:19:06Z",
+   "body": "@reporter So I can reproduce Deno being slower than Node here, but not catastrophically slower like your benchmark suggests. I measured 1GB uploads to the Node server at 1.24 secs, and the Deno upload at 3.40 secs. I am using your exact script and commands, except that I am writing to /tmp instead of cwd.\r\n\r\nIs there anything else I should know to be able to reproduce your results? What Deno version are you on?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2022-02-07T08:31:24Z",
+   "body": "> @reporter So I can reproduce Deno being slower than Node here, but not catastrophically slower like your benchmark suggests. I measured 1GB uploads to the Node server at 1.24 secs, and the Deno upload at 3.40 secs. I am using your exact script and commands, except that I am writing to /tmp instead of cwd.\r\n> \r\n> Is there anything else I should know to be able to reproduce your results? What Deno version are you on?\r\n\r\nTry to upload 1g file multiple times in the row, every time it's slower and slower...\r\n\r\n2x-3x slower that node, looks catastrophic in my eyes, something wrong in deno code under the hood.\r\n\r\nI'm using latest deno version, and node 16.\r\n\r\nAlso,  I had 2 cpu and 2g ram server."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2022-02-07T09:41:33Z",
+   "body": "I'll try that, thanks.\n\n> 2x-3x slower that node, looks catastrophic in my eyes, something wrong in deno code under the hood.\n\nI agree it isn't great, but 5s is much faster than 5 minutes (60x faster) 😅\n\n> Also, I had 2 cpu and 2g ram server.\n\nAh, I think this may be related. I'll take this into account."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2022-02-07T19:54:54Z",
+   "body": "Deno also uses almost all CPU resource during upload  1G file."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2022-02-09T12:50:05Z",
+   "body": "Any news?"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2022-02-09T22:22:44Z",
+   "body": "No."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2022-02-21T15:52:55Z",
+   "body": "We've recently added the ability to use Web Streams directly with file system files. \r\n\r\nhttps://deno.com/blog/v1.19#files-network-sockets-and-stdio-are-now-native-web-streams\r\n\r\n@reporter I'd be interested to see your benchmark again with this new interface:\r\n```js\r\nasync function handler(req) {\r\n    console.log(`>>>new request: ${req.method}, ${req.url}, path: ${req.pathname} params: ${req.searchParams}`)\r\n    console.log(\"HEADERS:\",req.headers)\r\n\r\n    if (req.body) {\r\n        console.log(\"==>hasBody!\");\r\n        const file = await Deno.create(path.join(config.upload_dir, \"native_deno.bin\"))\r\n        await req.body.pipeTo(file.writable)\r\n    }\r\n    console.log(\">>upload complete!\")\r\n    return new Response(\"upload complete!\");\r\n}\r\n```"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2022-02-21T16:03:26Z",
+   "body": "Thanks, will try today."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2022-02-21T20:01:58Z",
+   "body": "Hi!\r\nTested new version:\r\n```\r\ndeno --version\r\ndeno 1.19.0 (release, x86_64-unknown-linux-gnu)\r\nv8 9.9.115.7\r\ntypescript 4.5.2\r\n```\r\nI tested 1G file uploading and with new version total uploading time is reduced from 16.5 to 5.3 seconds (3x improvement and result more stable if I repeat test multiple times). But `node.js` has 2.3 seconds! (2x faster) and uses 2x less CPU power on my VPS server: 2 CPU & 2G RAM. \r\nI also want to try to run test on 4-8 core CPU."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2022-02-21T23:28:49Z",
+   "body": "Hi!\r\nRunning the tests on another VPS with 4 CPUs and 8 GB of RAM gives exactly the same result.\r\nBasycally `deno`  has  1G/5s =200MByte/secod throughput , but `node` has 450MByte/s throughput.\r\nSo, `deno` is 2x slower and it's a huge difference. \r\n\r\nHow we can improve it?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2022-03-07T13:48:28Z",
+   "body": "Tested again on new  `deno` and `std` versions:\r\n```\r\ndeno 1.19.2\r\nstd@0.128.0\r\n```\r\nDeno still 2x slower vs `node` : 2.3sec vs 5.5sec\r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2022-04-21T10:58:14Z",
+   "body": "```\r\ndeno 1.21.0\r\nstd@0.136.0\r\n```\r\nDeno still 2x slower vs node : 2.3sec vs 5.5sec"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2022-04-29T12:05:38Z",
+   "body": "Tested new `deno` release:\r\n```\r\ndeno 1.21.1\r\nstd@0.137.0\r\n```\r\nDeno is slightly faster than previous version 4.5s, but still 2x slower than `node` 2.3s"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2022-05-14T00:20:39Z",
+   "body": "Same results as before...\r\n```\r\ndeno 1.21.3\r\nstd@0.139.0\r\n```"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2022-05-21T00:45:53Z",
+   "body": "Same result as  before....\r\n```\r\ndeno 1.22.0\r\nstd@0.140.0\r\n```"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2022-06-01T11:04:57Z",
+   "body": "Same result as before....\r\n```\r\ndeno 1.22.1\r\nstd@0.141.0\r\n```"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2022-06-20T12:05:52Z",
+   "body": "Same result as before....\r\n```\r\ndeno 1.23.0\r\nstd@0.144.0\r\n```"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2022-07-22T16:14:09Z",
+   "body": "Same result as before....\r\n```\r\ndeno 1.24.0\r\nstd@0.149.0\r\n```"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2022-07-22T18:55:38Z",
+   "body": "We are actively working on improving performance of HTTP server."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2022-08-28T15:11:57Z",
+   "body": "I'm tested same server but with new `Deno.serve()`, result is the same: 2x slower vs `node`.\r\n```\r\ndeno 1.25.0 (release, x86_64-unknown-linux-gnu)\r\nv8 10.6.194.5\r\ntypescript 4.7.4\r\n```"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2022-09-06T06:59:37Z",
+   "body": "Same slow results.\r\n```\r\ndeno 1.25.1 (release, x86_64-unknown-linux-gnu)\r\nv8 10.6.194.5\r\ntypescript 4.7.4\r\n```"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2022-09-17T17:09:32Z",
+   "body": "ReadableStreams are quite slow as compared to the old Reader/Writer interface, because the buffer is not being reused. Allocating a new `Uint8Array` on every chunk is one of the reasons of the slow performance on big uploads.\r\n\r\nhttps://github.com/denoland/deno/blob/d7b27ed63bf74c19b0bc961a52665960c199c53a/ext/http/01_http.js#L383-L390\r\n\r\nBy reusing the buffer (not using ReadableStream) uploading a 2gb file takes around 3 seconds, the same upload using a ReadableStream takes 4.8 seconds on my computer.\r\n\r\nI love having spec compliant `Response` and `Request`, but when dealing with a lot of data is nice to have some lower level APIs. I think we should expose lower level APIs for users that really need that speed. \r\n\r\nThe same bottleneck happens in `fetch` when downloading large files."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2022-09-28T15:23:06Z",
+   "body": "I'm working on this, I'll try to have a PR by tomorrow."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2022-10-09T14:33:03Z",
+   "body": "Xref #16046"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2022-10-11T13:17:47Z",
+   "body": "Same slow results.\r\n```\r\ndeno 1.26.1 (release, x86_64-unknown-linux-gnu)\r\nv8 10.7.193.3\r\ntypescript 4.8.3\r\n```"
+  },
+  {
+   "author": "participant6",
+   "created_at": "2022-10-28T20:15:09Z",
+   "body": "On Windows, the gap between deno and node is getting closer.\r\n\\\r\nResults for uploading an 1GB file:\r\n\r\n`node` ~ 3.5 sec \r\n`deno` ~ 3.8 sec \r\n\r\n```\r\ndeno 1.27.0 (release, x86_64-pc-windows-msvc)\r\nv8 10.8.168.4\r\ntypescript 4.8.3\r\n```"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2022-10-28T21:53:01Z",
+   "body": "Little bit faster but still  2x slower vs node.\r\n```\r\ndeno 1.27.0 (release, x86_64-unknown-linux-gnu)\r\nv8 10.8.168.4\r\ntypescript 4.8.3\r\n```"
+  },
+  {
+   "author": "participant7",
+   "created_at": "2023-01-18T09:56:22Z",
+   "body": "Hi, any update?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-01-18T10:11:54Z",
+   "body": "```\r\ndeno 1.29.4 (release, x86_64-unknown-linux-gnu)\r\nstd  0.173.0\r\n```\r\nSame slow results..."
+  },
+  {
+   "author": "participant7",
+   "created_at": "2023-01-18T11:42:00Z",
+   "body": "How it compared with Bun?\n\nOn Wed, Jan 18, 2023, 17:12 reporter ***@***.***> wrote:\n\n> deno 1.29.4 (release, x86_64-unknown-linux-gnu)\n> std  0.173.0\n>\n> Same slow results...\n>\n> —\n> Reply to this email directly, view it on GitHub\n> <https://github.com/denoland/deno/issues/13608#issuecomment-1386802366>,\n> or unsubscribe\n> <https://github.com/notifications/unsubscribe-auth/AAJZVS2VOV3XINOIM27NZQLWS66XLANCNFSM5NVO2WJQ>\n> .\n> You are receiving this because you commented.Message ID:\n> ***@***.***>\n>\n"
+  },
+  {
+   "author": "participant8",
+   "created_at": "2023-01-18T12:16:07Z",
+   "body": "What's the current code you're running by the way? I think `writableStreamFromReader` etc. are no longer needed as there's now a `.readable` and `.writable` property in the `Deno.open` result: https://deno.land/api@v1.29.4?s=Deno.FsFile#prop_readable"
+  },
+  {
+   "author": "participant8",
+   "created_at": "2023-01-18T12:43:34Z",
+   "body": "I tested this with the `.writable` property from `Deno.open`. I had to use my browser as the sending side because CURL would always set Content-Length to 10, and if I set it manually the upload would hang (presumably from Deno waiting for more data while CURL would not send any more).\r\n\r\n~~Using the browser I sent `107374182` bytes, that is about 103M, in 880-920 milliseconds. So, based on that it seems like with the new APIs allotted that use the fast streams feature behind the scenes, performance is now on par with Node.~~\r\n\r\nEDIT: Never mind, you were already using the new APIs so it seems like my results are not in line with what you see.\r\n\r\nAfter some more tinkering I got a 512M buffer sent over taking 4687 ms on the browser from start to finish, and 2947 ms on Deno end to save the file (including file open), so that seems to be more in line with what @reporter has been seeing."
+  },
+  {
+   "author": "participant8",
+   "created_at": "2023-01-18T13:48:12Z",
+   "body": "Example performance graph of one upload:\r\n![image](https://user-images.githubusercontent.com/19621382/213187690-da8f58fe-7294-4ab0-a811-96b73b47e9d1.png)\r\n\r\nZoomed in:\r\n![image](https://user-images.githubusercontent.com/19621382/213187761-4f9a1ed3-7818-4948-b48e-02451f8fb4eb.png)\r\n\r\nIf I'm not badly mistaken, this means that the stream isn't actually taking the \"fast stream API\", right? As that would happen behind the scenes, outside of JavaScript."
+  },
+  {
+   "author": "participant8",
+   "created_at": "2023-05-17T13:28:41Z",
+   "body": "Profiling can be done by setting up the server from the topic statement (change to use `Deno.serve` or some other API if preferred) and start the server with `deno run --unstable -A --inspect server.ts`. Then connect via Chrome profiler, start a performance recording and start a curl session to upload 1000MB or 1GB file (use `-X POST -T 1GB_file.bin` if you run into curl memory issues).\r\n\r\nI'll come back with a proper profiling code and setup later today."
+  },
+  {
+   "author": "participant8",
+   "created_at": "2023-05-17T19:29:18Z",
+   "body": "Here's the way I profiled this:\r\n\r\n```ts\r\n// test.ts\r\nimport { dirname, fromFileUrl, join } from \"https://deno.land/std/path/mod.ts\";\r\n\r\nconst directory = dirname(fromFileUrl(import.meta.url));\r\n\r\nDeno.serve(async (req) => {\r\n  console.group(\"Request to\", req.method, req.url);\r\n  console.log(`Headers:`, req.headers);\r\n\r\n  if (req.body) {\r\n    console.log(\"Initiating upload\");\r\n    const start = performance.now();\r\n    const file = await Deno.open(join(directory, \"native_deno.bin\"), {\r\n      create: true,\r\n      write: true,\r\n    });\r\n    await req.body.pipeTo(file.writable);\r\n    console.log(\"Finished upload in\", performance.now() - start, \"ms\");\r\n  }\r\n  console.groupEnd();\r\n  return new Response();\r\n});\r\n```\r\nAnd start the server with `deno run --inspect --unstable --allow-net=0.0.0.0 --allow-write=. test.ts`. Then start up a debugger with either Chrome / Chromium, or VS Code or some other way if that's your preference.\r\n\r\nCreate a 1 GB file with\r\n```sh\r\ntruncate -s 1G foo1GB.bin\r\n```\r\nthen start a Performance recording in debugger and send the file to the server with\r\n```sh\r\ntime curl -H \"Content-Type:application/octet-stream\" -XPOST -T foo1G.bin  http://127.0.0.1:8000\r\n```\r\n\r\n### Side note about profiling performance:\r\nLocally currently when I do not have a debugger connected, the 1GB upload finishes in just about a second.\r\n\r\nWhen I connected a debugger but do not start up a performance recording, the upload takes anything from 3.5 to more than 4 seconds.\r\n\r\nIf I start a performance recording, the upload again goes down to about a second. ~~This may indicate some issue with Deno regarding a connected-but-idle debugger client.~~ This same happens with Node as well."
+  },
+  {
+   "author": "participant9",
+   "created_at": "2023-06-23T20:40:07Z",
+   "body": "Any update?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-06-24T12:08:40Z",
+   "body": "Upload 1G file: (This is test for 4 core VPS server)\r\n```\r\ndeno 1.34.3 (release, x86_64-unknown-linux-gnu)\r\nv8 11.5.150.2\r\ntypescript 5.0.4\r\nstd 0.192.0\r\n```\r\n`deno`:  2.7s\r\n`node`:  1.8s\r\n\r\n1.5X slower"
+  },
+  {
+   "author": "participant10",
+   "created_at": "2023-07-06T16:44:59Z",
+   "body": "ref: #19737 "
+  },
+  {
+   "author": "participant4",
+   "created_at": "2026-06-07T21:39:35Z",
+   "body": "Revisiting this on the latest canary (`deno 2.8.2+ecc3053`) vs Node 24.8.0, uploading a 1 GB file via `curl -T` to a server that pipes the request body to disk.\n\n**TL;DR:** The catastrophic part of this report (1 GB taking \"20s–5m\", CPU saturation, and getting progressively slower on each repeat) is no longer reproducible. The \"~2x slower than Node\" part was an apples-to-oranges comparison: the original Deno script uses **Web Streams** (`req.body.pipeTo(file.writable)`) while the Node script uses **native Node streams** (`stream.pipeline(req, fs.createWriteStream)`). When the API is held constant, the runtime gap disappears.\n\nI decomposed it into a 2×2 matrix (same API on both runtimes), 1 GB upload, typical warm time:\n\n| | API | Runtime | Time |\n|---|---|---|---|\n| A | node:http + native fs streams | Node | ~0.52 s |\n| B | node:http + native fs streams | Deno | ~0.57 s |\n| C | node:http + Web Streams (`Readable.toWeb`/`Writable.toWeb`) | Node | ~1.05 s |\n| D | node:http + Web Streams | Deno | ~0.76 s |\n| E | `Deno.serve` + `file.writable` (Web Streams) | Deno | ~0.80 s |\n\nWhat this isolates:\n\n1. **Same API → no runtime gap.** B vs A (both native streams): 0.57 s vs 0.52 s, within noise. Deno's socket read / file write / I/O plumbing is on par with Node.\n2. **The cost is the Web Streams abstraction, not the runtime.** On Node alone, A→C goes 0.52 s → 1.05 s just by switching the same sockets/files to Web Streams. Node pays this penalty too. This matches @participant5's earlier observation: Web Streams allocate a fresh `Uint8Array` per chunk instead of reusing a buffer, plus promise-based backpressure overhead.\n3. **On the actual apples-to-apples comparison (Web Streams on both), Deno is faster than Node:** D vs C is 0.76 s vs 1.05 s, and `Deno.serve` (E) lands right alongside it.\n\nSo the original 2x figure came from comparing Deno's spec-compliant Web Streams against Node's hand-optimized native streams. With the API held constant, Deno is on par with Node (native) and ahead of Node (Web Streams). The only remaining delta is the inherent per-chunk allocation cost of the Web Streams spec, which is tracked separately as a streams-perf optimization (BYOB / buffer reuse), not an HTTP-server or runtime issue.\n\nClosing as the reported pathology is resolved.\n\n(Benchmarked on Apple Silicon over loopback with an SSD; absolute numbers will differ from the original 2-core VPS, but the relative decomposition holds.)\n"
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "denoland/deno",
+  "default_branch": "main",
+  "commit_sha": "a7850d7fe6c52225acd614167495d765ed2385f3",
+  "as_of": "2022-02-06T15:30:30Z",
+  "method": "github_commits_until"
+ },
+ "images": [
+  {
+   "where": "c37",
+   "source_url": "https://user-images.githubusercontent.com/19621382/213187690-da8f58fe-7294-4ab0-a811-96b73b47e9d1.png",
+   "file": "gh_denoland_deno_13608_img0.png"
+  },
+  {
+   "where": "c37",
+   "source_url": "https://user-images.githubusercontent.com/19621382/213187761-4f9a1ed3-7818-4948-b48e-02451f8fb4eb.png",
+   "file": "gh_denoland_deno_13608_img1.png"
+  }
+ ],
+ "slug": "gh_denoland_deno_13608"
+}

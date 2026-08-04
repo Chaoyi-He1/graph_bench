@@ -1,0 +1,338 @@
+{
+ "repo": "etcd-io/etcd",
+ "number": 14370,
+ "url": "https://github.com/etcd-io/etcd/issues/14370",
+ "title": "Durability API guarantee broken in single node cluster",
+ "state": "closed",
+ "labels": [
+  "type/bug",
+  "priority/important-soon"
+ ],
+ "reporter": "reporter",
+ "created_at": "2022-08-22T15:24:27Z",
+ "closed_at": "2022-09-22T00:43:38Z",
+ "body": "I observed the possibility of data loss and I would like the community to comment / correct me otherwise.\r\n\r\nBefore explaining that, I would like to explain the happy path when user does a PUT <key, value>. I have tried to only necessary steps to focus this issue. And considered a single etcd instance.\r\n\r\n====================================================================================\r\n----------api thread --------------\r\n\r\nUser calls etcdctl PUT k v\r\n\r\nIt lands in v3_server.go::put function with the message about k,v\r\n\r\nCall delegates to series of function calls and enters v3_server.go::processInternalRaftRequestOnce\r\n\r\nIt registers for a signal with wait utility against this keyid\r\n\r\nCall delegates further to series of function calls and enters raft/node.go::stepWithWaitOption(..message..)\r\n\r\nIt wraps this message in a msgResult channel and updates its result channel; then sends this message to propc channel.\r\n\r\nAfter sending it waits on msgResult.channel\r\n----------api thread waiting --------------\r\n\r\nOn seeing a message in propc channel, raft/node.go::run(), it wakes up and sequence of calls adds the message.Entries to raftLog\r\n\r\nNotifies the msgResult.channel\r\n\r\n----------api thread wakes--------------\r\n10. Upon seeing the msgResult.channel, api thread wakes and returns down the stack back to v3_server.go::processInternalRaftRequestOnce and waits for signal that it registered at step#4\r\n----------api thread waiting --------------\r\n\r\nIn next iteration of raft/node.go::run(), it gets the entry from raftLog and add it to readyc\r\netcdserver/raft.go::start wakes up on seeing this entry in readyc and adds this entry to applyc channel\r\nand synchronously writes to wal log ---------------------> wal log\r\netcdserver/server.go wakes up on seeing entry in applyc channel (added in step https://github.com/etcd-io/etcd/pull/12)\r\nFrom step#14, the call goes through series of calls and lands in server.go::applyEntryNormal\r\napplyEntryNormal calls applyV3.apply which will eventually puts the KV to mvcc kvstore txn kvindex\r\napplyEntryNormal now sends the signal for this key which is basically to wake up api thread that is waiting in 7\r\n----------api thread wakes--------------\r\n18. User thread here wakes and sends back acknowledgement\r\n----------user sees ok--------------\r\n\r\nBatcher flushes the entries added to kvstore txn kvindex to database file. (also this can happen before 18 based on its timer)\r\n====================================================================================\r\nHere if step https://github.com/etcd-io/etcd/pull/13 thread is pre-empted and rescheduled by the underlying operating system after completing step https://github.com/etcd-io/etcd/pull/18 and when there is a power failure at the end of step 18 where after user sees error, then the kv is neither written to wal nor to database file\r\n\r\nI think this is not seen today because it is a small window where the server has to restart immediately after step 18 (and immediately after step 12 the underlying os must have pre-empted the etcdserver/raft.go::start and added to end of the runnable Q.). Given these multiple conditions, it appears that we dont see data loss.\r\n\r\nBut it appears from the code that it is possible. To simulate, added sleep after step 12 (also added exit) and 19. I was able to see ok but the data is not in both wal and db.\r\n\r\nIf I am not correct, my apology and also please correct my understanding.\r\n\r\nBefore repro please do the changes:\r\n1. Do the code changes in raft.go\r\n![image](https://user-images.githubusercontent.com/10446093/185958416-6a52e10e-34f4-4d33-96dd-18e79454c74f.png)\r\n\r\n2.Do the code changes in tx.go\r\n![image](https://user-images.githubusercontent.com/10446093/185958466-7648b6c5-5d08-428b-b5f6-76e58e0448bc.png)\r\n\r\n3. Rebuild etcd server\r\n\r\nNow follow the steps to repro\r\n//1. Start etcd server with changes\r\n\r\n//2. Add a key value. Allow etcdserver to acknowledge and exit immediately (with just sleep and exit to simulate the explanation)\r\n$ touch /tmp/exitnow; ./bin/etcdctl put /k1 v1\r\nOK\r\n\r\n//3. Remove this control flag file and restart the etcd server\r\n$ rm /tmp/exitnow\r\n\r\n//4. Check if key present\r\n$ ./bin/etcdctl get /k --prefix\r\n$\r\n\r\n// We can see no key-value \r\n",
+ "comments": [
+  {
+   "author": "reporter",
+   "created_at": "2022-08-22T17:20:58Z",
+   "body": "Looks the explanation and steps are very tedious for one to look. Instead, please find this.\r\n\r\n//1. Incorporate this code diff and run etcd-server\r\nhttps://github.com/etcd-io/bbolt/compare/v1.3.6...reporter:bbolt:v1.3.6-test?expand=1\r\n\r\nhttps://github.com/etcd-io/etcd/compare/release-3.5...reporter:release-3.5?expand=1\r\n\r\n//2. Add a key value. Allow etcdserver to acknowledge and exit immediately (with just sleep and exit to simulate the explanation)\r\n$ touch /tmp/exitnow; ./bin/etcdctl put /k1 v1\r\nOK\r\n\r\n//3. Remove this control flag file and restart the etcd server\r\n$ rm /tmp/exitnow\r\n\r\n//4. Check if key present\r\n$ ./bin/etcdctl get /k --prefix\r\n$\r\n\r\n// We can see no key-value"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2022-08-23T20:22:14Z",
+   "body": "It seems that you raised a duplicated issue to https://github.com/etcd-io/etcd/issues/14364. \r\n\r\nI have already answered the issue in https://github.com/etcd-io/etcd/issues/14364#issuecomment-1223391071 and https://github.com/etcd-io/etcd/issues/14364#issuecomment-1222024469"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2022-08-24T04:17:39Z",
+   "body": "@participant1 it is not about HA. I am saying there appears to be a data loss.\r\nWhen we acknowledge ok to user and there is a possibility for data loss even after acknowledging, shouldnt we synchronously write to WAL before acknowledging? "
+  },
+  {
+   "author": "participant2",
+   "created_at": "2022-08-25T17:56:20Z",
+   "body": "@reporter haven't tried to repro, but I agree with @participant1, you should try 3 node cluster. Raft protocol doesn't really work on 1 node. I bet you won't be able to reproduce this.\r\n\r\nEtcd allows to launch 1 node clusters only to make it easy to experiment with api, not for any production use. "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2022-08-25T18:23:15Z",
+   "body": "Thanks @participant2 . I thought this; but isnt the raft message rtt covering up this observation? I am posting the screenshot here that will also give what I think basically wal can go first before the database/raft for strong consistency\r\n\r\n![image](https://user-images.githubusercontent.com/10446093/186740313-79c54507-be9a-4ef4-a3ad-9b33523e98b7.png)\r\n"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2022-08-25T18:36:03Z",
+   "body": "Hey @reporter can you please please not use screenshots. It's much easier to just link the code https://github.com/etcd-io/etcd/blob/4f0e92d94ceacdd0af26e7268764a5bce7b0a3eb/server/etcdserver/raft.go#L212-L239\r\n"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2022-08-25T20:25:01Z",
+   "body": "> Thanks @participant2 . I thought this; but isnt the raft message rtt covering up this observation? I am posting the screenshot here that will also give what I think basically wal can go first before the database/raft for strong consistency\r\n> \r\n> ![image](https://user-images.githubusercontent.com/10446093/186740313-79c54507-be9a-4ef4-a3ad-9b33523e98b7.png)\r\n\r\nI don't think you correctly identified order of operations. Please remember that committing to db is done after HardState is WAL entry is added to WAL. So the invocations you highlighted `case r.applyc <- ap:`, `r.storage.Save` are not saving the same entries.\r\n\r\nEDIT: In single node cluster `rd.Entries` = `rd.CommitedEntries` which is the exact problem that causes durability issue. "
+  },
+  {
+   "author": "participant1",
+   "created_at": "2022-08-25T21:29:48Z",
+   "body": "I agree that it's a little confusing that etcd returns success/OK, but the data is actually lost, although there is only one member in the cluster.\r\n\r\nIn theory, we can make everything as a synchronous call, and do not respond to the client until everything (including boltDB, WAL) is successfully persisted. Obviously it will cause huge reduce of performance, and the design doesn't make any sense at all.\r\n\r\nTo prevent data loss, etcd has WAL, which is similar to the redo log of MySQL. To prevent one member total down for whatever reason (e.g. disk corruption), we recommend to setup a cluster with at least 3 members. There is no perfect solution, but this is a good solution for now. \r\n\r\nBut you intentionally fail both the WAL persistent and the BoltDB, and also with only one member. So it's expected behavior by design. "
+  },
+  {
+   "author": "participant3",
+   "created_at": "2022-08-26T07:57:43Z",
+   "body": "I'm just flabbergasted with the conclusion. This means that single node cluster doesn't provide durability guarantee. Documentation about API guarantees do not state it anywhere https://etcd.io/docs/v3.5/learning/api_guarantees/#durability"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2022-08-26T09:06:53Z",
+   "body": "I will take care of this, updating the doc or enhance the existing etcdserver/raft workflow. Please note that it can only happens for a cluster with only one member. "
+  },
+  {
+   "author": "participant4",
+   "created_at": "2022-08-26T16:26:51Z",
+   "body": "Kube was designed with the assumption that PUT was durable and etcd was crash consistent for accepted writes, regardless of quorum size.  Maybe @xiang90 or @philips could weigh in on whether this was intentional - it is certainly not expected and I'd say my read of the ecosystem over the last 10 years has been that all accepted writes should be crash safe regardless of cluster size."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2022-08-26T16:36:40Z",
+   "body": "> I'd say my read of the ecosystem over the last 10 years has been that all accepted writes should be crash safe regardless of cluster size.\r\n\r\nAgreed. The only discussion around relaxing single node safety guarantees I was aware of was https://github.com/etcd-io/etcd/issues/11930, and that reinforced my expectation that even single-node etcd servers _default_ to being crash safe w.r.t. successfully persisting to disk prior to treating a write request as a success, and that overriding that default requires the admin explicitly opting into something unsafe (`--unsafe-no-fsync`)."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2022-08-26T18:33:17Z",
+   "body": "I will deliver a PR to fix this for clusters with only one member. "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2022-08-27T12:40:39Z",
+   "body": "@participant1 Since I did this locally and worked as expected thought of sharing. Please let me know if the fix you are planning is going to be different.\r\n\r\nhttps://github.com/etcd-io/etcd/compare/release-3.5...reporter:etcd:14370?expand=1#diff-54bdb7a5ed2d92f64598fb472372562ff64f8417e63d7ac672eaa485704cea9f"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2022-08-27T22:11:08Z",
+   "body": "> https://github.com/etcd-io/etcd/compare/release-3.5...reporter:etcd:14370?expand=1#diff-54bdb7a5ed2d92f64598fb472372562ff64f8417e63d7ac672eaa485704cea9f\r\n\r\nI don't think the change is expected, because it definitely cause big reduce of performance. "
+  },
+  {
+   "author": "participant1",
+   "created_at": "2022-08-27T22:43:02Z",
+   "body": "I just delivered a PR https://github.com/etcd-io/etcd/pull/14394 to fix this issue. \r\n\r\nPlease let me know whether you can still reproduce the issue with the PR. cc @reporter "
+  },
+  {
+   "author": "participant3",
+   "created_at": "2022-08-28T08:19:17Z",
+   "body": "Question is how we want to roll out this fix, it's not a breaking change as it restores etcd durability which matches user expectation. However it is expected to come with performance regression. For v3.6 we should make single etcd instances durable, but we should avoid backport being to disruptive.\r\n\r\nI think it's crucial to do benchmarking to confirm how impact-full is the change. If the change is small, i would to backport it as it is. If it could disrupt larger clusters, I would want to leave a escape hatch flag, so users can return to previous behavior. If regression is very big, we could consider backport would need to be in default off mode.\r\n"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2022-08-28T13:34:08Z",
+   "body": "Minimal repro, by using pre-existing failpoints in etcdserver:\r\n```\r\nFAILPOINTS=enable make\r\nGOFAIL_HTTP=\"127.0.0.1:22381\" ./bin/etcd & \r\n# Wait for etcd to start\r\ncurl http://127.0.0.1:22381/go.etcd.io/etcd/server/etcdserver/raftBeforeSave -XPUT -d'panic'\r\n./bin/etcdctl put a 1\r\n# Expect put to return OK and etcd to crash\r\nGOFAIL_HTTP=\"127.0.0.1:22381\" ./bin/etcd & \r\n./bin/etcdctl get a\r\n# Expect to get empty reponse\r\n```"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2022-08-29T03:14:46Z",
+   "body": "> I think it's crucial to do benchmarking to confirm how impact-full is the change. If the change is small, i would to backport it as it is. If it could disrupt larger clusters, I would want to leave a escape hatch flag, so users can return to previous behavior. If regression is very big, we could consider backport would need to be in default off mode.\r\n\r\nPlease see my comments https://github.com/etcd-io/etcd/pull/14394#issuecomment-1229606410, https://github.com/etcd-io/etcd/pull/14394#issuecomment-1229673875 and https://github.com/etcd-io/etcd/pull/14394#issuecomment-1229676690. In short, I think we should backport the fix to 3.5, and probably 3.4.\r\n\r\n\r\n\r\n\r\n> FAILPOINTS=enable make\r\n> GOFAIL_HTTP=\"127.0.0.1:22381\" ./bin/etcd & \r\n> curl http://127.0.0.1:22381/go.etcd.io/etcd/server/etcdserver/raftBeforeSave -XPUT -d'panic'\r\n> ./bin/etcdctl put a 1\r\n> GOFAIL_HTTP=\"127.0.0.1:22381\" ./bin/etcd & \r\n> ./bin/etcdctl get a\r\n\r\nThese steps aren't correct to me. Although you can reproduce this issue easily using these steps, but it isn't stable. We need to make sure both the boltDB and WAL fail to save the data, but the boltDB may save data successfully or the client might get an error response in your steps.  The correct steps are,\r\n```\r\ngo get go.etcd.io/gofail/runtime   # execute this command for both server and etcdutl\r\nFAILPOINTS=enable make\r\nGOFAIL_HTTP=\"127.0.0.1:22381\" ./bin/etcd &\r\n\r\ncurl http://127.0.0.1:22381/etcdserver/raftBeforeLeaderSend -XPUT -d'sleep(100)'\r\ncurl http://127.0.0.1:22381/etcdserver/raftBeforeSave -XPUT -d'panic'\r\ncurl http://127.0.0.1:22381/backend/beforeCommit -XPUT -d'sleep(200)'\r\n./etcdctl  put k1 v1   \r\n\r\n# The client will get an \"OK\" response, and the etcd crashes when running this step. please start the etcd again\r\n\r\n./etcdctl  get k1   ## no data because the data was lost\r\n```\r\n\r\nFor anyone reference:  https://github.com/etcd-io/gofail/blob/master/doc/design.md"
+  },
+  {
+   "author": "participant6",
+   "created_at": "2022-08-29T11:55:11Z",
+   "body": "I think we should fix etcd's RAFT implementation rather than the etcd \"apply\" layer. \r\n\r\nThe RAFT protocol is pretty explicit about this: \r\n - https://github.com/ongardie/dissertation/blob/master/online.pdf?raw=true 10.2.1:\r\n1. \"Fortunately, the leader can write to its disk in parallel with replicating to the followers and them\r\nwriting to their disks.\"  (this says about writing WAL). \r\n2. \"The leader may even commit an entry before it has been written to its own disk, if a majority of\r\nfollowers have written it to their disks;\"\r\n\r\nSeems that etcd's RAFT implementation skips the rules needed for 'committing' an entry... \r\nI think that the rule intents to say: \"The leader may even commit an entry before it has been written to its own disk, if a \r\nfollowers that had written it to their disks are the majority of all members;\". \r\n\r\nSo in case of 1-member RAFT, the leader needs to write and flush first - before considering the entry to be \"committed\"."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2022-08-29T12:39:43Z",
+   "body": "Thanks @participant6 for the feedback. The 10.2.1 is for the performance optimization for multi-member cluster, and I don't think it is the root cause of this issue. The performance optimization is based on the key point that a follower must sync the WAL entries before responding to the leader. Anyway, it's for multi-member cluster. \r\n\r\nFor the case of 1-member cluster, I believe the solution \"`the leader needs to write and flush first - before considering the entry to be \"committed\"`\" definitely works, and several people raised the same solution . But I mentioned the reason why I did not adopt in https://github.com/etcd-io/etcd/pull/14394#discussion_r956643329. Let me recap the points:\r\n1. It has some performance improvement to save WAL entries in parallel with committing&applying it, although it might not be too big performance improvement;\r\n2. When etcdserver fails to apply the entries for whatever reason, it can respond to the client asap, and no need to wait for the WAL syncing at all in this case.\r\n3. The raft package is relative stable against the etceserver, so we are always cautious to enhance/refactor the raft package. Raft handle the commit logic in the same way no matter it's one-member cluster or multi-member cluster. For one-member cluster, it just commits the proposal immediately because it doesn't need to get confirmation from itself. It might be OK for  now.\r\n\r\nAnyway, I agree that we should enhance the raft protocol for one-member cluster, but we'd better do it in future instead of now, because we have more higher priority things to do. WDYT? @participant6 @participant3 @spzala "
+  },
+  {
+   "author": "participant6",
+   "created_at": "2022-08-29T14:34:44Z",
+   "body": "Thank you @participant1 . My intuition is that 1. and 2. are premature optimisations. \r\n  1. Committing/flushing bolt is the most expensive operation and in both cases we are not doing this on the synchronous part. From in-memory apply I would expect insignificant overhead.\r\n  2. That's interesting. This would apply if etcd is used with many transactions with failing preconditions... this used to be a case more before introduction of leases... as such usage model is expensive due to need to write (but not flush) WAL log for all such (practically RO) entries. I would not optimize for patterns that should be rather avoided. \r\n  3. TBH I failed to find where the exception on happens in RAFT implementation: \r\n     - https://github.com/etcd-io/etcd/blob/f56e0d0e15d51a896601a9b9cebbac8c58435420/raft/raft.go#L585-L588\r\n     is the place that move committed index and \r\n     https://github.com/etcd-io/etcd/blob/f56e0d0e15d51a896601a9b9cebbac8c58435420/raft/quorum/majority.go#L167-L170 check for the majority index.  Do you see where there is a special case for single-node cluster ?\r\n\r\nIf Raft change is O(10-20) lines change and it will not show the (more-significant) performance degradation, I would prefer that than introducing another 'case' (walNatifyc) on the etcd side. I think it will:\r\n - simplify the code-paths. \r\n - avoid similar errors for other etcd's raft users that does not distinguish 1 and multi member case. \r\n\r\nIf the applications want's to do 'hedging' (apply early but do not bolt commit when probability of commit is high), such optimisation can be added in etcd layer on top of proper raft protocol (although I don't think it's worth it). \r\n\r\nRaft change would need to be [Config](https://github.com/etcd-io/etcd/blob/f56e0d0e15d51a896601a9b9cebbac8c58435420/raft/raft.go#L116) gated to keep the behavior stable - with previous behavior default in 3.4 & 3.5 (overwritten in etcd)."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2022-08-30T06:47:00Z",
+   "body": "> My intuition is that 1. and 2. are premature optimizations.\r\n\r\n I just delivered another PR https://github.com/etcd-io/etcd/pull/14400, in which the implementation is greatly simplified. There is about 2.7% performance downgrade as compared to https://github.com/etcd-io/etcd/pull/14394 . So it' about **8.2%** performance downgrade as compared to the `main` branch.\r\n\r\nIn summary, \r\n|  | https://github.com/etcd-io/etcd/pull/14394 | https://github.com/etcd-io/etcd/pull/14400 |\r\n| --- | --- | --- |\r\n| Good side | better performance, but not too much (2.7% higher than 14400).  Client can also get quicker response when applying fails | The implementation is much simpler  |\r\n| Bad side | The implementation is a little complicated, but it only adds one more channel `walNotifyc`, and only adds about 13 lines of code in server.go, so it seems acceptable |  performance downgrade, but not too much (2.7%) | \r\n\r\n@participant3 mentioned that he will work with K8s Scalability folks validate the change for K8s in https://github.com/etcd-io/etcd/pull/14394#issuecomment-1229925525 . So Let's wait for the feedback from @participant3 and K8s Scalability folks, and we can make a decision afterwards. The key point is to depend on the comparison of performance results. \r\n\r\n<br>\r\n\r\n> Seems that etcd's RAFT implementation skips the rules needed for 'committing' an entry...\r\n> I think that the rule intents to say: \"The leader may even commit an entry before it has been written to its own disk, if a\r\n> followers that had written it to their disks are the majority of all members;\".\r\n\r\n\r\n> If Raft change is O(10-20) lines change and it will not show the (more-significant) performance degradation, I would prefer that than introducing another 'case' (walNatifyc) on the etcd side.\r\n\r\nThe key point is the etcd's raft implementation follows a minimalistic design philosophy, and it delegates both network transport and storage to users. When the raft (etcd's RAFT implementation) considers an entry committed, it doesn't mean that the entry has already been successfully saved to disk on majority members. But it isn't a problem for multi-member cluster, because when the leader broadcasts the commitId to followers in the next ready loop, it must waits for previous loop to finish, accordingly eventually the WAL must be successfully persisted in majorities members disk, including itself, before any member starts apply the data. But it is an issue for one-member cluster, because raft sends identical unstable and committed entries to etcdserver, and it saves WAL entries concurrently with applying the committed entries. \r\n\r\nI will think about how to formally fix this, either update doc to guide users how to correctly use the raft package (just like what https://github.com/etcd-io/etcd/pull/14394 or https://github.com/etcd-io/etcd/pull/14400 does), or enhance the raft package so that raft will not commit an entry until it's really persisted by etcdserver (WAL) for one-member cluster, and accordingly users (etcdserver in this case) do not need to worry about this at all. **But I think we should only enhance the raft package/protocol in `main` branch, and cherry pick either https://github.com/etcd-io/etcd/pull/14394 or https://github.com/etcd-io/etcd/pull/14400 to 3.5 and probably 3.4**.\r\n\r\nWhat do you think? @participant6 @participant3 @spzala "
+  },
+  {
+   "author": "participant6",
+   "created_at": "2022-08-30T16:22:59Z",
+   "body": "I have serious doubts the issue is limited to single instance etcd deployments: \r\n\r\n> it must waits for previous loop to finish, accordingly eventually the WAL must be successfully persisted in majorities members disk, including itself, before any member starts apply the data. \r\n\r\nMy understanding is that the source of the issue is line 638: \r\n\r\nhttps://github.com/etcd-io/etcd/blob/cdd2b737f04812a919a5735380fdaa1f932346d0/raft/raft.go#L637-L640\r\n\r\nLider just appended entries to the unstable (in-memory) log queue, and notifies progress tracker that the leader (r.id) instance had persisted (!!!) up to the 'unstable' entry li (last-index). \r\nThe progress tracker is the source of truth that the majority of members had persisted the given entry in WAL. \r\nI think that state of the leader is inaccurate in the voting process in case of multi-instance RAFT as well. \r\nI don't have a repro yet but I don't see a reason why following scenario is not possible: \r\n  1. client sends PUT\r\n  2. lider replicates (successfully) the put to 1 instance. The other instance fails to accept the replication message. \r\n  3. lider receives confirmation of WAL write from the follower\r\n  4. lider assumes its majority confirmed (leader + 1 instance), moves commit inde). \r\n  5. lider crashes before persisting WAL, but manages to apply or broadcast hard state (so let follower 1 to apply)\r\nIt seems we can land in corrupted multi-instance state. \r\n\r\nI think #14400 properly workarounds the problem (in single & multi-instance) case. Trying in the background (still on vacation) find raft level fix."
+  },
+  {
+   "author": "participant6",
+   "created_at": "2022-08-30T22:13:33Z",
+   "body": "Playing with the RAFT level fix in: \r\nhttps://github.com/etcd-io/etcd/pull/14406/files#diff-b9adbc46e4a317ffbb3d11a66c38d6b9af41a09170d77d87efbd96d115da452f"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2022-08-30T22:48:28Z",
+   "body": "> 5\\. lider crashes before persisting WAL, but manages to apply or broadcast hard state (so let follower 1 to apply)\r\n>         It seems we can land in corrupted multi-instance state.\r\n\r\nThe leader will never successfully apply or broadcast the hard state in this case, because the etcdserver is still in progress of persisting the WAL entries, so it will not help the raft to do the task (apply or broadcast the hard state) before it finishes the WAL persisting. \r\n\r\n\r\n\r\n> Playing with the RAFT level fix in: https://github.com/etcd-io/etcd/pull/14406/files#diff-b9adbc46e4a317ffbb3d11a66c38d6b9af41a09170d77d87efbd96d115da452f\r\n\r\nI was thinking exactly the same solution on raft layer. The only concern is worse performance for one-member cluster. The impact on multi-member cluster should be negligible.  Let me diff the performance today."
+  },
+  {
+   "author": "participant6",
+   "created_at": "2022-08-31T06:43:29Z",
+   "body": "> > 5. lider crashes before persisting WAL, but manages to apply or broadcast hard state (so let follower 1 to apply)\r\n> > It seems we can land in corrupted multi-instance state.\r\n> \r\n> The leader will never successfully apply or broadcast the hard state in this case, because the etcdserver is still in progress of persisting the WAL entries, so it will not help the raft to do the task (apply or broadcast the hard state) before it finishes the WAL persisting.\r\n\r\nWhich line prevents that situation ?\r\n\r\nI claim that single \"Ready\" call can have already incremented hard-state and overlapping Entries & CommittedEntries on multi-instance etcd.  In such case, the current code would: \r\n1. start applying asynchronously:\r\n https://github.com/etcd-io/etcd/blob/cdd2b737f04812a919a5735380fdaa1f932346d0/server/etcdserver/raft.go#L213\r\n2. broadcast async:\r\n  https://github.com/etcd-io/etcd/blob/cdd2b737f04812a919a5735380fdaa1f932346d0/server/etcdserver/raft.go#L223\r\n3. write to WAL (sync - but after):\r\nhttps://github.com/etcd-io/etcd/blob/cdd2b737f04812a919a5735380fdaa1f932346d0/server/etcdserver/raft.go#L237\r\n> \r\n> > Playing with the RAFT level fix in: https://github.com/etcd-io/etcd/pull/14406/files#diff-b9adbc46e4a317ffbb3d11a66c38d6b9af41a09170d77d87efbd96d115da452f\r\n> \r\n> I was thinking exactly the same solution on raft layer. The only concern is worse performance for one-member cluster. The impact on multi-member cluster should be negligible. Let me diff the performance today.\r\n\r\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2022-08-31T07:22:43Z",
+   "body": "|  | Good side | Bad side |\r\n| --- | --- | --- |\r\n| Solution 1: https://github.com/etcd-io/etcd/pull/14394 | better performance, about 5% downgrade as compared to `main`.  Client can also get quicker response when applying fails | The implementation is a little complicated, but it only adds one more channel `walNotifyc`, and only adds about 13 lines of code in server.go, so it seems acceptable  |\r\n| Solution 2: https://github.com/etcd-io/etcd/pull/14400 | The implementation is much simpler |  performance downgrade, about 6 ~7% downgrade as compared to `main` | \r\n| Solution 3: https://github.com/etcd-io/etcd/pull/14407 | Same as above, but it encapsulates the details in raft layer, so that it can benefit other users of the raft package. It is also a good supplement & enhancement to the raft package/lib for one-member cluster. | same performance as above. <br> The applications which depend on the raft package need to be updated following the guide |\r\n| Solution 4: https://github.com/etcd-io/etcd/pull/14411 (based on https://github.com/etcd-io/etcd/pull/14406 ) | It looks elegant, and is consistent with the raft paper/protocol | same performance as above. <br> It updates the raft layer, so it might have some potential risk and need more test and review |\r\n\r\nNote that solution 3 and 4 have the same performance result, both of them have about **6 ~7%** downgrade as compared to the `main` branch for one-member cluster, and there is no any performance impact for multi-member cluster.\r\n```\r\n###### Solution main\r\nSummary:\r\n  Total:\t55.6366 secs.\r\n  Slowest:\t0.1451 secs.\r\n  Fastest:\t0.0018 secs.\r\n  Average:\t0.0555 secs.\r\n  Stddev:\t0.0307 secs.\r\n  Requests/sec:\t3594.7538\r\n\r\nResponse time histogram:\r\n  0.0018 [1]\t|\r\n  0.0161 [19974]\t|∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎\r\n  0.0305 [20153]\t|∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎\r\n  0.0448 [47003]\t|∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎\r\n  0.0591 [43090]\t|∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎\r\n  0.0734 [8496]\t|∎∎∎∎∎∎∎\r\n  0.0878 [16161]\t|∎∎∎∎∎∎∎∎∎∎∎∎∎\r\n  0.1021 [25094]\t|∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎\r\n  0.1164 [16493]\t|∎∎∎∎∎∎∎∎∎∎∎∎∎∎\r\n  0.1307 [3290]\t|∎∎\r\n  0.1451 [245]\t|\r\n\r\nLatency distribution:\r\n  10% in 0.0161 secs.\r\n  25% in 0.0344 secs.\r\n  50% in 0.0471 secs.\r\n  75% in 0.0844 secs.\r\n  90% in 0.1021 secs.\r\n  95% in 0.1097 secs.\r\n  99% in 0.1194 secs.\r\n  99.9% in 0.1338 secs.\r\n\r\n###### Solution 4 \r\n\r\nSummary:\r\n  Total:\t59.9271 secs.\r\n  Slowest:\t0.1403 secs.\r\n  Fastest:\t0.0058 secs.\r\n  Average:\t0.0598 secs.\r\n  Stddev:\t0.0199 secs.\r\n  Requests/sec:\t3337.3909\r\n\r\nResponse time histogram:\r\n  0.0058 [1]\t|\r\n  0.0192 [344]\t|\r\n  0.0327 [4603]\t|∎∎∎\r\n  0.0462 [59793]\t|∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎\r\n  0.0596 [50277]\t|∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎\r\n  0.0731 [30341]\t|∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎\r\n  0.0865 [25795]\t|∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎\r\n  0.1000 [25223]\t|∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎\r\n  0.1134 [2902]\t|∎\r\n  0.1269 [473]\t|\r\n  0.1403 [248]\t|\r\n\r\nLatency distribution:\r\n  10% in 0.0382 secs.\r\n  25% in 0.0426 secs.\r\n  50% in 0.0547 secs.\r\n  75% in 0.0748 secs.\r\n  90% in 0.0895 secs.\r\n  95% in 0.0944 secs.\r\n  99% in 0.1049 secs.\r\n  99.9% in 0.1297 secs.\r\n\r\n\r\n###### Solution 3\r\nSummary:\r\n  Total:\t59.3026 secs.\r\n  Slowest:\t0.1479 secs.\r\n  Fastest:\t0.0068 secs.\r\n  Average:\t0.0592 secs.\r\n  Stddev:\t0.0198 secs.\r\n  Requests/sec:\t3372.5346\r\n\r\nResponse time histogram:\r\n  0.0068 [1]\t|\r\n  0.0209 [416]\t|\r\n  0.0350 [7403]\t|∎∎∎\r\n  0.0491 [77514]\t|∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎\r\n  0.0632 [39921]\t|∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎\r\n  0.0773 [28729]\t|∎∎∎∎∎∎∎∎∎∎∎∎∎∎\r\n  0.0914 [32529]\t|∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎\r\n  0.1056 [11067]\t|∎∎∎∎∎\r\n  0.1197 [2127]\t|∎\r\n  0.1338 [232]\t|\r\n  0.1479 [61]\t|\r\n\r\nLatency distribution:\r\n  10% in 0.0382 secs.\r\n  25% in 0.0420 secs.\r\n  50% in 0.0545 secs.\r\n  75% in 0.0748 secs.\r\n  90% in 0.0890 secs.\r\n  95% in 0.0944 secs.\r\n  99% in 0.1069 secs.\r\n  99.9% in 0.1257 secs.  \r\n```"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2022-08-31T07:47:05Z",
+   "body": "> 2\\. broadcast async:\r\n>         https://github.com/etcd-io/etcd/blob/cdd2b737f04812a919a5735380fdaa1f932346d0/server/etcdserver/raft.go#L223\r\n\r\nThis step can only be running in the following loop to step 3.  Let's work with an detailed workflow (based on the current main branch) below.\r\nAssuming it's 3-member cluster, including one leader and two followers. \r\n1. Client puts a k/v;\r\n2. The leader receives the k/v pair, append the data its unstable list and update the progress for itself (see below). \r\n\r\nhttps://github.com/etcd-io/etcd/blob/cdd2b737f04812a919a5735380fdaa1f932346d0/raft/raft.go#L638\r\n\r\nand broadcast the data to followers,\r\n\r\nhttps://github.com/etcd-io/etcd/blob/cdd2b737f04812a919a5735380fdaa1f932346d0/raft/raft.go#L1076 \r\n\r\n3. etcdserver gets the notification from raft\r\n\r\nhttps://github.com/etcd-io/etcd/blob/cdd2b737f04812a919a5735380fdaa1f932346d0/server/etcdserver/raft.go#L169 \r\n\r\n4. etcdserver sends the data to all followers,\r\n\r\nhttps://github.com/etcd-io/etcd/blob/cdd2b737f04812a919a5735380fdaa1f932346d0/server/etcdserver/raft.go#L223 \r\n\r\nand persist the WAL entries,\r\nhttps://github.com/etcd-io/etcd/blob/cdd2b737f04812a919a5735380fdaa1f932346d0/server/etcdserver/raft.go#L237 \r\n\r\n5. Assuming one follower is unreachable for whatever reason, so leader only gets response from the other follower.\r\nSince there are two confirmations, including itself, so the leader marks the entry as committed,\r\n\r\nhttps://github.com/etcd-io/etcd/blob/cdd2b737f04812a919a5735380fdaa1f932346d0/raft/raft.go#L1259\r\n\r\nand tries to broadcast the new commitId to all followers,\r\n\r\nhttps://github.com/etcd-io/etcd/blob/cdd2b737f04812a919a5735380fdaa1f932346d0/raft/raft.go#L1263 \r\n\r\n6. Assuming the etcdserver (leader) hasn't finish saving the WAL entries (received at step 3). Then there is no chance for the etcdserver get the new ready at [raft.go#L169](https://github.com/etcd-io/etcd/blob/cdd2b737f04812a919a5735380fdaa1f932346d0/server/etcdserver/raft.go#L169). \r\n\r\nOnce etcdserver receives the new Ready, then it means that it must have already finished the WAL persistence (step 3)\r\n\r\n@participant6  Please let me know if you still need clarification. "
+  },
+  {
+   "author": "participant1",
+   "created_at": "2022-08-31T07:55:31Z",
+   "body": "Eventually `solution 3` and `solution 4 `are the two best candidates. Recap the points again,\r\n1. They have the same performance;\r\n2. Both of them require applications which depend on the raft lib to be updated.\r\n3. Solution 3 looks more safe for now because solution 4 changes the raft layer. The raft implementation is really subtle!"
+  },
+  {
+   "author": "participant6",
+   "created_at": "2022-08-31T12:09:10Z",
+   "body": "> @participant6 Please let me know if you still need clarification.\r\n\r\nNo - thank you. You are right. Broadcasting goes together with WAL write from leader and it's a barrier for next raft round. \r\n\r\n> Note that solution 3 and 4 have the same performance result, both of them have about 6 ~7% downgrade. \r\n\r\nSo 1,3 &4 has 6-7% degradation and 2 has 2.7% degradation ?  The table says for 3 \"same as above\". \r\n\r\n> The applications which depend on the raft package need to be updated following the guide.\r\n\r\nIf  integrated into .Advance(), the application would not need to be changed. But for safety \r\nwe should make it an opt-in behavior in 3.4 and 3.5 backports. "
+  },
+  {
+   "author": "participant1",
+   "created_at": "2022-08-31T12:15:52Z",
+   "body": "> So 1,3 &4 has 6-7% degradation and 2 has 2.7% degradation ? The table says for 3 \"same as above\".\r\n\r\nSorry for the confusion. `2.7%` mentioned in the table means that solution 2 has about 2.7% performance downgrades as compared to solution 1. \r\n\r\nI tested all the solutions as compared to `main` today. Solution 1 has the best performance, it has about 5% performance downgrade as compared to the `main` branch.  Solution 2/3/4 has the same performance, all of them have about 6~7% performance downgrade as compared to the `main` branch. \r\n\r\n\r\n\r\n\r\n> If integrated into .Advance(), the application would not need to be changed. But for safety\r\n> we should make it an opt-in behavior in 3.4 and 3.5 backports.\r\n\r\nPersonally I don't like the idea of `integrated into .Advance()`, please see my comment https://github.com/participant1/etcd/commit/7ab0842a9df897878734070ebb5594baef5c56c1#r82690914 "
+  },
+  {
+   "author": "participant1",
+   "created_at": "2022-08-31T12:25:48Z",
+   "body": "We need to make a decision between solution 3 and solution 4. Please note that solution 3 is completed and ready for review, while solution 4 is still in progress of development. \r\n\r\nFor solution 4, we also need to decide which way to go, follow [my commit](https://github.com/participant1/etcd/commit/7ab0842a9df897878734070ebb5594baef5c56c1) or @participant6 's [draft PR](https://github.com/etcd-io/etcd/pull/14406). \r\n\r\nPlease also see https://github.com/etcd-io/etcd/issues/14370#issuecomment-1232592188"
+  },
+  {
+   "author": "participant6",
+   "created_at": "2022-08-31T13:24:18Z",
+   "body": "@participant9 @bdarnell - Could you, please, take a look ? Your RAFT expertise would be critical here. "
+  },
+  {
+   "author": "participant7",
+   "created_at": "2022-08-31T15:54:52Z",
+   "body": "Outsider perspective: if you fix this locally for performance reasons, it'd be good to fix the RAFT library too."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2022-09-01T10:52:16Z",
+   "body": "Based on all the discussion so far, it seems solution 4 https://github.com/etcd-io/etcd/pull/14411 is almost the final solution. The good point is that it doesn't require any change on the applications which depend on the etcd's RAFT implementation. \r\n\r\nAlthough it looks like a big PR, but actually it has only 10 ~ 20 lines of production code change, all others are test code/data changes. I am still working on the test data/code, but it's appreciated anyone can provide early feedback. cc @participant6 @participant9 @bdarnell @participant3 @spzala thx"
+  },
+  {
+   "author": "participant8",
+   "created_at": "2022-09-01T12:59:12Z",
+   "body": "Thanks to the community for acknowledging this is an issue finally. And thanks @reporter for persisting with this and reporting this issue as a good open-source citizen."
+  },
+  {
+   "author": "participant9",
+   "created_at": "2022-09-01T13:34:11Z",
+   "body": "Ultimately this problem is caused by ambiguity around what it means to correctly handle a `raft.Ready`. As it stands, `CommittedEntries` is populated under the assumption that the `Entries` field has already been handled, i.e. the entry is durably in the WAL.\r\n\r\nThis is ultimately a performance optimization for a single-threaded implementation against raft: you only need to go through the raft handling loop once to get a command committed and applied. It doesn't apply to the multi-node case, since you will go through the loop once to send the message to at least one follower + write locally to WAL, but then you still need the second loop to realize the entry is now committed.\r\n\r\nI can't blame the etcd community for getting this wrong in their use of the raft library. `Ready` is notoriously under-documented and leaves much to the imagination, despite this being the crucial touchpoint between the raft library and the implementer.\r\n\r\nI once had an update to the comments in progress, which pointed out the exact caveat that prompted this issue: https://github.com/etcd-io/etcd/pull/10861/files#diff-bd82b488417cfb0c169dbf02eb5c4355165028295855fc78bdb72a62eb338c98R124\r\n\r\nI regret not pushing this over the finish line, but it's unclear whether it would've prevented the issue at hand, anyway.\r\n\r\nIt has been a while since I closely engaged with the raft library, but I agree with removing this optimization and, by default, simplifying the `Ready` contract. `Entries` and `Committed` should be independent, and there shouldn't be an implicit requirement to handle the former after the latter. Most advanced implementations will at some point add concurrency between log writes and entry application, and this issue is likely to be found in many of them.\r\n\r\nI'll take a look at #14411 next week, and help find the right way to address this. I hope to also revive #10861."
+  },
+  {
+   "author": "participant9",
+   "created_at": "2022-09-01T15:21:58Z",
+   "body": "I submitted a draft https://github.com/etcd-io/etcd/pull/14413 which I think will end up a little cleaner than https://github.com/etcd-io/etcd/pull/14411 but is basically following in its footprints.\r\n\r\nThe draft has no chance of passing CI, since I need to fix up all sorts of tests. But it's the diff that most clearly demonstrates the change and its effect on a single-voter unit test."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2022-09-01T21:32:17Z",
+   "body": "Thanks @participant9 for the feedback, I agree that https://github.com/etcd-io/etcd/pull/14413 is a little cleaner than https://github.com/etcd-io/etcd/pull/14411/commits/d1957fe2beea3c444c4294edc70231be0515155c (first commit of https://github.com/etcd-io/etcd/pull/14411) and it keeps everything in the real [raft](https://github.com/etcd-io/etcd/blob/main/raft/raft.go) layer, but it seems that there are some edge cases (e.g. en empty entry may be appended in some cases) to be resolved. "
+  },
+  {
+   "author": "participant1",
+   "created_at": "2022-09-01T22:01:03Z",
+   "body": "For anyone reference, https://github.com/etcd-io/etcd/pull/14407 and https://github.com/etcd-io/etcd/pull/14400 are two simple workarounds. "
+  },
+  {
+   "author": "participant1",
+   "created_at": "2022-09-01T22:13:02Z",
+   "body": "As mentioned previously multiple times, I still suggest to cherry pick either https://github.com/etcd-io/etcd/pull/14407 or https://github.com/etcd-io/etcd/pull/14400 to release-3.5 and 3.4, and update the raft layer only in `main` branch for safety.  What do you think? cc @participant6 @participant3 @spzala @participant9 "
+  },
+  {
+   "author": "participant1",
+   "created_at": "2022-09-02T05:47:12Z",
+   "body": "After second thought, it seems that https://github.com/etcd-io/etcd/pull/14411 is clearer & better than https://github.com/etcd-io/etcd/pull/14413, points:\r\n1. https://github.com/etcd-io/etcd/pull/14413 is similar to @participant6 's original draft PR https://github.com/etcd-io/etcd/pull/14406, which is slightly worse than https://github.com/etcd-io/etcd/pull/14411 per the discussion.\r\n2. The leader raft node [updates each follower's pr.Match on receiving the pb.MsgAppResp](https://github.com/etcd-io/etcd/blob/5707147363361a3dd774f8287e9ccf4885e15fb4/raft/raft.go#L1239), and tries to [update the commitId](https://github.com/etcd-io/etcd/blob/5707147363361a3dd774f8287e9ccf4885e15fb4/raft/raft.go#L1259) afterwards. So we just need to let users (e.g., leader etcdserver) to explicitly acknowledge persisting the Entries and raft follows the same way to process the user's acknowledgment, instead of updating the raft protocol to process the single-instance cluster case separately.  Since we already have the contract [Advance()](https://github.com/etcd-io/etcd/blob/5707147363361a3dd774f8287e9ccf4885e15fb4/raft/node.go#L168) between raft and users (etcdserver in this case), so we can encapsulate the logic in it so that users do not need to worry about it at all. Please also refer to https://github.com/participant1/etcd/commit/7ab0842a9df897878734070ebb5594baef5c56c1#r82690914.\r\n3. I think https://github.com/etcd-io/etcd/pull/14411 is safer and clearer, because it has the least impact on the raft protocol.\r\n\r\nSince @participant6 @participant9 @bdarnell  have more expertise on the etcd RAFT implementation, so I'd defer to all of you (including @participant3 and @spzala as well) on how to move forward.\r\n\r\nAgain, I think we'd better do it in `main` branch only; and cherry pick https://github.com/etcd-io/etcd/pull/14407 or https://github.com/etcd-io/etcd/pull/14400 to release-3.5 and 3.4. \r\n\r\nPlease let me know if you have any comments or concerns. cc @dims @participant5 "
+  },
+  {
+   "author": "participant6",
+   "created_at": "2022-09-02T10:14:58Z",
+   "body": "Thank you @participant9 for looking and providing the PR. \r\n\r\nI wouldn't proceed with #14407 (Third solution), as it complicates the raft contract (introduces 'MustSaveEntriesBeforeApply' in the Ready state).\r\n\r\nI'm on the edge with #14400. I think it's correct and safe. What I don't like is neither of: \r\n a) Keeping the #14400 on the main branch, as it carries not necessary complexity with RAFT fix \r\n b) Diverging  far between 3.4&3.5 and 'evaluating' 2 different fixes. \r\nSo it's down to the level of confidence around the RAFT fix. Tobias opinion is crucial here. \r\n\r\nThank you @participant1 on the tremendous work on all the approaches and tests.  "
+  },
+  {
+   "author": "participant3",
+   "created_at": "2022-09-02T13:19:44Z",
+   "body": "Ok let me try to summarize the current discussion. Hope that it will be useful for external observers and make making the decision easier.\r\n\r\nWhole API durability issue is caused by difference in raft library behavior in multi vs single node scenario. In multi node raft processes entries in 2 steps (first append to log, second apply to database), which differs from single node clusters where those steps are combined. This leads to hidden assumption (not documented as [#10861](https://github.com/etcd-io/etcd/pull/10861/files#diff-bd82b488417cfb0c169dbf02eb5c4355165028295855fc78bdb72a62eb338c98R124) was not merged) that appending entries should be done before committing. At least when there is overlap in entries to append and to commit.\r\n\r\nEtcd was unaware of this assumption and implemented optimization to start the apply first (asynchronously) so users will get results faster. This however caused a problem as in single node clusters, entries will be processed in one step (they will be present in both to append and to apply list). If the apply executes before the append and etcd crashes it will report success to user without persisting entries to WAL.\r\n\r\nThere are two ways to fix the problem:\r\n* On etcd side, detect that there is overlap between lists and pospone applying the entries. This is the https://github.com/etcd-io/etcd/pull/14400\r\n* On raft side, separate append and apply steps in single node cluster. This is the https://github.com/etcd-io/etcd/pull/14413\r\n\r\nI'm currently on the side of fixing raft library https://github.com/etcd-io/etcd/pull/14413 for both main and older branches (assuming that performance regression is acceptable)."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2022-09-02T18:23:51Z",
+   "body": "> There are two ways to fix the problem:\r\n> * On etcd side, detect that there is overlap between lists and pospone applying the entries. This is the https://github.com/etcd-io/etcd/pull/14407\r\n> * On raft side, separate append and apply steps in single node cluster. This is the https://github.com/etcd-io/etcd/pull/14413\r\n> \r\n> I'm currently on the side of fixing raft library https://github.com/etcd-io/etcd/pull/14413 for both main and older branches (assuming that performance regression is acceptable).\r\n\r\n\r\nThis isn't accurate. Based on all the discussion so far, the action plan would be one of the following two approaches:\r\n1. Fix the etcd RAFT implementation for both `main` and `release-3.4/5`, using either https://github.com/etcd-io/etcd/pull/14411 (already approved by one maintainer @participant6 ) or https://github.com/etcd-io/etcd/pull/14413 . Please see my previous comment as well https://github.com/etcd-io/etcd/issues/14370#issuecomment-1235091312.\r\n2. Fix the etcd RAFT implementation for `main` only, same solutions as above.  Fix release-3.4/5 using https://github.com/etcd-io/etcd/pull/14400 (already approved by one maintainer @participant6 ) \r\n\r\nLet's wait for @participant9 and @bdarnell 's feedback, which is crucial here just as @participant6 pointed out."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2022-09-04T21:50:18Z",
+   "body": "In case anyone wants a simple summary on this issue, FYI. \r\nhttps://github.com/participant1/etcd-issues/tree/master/issues/14370  "
+  },
+  {
+   "author": "participant9",
+   "created_at": "2022-09-05T09:57:34Z",
+   "body": "@participant1 responding to https://github.com/etcd-io/etcd/issues/14370#issuecomment-1235091312 above.\r\n\r\n----\r\n\r\n> After second thought, it seems that https://github.com/etcd-io/etcd/pull/14411 is clearer & better than https://github.com/etcd-io/etcd/pull/14413, points:\r\n\r\n#14413 fixes the problem at the level of `(*raft).advance`, which ensures that any implementation will get the right behavior. For example, CockroachDB implements uses `*raft.RawNode`, which wraps a `*raft`. #14411 fixes the problem for users of `*node` (which internally wraps a `*RawNode`), but this leaves direct users of `*RawNode` dangling.\r\n\r\nI am obviously biased because of my affiliation with CockroachDB, but I consider `*RawNode` the true external interface of the library. `*node` is certainly helpful for some (it's `*RawNode` with a bit of goroutine wrapping), but we better fix `*RawNode` if we can, and we definitely can in the exact same way. That will allow us to have everything work the same way, and to document the desired semantics on `raft.Ready` without having to reference the ways (`RawNode`, `node`) that exist for consuming `Ready`.\r\n\r\n----\r\n\r\n> The leader raft node [updates each follower's pr.Match on receiving the pb.MsgAppResp](https://github.com/etcd-io/etcd/blob/5707147363361a3dd774f8287e9ccf4885e15fb4/raft/raft.go#L1239)\r\n\r\nI can see that injecting an `MsgAppResp` automatically can be preferred over directly expanding to the tracker update (which I did in #14413 at time time of writing). That's a change I can make.\r\n\r\nI don't follow [the argument](https://github.com/participant1/etcd/commit/7ab0842a9df897878734070ebb5594baef5c56c1#r82688288) that seems to suggest that doing work in `Advance` amounts to undesirable special casing.\r\n\r\nThere is always going to be some special casing for the leader node and that special casing is useful.\r\n\r\nImagine we would completely reject any special casing for the leader. The leader would have to emit an MsgApp to itself, which we would then step back into the leader. The next cycle we would see the entry in `Entries`. The cycle after that would see an `MsgAppResp` emitted. The cycle after that would step it back into the leader and in the subsequent cycle we'd finally see the `CommittedEntries` field populated.\r\n\r\nThis wouldn't be particularly performant, and it would also burden the user with new footguns, such as having to make sure that their transports allow self-directed messages, etc.\r\n\r\nExplicitly asking the user to pass a parameter back in, etc, seems to be overdoing it. `Advance()` signals to raft that everything it has asked for was done, which includes appending entries. So it strikes me as the idiomatic place to self-deliver an `MsgAppResp`, freeing the user from having to do any kind of special tracking for local proposals, while also avoiding unnecessary work.\r\n\r\n----\r\n\r\n> I think https://github.com/etcd-io/etcd/pull/14411 is safer and clearer, because it has the least impact on the raft protocol.\r\n\r\nI'm not sure I understand, first of all it seems like the exact same fix but at the level of `*node` vs `*RawNode`, and isn't the point to fix it in a way that lets all consumers of the library avoid the footgun? If that is not the goal we could fix in etcdserver, put a comment on `raft.Ready`, and leave raft completely as is."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2022-09-05T10:11:47Z",
+   "body": "Hey @participant9, thanks for response. It's a good argument that both `Node` and `RawNode` are part of raft public interface. \r\n\r\nDo I conclude correctly that your suggestion would be to prefer https://github.com/etcd-io/etcd/pull/14413 over https://github.com/etcd-io/etcd/pull/14411 ?\r\n\r\nWhat would be your suggestion about picking a fix for backport? I think the discussion is to either:\r\n* Use raft fix (e.g. https://github.com/etcd-io/etcd/pull/14413) for all branches\r\n* Use raft fix (e.g. https://github.com/etcd-io/etcd/pull/14413) for `main`, and use etcdserver fix (e.g. https://github.com/etcd-io/etcd/pull/14400) for `release-3.4` and `release-3.5)"
+  },
+  {
+   "author": "participant9",
+   "created_at": "2022-09-05T10:24:38Z",
+   "body": " > Do I conclude correctly that your suggestion would be to prefer https://github.com/etcd-io/etcd/pull/14413 over https://github.com/etcd-io/etcd/pull/14411 ?\r\n\r\nYes, I think #14413 with the `.Step` approach is the right fix. (And then of course work out all of the test failures, etc). There is a bit in #14411 that I don't understand, such as special casing of the empty entry, but I think if that is really necessary it will carry over as well.\r\n\r\n> What would be your suggestion about picking a fix for backport? I think the discussion is to either:\r\n\r\nI would merge solution 2 (#14400) immediately on all branches (`main`, `release-*`) since it's clearly correct, has a test, and solves the problem at hand immediately. This avoids having to rush in a raft-level fix.\r\n\r\nOnce a raft-level fix has landed on `main`, #14400 can then be reverted on master."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2022-09-05T11:52:40Z",
+   "body": "Thanks @participant9 for the detailed feedback. \r\n\r\n\r\n\r\n> For example, CockroachDB implements uses `*raft.RawNode`, which wraps a `*raft`\r\n\r\nDo you mean that CockroachDB doesn't use the [node](https://github.com/etcd-io/etcd/blob/main/raft/node.go) at all? \r\n\r\n\r\n\r\n> but this leaves direct users of `*RawNode` dangling.\r\n\r\nIt indeed has some impact on the direct users of `RawNode` if following https://github.com/etcd-io/etcd/pull/14411 .\r\n\r\n\r\n> I can see that injecting an `MsgAppResp` automatically can be preferred over directly expanding to the tracker update (which I did in #14413 at time time of writing). That's a change I can make.\r\n\r\nGood. \r\n\r\n\r\n\r\n> There is always going to be some special casing for the leader node and that special casing is useful.\r\n\r\nI am not sure whether this is a valid point for now for this case because your PR isn't finished yet, so it isn't clear how will you design & implement the special case for the leader. What I am trying to do in https://github.com/etcd-io/etcd/pull/14411 is to avoid such special case, so as to make as least change as possible for the raft.  \r\n\r\nBut I tend to trust a raft maintainer & expert like you. I will leave it to you to finish this. \r\n\r\n\r\n\r\n> If that is not the goal we could fix in etcdserver, put a comment on `raft.Ready`, and leave raft completely as is.\r\n\r\nThat's the reason why I delivered https://github.com/etcd-io/etcd/pull/14400 as well:). I even delivered another PR based on that one https://github.com/etcd-io/etcd/pull/14407 . \r\n\r\n \r\n\r\n> I would merge solution 2 (#14400) immediately on all branches (`main`, `release-*`) since it's clearly correct, has a test, and solves the problem at hand immediately. This avoids having to rush in a raft-level fix.\r\n\r\nAgreed. \r\n\r\n\r\n "
+  },
+  {
+   "author": "participant3",
+   "created_at": "2022-09-05T12:21:33Z",
+   "body": "Automatic close from Github automation. Will keep the issue open until we have fixed all branches and applied fix proposed by @participant9. "
+  },
+  {
+   "author": "participant9",
+   "created_at": "2022-09-05T14:05:53Z",
+   "body": "Thanks @participant1!\r\n\r\n> But I tend to trust a raft maintainer & expert like you. I will leave it to you to finish this.\r\n\r\nI'm not a raft maintainer any more as of recently and if I am an expert then not an infallible one 😄 . I still think there is something that I am not understanding. Looking at #14411, it strikes me as the exact same fix as #14413 except operating at `node` vs `*raft`, respectively. There are bits that I don't understand in #14411 - for example, why do we retain the `maybeUpdate` Call when adding an empty proposal[^1]? It's not immediately obvious why we can emit the empty proposal for application in the same cycle as that in which it is to be appended to the log. (I think this is a correct optimization, but also an inconsequential one, so I wonder why it's in your PR and it makes me think I am missing something). It would help me if you put the differences between the approaches in words, since I can't see them from the code and surrounding discussions.\r\n\r\n> I am not sure whether this is a valid point for now for this case because your PR isn't finished yet, so it isn't clear how will you design & implement the special case for the leader. What I am trying to do in https://github.com/etcd-io/etcd/pull/14411 is to avoid such special case, so as to make as least change as possible for the raft.\r\n\r\nBut you're changing `(*node).advance` to special case in very much the same way as my PR for `(*raft).advance` (I basically took the approach from yours). So what is the special case in #14413 that you're avoiding in #14411? Are you saying that you tried not changing `*raft`? IMO it belongs in `*raft.advance`; `raft` just treats the leader specially (all of the things I said above about never sending loopback messages etc) and so it's better to contain all of that in `*raft` vs. leaking it into both `RawNode` and `*node`. I wasn't planning on doing more design: your fix is my fix, just implemented at what I think is the correct level (and without special casing of empty entry).\r\n\r\n> Do you mean that CockroachDB doesn't use the node at all?\r\n\r\nThat's correct, we use `RawNode` directly[^2]. We like to be in direct control (well, as much as the Go runtime lets us) of concurrency. In CockroachDB, raft processing is driven by a goroutine pool[^3]; a given CockroachDB process may service tens of thousands of raft leaders and so the batteries-included event loop that `*node` provides is not as useful.\r\n\r\n[^1]: https://github.com/etcd-io/etcd/pull/14411/files#diff-b9adbc46e4a317ffbb3d11a66c38d6b9af41a09170d77d87efbd96d115da452fR643\r\n[^2]: https://github.com/cockroachdb/cockroach/blob/3fe8ffc7f854b6ff9689735dbb1e6ba6e661e027/pkg/kv/kvserver/replica_raft.go#L1782-L1799\r\n[^3]: https://github.com/cockroachdb/cockroach/blob/0695b83ff06561ed575cd4d8579c17dc72e2814c/pkg/kv/kvserver/scheduler.go#L186-L198"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2022-09-05T21:04:04Z",
+   "body": "> There are bits that I don't understand in #14411 - for example, why do we retain the `maybeUpdate` Call when adding an empty proposal[1](#user-content-fn-1-3b7939039439226ffa1c6413600da64c)\r\n\r\nI intentionally did it. The main purpose is to keep the previous behavior for multi-node cluster, so as to minimize the impact on the raft package. Please also see [comment](https://github.com/participant1/etcd/blob/e60cb56ec88b325aa3f50ff450bd0e23ca76816f/raft/node.go#L513-L519). Please correct me if I am wrong. \r\n\r\n\r\n\r\n> But you're changing `(*node).advance` to special case in very much the same way as my PR for `(*raft).advance` (I basically took the approach from yours). So what is the special case in #14413 that you're avoiding in #14411? Are you saying that you tried not changing `*raft`? IMO it belongs in `*raft.advance`; `raft` just treats the leader specially (all of the things I said above about never sending loopback messages etc)\r\n\r\nI only updated the [appendEntry](https://github.com/etcd-io/etcd/pull/14411/files#diff-b9adbc46e4a317ffbb3d11a66c38d6b9af41a09170d77d87efbd96d115da452f) in https://github.com/etcd-io/etcd/pull/14411, all other changes in raft side are special case to me. Although https://github.com/etcd-io/etcd/pull/14411 and https://github.com/etcd-io/etcd/pull/14413 are very similar, there is a key difference; In https://github.com/etcd-io/etcd/pull/14411, the users explicitly provide two feedback to raft, the first is I have finished persisting the `Entries`, and the second is I am ready to receive next `Ready` data. The `node` just does both tasks for the user in `(*node)Advance`. Please note that raft already supports handling the two feedback/messages separately, so no any other change is needed on raft side. <br>\r\nBut in https://github.com/etcd-io/etcd/pull/14413 , you combined the two feedback/messages into one, and get it encapsulated in` (*raft)advance`. It simplifies the user interface, but complicates the raft internal implementation. But after you update https://github.com/etcd-io/etcd/pull/14413 to inject an `MsgAppResp` automatically using (*raft)Step, then it will be almost identical to https://github.com/etcd-io/etcd/pull/14411, except the edge case for empty entry. <br>\r\nAnyway, I defer to you to finish this on raft side. \r\n\r\n\r\n\r\n\r\n\r\n> In CockroachDB, raft processing is driven by a goroutine pool[3](#user-content-fn-3-3b7939039439226ffa1c6413600da64c); a given CockroachDB process may service tens of thousands of raft leaders and so the batteries-included event loop that `*node` provides is not as useful.\r\n\r\nThanks for the info. I am not sure whether it's worthwhile for etcd to do similar enhancement. Could you provide suggestion here? thx. \r\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2022-09-06T01:50:10Z",
+   "body": "Update: the issue is already resolved on `etcdserver` side for now in [main](https://github.com/etcd-io/etcd/pull/14400) branch, and cherry picked to [release-3.5](https://github.com/etcd-io/etcd/pull/14424) and [3.4](https://github.com/etcd-io/etcd/pull/14423); the [changelog](https://github.com/etcd-io/etcd/pull/14425) is also updated. \r\n\r\nThe fix will be included in 3.5.5 and 3.4.21.\r\n\r\n@participant9 is still working on the [raft side change](https://github.com/etcd-io/etcd/pull/14413) for `main` branch.\r\n\r\nThanks all for working on this issue. Special thanks to @reporter , I closed the issue for three times (the last one is closed automatically by github when I merged the PR), but you kept raising this issue. Sorry for that. Without your persistence, it can't attract the attention of the community. So thanks again! "
+  },
+  {
+   "author": "participant9",
+   "created_at": "2022-09-06T06:40:10Z",
+   "body": "Thanks for the context @participant1. I still think fixing this in `*raft` is the right move so that `RawNode` is also correct, thanks for your explanations. I will continue working on #14413.\r\n\r\nI'm still not sure why the empty entry gets special treatment in your PR. The [comment](https://github.com/participant1/etcd/blob/e60cb56ec88b325aa3f50ff450bd0e23ca76816f/raft/node.go#L513-L519) reflects that we also [leave the old code active for the empty entry](https://github.com/etcd-io/etcd/pull/14411/files#diff-b9adbc46e4a317ffbb3d11a66c38d6b9af41a09170d77d87efbd96d115da452fR643-R645) and I don't understand why. What would change if you removed these lines altogether, and in turn called `.Step` in `(*node).advance` for the empty entry?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2022-09-06T07:12:44Z",
+   "body": "> What would change if you removed these lines altogether, and in turn called `.Step` in `(*node).advance` for the empty entry?\r\n\r\nThree points:\r\n1.Usually empty entries will only be generated in multi-node cluster. Since multi-node clusters do not have this issue, so I think it makes sense to keep the optimization (update the `pr.Match` immediately after appending it). \r\n2. If you remove the optimization (mentioned above) so as to keep the behavior consistent for both empty and non-empty entry, then likely there are more subtle edge cases you need to handle, accordingly it might further complicate the raft package; and they are exactly what I have been trying to avoid. \r\n3. Actually https://github.com/etcd-io/etcd/pull/14411 doesn't almost change anything on the raft protocol, which I think is better. But I agree it has some impact on the direct users on `RawNode`. "
+  },
+  {
+   "author": "participant1",
+   "created_at": "2022-09-22T07:38:49Z",
+   "body": "Update:\r\n-  This issue is resolved by https://github.com/etcd-io/etcd/pull/14413 on `raft` side on `main (3.6)`. Previous solution https://github.com/etcd-io/etcd/pull/14400 on main is reverted\r\n- Resolved by https://github.com/etcd-io/etcd/pull/14424 on `etcdserver` side on `release-3.5`\r\n- Resolved by https://github.com/etcd-io/etcd/pull/14423 on `etcdserver` side on `release-3.4`"
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "etcd-io/etcd",
+  "default_branch": "main",
+  "commit_sha": "f6ed36372baf87354714b0c3eaae35823c7ca8a9",
+  "as_of": "2022-08-22T15:24:27Z",
+  "method": "github_commits_until"
+ },
+ "images": [
+  {
+   "where": "opening",
+   "source_url": "https://user-images.githubusercontent.com/10446093/185958416-6a52e10e-34f4-4d33-96dd-18e79454c74f.png",
+   "file": "gh_etcd-io_etcd_14370_img0.png"
+  },
+  {
+   "where": "opening",
+   "source_url": "https://user-images.githubusercontent.com/10446093/185958466-7648b6c5-5d08-428b-b5f6-76e58e0448bc.png",
+   "file": "gh_etcd-io_etcd_14370_img1.png"
+  },
+  {
+   "where": "c4",
+   "source_url": "https://user-images.githubusercontent.com/10446093/186740313-79c54507-be9a-4ef4-a3ad-9b33523e98b7.png",
+   "file": "gh_etcd-io_etcd_14370_img2.png"
+  },
+  {
+   "where": "c6",
+   "source_url": "https://user-images.githubusercontent.com/10446093/186740313-79c54507-be9a-4ef4-a3ad-9b33523e98b7.png",
+   "file": "gh_etcd-io_etcd_14370_img3.png"
+  }
+ ],
+ "slug": "gh_etcd-io_etcd_14370"
+}

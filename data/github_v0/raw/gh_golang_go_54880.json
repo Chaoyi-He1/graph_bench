@@ -1,0 +1,324 @@
+{
+ "repo": "golang/go",
+ "number": 54880,
+ "url": "https://github.com/golang/go/issues/54880",
+ "title": "math/rand: seed global generator randomly",
+ "state": "closed",
+ "labels": [
+  "Proposal",
+  "Proposal-Accepted",
+  "FrozenDueToAge",
+  "Proposal-FinalCommentPeriod"
+ ],
+ "reporter": "reporter",
+ "created_at": "2022-09-06T02:14:04Z",
+ "closed_at": "2022-10-25T16:50:23Z",
+ "body": "As a step toward a larger overhaul of math/rand (for example, #21835 or #26263), @participant3 and I propose that math/rand seed the global generator randomly and deprecating Seed, rather than behaving as if Seed(1) had been called. A more aggressive step (which we are not proposing at the moment) would be to make the global Seed function a no-op.\n\nSeeding the global generator randomly at startup eliminates the possibility of programs that don't call Seed depending on the algorithm behind the global functions. If the package randomly seeded the global generator, that would let us change the global generator's source algorithm as an implementation detail: nothing could tell that the algorithm was different.\n\nAuto-seeding would also fix any programs that are missing calls to Seed and think they are getting non-deterministic values but are not. (This is a common mistake.)\n\nAuto-seeding would break programs that have no calls to Seed and expect a deterministic sequence. The most common time this might happen would be in golden tests.\n\nThere are lots of other possible changes that could be made to math/rand, and we are intentionally leaving them all to the side for the purposes of this proposal. This proposal is only about auto-seeding, precisely because it targets the most common backwards compatibility concern that comes up in any other changes to math/rand. Addressing that one concern in isolation greatly simplifies any other changes we might make later.\n\nI hope that this proposal discussion can focus on the impact of making this change, specifically programs that would break that we need to be concerned about. If it turns out that we can't make this change, then maybe we will propose a math/rand/v2 instead. But we'd like to understand whether it can be done in the original math/rand first.\n\nAgain **please limit comments to the impact of auto-seeding and not on other possible changes to math/rand**. Thank you!",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2022-09-06T04:27:47Z",
+   "body": "While I am sympathetic to the idea, I believe this would be a violation of the [backwards compatibility guarantee](https://go.dev/doc/go1compat) in a very direct manner. The package documentation clearly states that\r\n\r\n> Top-level functions, such as Float64 and Int, use a default shared Source that produces a deterministic sequence of values each time a program is run. Use the Seed function to initialize the default Source if different behavior is required for each run.\r\n\r\nThat is, the fact that the global RNG is deterministic isn't an implicit detail that people may be relying on; it's documented fact.\r\n\r\nI don't believe that the downsides of accidentally using an unseeded RNG outweigh the cost of breaking compatibility, especially because this can't be considered a bug fix nor a security fix."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2022-09-06T04:49:35Z",
+   "body": "I guess the final implementation may be similar to https://github.com/participant2/fastrand ? The internal implementation of this library has been widely used in my company, and we have proposed similar ideas internally, but we have not implemented it yet(replace `math/rand` with this library).\r\n\r\nAccording to our experience, this change will not bring any negative effects in most cases(maybe ~99%?). In rare cases, this may break some services or tests(e.g., call `Seed(1)` and then generate a random slice, use it as a test case or send it to other places).\r\n\r\nBut I think it's not worthing to break the compatibility for golang/go, as @participant1 said before. I think `math/rand/v2` or `math/fastrand`  is better."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2022-09-06T05:17:24Z",
+   "body": "It's a bit of a stretch, but it can be argued that this is in fact a security issue. Programs that don't seed their random numbers   will behave predictably, which can sometimes be a risk if the numbers are used to generate unique, supposedly unguessable results.\r\n\r\nIt was a design error, copied from Unix, to have rand be reproducible like this. It should be changed. The question is whether it can be changed without a version bump on the library."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2022-09-06T05:56:08Z",
+   "body": "~~I would add this as a math/rand2 variant. I personally have used the behaviour in the past to generate stable id references for different runs of a same program.~~\r\n\r\n~~When I don't need that behavior, I usually go for devurandom.~~\r\n\r\nUnless I'm mistaken somewhere? \r\n\r\nEdit: ha but I usually provide a seed. Please ignore sorry. "
+  },
+  {
+   "author": "participant5",
+   "created_at": "2022-09-06T06:07:30Z",
+   "body": ">Programs that don't seed their random numbers will behave predictably, which can sometimes be a risk if the numbers are used to generate unique, supposedly unguessable results.\r\n\r\nI'd say that if people are using math/rand [out of the box] for security-sensitive uses there are other problems."
+  },
+  {
+   "author": "participant6",
+   "created_at": "2022-09-06T06:10:13Z",
+   "body": "Go1 compatibility promise aside (and I do think this would be a compatibility break),\n\nSeeding math/rand doesn't make it any less predictable. Instead, it just becomes easier to use as a footgun in security crtical contexts.\n\nToday, it's common for junior devs to ask me why math/rand produces the same values every time they use it. This is a great learning point - they become aware of the difference between a PRNG and a CSPRNG.\n\nAutoseeding would make it easy to think math/rand is suitable for all uses."
+  },
+  {
+   "author": "participant7",
+   "created_at": "2022-09-06T06:22:51Z",
+   "body": "This would definitely break some existing programs, even if those programs are bad. I think, though, participant6's point is the one I'm most concerned by. I am worried about anything that makes it easier for people to accidentally get apparently-not-horrible behavior from the default rand, without actually getting good enough behavior that it's reasonably safe. I'd rather have the behavior be sufficiently clearly bad that people are encouraged to change it."
+  },
+  {
+   "author": "participant8",
+   "created_at": "2022-09-06T08:45:43Z",
+   "body": "It's just an anecdote, but I tinker with procedural content generation toys from time to time, these are often UI based or 1-shot programs that provide an output. I often use the global random in those pieces of code and I initialise the seed based on some input.\r\n\r\nDefault seeding the global generator would not break my code, but making the global Seed() call a no-op would definitely break the code today I have today.\r\n\r\nI also agree with the other comments that this should not be changed as it breaks documented behaviour (https://pkg.go.dev/math/rand#Seed)\r\n\r\nI don't see that it's a security issue because nobody should be using math/rand for security related random and in fact the doc's for math/rand even explicitly cover this: \r\n\r\n\"For random numbers suitable for security-sensitive work, see the crypto/rand package.\""
+  },
+  {
+   "author": "reporter",
+   "created_at": "2022-09-06T14:08:24Z",
+   "body": "Re security:\r\n\r\nThere's no positive security argument here. Code that needs true randomness should use crypto/rand. \r\n\r\nBut there's also no negative security argument here. People accidentally reaching for math/rand when they mean crypto/rand does not seem like justification for making math/rand as bad as possible. \r\n\r\n\r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2022-09-06T14:13:15Z",
+   "body": "Re general breakage and backwards compatibility:\r\n\r\n@participant1 pointed out\r\n\r\n> Top-level functions, such as Float64 and Int, use a default shared Source that produces a deterministic sequence of values each time a program is run. Use the Seed function to initialize the default Source if different behavior is required for each run.\r\n\r\nHe reads that as a promise, but I read it as a warning (don't forget to call Seed). \r\n\r\nEither way, using the global source and expecting a deterministic sequence is incredibly fragile. All it takes is one new import that happens to call Seed or Int (or any of the other getters) and your code breaks. Suppose instead of auto-seeding we made a change where some commonly used package (say, strings) called rand.Int a few times at init time. Is changing the number of times math/rand is called by a package's init function a breaking change for that package? That can't be right. \r\n\r\nAuto-seeding is like you have a package linked into the binary that reads a non-deterministic amount of randomness from math/rand at init time.\r\n\r\nTo be clear, at the moment I am assuming that if you call global Seed(1) then determinism is restored. Programs that want determinism can and probably should ask for it explicitly."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2022-09-06T14:16:01Z",
+   "body": "Re specific breakage:\r\n\r\n@participant2 reported their experience:\r\n\r\n> According to our experience, this change will not bring any negative effects in most cases(maybe ~99%?). In rare cases, this may break some services or tests(e.g., call Seed(1) and then generate a random slice, use it as a test case or send it to other places).\r\n\r\nIn contrast, @participant7 said:\r\n\r\n> This would definitely break some existing programs, even if those programs are bad.\r\n\r\nI expect it would break some (again, latently fragile) golden tests. Those are annoying but easy to fix. What about non-tests? Can anyone think of a case where a non-test would break? That would concern me more."
+  },
+  {
+   "author": "participant9",
+   "created_at": "2022-09-06T14:52:42Z",
+   "body": "Regarding security and warning new programmers of foot-guns, if that is a problem, the safer solution is to make the default RNG cryptographically secure, and when it shows up in profiles, then we have the discussion about whether this application needs the secure rand or not.  Premature optimization, etc.\r\n\r\nI favor this change.  Current behavior is a foot-gun, adds to the learning curve for new Go programmers, adds one line of \"don't forget\" code to good programs, and it compromises security, where one of the rules (at least, my rules) for security is \"you never know what's going to end up exposed to strangers on the internet\". \r\n\r\nI am less swayed by the need for compatibility here because the winning example is \"tests\".  Those will break, they'll be easy to fix, it's unlikely that production code depends on this, and my actually-educated guess is that any such uses are unintentional and this change will fix (through removed security holes) more code than it breaks.\r\n\r\nI am not sure what to do with Seed.  Short-term, we'll need \"Seed(1)\" to fix any tests that this breaks, but then what's the plan for changing the RNG down the road, if that becomes necessary, or or if people are swayed by my \r\nGreat Idea in the first paragraph?  Special case Seed(1) to select the old RNG?"
+  },
+  {
+   "author": "participant8",
+   "created_at": "2022-09-06T15:00:49Z",
+   "body": "> Regarding security and warning new programmers of foot-guns, if that is a problem, the safer solution is to make the default RNG cryptographically secure\r\n\r\nPseudo random has use-cases beyond security use cases, using it to produce \"random\" but deterministic output. This is useful for a wide range of scenarios.\r\n\r\nPseudo random shouldn't be removed from the core library just because some use cases are better with cryptographic random, not everything needs or wants real random behaviour or the overhead of secure random when pseudo is good enough."
+  },
+  {
+   "author": "participant6",
+   "created_at": "2022-09-06T15:26:07Z",
+   "body": "@reporter said:\n\n> Either way, using the global source and expecting a deterministic sequence is incredibly fragile...\n\nPerhaps bordering on counter-proposal territory, but maybe having a global PRNG is the problem here?\n\nLeave the behavior alone, deprecate it, put up big warning signs that users should initialize their own source. Expose LockedSource for convenience.\n\nI think it's pretty valid that folks here are wanting a PRNG to produce a deterministic sequence. I also appreciate that the global source is fragile and can easily be misused."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2022-09-06T17:33:12Z",
+   "body": "> Perhaps bordering on counter-proposal territory, but maybe having a global PRNG is the problem here?\r\n\r\nHaving a global _deterministic_ PRNG is the problem. If it's not guaranteed to be deterministic, there are many possible paths forward.\r\n\r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2022-09-06T17:35:49Z",
+   "body": "> I am not sure what to do with Seed. Short-term, we'll need \"Seed(1)\" to fix any tests that this breaks, but then what's the plan for changing the RNG down the road, if that becomes necessary\r\n\r\nThe plan is that Seed would do two things: (1) select the original algorithm as the global source and (2) seed it. Until Seed is called, you get the better algorithm."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2022-09-06T19:34:16Z",
+   "body": "I forgot to mention that if you want to try the change out, you can patch in https://go-review.googlesource.com/427963, or as a rough approximation you can put\r\n\r\n    func init() { rand.Seed(time.Now().UnixNano()) } \r\n\r\nin any package you like."
+  },
+  {
+   "author": "participant10",
+   "created_at": "2022-09-07T06:23:52Z",
+   "body": "> Can anyone think of a case where a non-test would break? \r\n\r\nI can imagine using math/rand to do deterministic-yet-random codegen for correctly-shaped random input data for a simulation. Broadly speaking, the line between tests and prod is looser in many contexts in which math/rand gets used.\r\n\r\nBut to be fair, I don’t know of any cases concretely."
+  },
+  {
+   "author": "participant10",
+   "created_at": "2022-09-07T06:26:38Z",
+   "body": "It’s also worth noting that this proposal is a bit of a surprise. There have been multiple discussions about de-global-lock-ing math/rand over many years, always with the apparent understanding that we couldn’t change the math/rand value stream. (I’m on my phone, but I believe this is documented in #26263, at least as of the time of that issue.) It might be helpful to share some context about why your thinking has evolved."
+  },
+  {
+   "author": "participant11",
+   "created_at": "2022-09-07T15:54:10Z",
+   "body": "First of all, a non cryptographical, seedable RNG like that of math/rand is useful not only for tests, but also for games , simulations, and scientific models. The sequence should be predictable in some use cases, so we definitely need the Seed function to stay functional.\r\n\r\nI am not sure about the impact on backwards compatibility. The documentation does not exactly say what random series you are getting by default. Is it the same as after calling Seed(0)? \r\n\r\nAnd I assume there was some serious security issue related to this that triggered this issue?  It is documented well enough that we cannot use math/rand for secure random numbers, so I am more agreeing with those who say crypto/rand should have been used in stead.\r\n\r\nIf the issue is that too many people ignore this warning, then we can deprecate the whole package and move it to a new package a bit like ioutil."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2022-09-07T16:32:51Z",
+   "body": "In #21835, @participant3 wrote on Sept 11 2017:\r\n\r\n> We propose to make this generator the default one in math/rand for Go 2. The Go 1 compatibility decree could allow it to happen today, but we have chosen in the past to take the guarantee more literally than is expressed by also requiring that the generated stream of bits will never change. This decision was made when a fix was done, but enough tests in production were discovered that depended on the exact stream that it was deemed simpler to lock down the implementation rather than to fix all the tests.\r\n\r\n@participant10 asked much more recently:\r\n\r\n> It’s also worth noting that this proposal is a bit of a surprise. There have been multiple discussions about de-global-lock-ing math/rand over many years, always with the apparent understanding that we couldn’t change the math/rand value stream. (I’m on my phone, but I believe this is documented in #26263, at least as of the time of that issue.) It might be helpful to share some context about why your thinking has evolved.\r\n\r\nIt came up because Rob and I were discussing math/rand as an example of a possible v2 package in the standard library (it is a good test case for v2 machinery precisely because it is so simple). We've meant to replace the generator for a long time, and if we do that it would be good to avoid making the same mistakes over again. But then we also got to talking about how much we can fix the current math/rand without a v2. \r\n\r\nAs Josh noted, the stumbling block for lots of possible API evolution has been the default Seed(1) behavior. So we thought it made sense to file a proposal focused on really understanding the true amount of flexibility we have for just that one detail, separate from any other API changes. \r\n\r\nOne thing that has changed since 2017 is we have five more years of experience with programmers use of math/rand. It does get used in many reasonable contexts, but what we see over and over is (1) programmers forgetting to Seed; (2) programmers seeding in their package \"just in case\"; (3) programs breaking when a program that did (1) but also imported a package that did (2) removes the import; and so on.\r\n\r\nTo be clear, the outcome is not a foregone conclusion here. But at the same time, I haven't seen compelling specifics of breakage yet either. "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2022-09-07T16:36:43Z",
+   "body": "I meant to add that I don't have any records of which tests Rob was talking about in the 2017 comment, but I am rerunning all of Google's Go tests with an init-time auto-seeding change and will report what I find. If anyone else has large code bases and can do the same, more data is always good. "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2022-09-07T19:02:06Z",
+   "body": "\nThis proposal has been added to the [active column](https://go.dev/s/proposal-status#active) of the proposals project\nand will now be reviewed at the weekly proposal review meetings.\n— reporter for the proposal review group\n"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2022-09-07T22:34:29Z",
+   "body": "While I'm not convince of the need of the change and I do find the comment above (https://github.com/golang/go/issues/54880#issuecomment-1237699275) compelling from a pedagogical perspective, the autoseeding should not break any reasonable simulation as anyone doing a reasonable simulation would already have included an option to set the seed since a single run with a seed would not be strong enough for any conclusions of a simulation to be drawn. I'd also note that for any reasonable simulation code the author should probably be using their own local PRNG source rather than the package source to avoid locking costs, and the non-reproducibility that would come from sharing random sources between concurrent execution threads."
+  },
+  {
+   "author": "participant11",
+   "created_at": "2022-09-08T12:50:01Z",
+   "body": "Just an experiment that shows that now, not seeding the RNG and generating numbers exactly the same as generating numbers after seeding it with Seed(1). I do wonder why it is not Seed(0)?\r\n\r\nhttps://go.dev/play/p/Qph7qlRbjUg\r\n\r\nAnyway, randomly seeding the RNG _alone_ doesn't seem like a big backwards compatibility problem, as the sequence was not specified, and we can always call Seed(1) to get the original sequence back.\r\n\r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2022-09-08T14:47:54Z",
+   "body": "> I meant to add that I don't have any records of which tests Rob was talking about in the 2017 comment, but I am rerunning all of Google's Go tests with an init-time auto-seeding change and will report what I find. If anyone else has large code bases and can do the same, more data is always good.\r\n\r\nI ran all of Google's Go tests with auto-seeding, and the failed test rate was about 2 per 10,000. The failures were all golden test failures, as one would expect."
+  },
+  {
+   "author": "participant12",
+   "created_at": "2022-09-08T15:31:43Z",
+   "body": "I just want to go on the record that this seems like a clear improvement, makes the generation of random numbers or picking a user at random or whatever much easier, and is welcome from me and mine. "
+  },
+  {
+   "author": "participant13",
+   "created_at": "2022-09-08T15:52:04Z",
+   "body": "Just to look at some other languages:\r\n\r\n* C: The POSIX `rand` function acts as though `srand(1)` is called at program startup.  Similarly for the POSIX `random` function, which assumes `srandom(1)`.\r\n* Java: `math.Random` returns random numbers with a randomly chosen seed (\"sets the seed of the random number generator to a value very likely to be distinct from any other invocation\").\r\n* Python: `random.random` uses the current system time as a default seed.\r\n* Rust: there are several random number generators.  As far as I can tell you have to either provide a seed or you get a random one.\r\n\r\nSo Go copied C's seed behavior, but it seems that several other languages did not."
+  },
+  {
+   "author": "participant14",
+   "created_at": "2022-09-09T14:08:30Z",
+   "body": "For reference, a very related 2015 discussion: #11871 math/rand: Deterministic random by default is dangerous"
+  },
+  {
+   "author": "participant6",
+   "created_at": "2022-09-09T17:37:32Z",
+   "body": "Thanks for bringing that up, @participant14.\r\n\r\nI tend to agree with the comment @reporter left in 2015:\r\n\r\n> If there is concern about people incorrectly using math/rand in security settings, it seems like it would be better to have the same seed every time than to give the appearance of unpredictability. That is, it is better without any attempt at time-dependent or otherwise unpredictable automatic seeding.\r\n\r\nOf course, that was ~7 years ago! If I may ask, @reporter, what insight or experience has changed your point of view in that time?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2022-09-21T17:31:51Z",
+   "body": "The strongest argument I can see here is the one I mentioned above in https://github.com/golang/go/issues/54880#issuecomment-1238210588, namely that as it stands today, depending on the deterministic global generator in math/rand leads to bad results in package evolution.\r\n\r\nFor example, if I have package P and it uses rand.Int 100 times in its func init (without seeding), and I change it to call rand.Int only 99 times, then any package importing P and depending on the exact rand results from its own calls to math/rand will break when it updates from the old P to the new P. Does that mean P has to issue a v2 every time it changes the number of rand calls it makes during init? Or during other functions that might be called? This seems clearly false. \r\n\r\nBut if P changing the number of calls is not a breaking change, then changing the global generator to be non-deterministically seeded should also not be a breaking change. \r\n\r\nOr put a different way, suppose we wanted to use rand.Int in a standard library package for some randomized algorithm. Would that be allowed, or would that be a breaking change because these programs that depend on the exact results from the global generator would be affected? It seems like that can't be a breaking change. But if it's not, then neither is randomizing the seed.\r\n\r\nYes, this will break programs (mostly tests) that depend on the global sequence. Those programs are very fragile today - changes in other packages can break those programs. (To some extent, they're broken already and don't know it.) Instead, those programs can allocate their own source and seed with 1 to get that sequence again. And then they will be insulated from any of these other breakages due to other uses of the global sequences.\r\n\r\nOn top of all this, non-deterministically seeding will open the door for various other improvements inside the package."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2022-09-21T22:47:59Z",
+   "body": "> Does that mean P has to issue a v2 every time it changes the number of rand calls it makes during init? Or during other functions that might be called? This seems clearly false.\r\n\r\nI don't think this is so clear. RAA can be faced in the opposite direction here if flexibility in the starting axiom is allowed. If conistent behaviour is the axiom we can arrive at the conclusion that it's not false and that libraries should not depend on calls to the global rand. This is the conclusion that we arrived at in Gonum where all the simulation primitives take a `rand.Source` so that the problem never arises.\r\n\r\n> Or put a different way, suppose we wanted to use rand.Int in a standard library package for some randomized algorithm. Would that be allowed\r\n\r\nI don't think it should be and there are better ways of implementing this kind of thing (above).\r\n\r\n> On top of all this, non-deterministically seeding will open the door for various other improvements inside the package.\r\n\r\nThis is a convincing argument, except that the major improvements like rand source width are constrained by interface satisfaction, viz [math/rand](https://pkg.go.dev/math/rand#Source) cf [x/exp/rand](https://pkg.go.dev/golang.org/x/exp/rand#Source).\r\n\r\nThe issue of how [making something look like it's good enough but isn't](https://github.com/golang/go/issues/54880#issuecomment-1237699275) will impact on use hasn't been addressed."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2022-09-28T20:04:46Z",
+   "body": "\nBased on the discussion above, this proposal seems like a **[likely accept](https://go.dev/s/proposal-status#likely-accept)**.\n— reporter for the proposal review group\n"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2022-09-28T20:35:41Z",
+   "body": "What were the parts that make this likely accept? It seems much less clear to me."
+  },
+  {
+   "author": "participant15",
+   "created_at": "2022-09-28T21:34:10Z",
+   "body": "> I ran all of Google's Go tests with auto-seeding, and the failed test rate was about 2 per 10,000. The failures were all golden test failures, as one would expect.\r\n> [...]\r\n> Yes, this will break programs (mostly tests) that depend on the global sequence.\r\n\r\nDo we have a larger corpus of Go packages to test with auto-seeding turned on? That would presumably give us more confidence about the belief that we would only break a minority of tests.\r\n\r\nWe could always try this change during the beta or RC period and see how many users report bugs, although the reality today is that not very many people test pre-releases regularly.\r\n"
+  },
+  {
+   "author": "participant16",
+   "created_at": "2022-09-28T22:09:58Z",
+   "body": "@reporter\r\n\r\n> Either way, using the global source and expecting a deterministic sequence is incredibly fragile. All it takes is one new import that happens to call Seed or Int (or any of the other getters) and your code breaks.\r\n\r\nI believe the same argument can be made about this proposal, unless `Seed` is removed altogether. Say we do this and you import one package that happens to call `Seed(1)`, suddenly you unexpectedly get a deterministic sequence.\r\n\r\nI wrote my own wrapper with a locked source without any `Seed` function for exactly this reason. As a library author, I can't use the global `math/rand` functions because I can't rely on them being seeded. I can't seed them because I might break someone relying on them being deterministic. And as a `main` author I can't use them because I have to assume an author of some package I import thought it is appropriate to seed it with the current time or some other bad seed.\r\n\r\nThe only way to get a reliable, properly non-deterministic PRNG is to use one that can't be seeded at all.\r\n\r\nI generally would like something like this proposal to happen, but I neither like the breakage, nor does it seem to go far enough. I'd rather have something like\r\n\r\n```go\r\n// SeedRandomly chooses a non-deterministic seed for the global source\r\n// and makes any future call to `Seed` a no-op.\r\nfunc SeedRandomly()\r\n```\r\n\r\nwhich I can call from `main` for much the same effect. It would be backwards compatible, it would allow me to trust that the seed actually remains good and it would still allow us to change the algorithm for the global source, at least. What it wouldn't do is prevent people from accidentally forgetting to call it and getting deterministic sequences. But at least some people seem to think that's a good thing, with the whole \"at least it's obviously broken\" argument."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2022-10-04T20:02:09Z",
+   "body": "> What were the parts that make this likely accept? It seems much less clear to me.\r\n\r\nThe main reason suggested for not making this change is that it will break fragile programs that depend on the exact sequence of results from top-level rand functions. But that reason doesn't hold up. Adding new calls to rand.Int or init funcs in the standard library would break the same programs, and yet we clearly must be able to make that kind of change. It would make no sense to say we can't use functionality that the standard library provides. It's true that programs that call Seed(1) go back to being the same kind of fragile, but at least Seed(1) is a fairly explicit signal about opting in to fragile behavior. It also seems to me that if we can break fragile programs by changing the results from sort.Sort, as we did in Go 1.19, then we should also be able to break fragile programs by changing the results from rand.Int.\r\n\r\nThe only other reason suggested for not making the change was security, but I don't think that holds up either. The ability to misuse a package in one context should not mean we have to keep it difficult to use in other contexts.\r\n\r\nI don't believe any other reasons have been brought up.\r\n\r\nOn the other side, making the change fixes programs that think they are getting non-deterministic results but aren't (a common mistake), and it opens the door to more efficient implementations of the top-level functions. And we also have evidence from one large code base that making the change broke very few tests. \r\n\r\nIf anyone else with a large codebase wants to try the change and report about test breakage, that would be useful data. (Add a `func init() { rand.Seed(time.Now().UnixNano()) }` to the top of a commonly-imported package or two in your repo.)"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2022-10-04T20:44:56Z",
+   "body": ">I don't believe any other reasons have been brought up.\r\n\r\nhttps://github.com/golang/go/issues/54880#issuecomment-1237699275"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2022-10-04T21:09:15Z",
+   "body": "@participant5 it looks like you are referring to this part of that comment:\r\n\r\n> Today, it's common for junior devs to ask me why math/rand produces the same values every time they use it. This is a great learning point - they become aware of the difference between a PRNG and a CSPRNG.\r\n\r\nMaybe that's useful but I'm not sure it's a compelling enough reason not to make the change. The core of the argument is that the current behavior is wrong in a few different ways. Fixing wrong behavior usually wins over what people learn from running into the wrong behavior."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2022-10-04T21:13:27Z",
+   "body": "More \"Autoseeding would make it easy to think math/rand is suitable for all uses.\"\r\n\r\nThere are already significant misunderstandings of the contexts where the two packages should be used (partly impacted by the way CRNGs and PRNGs are used in other languages I think), and I think this will make that worse."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2022-10-04T21:17:17Z",
+   "body": "@participant5 OK, I think that's the security argument then. Note that issue #20661 is deprecating math/rand.Read, which is by far the most common way that users accidentally use a pseudo-random source when they should be using a true random source. If #20661 is accepted (which is currently \"likely\"), I think it takes with it almost the entire security argument."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2022-10-04T21:19:07Z",
+   "body": "Replying to @participant16, I like the idea of rand.AutoSeed, but looking more closely I don't think it solves the problem. \r\n\r\nConsider a use of rand in a library, like net/http or testing, which both use it today. If the library calls rand.AutoSeed we're back to automatic seeding in all programs. So it must be package main's responsibility to call rand.AutoSeed. But even if main's init calls AutoSeed, that runs after all the inits in all the other packages. So any init code that calls rand is not getting auto-seeded results. The only way to get auto-seeded results at init time is for the library to call rand.AutoSeed, and we're back where we started.\r\n"
+  },
+  {
+   "author": "participant16",
+   "created_at": "2022-10-04T21:42:28Z",
+   "body": "@reporter The benefit I really want from it is to prevent future `Seed` calls from doing anything, so I can be sure that the global source is always properly seeded. That is, we wouldn't be *quite* back where we started - we'd get the same level of breakage, but there is some benefit.\r\n\r\nI agree that it's unfortunate though, that there would be no way to guarantee this happens before imported packages's `init`, so there is still a window of them getting bad randomness."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2022-10-05T16:01:36Z",
+   "body": "I agree about it being nice to remove the global func Seed entirely. Perhaps in math/rand/v2. Right now I'm focusing on what we can do in math/rand without a v2. The next step will be to propose a math/rand/v2 that removes problematic API. Making compatible improvements to the existing math/rand first ensures that the delta between the two packages is as small as possible."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2022-10-05T17:14:08Z",
+   "body": "Leaving in likely accept for another week.\r\n"
+  },
+  {
+   "author": "participant9",
+   "created_at": "2022-10-06T14:49:41Z",
+   "body": "@participant5 Thus my proposal that the default RNG should be secure.  Most people won't notice that an RNG is insecure, even if it matters, so it can stay broken.  If on the other hand it is slow and that matters, they notice that pretty quickly, and will deal with it, hopefully in an appropriate way.  It is useful to *us* to have become experts and we place value on all the time it took for that to happen, but the more we can lower the level of expertise needed to write secure and mostly bug-free Go, the better.  And in all real-world cases, I prefer a performance foot-gun to a security foot-gun."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2022-10-06T18:59:00Z",
+   "body": "@participant9 Unfortunately that doesn't consider the use of PRNGs in simulation and randomised algorithms. Particularly in simulations, people would like to be able to replay a simulation repeatably.\r\n\r\nThe situations where seeding changes, like those proposed here, impact on those uses are likely to be very few, but if the default RNG is not a PRNG, there would be many more cases where people who have code that they expect to give consistent output for the same input, but don't. Now, arguably, they should not be using a program-global RNG for the simulation, but it happens, and if people always did the right thing, we wouldn't be having this discussion."
+  },
+  {
+   "author": "participant9",
+   "created_at": "2022-10-06T19:39:18Z",
+   "body": "@participant5 a non-repeatable simulation is another one of those in-your-face problems that you notice and fix.  It's much easier to get educated about things like that, and performance, because the failure is not subtle.\r\n\r\nAnd if it's a multithreaded simulation, you'll want something like splittable PRNG, wouldn't you?\r\nE.g. https://vigna.di.unimi.it/ftp/papers/LXM.pdf"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2022-10-06T20:01:12Z",
+   "body": "> non-repeatable simulation is another one of those in-your-face problems that you notice and fix\r\n\r\nYou'd think so, but the common construction of and care for scientific software means that that is less likely.\r\n\r\n> And if it's a multithreaded simulation, you'll want something like splittable PRNG, wouldn't you?\r\n\r\nSure, or just per-thread PRNGs which is why Gonum provides a collection of PRNGs and makes all rand-requiring functions accept a `rand.Source` rather than using the global RNG.\r\n\r\nIn most cases though simulations that scientists write will likely be single threaded and (intended to be) throwaway, these single threaded throwaway codes often become the kernel of future work and are retained by labs long after the (often student) author has left a lab. The tangle of code (often multiple programs that are loosely coupled in code but tightly couple in semantics) is rarely understood properly by the inheritors of the code.\r\n\r\nI'm not saying any of this is good, or even marginally acceptable, but is it the reality in the house of cards that we call computational sciences and I'd really like it if it didn't get worse. The current proposal doesn't make this worse in most cases, but replacing default RNG with a CRNG would."
+  },
+  {
+   "author": "participant16",
+   "created_at": "2022-10-07T21:58:16Z",
+   "body": "@takeyourhatoff You can still do all of that by simply using `rand.New(rand.NewSource(1))`: https://go.dev/play/p/G4IA3tF1ryZ\r\n\r\nThe argument is exactly that that's what you should do if you require determinism anyway, as relying on the global source is brittle, Go compatibility or not. But if you *want* a deterministic PRNG you can still get it."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2022-10-12T17:52:21Z",
+   "body": "\nNo change in consensus, so **[accepted](https://go.dev/s/proposal-status#accepted)**. 🎉\nThis issue now tracks the work of implementing the proposal.\n— reporter for the proposal review group\n"
+  },
+  {
+   "author": "gopherbot",
+   "created_at": "2022-10-14T14:49:36Z",
+   "body": "Change https://go.dev/cl/443058 mentions this issue: `math/rand: auto-seed global source`"
+  },
+  {
+   "author": "gopherbot",
+   "created_at": "2022-10-14T14:49:37Z",
+   "body": "Change https://go.dev/cl/443057 mentions this issue: `math/rand: refactor to delay allocation of global source`"
+  },
+  {
+   "author": "gopherbot",
+   "created_at": "2022-10-14T15:30:57Z",
+   "body": "Change https://go.dev/cl/439418 mentions this issue: `internal/godebug: remove dependency on os`"
+  },
+  {
+   "author": "gopherbot",
+   "created_at": "2022-10-25T16:57:07Z",
+   "body": "Change https://go.dev/cl/445395 mentions this issue: `all: remove uses of rand.Seed`"
+  },
+  {
+   "author": "participant17",
+   "created_at": "2023-01-04T22:42:42Z",
+   "body": "I was against this change (because of the compatibility break argument, and the security argument) and I wanted to propose to autoseed only for `go test` as a first step (as it would reveal fragile tests that rely on a specific seeding value).\r\n\r\nBut **I have been convinced** by this sentence in https://github.com/golang/go/issues/54880#issuecomment-1267589575:\r\n> So any init code that calls rand is not getting auto-seeded results.\r\n\r\nTo develop, we are in this state:\r\n1. Seeding the global PRNG outside the `main` package or `*_test.go` files is wrong to me (and I'm looking for static analysis tools that enforce this, any pointer welcome) because seeding the global PRNG should be done just once.\r\n2. But there is no way for a package to ensure at init time that seeding the global PRNG to a random value has been done: the only way is to trigger Seed itself, or use its own random seeded `rand.Source`\r\n\r\nSo always random seeding seems the right thing to do, to enforce that any wanted non-random seeding is explicit (`rand.Seed(1)`) with documentation for `Seed` suggesting more clearly it would be safer to use a private PRNG for the deterministic use case."
+  },
+  {
+   "author": "participant17",
+   "created_at": "2023-01-04T22:56:03Z",
+   "body": "What about a way to override the new randomized seed via a `GODEBUG` flag to restore the `Seed(1)`?"
+  },
+  {
+   "author": "participant18",
+   "created_at": "2023-01-04T23:15:11Z",
+   "body": "> What about a way to override the new randomized seed via a GODEBUG flag to restore the Seed(1)?\r\n\r\nHi @participant17, I think that already exists. From the [draft Go 1.20 release notes](https://tip.golang.org/doc/go1.20#math/rand):\r\n\r\n> Programs that need the earlier consistent global seeding behavior can set GODEBUG=randautoseed=0 in their environment."
+  },
+  {
+   "author": "gopherbot",
+   "created_at": "2023-02-03T06:17:30Z",
+   "body": "Change https://go.dev/cl/465037 mentions this issue: `math/rand: use fastrand64 if possible`"
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "golang/go",
+  "default_branch": "master",
+  "commit_sha": "4c1ca42aa295d68b6172b7f49e4fb4fd14d86475",
+  "as_of": "2022-09-06T02:14:04Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_golang_go_54880"
+}

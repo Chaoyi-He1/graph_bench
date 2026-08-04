@@ -76,6 +76,13 @@ def _profile(thread: dict) -> dict:
     show_default=True,
 )
 @click.option('--out', default='data/github_v0', show_default=True)
+@click.option(
+    '--query',
+    default='',
+    help='Override the default search window (e.g. '
+    '"comments:12..60 created:2021-06-01..2023-01-01") — zero-hit repos '
+    'need a different window to surface new candidates.',
+)
 @click.option('--search-limit', default=20, show_default=True)
 @click.option('--profile-top', default=7, show_default=True)
 @click.option('--target', default=10, show_default=True)
@@ -83,6 +90,7 @@ def _profile(thread: dict) -> dict:
 def main(
     repos: str,
     out: str,
+    query: str,
     search_limit: int,
     profile_top: int,
     target: int,
@@ -100,7 +108,7 @@ def main(
     threads: list[dict] = []
     for repo in repos.split(','):
         repo = repo.strip()
-        q = _EXTRA_Q.get(repo, _DEFAULT_Q)
+        q = query or _EXTRA_Q.get(repo, _DEFAULT_Q)
         try:
             items = search_issues(repo, q, limit=search_limit)
         except urllib.error.HTTPError as err:
