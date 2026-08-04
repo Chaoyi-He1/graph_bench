@@ -1,0 +1,552 @@
+{
+ "task_id": "pg_bug_17928",
+ "title": "Standby fails to decode WAL when the primary stops",
+ "body": "I'm running PostgreSQL 15.2 on Ubuntu 22.04. When I stop the primary server, a standby can fail during WAL replay with `FATAL: invalid memory alloc request size 2021163525`, after the WAL receiver reports that the primary closed the connection. The startup process then exits and the standby shuts down. In gdb, `XLogDecodeNextRecord()` reads `xl_tot_len = 0x78787878` at `NextRecPtr = 0xB1703FF0`. A hexdump shows `0x78` bytes at that location in the standby's WAL segment, while the corresponding primary WAL contains a valid record header. I also have a TAP test that reproduces the failure; running several copies of it in parallel on tmpfs eventually makes `pg_ctl stop` fail because the standby startup process exits.",
+ "graph": {
+  "start_node": "N0",
+  "nodes": {
+   "N0": {
+    "system_state_id": "S1",
+    "info_state": [
+     "postgresql_15_2_on_ubuntu_22_04",
+     "standby_exits_with_large_allocation_after_primary_stop",
+     "gdb_header_contains_recycled_0x78_bytes",
+     "standby_wal_differs_from_valid_primary_wal",
+     "parallel_tap_reproducer_available"
+    ],
+    "symptoms_visible": [
+     "When I stop the primary, the standby can report `invalid memory alloc request size 2021163525`; its startup process exits and the database system shuts down.",
+     "At the failing WAL position I see `xl_tot_len = 0x78787878`, and the standby segment contains repeated `0x78` bytes where the primary segment has a valid record header.",
+     "My TAP reproducer eventually fails because `pg_ctl stop` cannot complete after the standby startup process exits."
+    ],
+    "is_terminal": false,
+    "label": "N0 standby WAL replay failure reported",
+    "volunteered_info": [
+     "gdb_header_contains_recycled_0x78_bytes",
+     "standby_wal_differs_from_valid_primary_wal",
+     "parallel_tap_reproducer_available"
+    ],
+    "user_perceives_resolved": false,
+    "symptom_images": []
+   },
+   "N1": {
+    "system_state_id": "S1",
+    "info_state": [
+     "postgresql_15_2_on_ubuntu_22_04",
+     "standby_exits_with_large_allocation_after_primary_stop",
+     "gdb_header_contains_recycled_0x78_bytes",
+     "standby_wal_differs_from_valid_primary_wal",
+     "parallel_tap_reproducer_available",
+     "head_reproduces_original_failure_quickly",
+     "early_length_validation_avoids_original_failure",
+     "early_length_validation_silently_stops_valid_oversized_replay"
+    ],
+    "symptoms_visible": [
+     "The unpatched server still exits with a large invalid allocation request when I run the reproducer.",
+     "With the first length-validation patch, the original reproducer keeps running, but replay of a valid oversized logical message stops at that record without reporting a fatal recovery failure."
+    ],
+    "is_terminal": false,
+    "label": "N1 initial length-check approach tested",
+    "volunteered_info": [],
+    "user_perceives_resolved": false,
+    "symptom_images": []
+   },
+   "N2": {
+    "system_state_id": "S1",
+    "info_state": [
+     "postgresql_15_2_on_ubuntu_22_04",
+     "standby_exits_with_large_allocation_after_primary_stop",
+     "gdb_header_contains_recycled_0x78_bytes",
+     "standby_wal_differs_from_valid_primary_wal",
+     "parallel_tap_reproducer_available",
+     "head_reproduces_original_failure_quickly",
+     "early_length_validation_avoids_original_failure",
+     "early_length_validation_silently_stops_valid_oversized_replay",
+     "controlled_end_of_wal_tests_cover_split_headers",
+     "refined_patch_passes_corrupted_wal_tests"
+    ],
+    "symptoms_visible": [
+     "The unpatched server fails on the controlled split-header WAL case, while the refined patch completes all of the controlled end-of-WAL tests."
+    ],
+    "is_terminal": false,
+    "label": "N2 refined validation patch tested",
+    "volunteered_info": [],
+    "user_perceives_resolved": false,
+    "symptom_images": []
+   },
+   "N3": {
+    "system_state_id": "S1",
+    "info_state": [
+     "postgresql_15_2_on_ubuntu_22_04",
+     "standby_exits_with_large_allocation_after_primary_stop",
+     "gdb_header_contains_recycled_0x78_bytes",
+     "standby_wal_differs_from_valid_primary_wal",
+     "parallel_tap_reproducer_available",
+     "head_reproduces_original_failure_quickly",
+     "early_length_validation_avoids_original_failure",
+     "early_length_validation_silently_stops_valid_oversized_replay",
+     "controlled_end_of_wal_tests_cover_split_headers",
+     "refined_patch_passes_corrupted_wal_tests",
+     "refined_patch_verified_across_branches_and_extra_configs"
+    ],
+    "symptoms_visible": [
+     "With the refined patch, I cannot reproduce the standby allocation failure using the original test or the controlled WAL tests, including runs with `wal_log_hints`, Valgrind, and the supported branch variants."
+    ],
+    "is_terminal": false,
+    "label": "N3 refined patch broadly verified before landing",
+    "volunteered_info": [],
+    "user_perceives_resolved": false,
+    "symptom_images": []
+   },
+   "N4_x": {
+    "system_state_id": "S2",
+    "info_state": [
+     "postgresql_15_2_on_ubuntu_22_04",
+     "standby_exits_with_large_allocation_after_primary_stop",
+     "gdb_header_contains_recycled_0x78_bytes",
+     "standby_wal_differs_from_valid_primary_wal",
+     "parallel_tap_reproducer_available",
+     "head_reproduces_original_failure_quickly",
+     "early_length_validation_avoids_original_failure",
+     "early_length_validation_silently_stops_valid_oversized_replay",
+     "controlled_end_of_wal_tests_cover_split_headers",
+     "refined_patch_passes_corrupted_wal_tests",
+     "refined_patch_verified_across_branches_and_extra_configs",
+     "root_cause_allocation_precedes_full_split_header_validation",
+     "post_landing_slow_architectures_segfault_in_crc"
+    ],
+    "symptoms_visible": [
+     "After the WAL-reader change landed, several slow non-Intel build-farm machines segfault during recovery in the CRC calculation.",
+     "The failing stack reaches `ValidXLogRecord()` from `XLogDecodeNextRecord()`, with the CRC routine receiving an extremely large length."
+    ],
+    "is_terminal": false,
+    "label": "N4_x landed patch build-farm aftermath",
+    "volunteered_info": [
+     "post_landing_slow_architectures_segfault_in_crc"
+    ],
+    "user_perceives_resolved": false,
+    "symptom_images": []
+   },
+   "N5": {
+    "system_state_id": "S2",
+    "info_state": [
+     "postgresql_15_2_on_ubuntu_22_04",
+     "standby_exits_with_large_allocation_after_primary_stop",
+     "gdb_header_contains_recycled_0x78_bytes",
+     "standby_wal_differs_from_valid_primary_wal",
+     "parallel_tap_reproducer_available",
+     "head_reproduces_original_failure_quickly",
+     "early_length_validation_avoids_original_failure",
+     "early_length_validation_silently_stops_valid_oversized_replay",
+     "controlled_end_of_wal_tests_cover_split_headers",
+     "refined_patch_passes_corrupted_wal_tests",
+     "refined_patch_verified_across_branches_and_extra_configs",
+     "root_cause_allocation_precedes_full_split_header_validation",
+     "post_landing_slow_architectures_segfault_in_crc",
+     "crc_failure_raw_stack_has_huge_unsigned_length",
+     "corrective_patch_passes_recovery_tests_on_failing_architecture"
+    ],
+    "symptoms_visible": [
+     "On the failing architecture, the recovery process no longer segfaults when I apply the corrective patch; both the two-phase recovery test and the end-of-WAL test pass."
+    ],
+    "is_terminal": false,
+    "label": "N5 corrective patch verified",
+    "volunteered_info": [],
+    "user_perceives_resolved": false,
+    "symptom_images": []
+   },
+   "N_terminal": {
+    "system_state_id": "S3",
+    "info_state": [
+     "postgresql_15_2_on_ubuntu_22_04",
+     "standby_exits_with_large_allocation_after_primary_stop",
+     "gdb_header_contains_recycled_0x78_bytes",
+     "standby_wal_differs_from_valid_primary_wal",
+     "parallel_tap_reproducer_available",
+     "head_reproduces_original_failure_quickly",
+     "early_length_validation_avoids_original_failure",
+     "early_length_validation_silently_stops_valid_oversized_replay",
+     "controlled_end_of_wal_tests_cover_split_headers",
+     "refined_patch_passes_corrupted_wal_tests",
+     "refined_patch_verified_across_branches_and_extra_configs",
+     "root_cause_allocation_precedes_full_split_header_validation",
+     "post_landing_slow_architectures_segfault_in_crc",
+     "crc_failure_raw_stack_has_huge_unsigned_length",
+     "corrective_patch_passes_recovery_tests_on_failing_architecture",
+     "secondary_cause_missing_minimum_length_check_before_crc"
+    ],
+    "symptoms_visible": [
+     "Stopping the primary no longer makes the standby request a garbage-sized allocation or shut down during WAL replay.",
+     "The end-of-WAL and recovery tests pass without the CRC segfault on the previously failing architectures."
+    ],
+    "is_terminal": true,
+    "label": "terminal resolved",
+    "volunteered_info": [],
+    "user_perceives_resolved": true,
+    "symptom_images": []
+   }
+  },
+  "edges": [
+   {
+    "edge_id": "e1_N0__N1",
+    "edge_type": "clarification_only",
+    "from": "N0",
+    "to": "N1",
+    "clarifications": [
+     {
+      "info_id": "head_reproduces_original_failure_quickly",
+      "level": "L3_specific",
+      "question_patterns": [
+       "Can you reproduce the failure on current HEAD using the TAP test?",
+       "Please run the reproducer against an unpatched build and report how quickly it fails."
+      ],
+      "user_answer_in_this_oncall": "I reproduced it on HEAD in under five minutes. The standby logged `FATAL: invalid memory alloc request size 2021163525`, and the startup process exited with code 1.",
+      "images": [],
+      "counterfactual_candidates": [
+       {
+        "type": "extreme",
+        "answer": "I cannot reproduce this on HEAD after repeated runs; it only occurs on my PostgreSQL 15.2 package.",
+        "solution_should_change": true
+       },
+       {
+        "type": "minor",
+        "answer": "I reproduced the same allocation failure after about an hour instead of five minutes.",
+        "solution_should_change": false
+       }
+      ]
+     },
+     {
+      "info_id": "early_length_validation_avoids_original_failure",
+      "level": "L3_specific",
+      "question_patterns": [
+       "Can you run the original reproducer with the first `xl_tot_len` validation patch?",
+       "Does the initial record-length patch prevent the large allocation failure?"
+      ],
+      "user_answer_in_this_oncall": "I ran the original reproducer with that patch for two hours and did not see the invalid allocation failure.",
+      "images": [],
+      "counterfactual_candidates": []
+     },
+     {
+      "info_id": "early_length_validation_silently_stops_valid_oversized_replay",
+      "level": "L3_specific",
+      "question_patterns": [
+       "Can you test the first patch with a valid oversized record generated by `pg_logical_emit_message()`?",
+       "Please verify whether recovery still handles a valid record near the old allocation limit correctly."
+      ],
+      "user_answer_in_this_oncall": "With the first patch, replay logs `record length 1073740879 ... too long` and then `redo done` at the previous position. It stops before replaying the valid oversized record instead of failing recovery.",
+      "images": [],
+      "counterfactual_candidates": [
+       {
+        "type": "extreme",
+        "answer": "The oversized valid record replays normally with the first patch, and recovery continues past it.",
+        "solution_should_change": true
+       }
+      ]
+     }
+    ],
+    "solution": null,
+    "comment": "Thread c6 and c14: contributors reproduced the original failure and then falsified the first simple maximum-length validation patch by showing silent termination of replay at a valid oversized record. All contributors are folded into one simulated user side."
+   },
+   {
+    "edge_id": "e2_N1__N2",
+    "edge_type": "clarification_only",
+    "from": "N1",
+    "to": "N2",
+    "clarifications": [
+     {
+      "info_id": "controlled_end_of_wal_tests_cover_split_headers",
+      "level": "L3_specific",
+      "question_patterns": [
+       "Can you build a controlled WAL test that exercises invalid end-of-WAL conditions, including a record header split across pages?",
+       "Please test zero, short, bad-link and bad-page-header cases on both ordinary and split record headers."
+      ],
+      "user_answer_in_this_oncall": "I added controlled end-of-WAL cases for zero and short `xl_tot_len`, bad `xl_prev`, bad CRC, bad page magic, page address, page info and `xlp_rem_len`, including split-record-header variants. The test reports 13 subtests.",
+      "images": [],
+      "counterfactual_candidates": [
+       {
+        "type": "minor",
+        "answer": "The same cases pass, but they are split across two TAP files rather than one 13-subtest file.",
+        "solution_should_change": false
+       }
+      ]
+     },
+     {
+      "info_id": "refined_patch_passes_corrupted_wal_tests",
+      "level": "L3_specific",
+      "question_patterns": [
+       "Run the controlled corrupted-WAL test against HEAD and the refined patch; what are the raw results?",
+       "Does the patch that validates the complete cross-page header before allocating pass the reproducer?"
+      ],
+      "user_answer_in_this_oncall": "The controlled test reliably triggers the invalid allocation on unpatched HEAD. The proposed refined patches pass the test, including the split-header cases.",
+      "images": [],
+      "counterfactual_candidates": [
+       {
+        "type": "extreme",
+        "answer": "The refined patch still exits with an invalid allocation request on the split-header case.",
+        "solution_should_change": true
+       }
+      ]
+     }
+    ],
+    "solution": null,
+    "comment": "Thread c23-c25: engineers converted the probabilistic reproducer into controlled WAL corruption tests. These are measurements; the conclusion about where validation must move remains engineer-side."
+   },
+   {
+    "edge_id": "e3_N2__N3",
+    "edge_type": "clarification_only",
+    "from": "N2",
+    "to": "N3",
+    "clarifications": [
+     {
+      "info_id": "refined_patch_verified_across_branches_and_extra_configs",
+      "level": "L3_specific",
+      "question_patterns": [
+       "Can you retest the refined patch across the affected branches and with `wal_log_hints`, Valgrind, and the original reproducer?",
+       "Please run a final pre-landing verification of the code and TAP changes."
+      ],
+      "user_answer_in_this_oncall": "I've retested the patches for all branches, including `wal_log_hints`, Valgrind, and my original `099_restart_with_stanby.pl` reproducer. I found no issues.",
+      "images": [],
+      "counterfactual_candidates": [
+       {
+        "type": "extreme",
+        "answer": "The original reproducer still makes the standby exit under Valgrind with the refined patch.",
+        "solution_should_change": true
+       },
+       {
+        "type": "minor",
+        "answer": "All the same checks pass, but I used a different Debian release for one branch.",
+        "solution_should_change": false
+       }
+      ]
+     }
+    ],
+    "solution": null,
+    "comment": "Reporter verification from c58, after earlier portability and WAL-positioning defects in the TAP test were corrected."
+   },
+   {
+    "edge_id": "e4_N3__N4_x",
+    "edge_type": "solution_only",
+    "from": "N3",
+    "to": "N4_x",
+    "clarifications": [],
+    "solution": {
+     "intent": "Restructure WAL decoding so a split record header is completed and validated using the next page and info metadata before permitting an oversized allocation, with controlled end-of-WAL TAP coverage.",
+     "approach_keywords": [
+      "xlogreader",
+      "validate_full_record_header",
+      "split_page_header",
+      "xlp_rem_len",
+      "allocate_after_validation",
+      "end_of_wal_tests"
+     ],
+     "concrete_example": "In `XLogDecodeNextRecord()`, allow reuse of an existing decode buffer without allocating, but if more space is required, read the next WAL page, complete the split header, validate the page and info fields, and only then call `XLogReadRecordAlloc()` with oversized allocation enabled.",
+     "required_elements_for_full_match": [
+      "moves_full_split_header_validation_before_new_allocation",
+      "uses_cross_page_continuation_checks",
+      "adds_controlled_end_of_wal_tests"
+     ],
+     "required_info": {
+      "L1": [
+       "standby_exits_with_large_allocation_after_primary_stop",
+       "gdb_header_contains_recycled_0x78_bytes"
+      ],
+      "L2": [
+       "standby_wal_differs_from_valid_primary_wal"
+      ],
+      "L3": [
+       "early_length_validation_silently_stops_valid_oversized_replay",
+       "refined_patch_passes_corrupted_wal_tests",
+       "refined_patch_verified_across_branches_and_extra_configs"
+      ]
+     },
+     "info_inferred_by_engineer": [
+      "root_cause_allocation_precedes_full_split_header_validation"
+     ],
+     "is_composite": false,
+     "composed_of": [],
+     "is_known_blind_path": true,
+     "is_shortcut": false,
+     "shortcut_skipped_info": [],
+     "inference_hint": "The opening evidence exposes garbage `xl_tot_len` bytes, but the conclusion is engineer analysis: when a record header straddled a WAL page boundary, the reader could use the partial header's length for allocation before the next page supplied the fields needed for full record and info validation."
+    },
+    "comment": "The main fix was pushed at c61 and corrected the reported allocation failure, but it was not yet a complete resolution: build-farm machines then exposed a CRC-path segfault caused by a missing minimum-length check."
+   },
+   {
+    "edge_id": "e5_N4_x__N5",
+    "edge_type": "clarification_only",
+    "from": "N4_x",
+    "to": "N5",
+    "clarifications": [
+     {
+      "info_id": "crc_failure_raw_stack_has_huge_unsigned_length",
+      "level": "L3_specific",
+      "question_patterns": [
+       "Can you capture the stack and argument values from the post-landing recovery segfault?",
+       "What raw length reaches the CRC routine on a failing build-farm architecture?"
+      ],
+      "user_answer_in_this_oncall": "The core reaches `pg_comp_crc32c_sb8()` from `ValidXLogRecord()` and `XLogDecodeNextRecord()`. One log shows `len=4294636456`; another stack shows the CRC call reading past the record buffer.",
+      "images": [],
+      "counterfactual_candidates": [
+       {
+        "type": "extreme",
+        "answer": "The crash is in an unrelated extension before WAL decoding begins, and the CRC routine is not on the stack.",
+        "solution_should_change": true
+       }
+      ]
+     },
+     {
+      "info_id": "corrective_patch_passes_recovery_tests_on_failing_architecture",
+      "level": "L3_specific",
+      "question_patterns": [
+       "Can you test the corrective patch on one of the architectures that reproduced the segfault?",
+       "Please rerun the two-phase and end-of-WAL recovery tests with the draft correction."
+      ],
+      "user_answer_in_this_oncall": "With the corrective patch, both `009_twophase` and `039_end_of_wal` pass on the machine that reproduced the segfault.",
+      "images": [],
+      "counterfactual_candidates": [
+       {
+        "type": "extreme",
+        "answer": "The corrective patch still segfaults in the CRC calculation on the same machine.",
+        "solution_should_change": true
+       }
+      ]
+     }
+    ],
+    "solution": null,
+    "comment": "Build-farm contributors and machine owners are folded into the simulated user side. The answers contain only raw stack values and test results; identifying the removed short-length check is engineer inference."
+   },
+   {
+    "edge_id": "e6_N5__N_terminal",
+    "edge_type": "solution_only",
+    "from": "N5",
+    "to": "N_terminal",
+    "clarifications": [],
+    "solution": {
+     "intent": "Complete the WAL-reader fix by restoring minimum record-length validation before the single-page CRC path, retaining full cross-page header validation before allocation, and adding a defensive CRC assertion and regression case.",
+     "approach_keywords": [
+      "restore_minimum_record_length_check",
+      "prevent_crc_length_underflow",
+      "validate_before_allocation",
+      "crc_assertion",
+      "split_header_regression_test"
+     ],
+     "concrete_example": "Before falling into the single-page `ValidXLogRecord()` path, reject `xl_tot_len < SizeOfXLogRecord`; keep the new cross-page header and `xlp_rem_len` validation before any new oversized allocation, add an assertion protecting the CRC length calculation, and retain a TAP case with a zero or short length at a split record header.",
+     "required_elements_for_full_match": [
+      "restores_minimum_record_length_validation_before_crc",
+      "retains_full_header_validation_before_new_allocation",
+      "prevents_unsigned_crc_length_underflow",
+      "includes_regression_coverage_for_short_split_header",
+      "asks_user_to_verify_on_a_build_containing_the_fix"
+     ],
+     "required_info": {
+      "L1": [
+       "standby_exits_with_large_allocation_after_primary_stop",
+       "gdb_header_contains_recycled_0x78_bytes"
+      ],
+      "L2": [
+       "post_landing_slow_architectures_segfault_in_crc"
+      ],
+      "L3": [
+       "early_length_validation_silently_stops_valid_oversized_replay",
+       "refined_patch_passes_corrupted_wal_tests",
+       "crc_failure_raw_stack_has_huge_unsigned_length",
+       "corrective_patch_passes_recovery_tests_on_failing_architecture"
+      ]
+     },
+     "info_inferred_by_engineer": [
+      "secondary_cause_missing_minimum_length_check_before_crc"
+     ],
+     "is_composite": false,
+     "composed_of": [],
+     "is_known_blind_path": false,
+     "is_shortcut": false,
+     "shortcut_skipped_info": [],
+     "inference_hint": "The huge CRC length is the unsigned result of subtracting `SizeOfXLogRecord` from a zero or too-short `xl_tot_len`. The landed restructuring had removed the old minimum-length rejection for the split-header path, allowing execution to reach CRC validation with that short value."
+    },
+    "comment": "Corrective change pushed at c83 after testing on a failing architecture. Resolution requires both the original validation-before-allocation restructuring and the restored short-length guard."
+   },
+   {
+    "edge_id": "e7_N0__N_terminal",
+    "edge_type": "solution_only",
+    "from": "N0",
+    "to": "N_terminal",
+    "clarifications": [],
+    "solution": {
+     "intent": "Fix WAL decoding by fully validating split record headers and info-page metadata before allocating from `xl_tot_len`, while rejecting too-short lengths before CRC validation.",
+     "approach_keywords": [
+      "xlogreader",
+      "split_record_header",
+      "validate_before_allocation",
+      "minimum_record_length",
+      "crc_underflow_guard"
+     ],
+     "concrete_example": "Rework `XLogDecodeNextRecord()` so a header crossing a page boundary is completed and checked against the reporter page before any new large allocation; preserve the `xl_tot_len >= SizeOfXLogRecord` check before `ValidXLogRecord()`, add controlled split-header tests, and ask for retesting on a build containing both changes.",
+     "required_elements_for_full_match": [
+      "validates_complete_cross_page_header_before_allocation",
+      "checks_continuation_page_metadata",
+      "rejects_short_record_length_before_crc",
+      "asks_user_to_verify_on_a_build_containing_the_fix"
+     ],
+     "required_info": {
+      "L1": [
+       "standby_exits_with_large_allocation_after_primary_stop",
+       "gdb_header_contains_recycled_0x78_bytes",
+       "parallel_tap_reproducer_available"
+      ],
+      "L2": [
+       "standby_wal_differs_from_valid_primary_wal"
+      ],
+      "L3": []
+     },
+     "info_inferred_by_engineer": [
+      "root_cause_allocation_precedes_full_split_header_validation",
+      "secondary_cause_missing_minimum_length_check_before_crc"
+     ],
+     "is_composite": false,
+     "composed_of": [],
+     "is_known_blind_path": false,
+     "is_shortcut": true,
+     "shortcut_skipped_info": [
+      "head_reproduces_original_failure_quickly",
+      "early_length_validation_avoids_original_failure",
+      "early_length_validation_silently_stops_valid_oversized_replay",
+      "controlled_end_of_wal_tests_cover_split_headers",
+      "refined_patch_passes_corrupted_wal_tests",
+      "refined_patch_verified_across_branches_and_extra_configs",
+      "post_landing_slow_architectures_segfault_in_crc",
+      "crc_failure_raw_stack_has_huge_unsigned_length",
+      "corrective_patch_passes_recovery_tests_on_failing_architecture"
+     ],
+     "inference_hint": "This shortcut represents an expert deriving the complete answer directly from the opening gdb and hexdump evidence. It skips the measurements that falsified a simple maximum-length check and exposed the missing short-length guard."
+    },
+    "comment": "Shortcut for an agent that proposes the complete final repair immediately. It must include the minimum-length guard as well as validation-before-allocation, avoiding both defects encountered in the thread."
+   }
+  ]
+ },
+ "satisfaction_conditions": [
+  "Must identify the original root cause: recycled or otherwise unwritten standby WAL bytes can be read as a partial record header at a page boundary, and the WAL reader used the garbage `xl_tot_len` for allocation before completing and validating the cross-page header and info metadata.",
+  "The diagnosis must be grounded in the reported `0x78787878` header, the standby-versus-primary WAL difference, and the controlled split-header/end-of-WAL tests.",
+  "Must not use only an early maximum-record-length rejection as the fix; that approach was falsified because it could silently terminate replay at a valid oversized record.",
+  "The complete fix must validate the full split header and `xlp_rem_len` before a new oversized allocation, while preserving a minimum `xl_tot_len` check before CRC validation so a short length cannot underflow into a huge CRC length.",
+  "Must not treat the initially landed restructuring as complete without the corrective short-length guard; build-farm recovery tests exposed a CRC-path segfault.",
+  "Must ask for verification on a build containing the complete corrected fix and treat the issue as resolved only after the standby and recovery tests pass without the allocation failure or CRC segfault."
+ ],
+ "persona_hint": {
+  "experience_level": "Highly technical PostgreSQL contributor who can write TAP recovery tests, run parallel stress reproductions, inspect WAL with gdb and hexdumps, test multiple branches and configurations, and review patch details. Other developers and build-farm testers are folded into the same simulated user side.",
+  "communication_style": "Precise, evidence-heavy, and collaborative; supplies exact logs and commands, retests revised patches thoroughly, and reports portability or test-stability problems without overclaiming their cause."
+ },
+ "metadata": {
+  "graph_version": "v1",
+  "created_from": "https://www.postgresql.org/message-id/flat/ZNSVlR/v8gTDIMsU%40paquier.xyz (LLM-draft via graph_bench pipeline; pending human review)",
+  "hitl_reviewed": false,
+  "repo_snapshot": {
+   "provider": "github",
+   "repo": "postgres/postgres",
+   "default_branch": "master",
+   "commit_sha": "375407f4940ba0922513666f00852c54943eb1a0",
+   "as_of": "2023-05-11 08:00:01",
+   "method": "github_commits_until"
+  }
+ },
+ "opening_images": []
+}

@@ -1,0 +1,125 @@
+{
+ "reporter_match_keys": [
+  "andrew bille",
+  "andrewbille"
+ ],
+ "repo": "postgresql.org/pgsql-bugs",
+ "number": 19086,
+ "url": "https://www.postgresql.org/message-id/flat/19086-871ff11017d03dc5%40postgresql.org",
+ "title": "BUG #19086: pg_dump --data-only selects and do not uses index definitions for the dumped tables.",
+ "state": "thread",
+ "labels": [
+  "pgsql-bugs"
+ ],
+ "reporter": "reporter",
+ "created_at": "2025-10-14 08:13:52",
+ "closed_at": "2025-10-16 01:47:52",
+ "body": "The following bug has been logged on the website:\n\nBug reference:      19086\nLogged by:          reporter\nEmail address:      <email-scrubbed>\nPostgreSQL version: 18.0\nOperating system:   Debian 12\nDescription:        \n\nIn case of system indexes corruption the collecting of index definitions can\ntake a really long time.\n\nSynthetic example:\n\nDO $$\nDECLARE\n    i INTEGER;\n    j INTEGER;\nBEGIN\n    FOR i IN 1..15000 LOOP\n        EXECUTE 'CREATE TABLE tab'  i  ' as SELECT 1 as f';\n        FOR j IN 1..5 LOOP\n            EXECUTE 'CREATE index idx_tab'  i  '_'  j   ' ON tab'  i  '(f)';\n        END LOOP;\n    END LOOP;\nEND;\n$$;\n\nIf\nignore_system_indexes = on\n\ntime pg_dump --data-only test > test.sql\n\nreal    62m44,582s\nuser    0m0,576s\nsys     0m0,259s\n\nof which\nLOG:  duration: 3474423.683 ms  statement: SELECT t.tableoid, t.oid,\ni.indrelid, t.relname AS indexname, t.relpages, t.reltuples,\nt.relallvisible, 0 AS relallfrozen, pg_catalog.pg_get_indexdef(i.indexrelid)\nAS indexdef, i.indkey, i.indisclustered, c.contype, c.conname,\nc.condeferrable, c.condeferred, c.tableoid AS contableoid, c.oid AS conoid,\npg_catalog.pg_get_constraintdef(c.oid, false) AS condef, CASE WHEN\ni.indexprs IS NOT NULL THEN (SELECT pg_catalog.array_agg(attname ORDER BY\nattnum)  FROM pg_catalog.pg_attribute   WHERE attrelid = i.indexrelid) ELSE\nNULL END AS indattnames, (SELECT spcname FROM pg_catalog.pg_tablespace s\nWHERE s.oid = t.reltablespace) AS tablespace, t.reloptions AS indreloptions,\ni.indisreplident, inh.inhparent AS parentidx, i.indnkeyatts AS indnkeyatts,\ni.indnatts AS indnatts, (SELECT pg_catalog.array_agg(attnum ORDER BY attnum)\nFROM pg_catalog.pg_attribute   WHERE attrelid = i.indexrelid AND\nattstattarget >= 0) AS indstatcols, (SELECT\npg_catalog.array_agg(attstattarget ORDER BY attnum)   FROM\npg_catalog.pg_attribute   WHERE attrelid = i.indexrelid AND\nattstattarget >= 0) AS indstatvals, i.indnullsnotdistinct, NULL AS conperiod\nFROM\nunnest('{16385,16393,16401,16409,16417,16425,16433,16441,16449,16457,16465,16473,16481,16489,16497,16505,16513,16521,16529,16537,16545,16553,16561,16569,16577,16585,16593,16601,16609,16617,16625,16633,16641,16649,16657,16665,16673,16681,16689,16697,16705,16713,16721,16729,16737,16745,16753,16761,16769,16777,16785,16793,16801,16809,16817,16825,16833,16841,16849,16857,16865,16873,16881,16889,16897,16905,16913,16921,16929,16937,16945,16953,16961,16969,16977,16985,16993,17001,17009,17017,17025,17033,17041,17049,17057,17065,17073,17081,17089,17097,17105,17113,17121,17129,17137,17145,17153,17161,17169,17177,17185,17193,17201,17209,17217\n... 36361,136369,136377}'::pg_catalog.oid[]) AS src(tbloid)\n        JOIN pg_catalog.pg_index i ON (src.tbloid = i.indrelid) JOIN\npg_catalog.pg_class t ON (t.oid = i.indexrelid) JOIN pg_catalog.pg_class t2\nON (t2.oid = i.indrelid) LEFT JOIN pg_catalog.pg_constraint c ON (i.indrelid\n= c.conrelid AND i.indexrelid = c.conindid AND c.contype IN ('p','u','x'))\nLEFT JOIN pg_catalog.pg_inherits inh ON (inh.inhrelid = indexrelid) WHERE\n(i.indisvalid OR t2.relkind = 'p') AND i.indisready ORDER BY i.indrelid,\nindexname\n\nWith a simple patch (passes tests)\n\ndiff --git a/src/bin/pg_dump/common.c b/src/bin/pg_dump/common.c\nindex a1976fae607..471e62da735 100644\n--- a/src/bin/pg_dump/common.c\n+++ b/src/bin/pg_dump/common.c\n@@ -95,7 +95,7 @@ static IndxInfo *findIndexByOid(Oid oid);\n  *       Collect information about all potentially dumpable objects\n  */\n TableInfo *\n-getSchemaData(Archive *fout, int *numTablesPtr)\n+getSchemaData(Archive *fout, int *numTablesPtr, bool dataOnly)\n {\n        TableInfo  *tblinfo;\n        ExtensionInfo *extinfo;\n@@ -211,11 +211,14 @@ getSchemaData(Archive *fout, int *numTablesPtr)\n        pg_log_info(\"reading partitioning data\");\n        getPartitioningInfo(fout);\n\n-       pg_log_info(\"reading indexes\");\n-       getIndexes(fout, tblinfo, numTables);\n+       if (!dataOnly)\n+       {\n+               pg_log_info(\"reading indexes\");\n+               getIndexes(fout, tblinfo, numTables);\n\n-       pg_log_info(\"flagging indexes in partitioned tables\");\n-       flagInhIndexes(fout, tblinfo, numTables);\n+               pg_log_info(\"flagging indexes in partitioned tables\");\n+               flagInhIndexes(fout, tblinfo, numTables);\n+       }\n\n        pg_log_info(\"reading extended statistics\");\n        getExtendedStatistics(fout);\ndiff --git a/src/bin/pg_dump/pg_dump.c b/src/bin/pg_dump/pg_dump.c\nindex 641bece12c7..ef8bd786371 100644\n--- a/src/bin/pg_dump/pg_dump.c\n+++ b/src/bin/pg_dump/pg_dump.c\n@@ -1090,7 +1090,7 @@ main(int argc, char **argv)\n         * Now scan the database and create DumpableObject structs for all\nthe\n         * objects we intend to dump.\n         */\n-       tblinfo = getSchemaData(fout, &numTables);\n+       tblinfo = getSchemaData(fout, &numTables, data_only);\n\n        if (dopt.dumpData)\n        {\ndiff --git a/src/bin/pg_dump/pg_dump.h b/src/bin/pg_dump/pg_dump.h\nindex fa6d1a510f7..83e097404a3 100644\n--- a/src/bin/pg_dump/pg_dump.h\n+++ b/src/bin/pg_dump/pg_dump.h\n@@ -750,7 +750,7 @@ typedef struct _SubRelInfo\n  *     common utility functions\n  */\n\n-extern TableInfo *getSchemaData(Archive *fout, int *numTablesPtr);\n+extern TableInfo *getSchemaData(Archive *fout, int *numTablesPtr, bool\ndataOnly);\n\n extern void AssignDumpId(DumpableObject *dobj);\n extern void recordAdditionalCatalogID(CatalogId catId, DumpableObject\n*dobj);\n\nwe have:\n\ntime pg_dump --data-only test > test.sql\n\nreal    7m45,533s\nuser    0m0,726s\nsys     0m0,634s\n\nIn the real case of system indexes corruption ... dump can take enourmous\namount of time.",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2025-10-14 08:15:36",
+   "body": "Patches for 17- and 18+\n\nRegards, Andrew\n\nOn Tue, Oct 14, 2025 at 3:14 PM PG Bug reporting form <\nnoreply(at)postgresql(dot)org> wrote:\n\n[quoted earlier message trimmed]"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-10-14 19:36:50",
+   "body": "On Tue, Oct 14, 2025 at 08:13:52AM +0000, PG Bug reporting form wrote:\n> In case of system indexes corruption the collecting of index definitions can\n> take a really long time.\n\nI don't think this qualifies as a bug, but avoiding pg_dump queries when\npossible seems like a good idea.  Is this a hypothetical problem or\nsomething you've experienced?\n\n[quoted earlier message trimmed]\n\nI think we ordinarily leave it up to the get*() functions to return early.\nFor example, getPartitioningInfo() has this near the top:\n\n\t/* needn't bother if not dumping data */\n\tif (!fout->dopt->dumpData)\n\t\treturn;\n\nAlso, we need to be certain that nothing getIndexes() gathers is ever used\nfor --data-only dumps.  That seems plausible, but I haven't looked closely.\n\n-- \nnathan"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-10-14 19:50:15",
+   "body": "Nathan Bossart <<email-scrubbed>> writes:\n> On Tue, Oct 14, 2025 at 08:13:52AM +0000, PG Bug reporting form wrote:\n>> In case of system indexes corruption the collecting of index definitions can\n>> take a really long time.\n\n> I don't think this qualifies as a bug, but avoiding pg_dump queries when\n> possible seems like a good idea.  Is this a hypothetical problem or\n> something you've experienced?\n\nEven if it's been seen in the field, it hardly qualifies as a\njustification for complicating pg_dump's behavior.  There's no reason\nto think that catalog corruption preferentially affects indexes, or\ndoes so in this particular way.  Should we also not collect data on\nfunctions, types, etc etc?\n\n> Also, we need to be certain that nothing getIndexes() gathers is ever used\n> for --data-only dumps.  That seems plausible, but I haven't looked closely.\n\nYeah, that's the main thing I'd worry about here.  For example,\nignoring some objects would likely lead to different conclusions about\nthe database objects' dependency web, possibly leading to changes in\ndump order or other effects.  Maybe there's no problem in practice,\nbut this unsupported bug report doesn't really motivate me to do the\nanalysis to see if it'd be all right.\n\n\t\t\tregards, tom lane"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-10-14 22:03:12",
+   "body": "On Tue, Oct 14, 2025 at 03:50:15PM -0400, Tom Lane wrote:\n[quoted earlier message trimmed]\n\nFWIW the getIndexes() query does tend to be one of the slowest, even with\nintact system indexes.  I've no concrete proposals, but there might be some\nroom for improvement.  I don't think we gain all that much by simply\navoiding the query in probably-somewhat-rare use-cases.  IMHO it ought to\nbe reworked for efficiency.\n\n-- \nnathan"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-10-14 23:56:25",
+   "body": "On Wed, 15 Oct 2025 at 11:03, Nathan Bossart <<email-scrubbed>> wrote:\n[quoted earlier message trimmed]\n\nThe extra slowness comes from all the subqueries in the targetlist, 3\nof which are going to pg_attribute using the same join condition. That\nresults in 3 separate scans of pg_attribute, 2 more than needed.\n\nThe query could be made more efficient generally by doing a left join\nto pg_attribute instead and then GROUP BY i.indexrelid.\n\nI tried rewriting the query so that pg_attribute is joined to rather\nthan subqueries. With 1500 tables I get:\n\nmaster:\n\nignore_system_indexes = on\nExecution Time: 6853.262 ms\n\nignore_system_indexes = off\nExecution Time: 66.781 ms\n\nRewritten query:\n\nignore_system_indexes = on\nExecution Time: 53.351 ms\n\nignore_system_indexes = off\nExecution Time: 56.965 ms\n\nDavid"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-10-15 02:21:05",
+   "body": "> Is this a hypothetical problem or something you've experienced?\n\nThe problem is real: when trying to rescue data from a large corrupted\ndatabase, we couldn't wait for the index definition query for more than 3\nhours.\n\nOn Wed, Oct 15, 2025 at 2:36 AM Nathan Bossart <<email-scrubbed>>\nwrote:\n\n[quoted earlier message trimmed]"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2025-10-15 08:56:06",
+   "body": "On 2025-Oct-15, reporter wrote:\n\n[quoted earlier message trimmed]\n\nMaybe it'd be reasonable to start the recovery by doing VACUUM FULL of\nall/some system catalogs.\n\n-- \nÁlvaro Herrera         PostgreSQL Developer  —  https://www.EnterpriseDB.com/"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-10-15 09:10:32",
+   "body": "Thank you, that case has already been resolved, and the data has been\nrecovered.\nSystem reindex and vacuum full didn't help.\nThe schema and indexes were not needed, a modified pg_dump helped us.\n\nOn Wed, Oct 15, 2025 at 3:56 PM Álvaro Herrera <<email-scrubbed>> wrote:\n\n[quoted earlier message trimmed]"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-10-15 16:24:34",
+   "body": "On Wed, Oct 15, 2025 at 12:56:25PM +1300, David Rowley wrote:\n[quoted earlier message trimmed]\n\nI tried this with 100K tables and saw the following (ignore_system_indexes\n= off):\n\nmaster:\n Planning Time: 1.672 ms\n Execution Time: 4077.008 ms\n\nrewritten:\n Planning Time: 1.641 ms\n Execution Time: 3427.206 ms\n\nI tried this with ignore_system_indexes = on, too, but it was very slow.\n\n-- \nnathan"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-10-15 21:38:09",
+   "body": "On Thu, 16 Oct 2025 at 05:24, Nathan Bossart <<email-scrubbed>> wrote:\n> I tried this with ignore_system_indexes = on, too, but it was very slow.\n\nSeems to be due to pg_get_indexdef / pg_get_constraintdef operating on\na cold cat cache. Getting rid of those the rewritten version runs in\n1.8 seconds with 100k tables for me.\n\nThat invalidates my timings from yesterday as I must have run the\nrewritten query once the catcache was populated. Here are updated\nresults.\n\nignore_system_indexes = on 1.5k tables:\nmaster: Execution Time: 26167.741 ms\nrewritten: Execution Time: 16661.774 ms\n\nignore_system_indexes = off 1.5k tables:\nmaster: Execution Time: 105.415 ms\nrewritten: Execution Time: 97.030 ms\n\nSo not as good.\n\nDavid"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-10-15 21:55:28",
+   "body": "David Rowley <<email-scrubbed>> writes:\n> Seems to be due to pg_get_indexdef / pg_get_constraintdef operating on\n> a cold cat cache. Getting rid of those the rewritten version runs in\n> 1.8 seconds with 100k tables for me.\n\nI wonder how much win could be had by postponing those function calls\nso that they only act on indexes we're going to dump.  It might be\na net loss in the default dump-everything case, though.\n\nAlso, it looks to me like getIndexes does not even look at the result\nof pg_get_constraintdef unless contype == 'x'.  So there should be\nsome low-hanging fruit with\n\n-                         \"pg_catalog.pg_get_constraintdef(c.oid, false) AS condef, \"\n+                         \"CASE WHEN c.contype = 'x' THEN \"\n+                         \"pg_catalog.pg_get_constraintdef(c.oid, false) \"\n+                         \"END AS condef, \"\n\nThis wouldn't matter except with primary/unique constraints, but\nsurely there are plenty of those in a typical DB.\n\n\t\t\tregards, tom lane"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-10-15 23:07:24",
+   "body": "On Thu, 16 Oct 2025 at 10:55, Tom Lane <<email-scrubbed>> wrote:\n[quoted earlier message trimmed]\n\nJust to make sure I understand correctly, that means run a query in\ndumpIndex() specifically just for the index being dumped to call\npg_get_indexdef()?\n\nIt would mean firing off quite a large number of queries to the\nserver, which might be especially bad when pg_dump is being run\nremotely. I suppose ideally we'd have some matrix to indicate\neverything we're going to need based on the given options and just\nfetch those things. That'd be a pretty big overhaul.\n\n[quoted earlier message trimmed]\n\nI expect that would help quite a bit. We do have NOT NULL constraints\nin that table now, so I expect it might be bigger than pg_index in\nmost cases for recent versions, so the full table scan in\npg_get_constraintdef_worker() with ignore_system_indexes = on could be\nmore painful than the same thing in pg_get_indexdef_worker().\n\nDavid\n\nDavid"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-10-15 23:36:20",
+   "body": "David Rowley <<email-scrubbed>> writes:\n[quoted earlier message trimmed]\n\n> Just to make sure I understand correctly, that means run a query in\n> dumpIndex() specifically just for the index being dumped to call\n> pg_get_indexdef()?\n\nWe could do it like that, but it's probably better to keep the\nsingle-query approach.  A way that could work is\n\n(1) Drop pg_get_indexdef and pg_get_constraintdef from getIndexes'\ninitial query.\n\n(2) As we scan the results of that query, build new OID-list\nstrings listing just the index OIDs and constraint OIDs that\nwe require definition strings for.\n\n(3) Still within getIndexes, run those queries and insert the\nresults into the arrays built in step 1.\n\nOn its face, this will be slower than doing it all in one query,\nat least in the normal case where we need most or all indexes.\nBut what I'm hoping is that we need at most one of the two\nfunction calls for any one index, depending on whether it's a\nconstraint or not.  That could buy back enough to justify the\nextra overhead, perhaps.\n\n(Hmm ... but on the third hand, if we only need one of the\ntwo strings, couldn't we mechanize that by wrapping the\npg_get_indexdef call in CASE WHEN c.contype IS DISTINCT FROM 'x'\n?)\n\n\t\t\tregards, tom lane"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-10-16 00:35:24",
+   "body": "On Thu, 16 Oct 2025 at 12:36, Tom Lane <<email-scrubbed>> wrote:\n[quoted earlier message trimmed]\n\nUnless I'm mistaken, it looks like the \"indexdef\" field is used only\nwhen there's no corresponding constraint with contype 'p,', 'u' or\n'x'. Wouldn't it be more like:\n\nCASE WHEN c.conrelid IS NULL THEN\npg_catalog.pg_get_indexdef(i.indexrelid) ELSE '' END AS indexdef\n\nwhich saves calling the function a bit more often than what you said... ?\n\nThe code I'm looking at is:\n\n/* Plain secondary index */\nindxinfo[j].indexconstraint = 0;\n\nand \"if (!is_constraint)\" in dumpIndex().\n\nDavid"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-10-16 00:45:47",
+   "body": "David Rowley <<email-scrubbed>> writes:\n[quoted earlier message trimmed]\n\n> Unless I'm mistaken, it looks like the \"indexdef\" field is used only\n> when there's no corresponding constraint with contype 'p,', 'u' or\n> 'x'.\n\nAh.  I hadn't researched that, but it makes sense.\n\n> Wouldn't it be more like:\n\n> CASE WHEN c.conrelid IS NULL THEN\n> pg_catalog.pg_get_indexdef(i.indexrelid) ELSE '' END AS indexdef\n\nI'd leave out the ELSE so that you get a null if the function\nisn't run, but yeah.  (The places saving these query results would\nneed PQgetisnull tests, too.)\n\n\t\t\tregards, tom lane"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-10-16 01:23:10",
+   "body": "On Thu, 16 Oct 2025 at 13:45, Tom Lane <<email-scrubbed>> wrote:\n[quoted earlier message trimmed]\n\nJust to put that to the test, I tried the attached.\n\nselect 'create table t'||t||'(a int primary key, b int not null);\ncreate index on t'||t||'(b)' from generate_Series(1,10000)t;\n\\gexec\n\nmaster\n$ PGOPTIONS='-c ignore_system_indexes=1' time pg_dump --schema-only\npostgres >> /dev/null\n2:23.75elapsed\n\n$ PGOPTIONS='-c ignore_system_indexes=0' time pg_dump --schema-only\npostgres >> /dev/null\n0:01.08 elapsed\n\npatched:\n$ PGOPTIONS='-c ignore_system_indexes=1' time pg_dump --schema-only\npostgres >> /dev/null\n0:40.28elapsed\n\n$ PGOPTIONS='-c ignore_system_indexes=0' time pg_dump --schema-only\npostgres >> /dev/null\n0:00.78elapsed\n\ni.e about 3.5x faster with ignore_system_indexes and 38% faster without.\n\nDavid"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-10-16 01:31:29",
+   "body": "David Rowley <<email-scrubbed>> writes:\n> Just to put that to the test, I tried the attached.\n\nI'm confused by all the extraneous changes in this?\n\n> i.e about 3.5x faster with ignore_system_indexes and 38% faster without.\n\nVery promising, but I'm still confused.\n\n\t\t\tregards, tom lane"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-10-16 01:36:23",
+   "body": "On Thu, 16 Oct 2025 at 14:31, Tom Lane <<email-scrubbed>> wrote:\n[quoted earlier message trimmed]\n\nIt includes the query rewrite too in order to get rid of the\nsubqueries in the targetlist to pg_attribute. There are 3 of those in\ntotal. When ignore_system_indexes is on, that means a 3x Seq Scans to\npg_attribute per returned row. The rewrite gets rid of that and turns\nthat into a single join to pg_attribute which allows the planner to\nhash or merge join to it.  We could just do the conditional calling of\nthe pg_get_*def() functions, but performance would still be terrible\nfor ignore_system_indexes=on due to the Seq Scans, and slightly worse\noverall.\n\nDavid"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-10-16 01:47:52",
+   "body": "David Rowley <<email-scrubbed>> writes:\n> On Thu, 16 Oct 2025 at 14:31, Tom Lane <<email-scrubbed>> wrote:\n>> I'm confused by all the extraneous changes in this?\n\n> It includes the query rewrite too in order to get rid of the\n> subqueries in the targetlist to pg_attribute.\n\nAh, I've not reviewed that bit.\n\n[quoted earlier message trimmed]\n\nGot it.  Definitely looks promising, but I'm too tired to review\nthe whole change.\n\n\t\t\tregards, tom lane"
+  }
+ ],
+ "images": [],
+ "slug": "pg_bug_19086",
+ "base_commit": {
+  "provider": "github",
+  "repo": "postgres/postgres",
+  "default_branch": "master",
+  "commit_sha": "4a8fb58671d36b8f6cb4f5c582b8dc5fa4d26702",
+  "as_of": "2025-10-14 08:13:52",
+  "method": "github_commits_until"
+ }
+}

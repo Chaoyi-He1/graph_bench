@@ -1,0 +1,191 @@
+{
+ "repo": "bugzilla.mozilla.org/Core",
+ "number": 1909219,
+ "url": "https://bugzilla.mozilla.org/show_bug.cgi?id=1909219",
+ "title": "Crash in [@ mozilla::net::nsHttpChannel::ContinueProcessResponse1] and ContinueProcessResponse3 on null mAuthProvider",
+ "state": "FIXED",
+ "labels": [
+  "Networking: HTTP",
+  "crash",
+  "regression",
+  "topcrash"
+ ],
+ "reporter": "reporter",
+ "created_at": "2024-07-22T13:45:00Z",
+ "closed_at": "2024-07-23T09:39:21Z",
+ "body": "Crash report: https://crash-stats.mozilla.org/report/index/66dc482c-970b-4280-b6e4-f33400240719\n\nReason: ```EXCEPTION_ACCESS_VIOLATION_READ```\n\nTop 10 frames:\n```\n0  xul.dll  mozilla::net::nsHttpChannel::ContinueProcessResponse1()  netwerk/protocol/http/nsHttpChannel.cpp:2393\n1  xul.dll  mozilla::net::nsHttpChannel::ProcessResponse()  netwerk/protocol/http/nsHttpChannel.cpp:2318\n1  xul.dll  mozilla::net::nsHttpChannel::OnStartRequest(nsIRequest*)  netwerk/protocol/http/nsHttpChannel.cpp:7560\n2  xul.dll  nsInputStreamPump::OnStateStart()  netwerk/base/nsInputStreamPump.cpp:504\n2  xul.dll  nsInputStreamPump::OnInputStreamReady(nsIAsyncInputStream*)  netwerk/base/nsInputStreamPump.cpp:409\n3  xul.dll  CallbackHolder::CallbackHolder::<lambda_1>::operator()() const  xpcom/io/nsPipe3.cpp:86\n3  xul.dll  NS_NewCancelableRunnableFunction<`lambda at /builds/worker/checkouts/gecko/xp...  xpcom/threads/nsThreadUtils.h:636\n4  xul.dll  mozilla::RunnableTask::Run()  xpcom/threads/TaskController.cpp:580\n4  xul.dll  mozilla::TaskController::DoExecuteNextTaskOnlyMainThreadInternal(mozilla::det...  xpcom/threads/TaskController.cpp:907\n5  xul.dll  mozilla::TaskController::ExecuteNextTaskOnlyMainThreadInternal(mozilla::detai...  xpcom/threads/TaskController.cpp:730\n```\n\nLooks like a new crash signature on release, found by the crash spike detector. There's a similar crash with the signature mozilla::net::nsHttpChannel::ContinueProcessResponse3 which I will file separately though it might be the same issue.",
+ "comments": [
+  {
+   "author": "reporter",
+   "created_at": "2024-07-22T13:47:02Z",
+   "body": "These are crashes on null."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-07-22T13:50:46Z",
+   "body": "Looking at a half dozen reports, the crash is on this line: `rv = mAuthProvider->CheckForSuperfluousAuth();` so maybe `mAuthProvider` is null?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-07-22T13:52:48Z",
+   "body": "*** Bug 1909221 has been marked as a duplicate of this bug. ***"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-07-22T13:53:32Z",
+   "body": "[Tracking Requested - why for this release]: Possible release crash regression."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-07-22T14:11:12Z",
+   "body": "I had same issue from today (bugreport d8da664a-8543-4bb6-87c5-482a50240722).\n\nIt was caused by wrong URL in c:\\Program Files\\Mozilla Firefox\\mozilla.cfg\" \n\nlockPref(\"autoadmin.global_config_url\", \"http://internal-server/invalid-url/firefox.js\");"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-07-22T14:40:09Z",
+   "body": "Oh, interesting. From another crash report I found this comment:\n```\n1. input proxy authentication\n2. click remember proxy authentication information\n3. enable do not prompt proxy authentication if saved\n4. next time open firefix it crash\n```\nAlso another crash has the comment \"version 128 crashes when a proxy is configured\"."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-07-22T15:36:18Z",
+   "body": "We also used this file for proxy settings. \n\nRight now when I remove comment in mozilla.cfg and restart Firefox twice then it will starts crashing again.\n\nFirefox will download one file - `config.pac` (51kb) from \"Script for automatic configuration\" in Windows \"Internet Settings\" and then crash.\n\nBut I have no idea why it started crashing now. Missing file is gone for a long time, our admins support only Chrome and Edge."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-07-22T15:59:36Z",
+   "body": "Looking at the Firefox release notes, I see \"Firefox now proxies DNS by default when using SOCKS v5\", which looks like it is bug 1741375. Maybe something new getting set over a proxy is causing this issue?\n\nI looked over code related to mAuthProvider and I don't see any recent changes. It looks like it will [always be set to a non-null value in nsHttpChannel::BeginConnect()](https://searchfox.org/mozilla-release/rev/c996b7e06b0bdf1ae6b4e2f2ece6b98504d6dd98/netwerk/protocol/http/nsHttpChannel.cpp#6679) and it [can be set to null in nsHttpChannel::ContinueProcessResponse1()](https://searchfox.org/mozilla-release/rev/c996b7e06b0bdf1ae6b4e2f2ece6b98504d6dd98/netwerk/protocol/http/nsHttpChannel.cpp#2408) if `httpStatus` is not either 401 or 407. That's AFTER the point where we are crashing in ContinueProcessResponse1, but maybe it can get called multiple times?"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-07-22T16:05:50Z",
+   "body": "This may be resolved by the pref flip in bug 1908115 per #necko."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-07-22T16:06:43Z",
+   "body": "@participant1, can you see if setting the `network.auth.use_redirect_for_retries` pref to false fixes the crashes for you?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-07-22T16:29:00Z",
+   "body": "I had that option `false`.\n\nI've created new report with option set to `false`: 3530d9e0-be3f-4a11-a143-ce0940240722\nAnd I tried to set it to `true` 754f3d8b-c383-4900-9c92-c2ffa0240722 but after reporting crash I noticed that option is set to false again.\n\nFirefox is set to \"Use system Proxy configuration\" (this is forced in Autoconfig file too). Only difference between working Firefox and crashing one is including\n```js\nlockPref(\"autoadmin.global_config_url\", \"http://internal-server/invalid-url/firefox.js\");\n```\nin `mozilla.cfg` Autoconfig file."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-07-22T16:33:24Z",
+   "body": "@participant1, could you try to capture a [http log](https://firefox-source-docs.mozilla.org/networking/http/logging.html#http-logging)?\nI know it's a crash, but a http log is also really helpful for us to debug this. Please select `logging to a file` and send the file to <email-scrubbed>.\nThanks."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-07-22T20:07:37Z",
+   "body": "Log sent. \n\nI forgot to mention in mail. Log is from first PC (bugreport d8da664a-8543-4bb6-87c5-482a50240722)\n\nBugreports from comment #11 are from second PC."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-07-22T20:21:46Z",
+   "body": "Created attachment 9414215\nBug 1909219 - Add null-checks for mAuthProvider, r=sunil"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-07-22T21:28:27Z",
+   "body": "These two signatures are both, individually, in the top 10 for 128.0 crashes. Looking how mAuthProvider is used, I don't think there are other places where we'd hit a null check, so I don't think there are more signatures, but I could be wrong."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-07-22T21:34:27Z",
+   "body": "mozilla::net::nsHttpChannel::ContinueProcessResponse3 alone is number 5 in the top crashes for 128, but number 1 if you ignore the usual pile of GC/OOM/hang crashes."
+  },
+  {
+   "author": "pulsebot@bmo.tld",
+   "created_at": "2024-07-22T21:44:53Z",
+   "body": "Pushed by <email-scrubbed>:\nhttps://hg.mozilla.org/integration/autoland/rev/b7af7fcaf778\nAdd null-checks for mAuthProvider, r=sunil,acreskey"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-07-22T22:21:33Z",
+   "body": "Created attachment 9414230\nBug 1909219 - Add null-checks for mAuthProvider,\n\n\nOriginal Revision: https://phabricator.services.mozilla.com/D217324"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-07-22T22:21:35Z",
+   "body": "Comment on attachment 9414215\nBug 1909219 - Add null-checks for mAuthProvider, r=sunil\n\n### Beta/Release Uplift Approval Request\n* **User impact if declined**: Crash\n* **Is this code covered by automated tests?**: Yes\n* **Has the fix been verified in Nightly?**: No\n* **Needs manual test from QE?**: Yes\n* **If yes, steps to reproduce**: \n* **List of other uplifts needed**: None\n* **Risk to taking this patch**: Low\n* **Why is the change risky/not risky? (and alternatives if risky)**: The patch adds null checks into the code and aborts if the auth provider is null\n* **String changes made/needed**: \n* **Is Android affected?**: Yes"
+  },
+  {
+   "author": "phab-bot@bmo.tld",
+   "created_at": "2024-07-22T22:24:15Z",
+   "body": "### release Uplift Approval Request\n- **User impact if declined**: Could crash.\n- **Code covered by automated testing**: no\n- **Fix verified in Nightly**: yes\n- **Needs manual QE test**: no\n- **Steps to reproduce for manual QE testing**: N/A\n- **Risk associated with taking this patch**: Low.\n- **Explanation of risk level**: This patch basically adds some null checks.\n- **String changes made/needed**: N/A\n- **Is Android affected?**: yes"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-07-22T22:25:35Z",
+   "body": "Comment on attachment 9414215\nBug 1909219 - Add null-checks for mAuthProvider, r=sunil\n\n### Beta/Release Uplift Approval Request\n* **User impact if declined**: Crash due to null dereference.\n* **Is this code covered by automated tests?**: Yes\n* **Has the fix been verified in Nightly?**: No\n* **Needs manual test from QE?**: Yes\n* **If yes, steps to reproduce**: \n* **List of other uplifts needed**: None\n* **Risk to taking this patch**: Low\n* **Why is the change risky/not risky? (and alternatives if risky)**: The patch adds null checks into the code and aborts if the auth provider is null\n* **String changes made/needed**: \n* **Is Android affected?**: Yes"
+  },
+  {
+   "author": "pulsebot@bmo.tld",
+   "created_at": "2024-07-22T22:38:09Z",
+   "body": "https://hg.mozilla.org/releases/mozilla-release/rev/43bc5d46c2c0"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-07-22T22:42:34Z",
+   "body": "Comment on attachment 9414230\nBug 1909219 - Add null-checks for mAuthProvider,\n\nApproved for 128.1esr."
+  },
+  {
+   "author": "pulsebot@bmo.tld",
+   "created_at": "2024-07-22T22:43:03Z",
+   "body": "https://hg.mozilla.org/releases/mozilla-esr128/rev/f3dfb3250704"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2024-07-22T22:48:55Z",
+   "body": "Comment on attachment 9414215\nBug 1909219 - Add null-checks for mAuthProvider, r=sunil\n\nApproved for 129.0b8"
+  },
+  {
+   "author": "pulsebot@bmo.tld",
+   "created_at": "2024-07-22T22:55:04Z",
+   "body": "https://hg.mozilla.org/releases/mozilla-beta/rev/48ea1bfe6fe4"
+  },
+  {
+   "author": "participant6",
+   "created_at": "2024-07-23T09:39:21Z",
+   "body": "https://hg.mozilla.org/mozilla-central/rev/b7af7fcaf778"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-07-24T11:35:40Z",
+   "body": "Please note that the patch in this bug is just a workaround to stop the crashing. We still don't know the reason why `mAuthProvider` is null.\n\nDigi, could you please try using Firefox 128.0.2 and get the log again? Thank you."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-07-24T19:56:27Z",
+   "body": "Firefox 128.0.2 is not crashing anymore.\n\nI sent new logs (I hope better ones this time)"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-09-17T11:57:21Z",
+   "body": "*** Bug 1909143 has been marked as a duplicate of this bug. ***"
+  }
+ ],
+ "_attachments_meta": [
+  {
+   "id": 9414215,
+   "content_type": "text/x-phabricator-request",
+   "description": "Bug 1909219 - Add null-checks for mAuthProvider, r=sunil"
+  },
+  {
+   "id": 9414230,
+   "content_type": "text/x-phabricator-request",
+   "description": "Bug 1909219 - Add null-checks for mAuthProvider,"
+  }
+ ],
+ "images": [],
+ "slug": "bmo_core_1909219",
+ "base_commit": {
+  "provider": "github",
+  "repo": "mozilla-firefox/firefox",
+  "default_branch": "main",
+  "commit_sha": "1756fdd980f507464b6fcfaacc4e5f2b2b6eb13d",
+  "as_of": "2024-07-22T13:45:00Z",
+  "method": "github_commits_until"
+ }
+}

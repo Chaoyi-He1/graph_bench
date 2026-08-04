@@ -1,0 +1,455 @@
+{
+ "reporter_match_keys": [
+  "alexander lakhin",
+  "exclusion"
+ ],
+ "repo": "postgresql.org/pgsql-bugs",
+ "number": 17928,
+ "url": "https://www.postgresql.org/message-id/flat/17928-aa92416a70ff44a2%40postgresql.org",
+ "title": "Re: BUG #17928: Standby fails to decode WAL on termination of primary",
+ "state": "thread",
+ "labels": [
+  "pgsql-bugs"
+ ],
+ "reporter": "reporter",
+ "created_at": "2023-05-11 08:00:01",
+ "closed_at": "2023-09-26 00:34:56",
+ "body": "The following bug has been logged on the website:\n\nBug reference:      17928\nLogged by:          reporter\nEmail address:      <email-scrubbed>\nPostgreSQL version: 15.2\nOperating system:   Ubuntu 22.04\nDescription:        \n\nWhen a primary server is stopped, standby might fail to replay WAL with\nthe memory allocation error, for example:\n2023-05-11 08:42:38.254 MSK [1706654] LOG:  recovery restart point at\n7/12012E88\n2023-05-11 08:42:38.254 MSK [1706654] DETAIL:  Last completed transaction\nwas at log time 2023-05-11 08:42:38.245399+03.\n2023-05-11 08:42:38.420 MSK [1706654] LOG:  restartpoint starting: wal\n2023-05-11 08:42:38.451 MSK [1725929] FATAL:  could not receive data from\nWAL stream: server closed the connection unexpectedly\n        This probably means the server terminated abnormally\n        before or while processing the request.\n2023-05-11 08:42:38.468 MSK [1706656] FATAL:  invalid memory alloc request\nsize 2021163525\n2023-05-11 08:42:38.469 MSK [1706643] LOG:  startup process (PID 1706656)\nexited with exit code 1\n2023-05-11 08:42:38.469 MSK [1706643] LOG:  terminating any other active\nserver processes\n2023-05-11 08:42:38.469 MSK [1706643] LOG:  shutting down due to startup\nprocess failure\n2023-05-11 08:42:38.470 MSK [1706643] LOG:  database system is shut down\n\nThe call stack of the error:\n...\n#6  0x000055cfabab8e97 in palloc_extended (size=2021163525, flags=2) at\nmcxt.c:1143\n#7  0x000055cfab456ae0 in XLogReadRecordAlloc (state=0x55cfacef4a08,\nxl_tot_len=2021161080, \n    allow_oversized=true) at xlogreader.c:524\n#8  0x000055cfab456dee in XLogDecodeNextRecord (state=0x55cfacef4a08,\nnonblocking=false) at xlogreader.c:689\n#9  0x000055cfab4575c0 in XLogReadAhead (state=0x55cfacef4a08,\nnonblocking=false) at xlogreader.c:960\n#10 0x000055cfab45519d in XLogPrefetcherNextBlock\n(pgsr_private=94350447959632, lsn=0x55cfacf4bc58)\n    at xlogprefetcher.c:496\n#11 0x000055cfab454b1c in lrq_prefetch (lrq=0x55cfacf4bb08) at\nxlogprefetcher.c:256\n#12 0x000055cfab454cdf in lrq_complete_lsn (lrq=0x55cfacf4bb08,\nlsn=2976923632) at xlogprefetcher.c:294\n#13 0x000055cfab455df2 in XLogPrefetcherReadRecord\n(prefetcher=0x55cfacef5e50, errmsg=0x7ffc2e410458)\n    at xlogprefetcher.c:1039\n#14 0x000055cfab45f136 in ReadRecord (xlogprefetcher=0x55cfacef5e50,\nemode=15, fetching_ckpt=false, \n    replayTLI=1) at xlogrecovery.c:3047\n#15 0x000055cfab45c922 in PerformWalRecovery () at xlogrecovery.c:1754\n#16 0x000055cfab448869 in StartupXLOG () at xlog.c:5300\n#17 0x000055cfab7d151a in StartupProcessMain () at startup.c:267\n#18 0x000055cfab7c3f80 in AuxiliaryProcessMain (auxtype=StartupProcess) at\nauxprocess.c:141\n#19 0x000055cfab7cfb4b in StartChildProcess (type=StartupProcess) at\npostmaster.c:5429\n#20 0x000055cfab7ca5c0 in PostmasterMain (argc=4, argv=0x55cfacef3e40) at\npostmaster.c:1470\n#21 0x000055cfab6be302 in main (argc=4, argv=0x55cfacef3e40) at main.c:202\n\n(gdb) frame 8\n#8  0x000055cfab456dee in XLogDecodeNextRecord (state=0x55cfacef4a08,\nnonblocking=false) at xlogreader.c:689\n689             decoded = XLogReadRecordAlloc(state,\n(gdb) print/x *record\n$5 = {xl_tot_len = 0x78787878, xl_xid = 0x78787878, xl_prev =\n0x7878787878787878, xl_info = 0x0, \n  xl_rmid = 0x10, xl_crc = 0x0}\n(gdb) print/x state->NextRecPtr\n$6 = 0xb1703ff0\n\nhexdump -C .../standby_data/pgdata/pg_wal/0000000100000000000000B1\n00703fe0 00 00 04 40 00 00 0c 56  00 00 00 00 00 00 00 00 (dot)(dot)(dot)(at)(dot)(dot)(dot)V(dot)(dot)(dot)(dot)(dot)(dot)(dot)(dot)\n00703ff0 78 78 78 78 78 78 78 78  78 78 78 78 78 78 78 78 xxxxxxxxxxxxxxxx\n00704000 10 d1 05 00 01 00 00 00  00 40 70 30 00 00 00 00 (dot)(dot)(dot)(dot)(dot)(dot)(dot)(dot)(dot)(at)p0(dot)(dot)(dot)(dot)\n00704010 db 00 00 00 00 00 00 00  78 78 78 78 78 78 78 78 ........xxxxxxxx\n00704020 78 78 78 78 78 78 78 78  78 78 78 78 78 78 78 78 xxxxxxxxxxxxxxxx\n*\n007040f0 09 00 00 00 00 00 00 00  33 02 00 00 1b 0d 00 00 ........3.......\n\nhexdump -C .../primary_data/pgdata/pg_wal/0000000100000000000000B1\n00703fe0 00 00 04 40 00 00 0c 56  00 00 00 00 00 00 00 00 (dot)(dot)(dot)(at)(dot)(dot)(dot)V(dot)(dot)(dot)(dot)(dot)(dot)(dot)(dot)\n00703ff0 33 02 00 00 54 2a 00 00  e0 3e 70 b1 00 00 00 00 3...T*...>p.....\n00704000 10 d1 05 00 01 00 00 00  00 40 70 b1 00 00 00 00 (dot)(dot)(dot)(dot)(dot)(dot)(dot)(dot)(dot)(at)p(dot)(dot)(dot)(dot)(dot)\n00704010 23 02 00 00 00 00 00 00  80 0a 00 00 55 0f 07 2c #...........U..,\n00704020 00 60 02 02 7f 06 00 00  05 00 00 00 f7 85 01 00 .`..............\n00704030 00 00 00 00 ff 03 02 00  02 08 18 00 01 00 00 00 ................\n00704040 e0 07 00 00 78 78 78 78  78 78 78 78 78 78 78 78 ....xxxxxxxxxxxx\n00704050 78 78 78 78 78 78 78 78  78 78 78 78 78 78 78 78 xxxxxxxxxxxxxxxx\n*\n00704230 78 78 78 78 78 78 78 78  01 00 00 00 00 00 00 00 xxxxxxxx........\n\n(In this case, rows with 500 'x' were inserted when the primary was\nstopped.)\n\n`git bisect` for this behavior blames 3f1ce9734 (where\nXLogDecodeNextRecord() -> XLogReadRecordAlloc() call was introduced).\n\nA reproducer for the anomaly to follow.",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2023-05-11 18:00:00",
+   "body": "11.05.2023 11:00, PG Bug reporting form wrote:\n[quoted earlier message trimmed]\nThe TAP test that demonstrates the issue is attached. To catch the failure\nfaster, I place it in multiple directories src/test/recoveryX/t, add\nminimal Makefiles, and run (on tmpfs):\nfor ((i=1;i<=10;i++)); do echo \"iteration $i\"; NO_TEMP_INSTALL=1 parallel --halt now,fail=1 -j7 --linebuffer --tag make \n-s check -C src/test/{} ::: recovery1 recovery2 recovery3 recovery4 recovery5 recovery6 recovery7 || break; done\n\niteration 1\nrecovery1       +++ tap check in src/test/recovery1 +++\nrecovery2       +++ tap check in src/test/recovery2 +++\nrecovery3       +++ tap check in src/test/recovery3 +++\nrecovery4       +++ tap check in src/test/recovery4 +++\nrecovery5       +++ tap check in src/test/recovery5 +++\nrecovery6       +++ tap check in src/test/recovery6 +++\nrecovery7       +++ tap check in src/test/recovery7 +++\n...\nrecovery5       # Restarting primary instance (49)\nrecovery3       # Restarting primary instance (49)\nrecovery7       # Restarting primary instance (49)\nrecovery2       Bailout called.  Further testing stopped:  pg_ctl stop failed\nrecovery2       FAILED--Further testing stopped: pg_ctl stop failed\nrecovery2       make: *** [Makefile:6: check] Error 255\nparallel: This job failed:\nmake -s check -C src/test/recovery2\n\ntail src/test/recovery2/tmp_check/log/099_restart_with_stanby_standby.log\n2023-05-11 20:19:22.247 MSK [2046385] DETAIL:  End of WAL reached on timeline 1 at 3/64BDFF8.\n2023-05-11 20:19:22.247 MSK [2046385] FATAL:  could not send end-of-streaming message to primary: server closed the \nconnection unexpectedly\n                 This probably means the server terminated abnormally\n                 before or while processing the request.\n         no COPY in progress\n2023-05-11 20:19:22.248 MSK [2037134] FATAL:  invalid memory alloc request size 2021163525\n2023-05-11 20:19:22.248 MSK [2037114] LOG:  startup process (PID 2037134) exited with exit code 1\n2023-05-11 20:19:22.248 MSK [2037114] LOG:  terminating any other active server processes\n2023-05-11 20:19:22.248 MSK [2037114] LOG:  shutting down due to startup process failure\n2023-05-11 20:19:22.249 MSK [2037114] LOG:  database system is shut down\n\nBest regards,\nAlexander"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-05-15 03:38:17",
+   "body": "On Fri, May 12, 2023 at 6:00 AM reporter <<email-scrubbed>> wrote:\n> 2023-05-11 20:19:22.248 MSK [2037134] FATAL:  invalid memory alloc request size 2021163525\n> 2023-05-11 20:19:22.248 MSK [2037114] LOG:  startup process (PID 2037134) exited with exit code 1\n\nThanks Alexander.  Looking into this.  I think it is probably\nsomething like: recycled standby pages are not zeroed (something we\nalready needed to do something about[1]), and when we read a recycled\ngarbage size (like your \"xxxx\") at the end of a page at an offset\nwhere we don't have a full record header on one page, we skip the\nValidXLogRecordHeader() call (and always did), but the check in\nallocate_recordbuf() which previously handled that \"gracefully\" (well,\nit would try to allocate up to 1GB bogusly, but it wouldn't try to\nallocate more than that and ereport) is a bit too late.  I probably\nneed to add an earlier not-too-big validation.  Thinking.\n\n[1] https://www.postgresql.org/message-id/<email-scrubbed>"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-07-10 20:00:12",
+   "body": "On Mon, May 15, 2023 at 03:38:17PM +1200, Thomas Munro wrote:\n[quoted earlier message trimmed]\n\nI agree about an earlier not-too-big validation.  Like the attached?  I\nhaven't tested it with Alexander's recipe or pondered it thoroughly.\n\n> [1] https://www.postgresql.org/message-id/<email-scrubbed>\n\nRegarding [1], is it still worth zeroing recycled pages on standbys and/or\nreading the whole header before allocating xl_tot_len?  (Are there benefits\nother than avoiding a 1G backend allocation or 4G frontend allocation, or is\nthat benefit worth the cycles?)"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2023-07-11 06:54:14",
+   "body": "At Mon, 10 Jul 2023 13:00:12 -0700, Noah Misch <<email-scrubbed>> wrote in \n[quoted earlier message trimmed]\n\nI like the patch for its code clean up, but I'm afraid that it removes\nthe existing record length check when reading continued\npages. However, I'm unsure about merely adding a check for too-long\nrecords, due to the potential for requesting an excessively large\namount of memory, even if it will be released shortly.\n\n[quoted earlier message trimmed]\n\nI believe reading the whole header is the most sensible approach as it\ncan prevent unnecessary memory requests. Another potential solution\n(or hack) for this specific case is to let XLogWalRcvFlush write a\nfinalizing ((uint32)0) when dying is true. This stabilizes the\nbehavior to \"invalid record length.. got 0\" when running the TAP test.\n\nregards.\n\nKyotaro Horiguchi\nNTT Open Source Software Center"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-07-17 00:49:05",
+   "body": "On Tue, Jul 11, 2023 at 03:54:14PM +0900, Kyotaro Horiguchi wrote:\n[quoted earlier message trimmed]\n\nOn my system, testing unpatched REL_15_2, the test reached its first failure\nat minute 53 and its second failure at minute 189.  Perhaps a faster,\ndeterministic test would be feasible:\n\n- Use pg_logical_emit_message to fill a few segments with 0xFF.\n- CHECKPOINT the primary, so the standby recycles segments.\n- One more pg_logical_emit_message, computing the length from\n  pg_current_wal_insert_lsn() such that new message crosses a segment boundary\n  and ends 4 bytes before the end of a page.\n- Stop the primary.\n- If the bug is present, the standby will exit.\n\n[quoted earlier message trimmed]\n\nThe removed check would be repetitive in all cases known to me, but I wouldn't\nmind keeping the check instead.\n\n[quoted earlier message trimmed]\n\n[quoted earlier message trimmed]\n\nThat's inexpensive in cycles, and it should make the failures in question\nquite rare.  If we do that instead of pre-zeroing, I think we'd still want to\nbe ready for invalid lengths, for the case of unclean standby shutdown."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2023-07-20 06:01:42",
+   "body": "At Sun, 16 Jul 2023 17:49:05 -0700, Noah Misch <<email-scrubbed>> wrote in \n[quoted earlier message trimmed]\n\nAh. I got it. No need to do that again.\n\n[quoted earlier message trimmed]\n...\n> That's inexpensive in cycles, and it should make the failures in question\n> quite rare.  If we do that instead of pre-zeroing, I think we'd still want to\n> be ready for invalid lengths, for the case of unclean standby shutdown.\n\nAgreed.\n\nregards.\n\n-- \nKyotaro Horiguchi\nNTT Open Source Software Center"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2023-08-10 07:45:25",
+   "body": "On Sun, Jul 16, 2023 at 05:49:05PM -0700, Noah Misch wrote:\n> On my system, testing unpatched REL_15_2, the test reached its first failure\n> at minute 53 and its second failure at minute 189.  Perhaps a faster,\n> deterministic test would be feasible:\n\nIt took less than five minutes for me to reproduce the failure using\nthe test case sent by Alexander on HEAD:\n2023-08-10 15:26:37.401 JST [11239] FATAL:  invalid memory alloc request size 2021163525\n2023-08-10 15:26:37.405 JST [11235] LOG:  startup process (PID 11239) exited with exit code 1\n\nI don't see it after two hours of tests with the patch.\n\n[quoted earlier message trimmed]\n\nGood idea to pollute the data with recycled segments.  Using a minimal\nWAL segment size whould help here as well in keeping a test cheap, and\ntwo segments should be enough.  The alignment calculations and the\nheader size can be known, but the standby records are an issue for the\npredictability of the test when it comes to adjust the length of the\nlogical message depending on the 8k WAL page, no?\n\n[quoted earlier message trimmed]\n\nFWIW, I came back to this thread while tweaking the error reporting of\nxlogreader.c for the sake of this thread and this proposal is an\nimprovement to be able to make a distinction between an OOM and an\nincorrect record:\nhttps://www.postgresql.org/message-id/ZMh/<email-scrubbed>\n\nAnyway, agreed that it's an improvement to remove this check out of\nallocate_recordbuf().  Noah, are you planning to work more on that?\n\n[quoted earlier message trimmed]\n\nTweaking the WAL receiver to do more zeroing has been discussed in the\npast, but as far as I recall we were not completely sure whether it's\ncompletely free, either.  It seems to me that this should have a\ndiscussion on its own, in a new thread.  Not sure if we should worry\nabout archiving, actually, even if the segments should be padded with\nzeros beforehand.\n\n+   gotheader = targetRecOff <= XLOG_BLCKSZ - SizeOfXLogRecord ? true : false;\nPerhaps this could use more parenthesis around the expression checked,\nfor readability.\n--\nMichael"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2023-08-10 23:22:48",
+   "body": "On Thu, Aug 10, 2023 at 04:45:25PM +0900, Michael Paquier wrote:\n[quoted earlier message trimmed]\n\nActually, for this one, I think that I have a simpler idea to make it\ndeterministic.  Once we have inserted a record at the page limit on\nthe primary, we can:\n- Stop the standby\n- Stop the primary\n- Rewrite by ourselves a few bytes in the last segment on the standby\nto emulate a recycled segment portion, based on the end LSN of the\nlogical message record, retrieved either with pg_walinspect or\npg_waldump.\n- Start the standby, which would replay up to the previous record at\nthe page limit.\n- The standby just be in a state where it waits for the missing\nrecords from the primary and keeps looking at streaming, but it should\nnot fail startup.\n--\nMichael"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-08-11 02:58:08",
+   "body": "On Thu, Aug 10, 2023 at 04:45:25PM +0900, Michael Paquier wrote:\n[quoted earlier message trimmed]\n\nThat is good.\n\n[quoted earlier message trimmed]\n\nCould be.  I expect there would be challenges translating that outline into a\nreal test, but I don't know if that will be a major one.  The test doesn't\nneed to be 100% deterministic.  If it fails 25% of the time and is not the\nslowest test in the recovery suite, I'd find that good enough.\n\n[quoted earlier message trimmed]\n\nI can push xl_tot_len-validate-v1.patch, particularly given the testing result\nyou reported today.  I'm content for my part to stop there.\n\n[quoted earlier message trimmed]\n\nOkay.\n\n> +   gotheader = targetRecOff <= XLOG_BLCKSZ - SizeOfXLogRecord ? true : false;\n\nOkay."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2023-08-11 06:08:26",
+   "body": "On Thu, Aug 10, 2023 at 07:58:08PM -0700, Noah Misch wrote:\n[quoted earlier message trimmed]\n\nFWIW, I'm having a pretty hard time to get something close enough to a\npage border in a reliable way.  Perhaps using a larger series of\nrecords and select only one would be more reliable..  Need to test\nthat a bit more.\n\n[quoted earlier message trimmed]\n\nOkay, fine by me.  That's going to help with what I am doing in the\nother thread as I'd need to make a better difference between the OOM\nand the invalid cases for the allocation path.\n\nYou are planning for a backpatch to take care of the inconsistency,\nright?  The report has been on 15~ where the prefetching was\nintroduced.  I'd be OK to just do that and not mess up with the stable\nbranches more than necessary (aka ~14) if nobody complains, especially\nREL_11_STABLE planned to be EOL'd in the next minor cycle.\n--\nMichael"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-08-11 14:00:08",
+   "body": "On Fri, Aug 11, 2023 at 03:08:26PM +0900, Michael Paquier wrote:\n[quoted earlier message trimmed]\n\nInteresting.  So pg_logical_emit_message(false, 'X', repeat('X', n)) doesn't\nget close enough, but s/n/n+1/ spills to the next page?  If so, I did not\nanticipate that.\n\n[quoted earlier message trimmed]\n\nI recall earlier messages theorizing that it was just harder to hit in v14, so\nI'm disinclined to stop at v15.  I think the main choice is whether to stop at\nv11 (normal choice) or v12 (worry about breaking the last v11 point release).\nI don't have a strong opinion between those."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-08-11 23:56:45",
+   "body": "On Sat, Aug 12, 2023 at 2:00 AM Noah Misch <<email-scrubbed>> wrote:\n[quoted earlier message trimmed]\n\nThanks for working on this.\n\nI wonder if we need a more explicit way to construct pages with the\nright bits to reach interesting test cases and get full enough\ncoverage...  (Cf throwing SQL at the WAL to see if it sticks.)"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2023-08-12 00:20:32",
+   "body": "On Sat, Aug 12, 2023 at 11:56:45AM +1200, Thomas Munro wrote:\n[quoted earlier message trimmed]\n\nOkay.  I wouldn't be inclined to patch v11 for that, FWIW, as this\ncode path is touched by recovery and more.  At least it does not seem \nworth taking any risk compared to the potential gain.\n\n[quoted earlier message trimmed]\n\nYou mean SQL functions that write an arbitrary set of bytes at a given\nLSN, to trigger some expected behavior on a follow-up crash recovery?\n--\nMichael"
+  },
+  {
+   "author": "participant6",
+   "created_at": "2023-08-12 00:32:00",
+   "body": "Michael Paquier <<email-scrubbed>> writes:\n[quoted earlier message trimmed]\n\n> Okay.  I wouldn't be inclined to patch v11 for that, FWIW, as this\n> code path is touched by recovery and more.  At least it does not seem \n> worth taking any risk compared to the potential gain.\n\nThat was my gut reaction too -- risk/reward seems not great for the\nlast v11 release.  (I've been burned a couple of times now by putting\ncan't-fix-it-anymore bugs into the final release of a branch, so maybe\nI'm just being overly paranoid.  But it's something to worry about.)\n\n\t\t\tregards, tom lane"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-08-12 21:13:27",
+   "body": "On Fri, Aug 11, 2023 at 08:32:00PM -0400, Tom Lane wrote:\n[quoted earlier message trimmed]\n\nOkay, v12+ would be fine with me.  Alas, a closer look at v1 found two\ndefects, one with severity far greater than the bug v1 aimed to fix:\n\n===== 1. For oversized records, it changed startup FATAL to silent data loss\n\nThis affects only supported branches (v15-).  In v16+, commit 8fcb32d\nintroduced and checked XLogRecordMaxSize.  But in v15 with patch v1, redo of\npg_logical_emit_message(false, '_', repeat('x', 1024 * 1024 * 1024 - 1000))\njust ends at the oversized record:\n\n2523581 2023-08-12 17:17:39.512 GMT LOG:  redo starts at 0/41F155B8\n2523581 2023-08-12 17:17:39.512 GMT LOG:  record length 1073740879 at 0/41F155F0 too long\n2523581 2023-08-12 17:17:39.512 GMT LOG:  redo done at 0/41F155B8 system usage: CPU: user: 0.00 s, system: 0.00 s, elapsed: 0.00 s\n\nAny user could call pg_logical_emit_message() to silently terminate the WAL\nstream, which is far worse than the original bug.  So far, I'm seeing one way\nto clearly fix $SUBJECT without that harm.  When a record header spans a page\nboundary, read the next page to reassemble the header.  If\n!ValidXLogRecordHeader() (invalid xl_rmid or xl_prev), treat as end of WAL.\nOtherwise, read the whole record in chunks, calculating CRC.  If CRC is\ninvalid, treat as end of WAL.  Otherwise, ereport(FATAL) for the oversized\nrecord.  A side benefit would be avoiding useless large allocations (1GB\nbackend, 4GB frontend) as discussed upthread.  May as well do the xl_rmid and\nxl_prev checks in all branches, to avoid needless XLogRecordMaxSize-1\nallocations.  Thoughts?  For invalid-length records in v16+, since every such\nrecord is end-of-wal or corruption, those versions could skip the CRC.\n\nAs an alternative, zeroing recycled pages could remove \"most of\" the spurious\nerrors without adding silent data loss.  I considered another alternative of\nback-patching XLogRecordMaxSize and proceeding with a patch like v1, but that\nwouldn't help with records in existing WAL archives.  Of course, we could also\nchoose to leave $SUBJECT unfixed in v15-.\n\n===== 2. DecodeXLogRecordRequiredSpace() is the wrong ceiling\n\nv1 treats DecodeXLogRecordRequiredSpace(L) (=L+2445 here) as the max needed,\nbut allocate_recordbuf(state, L) allocates up to L+8192.  If the uninitialized\nlength happened to contain an integer between about 1<<30-8192 and 1<<30-2445,\none still got e.g. \"FATAL:  invalid memory alloc request size 1073741824\".\nSince v16+ has XLogRecordMaxSize, testing XLogRecordMaxSize avoids the problem\nand should suffice:\n\n===\n--- a/src/backend/access/transam/xlogreader.c\n+++ b/src/backend/access/transam/xlogreader.c\n@@ -640,7 +640,6 @@ restart:\n \t\t\t\t\t\t\t  (uint32) SizeOfXLogRecord, total_len);\n \t\tgoto err;\n \t}\n-#ifndef FRONTEND\n \n \t/*\n \t * We may be looking at a random uint32 read from a recycled segment.  For\n@@ -651,13 +650,12 @@ restart:\n \t * the allocation may succeed but record checks are going to fail so this\n \t * would be short-lived.\n \t */\n-\tif (!AllocSizeIsValid(DecodeXLogRecordRequiredSpace(total_len)))\n+\tif (total_len > XLogRecordMaxSize)\n \t{\n \t\treport_invalid_record(state, \"record length %u at %X/%X too long\",\n \t\t\t\t\t\t\t  total_len, LSN_FORMAT_ARGS(RecPtr));\n \t\tgoto err;\n \t}\n-#endif\n \n \t/*\n \t * If the whole record header is on this page, validate it immediately.\n===\n\nallocate_recordbuf()'s addend is not critical; it's just to \"avoid useless\nsmall increases\".  v15- should avoid the problem like this:\n\n   ===\ndiff --git a/src/backend/access/transam/xlogreader.c b/src/backend/access/transam/xlogreader.c\nindex 969bcc3..1bac303 100644\n--- a/src/backend/access/transam/xlogreader.c\n+++ b/src/backend/access/transam/xlogreader.c\n@@ -201,4 +201,8 @@ allocate_recordbuf(XLogReaderState *state, uint32 reclength)\n \tnewSize += XLOG_BLCKSZ - (newSize % XLOG_BLCKSZ);\n \tnewSize = Max(newSize, 5 * Max(BLCKSZ, XLOG_BLCKSZ));\n+#ifndef FRONTEND\n+\tif (!AllocSizeIsValid(newSize))\n+\t\tnewSize = reclength;\n+#endif\n \n \tif (state->readRecordBuf)\n  ===\n\nIn v15, one can reach this case with pg_logical_emit_message(false, '_',\nrepeat('x', 1024 * 1024 * 1024 - 4000)).  On v16+, one might reach this with\nunlucky trailing garbage, but XLogRecordMaxSize prevents reaching it through\npg_logical_emit_message().\n\nThanks,\nnm"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-08-13 03:12:34",
+   "body": "On Sun, Aug 13, 2023 at 9:13 AM Noah Misch <<email-scrubbed>> wrote:\n[quoted earlier message trimmed]\n\nThat sounds quite strong.  But... why couldn't the existing\nxlp_rem_len cross-check protect us from this failure mode?  If we\ncould defer the allocation until after that check (and the usual\nValidXLogRecordHeader() check), I think we'd know that we're really\nlooking at a size that was actually written in both pages (which must\nalso have survived xlp_pageaddr check), no?"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-08-13 03:30:34",
+   "body": "On Sun, Aug 13, 2023 at 03:12:34PM +1200, Thomas Munro wrote:\n[quoted earlier message trimmed]\n\nHmm, I think that is right.  A coincidental match of the 32-bit CRC is more\nprobable than having all those fields appear valid by coincidence, especially\nxlp_pageaddr."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2023-08-14 02:08:40",
+   "body": "On Sat, Aug 12, 2023 at 08:30:34PM -0700, Noah Misch wrote:\n[quoted earlier message trimmed]\n\n+1 for relying on xlp_rem_len for that.\n\n> Hmm, I think that is right.  A coincidental match of the 32-bit CRC is more\n> probable than having all those fields appear valid by coincidence, especially\n> xlp_pageaddr.\n\nHmm.  [.. thinks ..]\n\nIt seems to me that we should try to also finish the header validation\nbefore attempting XLogReadRecordAlloc() on the total_len as well?  It\nlooks like the end result would be to move the first ReadPageInternal\ndone for the header with all its cross-page checks before\nXLogReadRecordAlloc().  That should remove the need of having\ngotheader from v1.\n--\nMichael"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-08-14 03:56:06",
+   "body": "On Mon, Aug 14, 2023 at 2:08 PM Michael Paquier <<email-scrubbed>> wrote:\n[quoted earlier message trimmed]\n\nYeah.  Trying out an idea for how to untangle that..."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-08-14 10:28:54",
+   "body": "On Mon, Aug 14, 2023 at 3:56 PM Thomas Munro <thomas(dot)<email-scrubbed>> wrote:\n[quoted earlier message trimmed]\n\nSomething like this... patches for 12 and master attached.  Needs a\nlot more testing.  I really want to figure out how to get\ndeterministic tests..."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2023-08-15 02:04:49",
+   "body": "On Mon, Aug 14, 2023 at 10:28:54PM +1200, Thomas Munro wrote:\n> Something like this... patches for 12 and master attached.  Needs a\n> lot more testing.  I really want to figure out how to get\n> deterministic tests...\n\nInteresting, thanks for the quick patch!\n\n    /*\n     * Try to find space to decode this record, if we can do so without\n     * calling palloc.  If we can't, we'll try again below after we've\n     * validated that total_len isn't garbage bytes from a recycled WAL page.\n     */\n    decoded = XLogReadRecordAlloc(state,\n                                  total_len,\n                                  false /* allow_oversized */ );\n\nThe patch relies on total_len before the header validation is\ncompleted, meaning that this value of total_len could be invalid\nbecause it comes from the partially-read header..  Oh wait, that's\nactually OK because an oversized allocation is not allowed yet and the\ndecode buffer would not be able to store more than what it can?\nPerhaps this comment should be updated to tell something like, adding\nthat total_len can be garbage, but we don't care because we don't\nallocate anything that the decode buffer cannot hold.\n\n #ifndef FRONTEND\n \n-\t/*\n-\t * Note that in much unlucky circumstances, the random data read from a\n-\t * recycled segment can cause this routine to be called with a size\n-\t * causing a hard failure at allocation.  For a standby, this would cause\n-\t * the instance to stop suddenly with a hard failure, preventing it to\n-\t * retry fetching WAL from one of its sources which could allow it to move\n-\t * on with replay without a manual restart. If the data comes from a past\n-\t * recycled segment and is still valid, then the allocation may succeed\n-\t * but record checks are going to fail so this would be short-lived.  If\n-\t * the allocation fails because of a memory shortage, then this is not a\n-\t * hard failure either per the guarantee given by MCXT_ALLOC_NO_OOM.\n-\t */\n \tif (!AllocSizeIsValid(newSize))\n \t\treturn false;\n\nWouldn't it be OK to drop entirely this check?  I'm fine to keep it as\na safety measure, but it should not be necessary now that it gets\ncalled only once the header is validated?\n\nRegarding the tests, I have been using this formula to produce the\nnumber of bytes until the next page boundary:\nselect setting::int - ((pg_current_wal_lsn() - '0/0') % setting::int)\n  from pg_settings where name = 'wal_block_size';\n\nUsing pg_logical_emit_message() non-transactional with an empty set of\nstrings generates records of 56 bytes, so I was thinking about the\nfollowing:\n- Generate a bunch of small records with pg_logical_emit_message(), or\nrecords based on the threshold with the previous formula.\n- Loop until we reach a page limit, at 24 bytes (?).\n- Generate one last record to cut through.\n- Stop the node in immediate mode.\n- Write some garbage bytes on the last page generated to emulate the\nrecycled contents and an allocation \n- Start the node, which should be able to startup.\nWith wal_level = minimal, autovacuum = off and a large\ncheckpoint_timeout, any other records are minimized.  That's fancy,\nthough.\n\nDo you think that this could work reliably?\n--\nMichael"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-08-15 02:36:10",
+   "body": "On Tue, Aug 15, 2023 at 2:05 PM Michael Paquier <<email-scrubbed>> wrote:\n[quoted earlier message trimmed]\n\nYeah.\n\n[quoted earlier message trimmed]\n\nYeah, now we're in \"shouldn't happen\" territory, and I'm not sure.\n\n[quoted earlier message trimmed]\n\nYeah, I think that sounds quite promising, and funnily enough I was\njust now working on some Perl code that appends controlled junk to the\nWAL in a test like that so we can try to hit all the error paths..."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2023-08-15 03:00:30",
+   "body": "On Tue, Aug 15, 2023 at 02:36:10PM +1200, Thomas Munro wrote:\n> Yeah, I think that sounds quite promising, and funnily enough I was\n> just now working on some Perl code that appends controlled junk to the\n> WAL in a test like that so we can try to hit all the error paths...\n\nI am pretty sure that adding some junk in a controlled manner is the\nonly cheap and rather-reliable way to get something..\n\nNot sure if that will help, but what I was playing with some stuff in\nthe lines of:\n-- Store the length up to page boundary.\nselect setting::int - ((pg_current_wal_insert_lsn() - '0/0') %\n  setting::int) as boundary from pg_settings where name = 'wal_block_size'\n  \\gset\n-- Generate record up to boundary (56 bytes for base size of the record,\n-- stop at 12 bytes before the end of the page.\nselect pg_logical_emit_message(false, '', repeat('a', :boundary - 56 - 12));\n\nThen by injecting some FF's on the last page written and forcing\nreplay I am able to force some of the error code paths, so I guess\nthat's what you were basically doing?\n--\nMichael"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2023-08-15 06:11:16",
+   "body": "On Tue, Aug 15, 2023 at 12:00:30PM +0900, Michael Paquier wrote:\n[quoted earlier message trimmed]\n\nI've been spending some extra time on this one and hacked a TAP test\nthat reliably reproduces the original issue, using a message similar\nto what I mentioned in my previous messages.  I guess that we could\nuse something like that:\n2023-08-15 15:07:03.790 JST [8729] LOG:  redo starts at 0/14EA428\n2023-08-15 15:07:03.790 JST [8729] FATAL:  invalid memory alloc\nrequest size 4294969740 2023-08-15\n15:07:03.791 JST [8726] LOG:  startup process (PID 8729) exited with exit code 1 \n\nThe proposed patches pass the test, HEAD does not.  We may want to do\nmore with page boundaries, and more error patterns, but the idea looks\nworth exploring more.  At least this can be used to validate patches.\n\nI've noticed while hacking the test that we don't do a XLogFlush()\nafter inserting the message's record, so we may lose it on crash.\nThat makes the test unstable except if an extra record is added after\nthe logical messages.  The attached patch forces that for the sake of\nthe test, but I'm spawning a different thread as losing this data\nlooks like a bug to me.\n--\nMichael"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-08-16 03:29:49",
+   "body": "On Tue, Aug 15, 2023 at 6:11 PM Michael Paquier <<email-scrubbed>> wrote:\n> I've been spending some extra time on this one and hacked a TAP test\n> that reliably reproduces the original issue, using a message similar\n> to what I mentioned in my previous messages.\n\nNice.\n\nI hacked on this idea for quite a long time yesterday and today and\ncame up with a set of tests for the main end-of-WAL conditions:\n\n▶ 1/1 - xl_tot_len zero                                  OK\n▶ 1/1 - xl_tot_len short                                 OK\n▶ 1/1 - xl_prev bad                                      OK\n▶ 1/1 - xl_crc bad                                       OK\n▶ 1/1 - xlp_magic zero                                   OK\n▶ 1/1 - xlp_magic bad                                    OK\n▶ 1/1 - xlp_pageaddr bad                                 OK\n▶ 1/1 - xlp_info bad                                     OK\n▶ 1/1 - xlp_info lacks XLP_FIRST_IS_CONTRECORD           OK\n▶ 1/1 - xlp_rem_len bad                                  OK\n▶ 1/1 - xlp_magic zero (split record header)             OK\n▶ 1/1 - xlp_pageaddr bad (split record header)           OK\n▶ 1/1 - xlp_rem_len bad (split record header)            OK\n1/1 postgresql:recovery / recovery/038_end_of_wal        OK\n    5.79s   13 subtests passed\n\nIt took me a while to come up with a workable way to get into the\nrecord-header-splitting zone.  Based on some of your clues about\nflushing, I eventually realised I needed transactional messages, and I\nbuilt a kind of self-calibrating Rube Goldberg function around that.\nIt's terrible, and I'm sure we can do better.\n\nI wonder what people think about putting internal details of the WAL\nformat into a Perl test like this.  Obviously it requires maintenance,\nsince it knows the size and layout of a few things.  I guess it'd be\nallowed to fish a couple of those numbers out of the source.\n\nWork in progress...  I'm sure more useful checks could be added.  One\nthing that occurred to me while thinking about all this it that the\n'treat malloc failure as end of WAL' thing you highlighted in another\nthread is indeed completely bananas -- I didn't go digging, but\nperhaps it was an earlier solution to the very same garbage xl_tot_len\nproblem, before 70b4f82a4b5 and now this xl_rem_len-based solution?"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2023-08-16 06:17:58",
+   "body": "On Wed, Aug 16, 2023 at 03:29:49PM +1200, Thomas Munro wrote:\n[quoted earlier message trimmed]\n\nNice.\n\n[quoted earlier message trimmed]\n\nSo that's advance_to_record_splitting_zone(), with the idea to loop\nacross multiple records.  The use of transactional messages ensures\nthe flush and the stability of the test when the server is stopped,\nbut it makes the records a bit longer than the non-transactional\nmessages.\n\n[quoted earlier message trimmed]\n\nThe format of the WAL header does not change a lot across the years,\nso I'd be OK with that.  If that's an issue, the scope of the test\ncould always be restricted a bit.\n\n[quoted earlier message trimmed]\n\nIt is bananas.  Still, the problem of the other thread is similar to\nwhat's here, and different at the same time because it can happen with\na valid record if the host is under memory pressure, and we should\nstill allow a standby to loop and continue in this case.  Perhaps also\na startup process doing only crash recovery.  This thread's problem is \ndependent on this one, which is why this one needs to happen first: we\nneed to clarify the boundary between a real OOM and garbage indicating\nthe end of WAL.\n\n+my $RECORD_HEADER_SIZE = 24;\n+my $XLP_PAGE_MAGIC = 0xd113;\n+my $XLP_FIRST_IS_CONTRECORD = 0x1;\n\nThis could use something like check_pg_config() to find the header\ncontents for the last two ones, but there's no easy way to extract the\nsize of the header struct, is there?  Or perhaps perl has a tool for\nthat..  Anything I can read on the matter tells to use pack() to make\nthe size estimations predictible.\n\n+   my $page_offset = $end_lsn % $WAL_BLOCK_SIZE;\n+   while ($page_offset >= $WAL_BLOCK_SIZE - 2000)\n+   {\n+       $end_lsn = emit_message($node, 2000)\n\nThe hardcoded 2000 feels magic here, but I get that you just want to\nget away from the page border, as well.  I'd be OK with more comments.\n\n+sub lsn_to_segment_and_offset\n+{\n+   my $lsn = shift;\n+   return ($lsn / $WAL_SEGMENT_SIZE, $lsn % $WAL_SEGMENT_SIZE);\n+}\n\nNow the backend also has pg_walfile_name_offset().  I tend to rely on\nthe backend logic as much as I can for tests.\n\n+sub start_of_page\n\nNot sure this one is needed, only being called in\nstart_of_next_page().\n\n+sub get_insert_lsn\n\nName is confusing with Cluster::lsn('insert') available, perhaps this\nshould be named get_insert_lsn_in_bytes.\n\nAs a whole, I find that pretty cool.  Not sure if I would backpatch\nthe test, so my opinion would be to use that on HEAD and let it\nstabilize there.\n--\nMichael"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2023-08-18 00:20:20",
+   "body": "On Wed, Aug 16, 2023 at 03:17:58PM +0900, Michael Paquier wrote:\n> As a whole, I find that pretty cool.  Not sure if I would backpatch\n> the test, so my opinion would be to use that on HEAD and let it\n> stabilize there.\n\nThomas, is there anything I can do to help with this patch and make it\nmove on?\n--\nMichael"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-08-18 02:30:31",
+   "body": "On Fri, Aug 18, 2023 at 12:20 PM Michael Paquier <<email-scrubbed>> wrote:\n[quoted earlier message trimmed]\n\nGive me a couple of days and I'll look into how back-patchable the\ntests can be made, and see what else we can test.  Perhaps it's not\nstrictly necessary to back-patch the fix further than 15, but I think\nwe should definitely consider it, and I don't like the idea of not\nhaving the tests accompanying the change.\n\nIf you have any ideas about how to write a more efficient version of\nadvance_to_record_splitting_zone() (or I guess that should really be\nadvance_to_record_header_splitting_zone()), and generally how to make\nthe perl better, and how to get those constants we need from the\nsource or binaries, then I'm all ears."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2023-08-18 04:55:32",
+   "body": "On Fri, Aug 18, 2023 at 02:30:31PM +1200, Thomas Munro wrote:\n[quoted earlier message trimmed]\n\nOkay, cool.\n\n[quoted earlier message trimmed]\n\nYeah, I think that there are ways to reduce the number of records\ngenerated.  \n\n> and how to get those constants we need from the\n> source or binaries, then I'm all ears.\n\nA new perl routine able to do a pg_control --includedir that scans a\ndefined header with a regexp would be able to make the job for the\nconstants.  If you're interested, I can code that up.\n--\nMichael"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2023-08-20 23:32:39",
+   "body": "On Fri, Aug 18, 2023 at 01:55:32PM +0900, Michael Paquier wrote:\n> A new perl routine able to do a pg_control --includedir that scans a\n> defined header with a regexp would be able to make the job for the\n> constants.  If you're interested, I can code that up.\n\nPlease find attached a patch, that applies on top of the TAP test,\nto implement a logic able to extract from header files the values\nwanted.  This is Utils::scan_header(), for example:\nmy @scan_result = scan_header('server/access/xlog_internal.h',\n    '#define\\s+XLOG_PAGE_MAGIC\\s+(\\w+)');\nmy $XLP_PAGE_MAGIC = hex($scan_result[0]); \n\nThis uses group capture so as it is possible to get more than one\nfield.  Guessing the size of the C structure is possible, but I've\nfound these options to be a bit awkward implementation-wise:\n- Config would not help for the Postgres-specific declarations, like\nTimeLineId, etc.\n- I saw something that was specific to GCC..  cannot put my finger on\nit now.\n\nAnother possibility would be to store the size in a different variable\nin xlog_internal.h, coupled with a StaticAssertDecl() to make sure\nthat it matches with the real size.  While it has the same maintenance\ncost as RECORD_HEADER_SIZE in the test itself, that's catching a\nmismatching size at compilation-time rather than at test-time.\n\nI am not sure that I'll be able to do more on this topic this week, at\nleast that's some progress.\n--\nMichael"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2023-09-02 01:29:39",
+   "body": "On Mon, Aug 21, 2023 at 08:32:39AM +0900, Michael Paquier wrote:\n> I am not sure that I'll be able to do more on this topic this week, at\n> least that's some progress.\n\nSome time later..\n\nI have spent more time and thoughts on the whole test suite, finishing\nwith the attached 0003 that applies on top of your own patches.  I am\nreally looking forward to making this whole logic more robust, so as\nWAL replay can be made itself more robust for the OOM/end-of-wal\ndetection on HEAD for standbys and crash recovery.\n\nWhile looking at the whole, I have considered a few things that may\nmake the test cleaner, like:\n- Calculating the segment name and its offset from the end_lsn of a\nrecord directly from the backend, but it felt inelegant to pass\nthrough more subroutine layers the couple ($segment, offset) rather\nthan just a LSN, so guessing the segment number and the offset while\nthe cluster is offline if OK by me.\n- The TLI can be queried from the server rather than hardcoded.\n- I've been thinking about bundling the tests of each sub-section in\ntheir own subroutine, but that felt a bit awkward, particularly for\nthe part where we need a correct $prev_lsn in the record header\nwritten to enforce other code paths.\n- The test needs better documentation.  One of the things I kept\nstaring at is cross-checking pack() and the dependency to the C\nstructures, so I have added more details there, explaining more the\nwhys and the hows.\n\nI have also looked again at the C code for a few hours, and still got\nthe impression that this is rather solid.  There are two things that\nmay be better:\n- Document at the top of allocate_recordbuf() that this should never\nbe called with a length coming from a header until it is validated.\n- Removing AllocSizeIsValid() for the non-FRONTEND path should be OK.\n\nWhat do you think?\n--\nMichael"
+  },
+  {
+   "author": "participant7",
+   "created_at": "2023-09-02 11:51:48",
+   "body": "Hello\nI have an error from the new test due to Test/Utils.pm new scan_header function.\n\nI applied all 3 patches and use\n\n./configure --prefix=/home/melkij/tmp/pgdev/inst --enable-cassert --enable-debug CFLAGS=\"-ggdb -Og -g3 -fno-omit-frame-pointer\" --enable-tap-tests\nmake -s world\nmake check-world\n\nThen I see:\n\nTest Summary Report\n-------------------\nt/038_end_of_wal.pl                (Wstat: 512 (exited 2) Tests: 0 Failed: 0)\n  Non-zero exit status: 2\n  Parse errors: No plan found in TAP output\n  \nCorresponding tmp_check/log/regress_log_038_end_of_wal show error:\n\nNo such file or directory at /home/melkij/tmp/srcs/postgresql/src/test/recovery/../../../src/test/perl/PostgreSQL/Test/Utils.pm line 725.\n\npg_config from scan_header function returns /home/melkij/tmp/srcs/postgresql/tmp_install/home/melkij/tmp/pgdev/inst/include , then the function tries to concatenate server/access/xlog_internal.h, while the required file is in postgresql/server/access/xlog_internal.h from this directory.\n\nIf I change the test like this for both scan_header, then it succeeds.\n\n- my @scan_result = scan_header('server/access/xlog_internal.h',\n+ my @scan_result = scan_header('postgresql/server/access/xlog_internal.h',\n\nIs there something wrong with my setup?\n\nregards, Sergei"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2023-09-02 23:42:55",
+   "body": "On Sat, Sep 02, 2023 at 02:51:48PM +0300, Sergei Kornilov wrote:\n[quoted earlier message trimmed]\n\nI think that's just a mistake I did, as there should not even be a\nneed for having to specify \"server/\" for the header path.  If you\nswitch scan_header() in Utils.pm to use --includedir-server rather\nthan --includedir, does it work correctly for you? \n--\nMichael"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2023-09-03 05:43:57",
+   "body": "On Sun, Sep 03, 2023 at 08:42:55AM +0900, Michael Paquier wrote:\n[quoted earlier message trimmed]\n\nIn short, I mean something like the v4 attached.  Feel free to use it\nfor your tests.\n--\nMichael"
+  },
+  {
+   "author": "participant7",
+   "created_at": "2023-09-03 11:21:07",
+   "body": "Hello\n\nThank you, this version passes check-world for me.\n\nLooks good (but I'm certainly not a big expert on xlogreader), a solid set of tests for different cases.\n\nregards, Sergei"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-09-04 03:20:31",
+   "body": "Thanks for looking/testing, Sergei.  Thanks for the changes, Michael,\nthese all look good.  I've squashed them and added you as co-author.\n\nA couple more small comment/text changes:\n\n1.  In the place where we fail to allocate memory for an oversized\nrecord, I copied the comment about treating that as a \"bogus data\"\ncondition.  I suspect that we will soon be converting that to a FATAL\nerror[1], and that'll need to be done in both places.\n\n2.  In this version of the commit message I said we'd only back-patch\nto 15 for now.  After sleeping on this for a week, I realised that the\nreason I keep vacillating on that point is that I am not sure what\nyour plan is for the malloc-failure-means-end-of-wal policy ([1],\nancient code from 0ffe11abd3a).  If we're going to fix that in master\nonly but let sleeping dogs lie in the back-branches, then it becomes\nless important to go back further than 15 with THIS patch.  But if you\nwant to be able to distinguish garbage from out-of-memory, and thereby\nend-of-wal from a FATAL please-insert-more-RAM condition, I think\nyou'd really need this industrial strength validation in all affected\nbranches, and I'd have more work to do, right?  The weak validation we\nare fixing here is the *real* underlying problem going back many\nyears, right?\n\nI also wondered about strengthening the validation of various things\nlike redo begin/end LSNs etc in these tests.  But we can always\ncontinue to improve all this later...\n\nHere also is a version for 15 (and a CI run[2]), since we tweaked many\nof the error messages between 15 and 16.\n\n[1] https://www.postgresql.org/message-id/flat/ZMh/WV%2BCuknqePQQ%40paquier.xyz\n[2] https://cirrus-ci.com/task/4533280897236992 (failed on some\nunrelated pgbench test, reported in another thread)"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2023-09-04 03:54:28",
+   "body": "On Mon, Sep 04, 2023 at 03:20:31PM +1200, Thomas Munro wrote:\n[quoted earlier message trimmed]\n\nYou mean for the two callers of XLogReadRecordAlloc(), even for the\ncase where !allow_oversized?  Using a FATAL on non-FRONTEND would be\nthe quickest fix, indeed, but there are argument for standbys where we\ncould let these continue, as well.  That would be an improvement over\nthe always-FATAL on OOM, of course.\n\n[quoted earlier message trimmed]\n\nFor HEAD, my plan was to give more control to the callers of the WAL\nreader, which is not something that could happen in back-branches\nbecause it requires a few structural changes in the reporting the\nreader is able to do.  That's the standby vs crash-recovery behavior,\nwhere we can make the startup process not FATAL all the time because\nit should just loop forever if it cannot process a record.  It does\nnot fix the root issue discussed here, of course, but it make the OOM\nhandling more friendly in some replay cases.\n\n[quoted earlier message trimmed]\n\nGetting the same validation checks for all the branches would be nice.\nFATAL-ing on OOM to force recovery to happen again is a better option\nthan assuming that it is the end of recovery.  I am OK to provide\npatches for all the branches for the sake of this thread, if that\nhelps.  Switching to a hard FATAL on OOM for the WAL reader in the\nbackend is backpatchable, but I'd rather consider that on a different\nthread once the better checks for the record header are in place.\n\n> I also wondered about strengthening the validation of various things\n> like redo begin/end LSNs etc in these tests.  But we can always\n> continue to improve all this later...\n\nAgreed.\n--\nMichael"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-09-04 07:17:21",
+   "body": "On Mon, Sep 4, 2023 at 3:54 PM Michael Paquier <<email-scrubbed>> wrote:\n[quoted earlier message trimmed]\n\nI just mean the two places where \"bogus data\" is mentioned in that v5 patch.\n\n[quoted earlier message trimmed]\n\nOK, so it sounds like you want to go back to 12.  Let me see if I can\nget this TAP test to work in 12... more tomorrow."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2023-09-04 07:28:30",
+   "body": "On Mon, Sep 04, 2023 at 07:17:21PM +1200, Thomas Munro wrote:\n> I just mean the two places where \"bogus data\" is mentioned in that v5 patch.\n\nGot it, thanks.\n\n> OK, so it sounds like you want to go back to 12.  Let me see if I can\n> get this TAP test to work in 12... more tomorrow.\n\nIf you're restricted on time, I am OK to deep-dive into these branches\nas well ;)\n--\nMichael"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-09-04 07:43:59",
+   "body": "On Mon, Sep 4, 2023 at 7:28 PM Michael Paquier <<email-scrubbed>> wrote:\n[quoted earlier message trimmed]\n\nI am behind on several things, so if you want to, please go ahead!  I\nalready posted a 15 version and a master version (which should also\napply and work on 16), so we'd need 12, 13, 14."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2023-09-05 03:19:46",
+   "body": "On Mon, Sep 04, 2023 at 07:43:59PM +1200, Thomas Munro wrote:\n> I am behind on several things, so if you want to, please go ahead!  I\n> already posted a 15 version and a master version (which should also\n> apply and work on 16), so we'd need 12, 13, 14.\n\nAnd here you go for all the three branches, with all the tests\npassing.  This change is complicated enough that it would be better to\nget more eyes on the three patches for these specific branches.  Now,\nthis is much simpler since we don't have to worry about the\nprefetching.\n\nFor these versions, it struck me that we *require* 6860198 so as the\nheader validation is able to correctly happen across page reads when\ndoing crash recovery.   I have added this change in the patches\nattached for simplicity, but 6860198 should be applied first on 12~14\nas an independent change.  I can do that as a first step, if you are\nOK with that.\n\nI haven't taken the time to rewrite the commit message yet for the\nmain patch ;p\n--\nMichael"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-09-05 03:58:42",
+   "body": "On Tue, Sep 5, 2023 at 3:19 PM Michael Paquier <<email-scrubbed>> wrote:\n[quoted earlier message trimmed]\n\nThanks!  Yeah.\n\n[quoted earlier message trimmed]\n\nAhhhh, that explains why back-patching was unexpectedly unsuccessful\nwhen I tried it.  I have added Fujii-san to the CC list.  I don't see\nany problem with that plan but it would be good to hear from him."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2023-09-05 04:13:16",
+   "body": "On Tue, Sep 05, 2023 at 03:58:42PM +1200, Thomas Munro wrote:\n> Ahhhh, that explains why back-patching was unexpectedly unsuccessful\n> when I tried it.  I have added Fujii-san to the CC list.  I don't see\n> any problem with that plan but it would be good to hear from him.\n\nRight.  Let's wait for a bit and see if there are any comments on this\npoint.  With 16.0 in sight next week, I'd like to propose that we move\non with this issue once next week's tag is pushed.\n--\nMichael"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2023-09-12 01:01:21",
+   "body": "On Tue, Sep 05, 2023 at 01:13:16PM +0900, Michael Paquier wrote:\n> Right.  Let's wait for a bit and see if there are any comments on this\n> point.  With 16.0 in sight next week, I'd like to propose that we move\n> on with this issue once next week's tag is pushed.\n\nHearing nothing, I have applied the backpatch of 0668719801 to 12~14.\nPlease find attached the remaining patches for all the stable\nbranches.\n\nThomas, would you prefer handling that yourself once 16.0 is tagged\nwith a last round of checks?  Or should I?  (Still need to edit the\ncommit message a bit..)\n--\nMichael"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-09-12 02:08:09",
+   "body": "On Tue, Sep 12, 2023 at 1:01 PM Michael Paquier <<email-scrubbed>> wrote:\n[quoted earlier message trimmed]\n\nThanks!\n\n> Thomas, would you prefer handling that yourself once 16.0 is tagged\n> with a last round of checks?  Or should I?  (Still need to edit the\n> commit message a bit..)\n\nI'll do that (and update the message).  Thanks for all the help!"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2023-09-12 02:12:07",
+   "body": "On Tue, Sep 12, 2023 at 02:08:09PM +1200, Thomas Munro wrote:\n> I'll do that (and update the message).  Thanks for all the help!\n\nCool, thanks!\n--\nMichael"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-09-15 22:07:30",
+   "body": "On Tue, Sep 12, 2023 at 2:12 PM Michael Paquier <<email-scrubbed>> wrote:\n[quoted earlier message trimmed]\n\nI rebased (bumped the test number 038 -> 039), updated the commit\nmessage[1], tested on a big endian machine (AIX/POWER), but then I\nfound there is something not quite right or stable with the WAL\npositioning logic.  On one of my machines, but not another, the\nback-patch to 12 fails in one of the tests unless I hack it to insert\na bit more WAL, and I think that's telling me that Perl code to\ncontrol the insertion point is not quite bullet proof enough yet.\nI'll need to dig into this some more on Monday.\n\n[1] https://github.com/macdice/postgres/commits/fix-12"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2023-09-16 00:02:57",
+   "body": "On Sat, Sep 16, 2023 at 10:07:30AM +1200, Thomas Munro wrote:\n[quoted earlier message trimmed]\n\nHmm.  What was the test that failed?\n--\nMichael"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-09-16 00:20:36",
+   "body": "On Sat, Sep 16, 2023 at 12:03 PM Michael Paquier <<email-scrubbed>> wrote:\n> > [1] https://github.com/macdice/postgres/commits/fix-12\n>\n> Hmm.  What was the test that failed?\n\n$ make -s -C src/test/recovery/ check PROVE_TESTS=t/039*\nt/039_end_of_wal.pl .. 4/?\n#   Failed test 'xlp_magic zero'\n#   at t/039_end_of_wal.pl line 312.\n\nnot ok 5 - xlp_magic zero\n\nWhere the log should say \"invalid magic number 0000\" I see:\n\n2023-09-16 12:13:07.331 NZST [156812] LOG:  record with incorrect\nprev-link 0/16B60C0 at 0/16B6120\n\nIt has to do with initial WAL position after initdb, because I get\nthis only on Debian, on REL_12_STABLE (with the commit listed above on\nmy public fix-12 branch) and only with --with-icu, but not without it,\nand I can't repro it on my other local OSes."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2023-09-16 04:13:33",
+   "body": "On Sat, Sep 16, 2023 at 12:20:36PM +1200, Thomas Munro wrote:\n[quoted earlier message trimmed]\n\nThat's close to my dev environment, with SID and x64 and the only\ndifference your branch and my local branch is a rename of the TAP\nfile, and I cannot see the problem.\n\nSome random thoughts: perhaps reducing $page_threshold would help with\nmore records inserted to get to the limit of a page, reducing noise?\nOr perhaps skipping a few pages would?\n--\nMichael"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-09-16 06:00:00",
+   "body": "Hello,\n\n16.09.2023 03:20, Thomas Munro wrote:\n[quoted earlier message trimmed]\n\nI tried to reproduce the failure on Debian 9, 10, 11, but not succeeded yet.\nThough I got another error on Debian 9:\nt/039_end_of_wal.pl .. Dubious, test returned 25 (wstat 6400, 0x1900)\nNo subtests run\n...\ncat src/test/recovery/tmp_check/log/regress_log_039_end_of_wal\ncould not find match in header access/xlog_internal.h\n\nIt looks like the construction \"@{^CAPTURE}\" used in scan_server_header()\nis not supported by Perl 5.24, which is included in Debian stretch:\nhttps://perldoc.perl.org/variables/@%7B%5ECAPTURE%7D\nI replaced it with\n@match = ($1);\nand that worked for me.\n\nAlso, I observed that \"wal_log_hints = on\" in extra.config, which I use via\n\"TEMP_CONFIG=extra.config make check-world\" makes the test fail too, though\ncheck-world passes fine without the new test.\nMaybe that's not an issue, and probably there are other parameters, which\nmight affect this test, but I'm somewhat confused by the fact that only this\ntest breaks with it.\n\nBest regards,\nAlexander"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-09-17 20:46:17",
+   "body": "On Sat, Sep 16, 2023 at 6:00 PM reporter <<email-scrubbed>> wrote:\n[quoted earlier message trimmed]\n\nThanks for catching that!  I see that %{^CAPTURE} was added to Perl\n5.25.7, but we document Perl 5.14 or later as the requirement\ncurrently, and for REL_12_STABLE it's Perl 5.8.3.  That would\ncertainly have turned a few build farm fossils red.\n\nYour replacement only returns the first captured group.  I don't know\nPerl, but I think we can just assign the whole array to @match\ndirectly, to maintain the semantics that Michael wanted, like so:\n\n-               if ($line =~ /^$regexp/)\n+               if (@match = $line =~ /^$regexp/)\n                {\n-                       # Found match, so store all the results.\n-                       @match = @{^CAPTURE};\n                        last;\n                }\n\nBetter Perl welcome.\n\nLooking into your observation about wal_log_hints..."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-09-19 09:25:34",
+   "body": "On Sat, Sep 16, 2023 at 6:00 PM reporter <<email-scrubbed>> wrote:\n[quoted earlier message trimmed]\n\nThe problem was that the Perl functions advance_XXX() would sometimes\nsee an \"unflushed\" insert position caused by hint records and other\nincidental stuff, and then we'd write our contrived header at a\ndisconnected location after a bunch of (unwritten) zeroes.  The\nsolution in this version is to start each test with\nemit_message($node, 0), which flushes a small record."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2023-09-19 09:53:14",
+   "body": "On Tue, Sep 19, 2023 at 09:25:34PM +1200, Thomas Munro wrote:\n[quoted earlier message trimmed]\n\nMakes sense.  Does this also address the other issue you've noticed on\nv12 when ICU is enabled (the one with the initial LSN changed after\ninitdb)?\n--\nMichael"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-09-19 10:09:10",
+   "body": "On Tue, Sep 19, 2023 at 9:53 PM Michael Paquier <<email-scrubbed>> wrote:\n[quoted earlier message trimmed]\n\nYep."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-09-19 13:00:06",
+   "body": "19.09.2023 13:09, Thomas Munro wrote:\n[quoted earlier message trimmed]\n\nThanks for the fixes!\n\nI've tested this patch version on Debian 9 and it works fine now.\nBut as to wal_log_hints, I see that v7 patches work for REL_12_STABLE and\nREL_13_STABLE, but not for other branches, though v6 patches definitely\nfailed on REL_12_STABLE and REL_13_STABLE too. So the behavior improved,\nbut not for all versions, for some reason (I haven't looked deeper yet).\nAlso I've noticed a few minor discrepancies in the patches.\nA commit message in patch.15 contains the sentence \"We should fix ...\",\nnot \"We could fix ...\", as in commit messages for other versions.\nAlso, patch.12 contains a duplicated \"Reviewed-by\" string.\nAnd may be \"xlp_prev\" is a typo?\n\nBest regards,\nAlexander"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-09-19 22:51:12",
+   "body": "On Wed, Sep 20, 2023 at 1:00 AM reporter <<email-scrubbed>> wrote:\n> I've tested this patch version on Debian 9 and it works fine now.\n\nProgress...\n\n[quoted earlier message trimmed]\n\nAhh, yeah, there was a second problem screwing up the LSN accounting.\nI was trying to write correct xl_prev links, but also emitting\noptional padding records to get into the right position (depending on\ninitial conditions varying between branches etc), and I forgot about\nthe extra COMMIT records that emit_message() generates.  Which, I\nguess, comes back to Michael's observation that this would all be a\nbit easier if we had a way to emit and flush a single record...\n\nThe solution in this version is to call get_insert_len() instead of\nusing the result of emit_message() for the values returned by the\nadvance_XXX() functions.  The result of emit_message() is actually the\nLSN of the following COMMIT record so can't be used directly for\nbuilding xl_prev chains.\n\n[quoted earlier message trimmed]\n\nFixed."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2023-09-20 00:51:39",
+   "body": "On Wed, Sep 20, 2023 at 10:51:12AM +1200, Thomas Munro wrote:\n[quoted earlier message trimmed]\n\nUnfortunately this part is not going to be backpatched based on the\ncurrent consensus, so this is goint to need an alternate and/or fluffy\nsolution to force the flushes at given points:\nhttps://www.postgresql.org/message-id/<email-scrubbed>\n\nThe test could be largely simplified on HEAD once the flush option is\navailable.  I'm just waiting a bit more on the other thread, keeping\nan eye on the temperature, but it looks like nobody would complain to\nmake that optional, with the default being what we did previously, at\nleast..\n\n[quoted earlier message trimmed]\n\nAnd by doing so the test paths would enter once again in the inner\nloops generating the records so as we'll only get out once we know\nthat we are at the border wanted, enough to stabilize the tests.\nSmart.\n--\nMichael"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-09-20 06:00:00",
+   "body": "20.09.2023 01:51, Thomas Munro wrote:\n[quoted earlier message trimmed]\n\nI've retested this version (patches for all branches, plus wal_log_hints,\nplus Valgrind, and also retested code changes with my\n099_restart_with_stanby.pl) and found no issues. IMHO, this patch is\nready to float off.\n\nThank you!\n\nBest regards,\nAlexander"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-09-22 03:11:54",
+   "body": "A thought: commit 8fcb32db prevented us from logging messages that are\ntoo big to be decoded, but it wasn't back-patched.  I think that means\nthat in older branches, there is a behaviour change unrelated to the\n\"garbage bytes\" problem discussed in this thread, and separate also\nfrom the out-of-memory problem.  If someone generates a record too big\nto decode, say with pg_logical_emit_message(), we will fail\ndifferently.  Before this patch set, we'd bogusly detect end-of-WAL,\nand after this patch we'd fail to palloc and recovery would bogusly\nfail.  Which outcome is more bogus is hard to answer, and clearly we\nshould prevent it upstream, but didn't for technical reasons.  Do you\nagree that that is a separate topic that doesn't prevent us from\ncommitting this fix?"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2023-09-22 04:02:42",
+   "body": "On Fri, Sep 22, 2023 at 03:11:54PM +1200, Thomas Munro wrote:\n> A thought: commit 8fcb32db prevented us from logging messages that are\n> too big to be decoded, but it wasn't back-patched.\n\nYes, there was one part done in ffd1b6bb6f8 that has required ABI\nbreakages, as well.  There is an argument against a backpatch as a\nset of records in a given range may fail to replay while they were\nallowed before (I forgot the exact math, but I recall that this was\nfor records larger than XLogRecordMaxSize, still lower than the max\nallocation mark.).\n\n[quoted earlier message trimmed]\n\nI don't see why it's a problem on HEAD: a startup process reacts the\nsame way for the end of WAL or an OOM.  If we were to FATAL hard on\nall stable branches for non-FRONTEND on OOM, which is something we'll\nhave to do anyway, then this patch set improves the situation because\nwe would fail in what I'd see is better in this case: with an OOM.\n--\nMichael"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-09-22 23:35:05",
+   "body": "On Fri, Sep 22, 2023 at 4:02 PM Michael Paquier <<email-scrubbed>> wrote:\n[quoted earlier message trimmed]\n\nHmm, OK, tricky choices.  Anyway, I guess the next thing to straighten\nout in this area is the OOM policy.\n\nPushed.  Thanks Alexander and everyone for the report, testing and\nhelp!  Time to watch the build farm to see if that Perl turns out to\nbe robust enough..."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2023-09-23 00:05:42",
+   "body": "On Sat, Sep 23, 2023 at 11:35:05AM +1200, Thomas Munro wrote:\n[quoted earlier message trimmed]\n\nLooks pretty stable to me.  I can see one thing in wrasse related to\npack():\nhttps://buildfarm.postgresql.org/cgi-bin/show_log.pl?nm=wrasse&dt=2023-09-22%2023%3A23%3A23\nInvalid type 'Q' in pack at t/039_end_of_wal.pl line 139.\n\nI don't have the room to look at that now, perhaps a bit later today\ndepending on the flow of the wind.\n--\nMichael"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-09-23 00:16:38",
+   "body": "On Sat, Sep 23, 2023 at 12:05 PM Michael Paquier <<email-scrubbed>> wrote:\n[quoted earlier message trimmed]\n\nOh, so although we were testing on 32 bit systems via CI (task\n\"test_world_32\" on \"Linux - Debian Bullseye - Meson\"), in that case\nthe perl binary is still 64 bit.  Apparently 32 bit perl binary (at\nleast of a certain vintage) doesn't like 'Q'."
+  },
+  {
+   "author": "participant6",
+   "created_at": "2023-09-23 00:20:46",
+   "body": "Thomas Munro <thomas(dot)<email-scrubbed>> writes:\n[quoted earlier message trimmed]\n\nWe discovered this once before, cf 945d2cb7d.\n\n\t\t\tregards, tom lane"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-09-23 01:07:06",
+   "body": "On Sat, Sep 23, 2023 at 12:20 PM Tom Lane <<email-scrubbed>> wrote:\n[quoted earlier message trimmed]\n\nHere is my proposed fix.  I couldn't quite use that trick, but we can\nsafely assume that the higher order bits of any LSN generated by this\ntest are zero.  Patch tested on x86 and big-endian POWER.  If no one\nhas a more idiomatic perl trick for this, I'll push this soon."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-09-23 02:02:02",
+   "body": "On Sat, Sep 23, 2023 at 12:05 PM Michael Paquier <<email-scrubbed>> wrote:\n> Looks pretty stable to me.  I can see one thing in wrasse related to\n> pack():\n\nHmm, copperhead (riscv) showed an unusual failure, a segfault in\nsuspiciously nearby code.  I don't immediately know what that's about,\nlet's see if we get more clues..."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-09-23 02:29:40",
+   "body": "On Sat, Sep 23, 2023 at 1:07 PM Thomas Munro <thomas(dot)<email-scrubbed>> wrote:\n[quoted earlier message trimmed]\n\nAnd done, after running through pgperltidy."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2023-09-23 04:44:18",
+   "body": "On Sat, Sep 23, 2023 at 02:02:02PM +1200, Thomas Munro wrote:\n> Hmm, copperhead (riscv) showed an unusual failure, a segfault in\n> suspiciously nearby code.  I don't immediately know what that's about,\n> let's see if we get more clues...\n\nYep, something is going on with the prefetching code:\nhttps://buildfarm.postgresql.org/cgi-bin/show_log.pl?nm=copperhead&dt=2023-09-22%2023%3A16%3A33\n\nUsing host libthread_db library\n\"/lib/riscv64-linux-gnu/libthread_db.so.1\". Core was generated by\n`postgres: paris: startup recovering 000000030000000000000003\n'. Program terminated with signal SIGSEGV, Segmentation fault.\n#0  pg_comp_crc32c_sb8 (crc=1613114916, crc(at)entry=4294967295,\ndata=data(at)entry=0x2af9e00d48, len=<optimized out>) at\npg_crc32c_sb8.c:56 56 uint32 a = *p4++ ^ crc;\n#0  pg_comp_crc32c_sb8 (crc=1613114916, crc(at)entry=4294967295,\ndata=data(at)entry=0x2af9e00d48, len=<optimized out>) at\npg_crc32c_sb8.c:56\n#1  0x0000002ad59a1536 in ValidXLogRecord (state=0x2af9db1fc0,\nrecord=0x2af9e00d30, recptr=50520048) at xlogreader.c:1195\n#2  0x0000002ad59a285a in XLogDecodeNextRecord\n(state=state(at)entry=0x2af9db1fc0, nonblocking=<optimized out>) at\nxlogreader.c:842\n#3  0x0000002ad59a28c0 in XLogReadAhead (state=0x2af9db1fc0,\nnonblocking=nonblocking(at)entry=false) at xlogreader.c:969\n#4  0x0000002ad59a0996 in XLogPrefetcherNextBlock\n(pgsr_private=184580836680, lsn=0x2af9e14618) at xlogprefetcher.c:496\n#5  0x0000002ad59a11c8 in lrq_prefetch (lrq=<optimized out>) at\nxlogprefetcher.c:256\n#6  lrq_complete_lsn (lsn=<optimized out>, lrq=0x2af9e145c8) at\nxlogprefetcher.c:294\n#7  XLogPrefetcherReadRecord\n(prefetcher=prefetcher(at)entry=0x2af9e00d48,\nerrmsg=errmsg(at)entry=0x3fec9a2bf0) at xlogprefetcher.c:1041\n\nThe stack may point out at a different issue, but perhaps this is a\nmatter where we're returning now XLREAD_SUCCESS where previously we\nhad XLREAD_FAIL, causing this code to fail thinking that the block was\nvalid while it's not?\n--\nMichael"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-09-23 20:48:42",
+   "body": "On Sat, Sep 23, 2023 at 4:44 PM Michael Paquier <<email-scrubbed>> wrote:\n[quoted earlier message trimmed]\n\n\"grison\" has a little more detail --  we see\npg_comp_crc32c_sb8(len=4294636456).  I'm wondering how to reproduce\nthis, but among the questions that jump out I have: why was it ever OK\nthat we load record->xl_tot_len into total_len, perform header\nvalidation, determine that total_len < len (= this record is all on\none page, no reassembly loop needed, so now we're in the single-page\nbranch), then call ReadPageInternal() again, then call\nValidXLogRecord() which internally loads record->xl_tot_len *again*?\nReadPageInternal() might have changed xl_tot_len, no?  That seems to\nbe a possible pathway to reading past the end of the buffer in the CRC\ncheck, no?\n\nIf that value didn't change underneath us, I think we'd need an\nexplanation for how we finished up in the single-page branch at\nxlogreader.c:842 with a large xl_tot_len, which I'm not seeing yet,\nthough it might take more coffee.  (Possibly supporting the re-read\ntheory is the fact that it's only happening on a few very slow\ncomputers, though I have no idea why it would only happen on master\n[so far at least].)"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2023-09-23 23:23:43",
+   "body": "On Sun, Sep 24, 2023 at 09:48:42AM +1300, Thomas Munro wrote:\n[quoted earlier message trimmed]\n\nHmm, it looks pretty clear that this is a HEAD-only thing as the\nbuildfarm shows and as you say, and my primary suspect here would be\n71e4cc6b8ec6, I think.  Any race condition underneath it would be\neasier to see on slower machines.  So it's likely possible that this\nhas messed up the page insertion logic.\n--\nMichael"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-09-24 20:02:35",
+   "body": "On Sun, Sep 24, 2023 at 12:23 PM Michael Paquier <<email-scrubbed>> wrote:\n[quoted earlier message trimmed]\n\nI see there was a failure on 16 on the very slow AIX box, and I have\naccess so looking into that..."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2023-09-24 23:58:45",
+   "body": "On Mon, Sep 25, 2023 at 09:02:35AM +1300, Thomas Munro wrote:\n> I see there was a failure on 16 on the very slow AIX box, and I have\n> access so looking into that...\n\nLucky you, if I may say ;)\n\nA bunch of architectures that are not Intel are failing.  Here is a\nsummary based on the buildfarm reports:\ntopminnow, mips64el with gcc 4.9.2\nmereswine, ARMv7 with gcc 10.2.1\nsungazer, ppc64 with gcc 8.3.0\nfrogfish, mips64el with gcc 4.6.3\nmamba, macppc with gcc 10.4.0\ngull, ARMv7 with clang 13.0.0\ngrison, ARMv7 with gcc 4.6.3\ncopperhead, riscv64 with gcc 10.X\n\nThe only thing close to that I have close by is tanager on Armv7 (it\nhas not reported to the buildfarm for a few weeks as it has\noverheated because of the summer here, but I've put it back online\nnow).  However, it has passed a few hundred cycles with both gcc and\nclang yesterday, on top of having a clean buildfarm run.\n\nWith sungazer now failing on REL_16_STABLE, it feels to me that we are\nactually looking at two bugs?  One on HEAD, and one in stable\nbranches?  For HEAD and the 2PC failure, the records up to PREPARE\nTRANSACTION should be replayed by the standby getting promoted, but\nI'd rather dig into that with a host that's able to report the\nfailure.\n\ncopperhead seems to be one of the failing hosts that's able to compile\nthings quickly.  Tom, Noah, or copperhead's owner, could it be\npossible to get access to one of the hosts that are failing for more\ninvestigation?  I would not do more than compiling the code and check\nafter the state of the 2PC test for this promotion failure.\n--\nMichael"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-09-25 00:18:56",
+   "body": "On Mon, Sep 25, 2023 at 12:58 PM Michael Paquier <<email-scrubbed>> wrote:\n[quoted earlier message trimmed]\n\nFTR anyone involved with an open source project can get an account on\nthe GCC compile farm machines.  That particular machine is so\noverloaded that it's practically unusable (~8 hours to run the test,\nhard to run vi etc).\n\n[quoted earlier message trimmed]\n\nOne thing that the failing systems have in common is that they are\nextremely slow.  3 to 8 hours to complete the tests.  turaco is an\narmv7 system that doesn't fail, but it's much faster.  At a guess,\nprobably something like an armv8 CPU that is just running 32 bit armv7\nsoftware, not  a real old school armv7 chip.\n\nWhich gives me the idea to try these tests under qemu...\n\n[quoted earlier message trimmed]\n\nOh, right yeah that is quite different and could even be unrelated."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-09-25 01:32:44",
+   "body": "On Mon, Sep 25, 2023 at 01:18:56PM +1300, Thomas Munro wrote:\n[quoted earlier message trimmed]\n\ntopminnow (gcc23) and frogfish (gcc22) are also part of the compile farm.\nThey're faster than sungazer (gcc111) for src/test/recovery."
+  },
+  {
+   "author": "participant6",
+   "created_at": "2023-09-25 03:07:08",
+   "body": "Thomas Munro <thomas(dot)<email-scrubbed>> writes:\n[quoted earlier message trimmed]\n\nThat one is mine, so let me know if there's something particular\nyou'd like me to check.\n\n\t\t\tregards, tom lane"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2023-09-25 03:29:54",
+   "body": "On Sun, Sep 24, 2023 at 11:07:08PM -0400, Tom Lane wrote:\n[quoted earlier message trimmed]\n\nThat would help, thanks!  Could it be possible to check if the\nattached patch applied on HEAD influences the fate of the recovery\ntest 009_twophase.pl?  That's one thing I am really doubting about,\nand we've not done much since REL_16_STABLE has been forked..\n\n(I'm still trying to get an environment where this can be reproduced,\nbut qemu takes time.)\n--\nMichael"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-09-25 03:47:12",
+   "body": "On Mon, Sep 25, 2023 at 4:07 PM Tom Lane <<email-scrubbed>> wrote:\n[quoted earlier message trimmed]\n\nThanks!  But after spending the best part of a day installing and\ncompiling stuff at snail's pace, I have just this moment managed to\nreproduce this reliably on an emulator running Debian armhf (= armv7).\nSo hopefully I can track the issue down from here without bothering\nbuild farm owners."
+  },
+  {
+   "author": "participant6",
+   "created_at": "2023-09-25 04:59:09",
+   "body": "Thomas Munro <thomas(dot)<email-scrubbed>> writes:\n> On Mon, Sep 25, 2023 at 4:07 PM Tom Lane <<email-scrubbed>> wrote:\n>> That one is mine, so let me know if there's something particular\n>> you'd like me to check.\n\n[quoted earlier message trimmed]\n\nFWIW, here's what I see on mamba:\n\nProgram terminated with signal SIGSEGV, Segmentation fault.\n#0  pg_comp_crc32c_sb8 (crc=3197562372, crc(at)entry=4294967295, \n    data=data(at)entry=0xfda6e030, len=<optimized out>) at pg_crc32c_sb8.c:56\n56                      uint32          a = *p4++ ^ crc;\n(gdb) bt\n#0  pg_comp_crc32c_sb8 (crc=3197562372, crc(at)entry=4294967295, \n    data=data(at)entry=0xfda6e030, len=<optimized out>) at pg_crc32c_sb8.c:56\n#1  0x0195ae5c in ValidXLogRecord (state=0xfde5cc88, record=0xfda6e018, \n    recptr=<optimized out>) at xlogreader.c:1195\n#2  0x0195cf18 in XLogDecodeNextRecord (state=state(at)entry=0xfde5cc88, \n    nonblocking=<optimized out>) at xlogreader.c:842\n#3  0x0195d0c8 in XLogReadAhead (state=0xfde5cc88, \n    nonblocking=nonblocking(at)entry=false) at xlogreader.c:969\n#4  0x01959760 in XLogPrefetcherNextBlock (pgsr_private=4259700408, \n    lsn=0xfda6b8a0) at xlogprefetcher.c:496\n#5  0x0195a72c in lrq_prefetch (lrq=<optimized out>) at xlogprefetcher.c:256\n#6  lrq_complete_lsn (lsn=50520048, lrq=0xfda6b858) at xlogprefetcher.c:294\n#7  XLogPrefetcherReadRecord (prefetcher=prefetcher(at)entry=0xfde5deb8, \n    errmsg=errmsg(at)entry=0xffffdd88) at xlogprefetcher.c:1041\n#8  0x01960054 in ReadRecord (xlogprefetcher=0xfde5deb8, emode=emode(at)entry=15, \n    fetching_ckpt=fetching_ckpt(at)entry=false, replayTLI=replayTLI(at)entry=3)\n    at xlogrecovery.c:3067\n#9  0x01963188 in PerformWalRecovery () at xlogrecovery.c:1756\n#10 0x01952594 in StartupXLOG () at xlog.c:5470\n#11 0x01c26e3c in StartupProcessMain () at startup.c:267\n#12 0x01c1b504 in AuxiliaryProcessMain (auxtype=auxtype(at)entry=StartupProcess)\n    at auxprocess.c:141\n#13 0x01c2276c in StartChildProcess (type=StartupProcess) at postmaster.c:5347\n#14 0x01c260ec in PostmasterMain (argc=argc(at)entry=4, \n    argv=argv(at)entry=0xffffe1e4) at postmaster.c:1457\n#15 0x01ee39d8 in main (argc=4, argv=0xffffe1e4) at main.c:198\n\n(gdb) f 1\n#1  0x0195ae5c in ValidXLogRecord (state=0xfde5cc88, record=0xfda6e018, \n    recptr=<optimized out>) at xlogreader.c:1195\n1195            COMP_CRC32C(crc, ((char *) record) + SizeOfXLogRecord, record->xl_tot_len - SizeOfXLogRecord);\n(gdb) p *record\n$3 = {xl_tot_len = 0, xl_xid = 0, xl_prev = 0, xl_info = 0 '\\000', \n  xl_rmid = 0 '\\000', xl_crc = 0}\n\nSure looks like ValidXLogRecord is assuming that record->xl_tot_len\ncan be trusted without reservation.\n\n\t\t\tregards, tom lane"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-09-25 05:05:03",
+   "body": "On Mon, Sep 25, 2023 at 5:59 PM Tom Lane <<email-scrubbed>> wrote:\n> Sure looks like ValidXLogRecord is assuming that record->xl_tot_len\n> can be trusted without reservation.\n\nI think there is something at least theoretically a bit fishy about\nthe ancient code that re-reads the page, doesn't consider short reads,\nand assumes that record->xl_tot_len hasn't changed since last time it\nloaded and validated it.  But I think that's also very unlikely to go\nwrong, and it's not the problem here.\n\nThe problem is that bae868ca removed something we still need:\n\n-               /* XXX: more validation should be done here */\n-               if (total_len < SizeOfXLogRecord)\n-               {\n-                       report_invalid_record(state,\n-\n\"invalid record length at %X/%X: expected at least %u, got %u\",\n-\nLSN_FORMAT_ARGS(RecPtr),\n-\n(uint32) SizeOfXLogRecord, total_len);\n-                       goto err;\n-               }\n+               /* We'll validate the header once we have the next page. */\n                gotheader = false;\n\nIf you happened to run into zeroes where an xl_tot_len is wanted right\nat the end of a page (or any value not big enough to get you to the\nnext page), we'll fall through to the single-page branch, and then go\ndirectly to the CRC check, but then ValidXLogRecord() subtracts\nSizeOfXLogRecord and gets a crazy big length.  The CRC implementation\nroutines on modern computers happened to use pointer arithmetic that\nterminates immediately without accessing any memory, which is why\nnothing was obviously wrong on most systems.  The _sb8.c\nimplementation for older ARM, MIPS etc use a length-based loop, and\nread off into deep space.\n\nDraft patch attached, including a new test for 039_end_of_wal.pl that\nfails on all systems without the above code."
+  },
+  {
+   "author": "participant6",
+   "created_at": "2023-09-25 05:13:37",
+   "body": "Michael Paquier <<email-scrubbed>> writes:\n> On Sun, Sep 24, 2023 at 11:07:08PM -0400, Tom Lane wrote:\n>> That one is mine, so let me know if there's something particular\n>> you'd like me to check.\n\n[quoted earlier message trimmed]\n\nApplying this does *not* fix it.  Stack trace looks the same\nas in my previous message.\n\n\t\t\tregards, tom lane"
+  },
+  {
+   "author": "participant6",
+   "created_at": "2023-09-25 05:29:26",
+   "body": "Thomas Munro <thomas(dot)<email-scrubbed>> writes:\n[quoted earlier message trimmed]\n\nAh-hah.  Maybe there should be an Assert in the modern CRC code path\nthat detects the bogus arguments?\n\n> Draft patch attached, including a new test for 039_end_of_wal.pl that\n> fails on all systems without the above code.\n\nBoth the 009 and 039 tests pass on mamba with this patch.  I did\nnot read the code, but testing-wise it seems good.\n\n\t\t\tregards, tom lane"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2023-09-25 06:52:12",
+   "body": "On Mon, Sep 25, 2023 at 01:13:37AM -0400, Tom Lane wrote:\n> Applying this does *not* fix it.  Stack trace looks the same\n> as in my previous message.\n\nOkay.  Thanks anyway for the test!\n--\nMichael"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-09-25 22:14:52",
+   "body": "On Mon, Sep 25, 2023 at 6:29 PM Tom Lane <<email-scrubbed>> wrote:\n> Ah-hah.  Maybe there should be an Assert in the modern CRC code path\n> that detects the bogus arguments?\n\nYeah.  Assertion added, and pushed.  Thanks for confirming on mamba,\nand thanks also to Alexander for an off-list test report."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2023-09-26 00:34:56",
+   "body": "On Tue, Sep 26, 2023 at 11:14:52AM +1300, Thomas Munro wrote:\n> Yeah.  Assertion added, and pushed.  Thanks for confirming on mamba,\n> and thanks also to Alexander for an off-list test report.\n\nYeah++, thanks!\n--\nMichael"
+  }
+ ],
+ "images": [],
+ "slug": "pg_bug_17928",
+ "base_commit": {
+  "provider": "github",
+  "repo": "postgres/postgres",
+  "default_branch": "master",
+  "commit_sha": "375407f4940ba0922513666f00852c54943eb1a0",
+  "as_of": "2023-05-11 08:00:01",
+  "method": "github_commits_until"
+ }
+}

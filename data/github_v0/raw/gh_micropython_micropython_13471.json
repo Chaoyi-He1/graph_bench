@@ -1,0 +1,241 @@
+{
+ "repo": "micropython/micropython",
+ "number": 13471,
+ "url": "https://github.com/micropython/micropython/issues/13471",
+ "title": "STM32: SPI.read(n) fails if n > 1 (regression)",
+ "state": "closed",
+ "labels": [
+  "bug"
+ ],
+ "reporter": "reporter",
+ "created_at": "2024-01-18T14:59:13Z",
+ "closed_at": "2024-03-08T01:35:06Z",
+ "body": "This arose driving an EEPROM using hard SPI on Pyboard D hardware (soft SPI works OK). Baudrate was 5MHz, other args default. Hardware is a Pyboard D on a DIP28 adaptor on a small PCB with a pair of EEPROM chips on the bus. Traces are very short. This setup has worked in the past when developing [this driver](https://github.com/reporter/micropython_eeprom/blob/master/eeprom/spi/SPI.md), and in fact still works with a Pyboard D SF2W running\r\n```\r\nMicroPython v1.18-355-g9ab66b50c-dirty on 2022-04-29; PYBD-SF2W with STM32F722IEK\r\n```\r\nWith a Pyboard D SF6W running\r\n```\r\nMicroPython v1.22.1 on 2024-01-05; PYBD-SF6W with STM32F767IIK\r\n```\r\nit behaves as follows. A single byte read from an arbitrary address returns the correct contents, but a multi-byte read returns a bytes object of the correct length but containing zeros. To investigate the fault reading was done with a simple `spi.read(n)`. The hardware was examined with an LA: the single byte and multi-byte reads were identical aside from the extra byte and conformed with the device spec. The MISO result for a 2-byte read was as follows:\r\n![Image](https://github.com/reporter/micropython-samples/blob/master/temp/read_2_hard.jpg?raw=true)\r\n\r\nThe LA shows correct data being transmitted by the EEPROM but `spi.read(2)` returned `b'\\x00\\x00'`.",
+ "comments": [
+  {
+   "author": "reporter",
+   "created_at": "2024-01-19T14:24:37Z",
+   "body": "I can't claim to fully grasp the code, but [this line](https://github.com/micropython/micropython/blob/16c6bc47cf2b9247418bca8c0d1361167d08594e/ports/stm32/spi.c#L603) does indicate that multi-byte transfers use DMA, while single byte ones do not. Not a smoking gun, perhaps, but maybe a dripping water pistol..."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-01-19T22:29:15Z",
+   "body": "From what you've shown it can probably be tested on a standalone pybd with a miso pin simply tied high, should return 1's when working, 0's on failure.\nIt does sound like it could be a mixup / overlap of dma channel configs; these are  separate for each stm chip family which would explain why it's not seen on _all_ stm boards.\nAlso, the onboard SPI flash chips are used softspi and hard qspi, again explaining why it's not seen there.\n\nIs it straightforward for you to test on some more versions, get a closer idea of when the issue came in?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-01-20T11:16:53Z",
+   "body": "Unfortunately tying the pin high does not demonstrate the failure. I also tried linking `MOSI` and `MISO` and running the following:\r\n```python\r\nfrom machine import Pin, SoftSPI, SPI\r\n#spi = SoftSPI(baudrate=5_000_000, sck=Pin('Y6'), miso=Pin('Y7'), mosi=Pin('Y8'))\r\nspi = SPI(2, baudrate=5_000_000)\r\nwbuf = bytearray(b'\\xaa' * 10)\r\nrbuf = bytearray(100)\r\nmvb = memoryview(rbuf)\r\nspi.write_readinto(wbuf, mvb[1:11])\r\nprint(rbuf[:15])\r\n```\r\nThis also failed to demonstrate the issue.\r\n\r\nI'd welcome any suggestion how I might be making a mistake here, but as far as I can see the LA trace is textbook correct. It has me completely foxed: I can't see why single byte transfers work and multi byte ones fail; or why hard SPI has problems while soft SPI works with transfers of any length. The latter has been extensively tested.\r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-01-20T18:10:28Z",
+   "body": "@participant1 \r\n\r\n> Is it straightforward for you to test on some more versions, get a closer idea of when the issue came in?\r\n\r\nI tested pre-built firmware from the website. V1.18 is the most recent version that passes. V1.19.1 (and later) fail. Hence between January and June 2022. Git blame shows some changes to `spi.c` two years ago."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-01-20T23:47:43Z",
+   "body": "Assuming it could be a dma config issue; the dma configs are different for each SPI peripheral index (eg. `SPI(0)` vs `SPI(1)`).\n\nIs your failing test on a particular SPI index, or multiple ones?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-01-21T11:13:19Z",
+   "body": "I am using SPI(2) - the only port available on the DIP28 adaptor (and used on my PCB). Testing SPI(1) would require new hardware - which I could do if this test is of sufficient importance. Please advise."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-01-21T23:34:36Z",
+   "body": "I was asking about the index just to assist in reproducing and/or looking for code changes related to that index, I'll have a quick play with SPI(2) here and see if I can repro.\r\n\r\nStrange that wiring other things to SPI2 isn't reproducing it for you... that could make it harder to track down... \r\n\r\nDid you look at the CS line with the LA by any chance? does it behave correctly in 1 vs multibyte ? Edit oh that's a moot point, CS is always manually controlled!\r\n\r\nHave you tried testing at a much lower frequency to see if it changes?\r\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-01-21T23:45:28Z",
+   "body": "Maybe re-run the failing code against the eeprom, ie. reproduce the failure again, then  print out the pins to ensure they're still configured for spi correctly? eg.\r\n```\r\n>>> Pin('Y6')\r\nPin(Pin.cpu.B13, mode=Pin.ALT, pull=Pin.PULL_DOWN, alt=Pin.AF5_SPI2)\r\n>>> Pin('Y7')\r\nPin(Pin.cpu.C2, mode=Pin.ALT, pull=Pin.PULL_DOWN, alt=Pin.AF5_SPI2)\r\n>>> Pin('Y8')\r\nPin(Pin.cpu.C3, mode=Pin.ALT, pull=Pin.PULL_DOWN, alt=Pin.AF5_SPI2)\r\n```\r\n... and check there's no other code elsewhere accidentally enabling any other pins on AF for SPI2 (should certainly be unlikely, just an idea)"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-01-22T14:11:28Z",
+   "body": "The top trace on the LA is `CS\\`. All LA signals are identical with single and multi byte transfers except for the extra clock pulses and MISO data as shown.\r\n\r\nI checked for the notion that pins are being reconfigured under working and failing firmware builds.\r\n```\r\nWorking firmware 1.18\r\n>>> from machine import Pin\r\n>>> Pin('Y6')\r\nPin(Pin.cpu.B13, mode=Pin.ALT, pull=Pin.PULL_DOWN, af=Pin.AF5_SPI2)\r\n>>> Pin('Y7')\r\nPin(Pin.cpu.C2, mode=Pin.ALT, pull=Pin.PULL_DOWN, af=Pin.AF5_SPI2)\r\n>>> Pin('Y8')\r\nPin(Pin.cpu.C3, mode=Pin.ALT, pull=Pin.PULL_DOWN, af=Pin.AF5_SPI2)\r\n>>> \r\nCurrent firmware 1.22.1\r\n>>> Pin('Y6')\r\nPin(Pin.cpu.B13, mode=Pin.ALT, pull=Pin.PULL_DOWN, alt=Pin.AF5_SPI2)\r\n>>> Pin('Y7')\r\nPin(Pin.cpu.C2, mode=Pin.ALT, pull=Pin.PULL_DOWN, alt=Pin.AF5_SPI2)\r\n>>> Pin('Y8')\r\nPin(Pin.cpu.C3, mode=Pin.ALT, pull=Pin.PULL_DOWN, alt=Pin.AF5_SPI2)\r\n``` \r\nTo put this into context I was reluctant to raise this issue especially as the loopback test passed. I therefore went to lengths to be sure there wasn't a silly mistake on my part swapping hardware - even assembling a new PCB - and checking signals with a scope (they look fine). The code is a simple test of the [EEPROM library](https://github.com/reporter/micropython_eeprom/blob/master/eeprom/spi/SPI.md). This was developed with hard SPI some years ago. It stopped working after a firmware upgrade.\r\n\r\nThe following observations seem pertinent.\r\n\r\nIt works fine with no other change if `HARD` is set to `False`:\r\n```python\r\n            if HARD:\r\n                spi = SPI(2, baudrate=5_000_000)\r\n            else:\r\n                spi = SoftSPI(baudrate=5_000_000, sck=Pin(\"Y6\"), miso=Pin(\"Y7\"), mosi=Pin(\"Y8\"))\r\n```\r\nObservations about the firmware:\r\n1. The firmware handles single transfers without using DMA; single transfers always work.\r\n2. There were changes to the DMA code at the time where the firmware starts to fail.\r\n\r\nI'm struggling to see how this can be other than a firmware issue - but I'm as baffled as you by the loopback and \"tied high\" tests.\r\n"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-01-23T15:51:37Z",
+   "body": "I have no EEPROM, so I wired up a flash device to SPI2. The result are mixed. Sometimes it reads data from the flash, sometimes not. Reading from the command area like flash ID fails always. Reading the sfdp area returns sometimes useful data, mos of the time it reads 0.\r\n\r\nSoftSPI works flawless. Loopback works. Changing phase has no effect."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-01-23T16:35:34Z",
+   "body": "Another observation: The baudrate cannot be changed. it's always 375 kHz. And yes, the data in the logic analyzer is fine."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-01-23T18:03:39Z",
+   "body": "@participant2 Thanks for confirming, but I can't confirm your baudrate observation. The above LA trace shows 9 cycles in 2μs which is close to 5MHz.\r\n\r\nI am getting more odd results with hard SPI. With the aim of creating a reproducer I wired up a 74LS73 JK with `clk` connected to `sck` and `Q` connected to `MISO`. `clr\\` was connected to pin Y4. The aim was to produce the same 0x55 data as in the above LA trace. I tested with the following.\r\n```python\r\nfrom machine import SPI, Pin\r\nrst = Pin(\"Y4\", Pin.OUT)\r\nspi = SPI(2, baudrate=5_000_000)\r\nspi.write(b'\\x06')\r\nspi.write(b'\\x02\\0\\0\\0\\0')  # Emulate EEPROM setup\r\nrst(0)\r\nrst(1)  # Reset the JK\r\nspi.read(20)  # b'UUUUUUUUUUUUUUUUUUUU' i.e. good (0x55).\r\n```\r\nThe writes have no effect (`MOSI` is unconnected) but I wanted to replicate the same SPI commands as in the driver. The test did not reproduce the fault. I unplugged the Pyboard and plugged it into my EEPROM test rig and it failed. This makes no sense to me.\r\n\r\nI then created a build from current source, fully expecting the failure to occur. Yet it worked.\r\n\r\nI've just about run out of ideas. The totally consistent takeaways are:\r\n1. Firmware <= 1.18 works.\r\n2. Soft SPI works.\r\n3. Single byte reads (and all writes) work.\r\n\r\nI am convinced that there is some kind of marginal condition with hard SPI multi-byte reads, but finding a guaranteed repro is proving to be beyond me."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-01-23T19:22:26Z",
+   "body": "@reporter @dpgeorge \r\nI just noticed that reading from SPI works if spi.write_readinto() is used and the write and read buffers are different objects. If the buffers are the same, it fails. And in extmod/machine_spi.c, spi.read() uses the same buffer for read & write:\r\n```\r\nSTATIC mp_obj_t mp_machine_spi_read(size_t n_args, const mp_obj_t *args) {\r\n    vstr_t vstr;\r\n    vstr_init_len(&vstr, mp_obj_get_int(args[1]));\r\n    memset(vstr.buf, n_args == 3 ? mp_obj_get_int(args[2]) : 0, vstr.len);\r\n    mp_machine_spi_transfer(args[0], vstr.len, vstr.buf, vstr.buf);\r\n    return mp_obj_new_bytes_from_vstr(&vstr);\r\n}\r\nMP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(mp_machine_spi_read_obj, 2, 3, mp_machine_spi_read);\r\n```\r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-01-24T11:12:54Z",
+   "body": "@participant2 Good find.\r\n\r\nI replaced instances of multi-byte reads with `spi.write_readinto()` **with different buffers** and the driver now works with hard SPI on STM32 running latest firmware."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-01-24T13:03:58Z",
+   "body": "Good. But that should only be a temporary patch."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-01-24T13:28:16Z",
+   "body": "Sure. On my PC only.\r\n\r\nWhat I'd like to know, when the detailed cause is discovered, is why these three attempts at a repro did not exhibit the fault:\r\n1. Tying MISO to a level (as suggested by @participant1).\r\n2. Linking MOSI and MISO.\r\n3. Toggling MISO.\r\n\r\nIt is a remarkably elusive bug."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-01-24T13:55:58Z",
+   "body": "I understand why that happens:  it seems to read the output data instead of the input data.  And that is by default 0. In test 2 the data which you read is the one you send. It may be interesting to invert the levels between MOSI and MISO. \r\nAlso: if one defines a different value than 0 as data to be written while reading as second argument to spi.read(), it returns that value. \r\n\r\nThere was also the question if SPI(1) is affected as well: it is."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-01-27T11:40:35Z",
+   "body": "I made that test with an inverter between MOSI and MISO, and sent `spi,read(5, 0x55)`. It failed as expected, returning `b'UUUUU'` instead of the inverted value `b'\\xaa\\xaa\\xaa\\xaa\\xaa'`.  Reading a single byte works fine, as you stated."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-01-27T13:01:57Z",
+   "body": "Unfortunately my response a couple of days ago was lost - probably finger trouble on my part. I'll try again :)\r\n\r\nHere is a test I did with the JK toggling `MISO`:\r\n```python\r\nMPY: soft reboot\r\nMicroPython v1.22.1 on 2024-01-05; PYBD-SF6W with STM32F767IIK\r\nType \"help()\" for more information.\r\n>>> \r\npaste mode; Ctrl-C to cancel, Ctrl-D to finish\r\n=== from machine import SPI, Pin\r\n=== rst = Pin(\"Y4\", Pin.OUT)\r\n=== spi = SPI(2, baudrate=5_000_000)\r\n=== spi.write(b'\\x02\\0\\0\\0\\0')\r\n=== rst(0)  # Reset the JK\r\n=== rst(1)\r\n=== spi.read(20, 0xFF)\r\n=== \r\nb'UUUUUUUUUUUUUUUUUUUU'\r\n```\r\nIt seems that my hardware isn't producing the same results as yours.\r\n\r\nMy experience of this bug is that its behaviour is not easily reproduced, nor is it deterministic. When testing with the EEPROM I had locations 0..9 holding 0x55. Subsequent locations were 0, except for one byte which was 0xFF. Printing the first 20 locations consistently failed to return 0x55, but occasionally the location containing 0xFF was correctly returned.\r\n\r\nThe rock-solid consistent observations I can make are now:\r\n1. Firmware <= 1.18 works.\r\n2. Soft SPI works.\r\n3. Single byte reads (and all writes) work.\r\n4.  `spi.write_readinto()` with different buffers works.\r\n"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-01-27T21:14:18Z",
+   "body": "Since looking at the changes to the files related to SPI and DMA did not help, I made simple brute force binary search though the ~600 commits between V1.18 and v1.19 and identified a commit which made it fail.:\r\n\r\n`c49d5207e py/persistentcode: Remove unicode feature flag from .mpy file.`\r\n\r\nAt the commit before that one SPI works fine.\r\n`b295b6f1f py/persistentcode: Remove obsolete comment about qstr window size.`\r\n\r\nThat seems strange. @reporter, maybe you could verify that.\r\n\r\nEdit: I verified that behavior again this morning, starting after each checkout with a complete new submodule update, clean & build of mpy-cross and the SF6 firmware. The behavior is the same. Commit `b295b6f1f` works, the next commit `c49d5207e` fails. For testing I just connect MISO to GND and run `spi.read(3, 0xff)`. In the good case, it returns \r\n`b'\\x00\\x00\\x00'`, in the bad case it returns `b'UUU'`.\r\n\r\nEdit2: Build set-up: PC with debian bookworm, GCC compilers both 10.3 or 12.3."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-01-28T12:17:46Z",
+   "body": "Unfortunately I can't replicate this. The \"bad\" c49d5207e and \"good\" b295b6f1f build behave identically. Both behave as follows:\r\n1. Testing with EEPROM: fail. Multi-byte reads return zeros.\r\n2. Testing with MISO tied low: `spi.read(20, 0xff)` returns zeros.\r\n3. MISO toggling: `spi.read(20, 0xff)` returns b'UUUU...'.\r\n\r\nHowever tests 2 and 3 always pass here, even with the latest release build. I have never managed to replicate your results."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-01-28T13:10:01Z",
+   "body": "That's good and bad. Good, because it is not understandable why this commit should fail. Bad, because w/o replication it's hard to progress. I made another test of building the firmware at the actual master branch commit with the `DEBUG=1`. That disables optimization. This version works here in the flash drive test.\r\n\r\nSide notes: \r\n- ~~I have still a SCL discrepancy. Setting SCL to 10MHz results in a 6Mhz SCL signal.~~ At 12Mhz I get 12 MHz. So it was a integer division phenomenon.\r\n- The MISO toggling test with an external J/K flip-flop may may have a different active edge vs. data fetch relation than the EEPROM.\r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-01-28T17:50:29Z",
+   "body": "I wish we could find some common ground. Here is the most basic test:\r\n1. Install release build PYBD_SF6-20240105-v1.22.1.dfu\r\n2. Connect Y7 (MISO for SPI(2) to gnd.\r\n3. Fire up mpremote and paste the follwing:\r\n\r\n```python\r\nfrom machine import SPI\r\nspi = SPI(2, baudrate=5_000_000)\r\nspi.read(3, 0xff)\r\n```\r\nThis is the outcome here. I tied Y7 directly to Gnd, ignoring the JK.\r\n```python\r\nConnected to MicroPython at /dev/ttyACM0\r\nUse Ctrl-] or Ctrl-x to exit this shell\r\nMicroPython v1.22.1 on 2024-01-05; PYBD-SF6W with STM32F767IIK\r\nType \"help()\" for more information.\r\n>>> \r\npaste mode; Ctrl-C to cancel, Ctrl-D to finish\r\n=== from machine import SPI\r\n=== spi = SPI(2, baudrate=5_000_000)\r\n=== spi.read(3, 0xff)\r\n=== \r\nb'\\x00\\x00\\x00'\r\n>>> \r\n```\r\nDo you see `b'\\xff\\xff\\xff'`?\r\n\r\n> The MISO toggling test with an external J/K flip-flop may may have a different active edge vs. data fetch relation than the EEPROM.\r\n\r\nThe JK is a 74LS73 which I chose because it is negative edge triggered. With J and K high it therefore reproduces the waveform in my original LA image. The fact that it produces different results from the EEPROM has me completely beat :("
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-01-28T18:55:13Z",
+   "body": "Same as your's here:\r\n```py\r\nMicroPython v1.22.1 on 2024-01-05; PYBD-SF6W with STM32F767IIK\r\nType \"help()\" for more information.\r\n>>> \r\npaste mode; Ctrl-C to cancel, Ctrl-D to finish\r\n=== from machine import SPI\r\n=== spi = SPI(2, baudrate=5_000_000)\r\n=== spi.read(3, 0xff)\r\n=== \r\nb'\\xff\\xff\\xff'\r\n>>> \r\n```\r\nSo we have a common ground of fails.\r\n\r\nedit: With that firmware (and my own builds as well), reading the flash chip does not always return \\x00. It reads some data, and partially it represents the content of the flash. Yes, I agree that this is some subtle timing issue, especially since the DEBUG builds work, which run somewhat slower and do not perform aggressive optimization.\r\n\r\nedit 2: Compiling with -O1 or -O2 instead of -Os works as well. Only using -O2 results in a warning from libm. That surprises me.\r\n```\r\n../../lib/libm_dbl/__rem_pio2_large.c:417:24: error: 'fq' may be used uninitialized [-Werror=maybe-uninitialized]\r\n```"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-01-28T21:38:10Z",
+   "body": "Another observation. If I recompile only stm32f7xx_hal_dma.c from stm32_lib, then SPI works. \r\n"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-01-29T09:53:31Z",
+   "body": "I changed the Makefile, building the DMA driver with the option -O2.\r\n```\r\n# Don't use -Os for this file, because it causes DMA to fail sometimes for a F7 MPU\r\n# if src and dest in memory are identical. May apply to other MCU's as well.\r\nifeq ($(MCU_SERIES), f7)\r\n$(BUILD)/lib/stm32lib/STM32$(MCU_SERIES_UPPER)xx_HAL_Driver/Src/stm32$(MCU_SERIES)xx_hal_dma.o: COPT += -O2\r\nendif\r\n```\r\nWith that change SPI at the PYBD_SF6 works. It may be useful for other fast MCU's as well."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-01-29T09:57:28Z",
+   "body": "@reporter b.t.w.: Yesterday i had set up a toggle circuitry as well, using a 74HC74 instead of a 74HC73. I did not have the latter in my drawers. That one switches on the rising edge of CLK. That setup show the bug as well.\r\n\r\nEdit: @reporter Thereis PR #13549 now making it easier for you if you want to test."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-01-29T11:38:04Z",
+   "body": "Oh great find! Does the buffer just need to be declared `volatile` instead?"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-01-29T12:09:22Z",
+   "body": "> Does the buffer just need to be declared volatile instead?\r\n\r\nI do not know how that would work. The file for which the code optimization of the compiler was changed is the HAL driver in the STM32 lib for DMA. That driver receives the source and destination addresses as arguments at runtime separately for each transfer direction in the transfer handle.\r\nSecondly, I did/could not want to change the library code, unless it's clear what happens."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-01-29T14:00:14Z",
+   "body": "At yes good point, I always think changing gcc opt settings like this is only hiding underlying problems, but it's far cleaner than needing to change the library code."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-01-29T15:49:59Z",
+   "body": "@reporter b.t.w. I managed to revive my partially broken PYBD_SF2: Same problem, same patch fixes it."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-01-30T11:54:44Z",
+   "body": "@participant2 I have built #13549 and the EEPROM board now passes the full test, which is quite rigorous. Well done in finding this!\r\n"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-01-30T11:56:34Z",
+   "body": "Thank you for verification. I'm still wondering what the difference is. But the only way to tell seems to compile with both options and compare the assembly output."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-01-30T12:56:47Z",
+   "body": "I'll close this as complete.\r\n\r\nI'd be interested to hear if you do find the detailed cause - I'm still puzzled over some of the observations I made."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-01-30T14:10:41Z",
+   "body": "Comparing the generated code files is pointless. They are completely different, with the -O2 disassembly file about 6.5k smaller than the -Os disassembly file and like 2000 differences. Part of the is related to init/exit code of functions not being iterated."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-01-30T19:47:58Z",
+   "body": "Adding optimization control statements into the file `stm32f7xx_hal_dma.c` I could tell the function that needs the -O2 option to work. It is `HAL_DMA_Start_IT()`. Again quite reasonable. "
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-01-31T03:46:54Z",
+   "body": "Suggest keeping this open until a fix is merged.\r\n\r\nI don't have a Pyboard D, but I have a few questions if anyone feels like indulging me:\r\n\r\n1. If you do the same read from Python twice in a row, does the bug trigger twice or only the first time?\r\n2. If you do a longer read (i.e. `spi.read(40, 0xff)` vs `spi.read(3, 0xff)`) does the bug still trigger? The comments above only seem to mention it happening on short reads but this might be a coincidence.\r\n3. If you add some kind of delay before and after the two calls to `HAL_DMA_Start_IT()` in `HAL_SPI_TransmitReceive_DMA()` (stm32f7xx_hal_spi.c), does this bug still trigger? For example, `HAL_Delay(1)`."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-01-31T07:41:02Z",
+   "body": "1. Doing the same read twice in a row triggers the error twice.\r\n2. The bug triggers for all lengths. With longer reads only the first n bytes may be disturbed, where n varies from attempt to attempt. But we have seen that already before. Example:\r\n\r\n```\r\n>>> spi.read(30,0x55);\r\nb'UUUUUUUUUUUUUUUUUUUUUUUUUUUUUU'\r\n>>> spi.read(30,0x55);\r\nb'UUUUUUUUUUUUUUUU\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00'\r\n>>> spi.read(40,0x55);\r\nb'UUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUU\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00'\r\n>>> spi.read(40,0x55);\r\nb'UUUUUUUUUUUUUUUU\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x\r\n```\r\n\r\n3. Adding some delay before and after the two calls to HAL_DMA_Start_IT() does not help. The error is still present."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-02-03T16:50:03Z",
+   "body": "After two days break, I looked again at the topic and repeated the delay test. Adding a short delay before the first call to HAL_DMA_Start_IT() after line 1808 in stm32f7xx_hal_spi.c works now. The same happens if I insert that delay at the begin of HAL_DMA_Start_IT(). Even HAL_Delay(0) seems sufficient, reducing the delay to upmost three function calls, one assignment and one compare.\r\nStrange! But that complies with the observation, that changing the optimization for either stm32f7xx_hal_spi.c or stm32f7xx_dma_spi.c worked."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-02-21T03:35:33Z",
+   "body": "Thanks to everyone's solid work reproducing and narrowing down this issue, I think the root cause is found (see PR linked above).\r\n\r\nIf anyone who is able to reproduce on their board can please test again this branch, I'd be very appreciative. :grin: "
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-02-21T03:41:47Z",
+   "body": "There may be no \"smoking gun\" bit of assembly for this root cause, due to speculative reads! [From the Cortex-M7 TRM chapter on speculative accesses](https://developer.arm.com/documentation/ddi0489/f/memory-system/speculative-accesses):\r\n\r\n> Speculative cache linefills can be initiated to any Cacheable memory address, and in rare cases, regardless of whether there is any instruction that causes the cache linefill.\r\n\r\nThis likely explains why changing the optimisation level around related code worked around the issue."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-02-21T07:50:37Z",
+   "body": "> If anyone who is able to reproduce on their board can please test again this branch, I'd be very appreciative. 😁\r\n\r\nDone. The fix works in my test."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-02-21T11:16:37Z",
+   "body": "This fix works for me too."
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "micropython/micropython",
+  "default_branch": "master",
+  "commit_sha": "16c6bc47cf2b9247418bca8c0d1361167d08594e",
+  "as_of": "2024-01-18T14:59:13Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_micropython_micropython_13471"
+}

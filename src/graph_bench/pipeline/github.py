@@ -115,7 +115,11 @@ def download_image(url: str, dest_stem: Path) -> Path | None:
             if not ctype.startswith('image'):
                 return None
             ext = mimetypes.guess_extension(ctype) or '.png'
-            dest = dest_stem.with_suffix(ext.replace('.jpe', '.jpg'))
+            # NOT with_suffix(): a dot in the repo name ('llama.cpp')
+            # would truncate the stem ('…_llama.png').
+            dest = dest_stem.parent / (
+                dest_stem.name + ext.replace('.jpe', '.jpg')
+            )
             dest.write_bytes(r.read())
             return dest
     except Exception:  # noqa: BLE001 - attachment loss is non-fatal

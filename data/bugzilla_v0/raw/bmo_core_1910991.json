@@ -1,0 +1,223 @@
+{
+ "repo": "bugzilla.mozilla.org/Core",
+ "number": 1910991,
+ "url": "https://bugzilla.mozilla.org/show_bug.cgi?id=1910991",
+ "title": "HTTP/3 connections do not survive network change, leading to resource loading failures",
+ "state": "FIXED",
+ "labels": [
+  "Networking"
+ ],
+ "reporter": "reporter",
+ "created_at": "2024-07-31T21:40:45Z",
+ "closed_at": "2025-01-08T04:44:22Z",
+ "body": "In bug 1706377 logic was added to move http/2 connections to the pending list on change of network in order to gracefully allow subsequent transactions to complete.\nSee `Always create new connection after network change`\nhttps://phabricator.services.mozilla.com/D189523\n\nHowever we don't yet do this for HTTP/3 connections, see [ConnectionEntry::VerifyTraffic](https://searchfox.org/mozilla-central/rev/b60bff00c0fe136f35e4d6f3316911c090a39f23/netwerk/protocol/http/ConnectionEntry.cpp#490-530)",
+ "comments": [
+  {
+   "author": "reporter",
+   "created_at": "2024-08-01T13:43:36Z",
+   "body": "From Kershaw:\nQUIC supports connection migration:\n[RFC 9000: QUIC: A UDP-Based Multiplexed and Secure Transport](https://www.rfc-editor.org/rfc/rfc9000.html#name-connection-migration)"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-08-21T13:10:53Z",
+   "body": "Based on discussions with Lars, I may have the wrong terminology in this bug.\n\nBut the intent is to handle scenarios where the user transitions networks as gracefully as possible (for HTTP/3 requests)."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-08-21T16:03:38Z",
+   "body": "Specifically, allowing the network request to complete even if the client changes network interfaces midway.\n\nFor example, when a mobile user migrates from Wifi to Cellular.\n\ni.e. as described here:\nhttps://www.debugbear.com/blog/http3-quic-protocol-guide\n\n```\nBy attaching an unencrypted connection identifier (CID) to each QUIC packet header, QUIC doesn’t have to reset the connection like TCP if the device switches to a new network (for example, from a 4G network to Wi-Fi, or vice versa) or the IP addresses or port numbers change for any other reason.\n\nWith the help of connection migration, QUIC doesn’t have to redo the handshake under the new conditions and HTTP/3 doesn’t have to re-request the files that were being downloaded when the network migration happened — which can be a problem in the case of larger files or video streaming.\n```"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-08-27T13:26:48Z",
+   "body": "For what it is worth QUIC Conection Migration is tested on Neqo's CI in:\n\nhttps://github.com/mozilla/neqo/blob/main/neqo-transport/src/connection/tests/migration.rs\n\nDo I understand correctly that this Bug is about:\n\n1. Update [`ConnectionEntry::VerifyTraffic`](https://searchfox.org/mozilla-central/rev/b60bff00c0fe136f35e4d6f3316911c090a39f23/netwerk/protocol/http/ConnectionEntry.cpp#490-530) to include h3 connections.\n2. Update [`test_verify_traffic.js`](https://phabricator.services.mozilla.com/D189523) test to ensure h3 connections are included in `ConnectionEntry::VerifyTraffic`, in other words test that h3 connections are requeued with change of network."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-08-27T21:33:21Z",
+   "body": "(In reply to comment #4)\n> For what it is worth QUIC Conection Migration is tested on Neqo's CI in:\n> \n> https://github.com/mozilla/neqo/blob/main/neqo-transport/src/connection/tests/migration.rs\n> \n\nGood to know!\n\n> Do I understand correctly that this Bug is about:\n> \n> 1. Update [`ConnectionEntry::VerifyTraffic`](https://searchfox.org/mozilla-central/rev/b60bff00c0fe136f35e4d6f3316911c090a39f23/netwerk/protocol/http/ConnectionEntry.cpp#490-530) to include h3 connections.\n> 2. Update [`test_verify_traffic.js`](https://phabricator.services.mozilla.com/D189523) test to ensure h3 connections are included in `ConnectionEntry::VerifyTraffic`, in other words test that h3 connections are requeued with change of network.\n\nSo I'm not sure what changes are needed to the necko stack in order to accomplish this (very possibly the two areas you mentioned).\n\nI'm going to write a test case within Firefox first to verify that this isn't already being handled gracefully."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-10-02T19:48:51Z",
+   "body": "Here's a distilled scenario where I'm seeing what looks to be the problem:\n\n1. Load a website over HTTP/3\n    I've written a simple test which is hosted on Cloudflare\n    https://connectionreuse.pages.dev/connection_reuse\n    Use dev tools to verify the connection was made over HTTP/3\n\n2. Change networks (e.g. switch to a different access point)\n    Wait until the connection change is complete\n\n3. Have the site make a new request. \n    On this site you can press the \"Load New Image\" button to request a new image.\n\nResult:\nImage request fails\n\nProfile with nsHttp logs capture, https://share.firefox.dev/3TSdekj\n\nAt times I've seen the connection drop down to HTTP/2, which is better, but not connection migration."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-10-02T19:58:55Z",
+   "body": "Seeing this behaviour on Android as well."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-10-02T20:16:27Z",
+   "body": "An alternative way to reproduce this behaviour, related to a scenario Kershaw observed:\n\n1. Visit a site that is served over HTTP/3, like https://www.cloudflare.com (verify via devtools)\n2. Change networks: access point, interface etc\n3. Try to interact with the site, e.g. click on `Learn More` button\n\nResult:\nNothing happens, interaction silently fails"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-10-02T21:58:16Z",
+   "body": "This particular problem where the site becomes non-responsive after a change of networks _may_ be limited to Cloudflare servers\nThe sites mentioned in comment 6 and comment 8 are both cloudflare HTTP/3 sites.\n\nSeeing the same issue here, a Shopify site that looks to be hosted by cloudflare:\nhttps://www.windsorstore.com/\n\nAnd another site on cloudflare:\nhttps://wordsift.org/"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-10-02T22:09:22Z",
+   "body": "[removed duplicate comment]"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-10-03T19:36:56Z",
+   "body": "Yes, it seems that the problem of requests failing after a network change is occurring only on Cloudflare's HTTP/3 servers and not on Google Cloud servers.\n\nI deployed the same simple test site used in [comment 6](https://bugzilla.mozilla.org/show_bug.cgi?id=1910991#c6) to both platforms:\n\nCloudflare: https://connectionreuse.pages.dev/connection_reuse\nGoogle Cloud: https://connectionmigration.ue.r.appspot.com/\n\nBoth sites are accessible over HTTP/3, after changing networks (e.g., switching from Wi-Fi to cellular), I can continue to perform requests against the Google Cloud site without any issues. However, the problem persists on the Cloudflare-hosted site, where requests fail following a network change.\n\nAlso reproduced the issue in Fx 131 Release, desktop and android."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-10-08T13:54:10Z",
+   "body": "For what it is worth, the Quic Interop Runner [does not](https://github.com/quic-interop/quic-interop-runner/blob/bf780fcb4f08a81087e28bf85f5e408bf7a9cce5/testcases.py#L1657-L1661) currently support the [connection migration testcase](https://github.com/quic-interop/quic-interop-runner/blob/bf780fcb4f08a81087e28bf85f5e408bf7a9cce5/testcases.py#L1385-L1457). In other words, we are not testing (active) connection migration between Neqo and e.g. Quiche (Cloudflare Quic/http3) on CI today."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-10-10T12:01:02Z",
+   "body": "Some updates:\n - I can confirm Andrew's observation in comment #11: this issue seems to only occur on Cloudflare's site. Firefox works fine with Google’s site after a network change.\n - In the transport parameters returned from the Cloudflare site, there is no [disable_active_migration](https://www.rfc-editor.org/rfc/rfc9000.html#section-18.2-4.30.1) specified, so their server should support connection migration.\n - The Wireshark trace shows that the Cloudflare site stops sending packets back to Firefox after a network change.\n - Chrome appears to always establish new connections after a network change, which is why it works fine with Cloudflare’s site. I think we should consider doing the same."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-10-10T12:51:36Z",
+   "body": "(In reply to comment #13)\n>  - Chrome appears to always establish new connections after a network change, which is why it works fine with Cloudflare’s site. I think we should consider doing the same.\n\nIs that for any network change event, or only those that result in an IP change?\nI suppose there could be network change events where the computer temporarily disconnects and the NAT clears existing port mappings, but I don't think that's common, is it?\n\nIf I understand correctly, we don't yet support active connection migration, so it kinda makes sense that Cloudflare stops sending back packets if suddenly they seem to be coming from a different source port.\nWhen a network change happens, neqo should ensure that the quic connection is still alive before continuing to use it. If the local IP address changes, then we definitely should use a new connection."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-10-10T17:51:24Z",
+   "body": "I'm only seeing requests fail after a network change in which the IP changes.\n\nSo scenarios in which the next HTTP/3 request against cloudflare will succeed:\n• disabling and re-enabling wifi\n• changing wifi access points and then changing back to the original one\n\n\nI have a work-in-progress test here*\nhttps://phabricator.services.mozilla.com/D224261\n\nCan be run with \n```\n./mach raptor --browsertime -t browsertime-connection-migration\n```\n*However, at the moment you have to manually change networks midway through the test."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-10-10T17:58:50Z",
+   "body": "(Or run with Chrome via\n```\n./mach raptor --browsertime -t browsertime-connection-migration --app chrome --binary={path to Chrome binary}\n```\n)"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-10-15T14:28:30Z",
+   "body": "At the moment I'm having a hard time reproducing this issue.\ni.e., I can connect via HTTP/3, but the change of IP does not break the connection.\nI'm forcing DoH on to ensure that we wait for HTTPS RR, and thus ECH on cloudflare."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-10-15T16:05:57Z",
+   "body": "Running the test from [comment 6](https://bugzilla.mozilla.org/show_bug.cgi?id=1910991#c6) I'm sometimes seeing the image load over an HTTP/2 connection (while the main document was loaded over HTTP/3)."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-10-16T13:26:08Z",
+   "body": "I spent some time trying to figure out what's so special about cloudflare.\nThe thing that most bugged me was that wireshark would fail to decrypt the QUIC packets into HTTP3 for the cloudflare connection when setting `SSLKEYLOGFILE=/tmp/keys.txt`, but it worked for google HTTP/3 connections.\nAfter doing mozregression multiple times it subsequently pointed me to:\n\nBug 1874464 - Turn on native HTTPS-RR DNS resolver on Nightly\nBug 1892528 - part 2: enable Xyber768 in Http/3 under a pref.\nBug 1910360 - network.http.http3.use_nspr_for_io\n\nAfter each mozregression session I would fix the pref then continue.\n\nMy mozregression_prefs.json now looks like this:\n```\n{\n  \"security.sandbox.content.level\": 0,\n  \"network.trr.mode\": 5,\n  \"network.dns.native_https_query\": false,\n  \"network.http.http3.enable_kyber\": false,\n  \"network.http.http3.use_nspr_for_io\": true\n}\n```\n\nWith all these prefs set I can always decrypt HTTP3 in wireshark.\nAfter a network change I can see that Firefox is still using sending HTTP/3 packets using the DCID established before the IP change.\nWill upload pcap."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-10-16T13:26:26Z",
+   "body": "Created attachment 9431235\ncf_connectionreuse_hang.pcapng"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-10-16T18:52:58Z",
+   "body": "(In reply to Valentin Gosu [:valentin] (he/him) from comment #19)\n> \n> My mozregression_prefs.json now looks like this:\n> ```\n> {\n>   \"security.sandbox.content.level\": 0,\n>   \"network.trr.mode\": 5,\n>   \"network.dns.native_https_query\": false,\n>   \"network.http.http3.enable_kyber\": false,\n>   \"network.http.http3.use_nspr_for_io\": true\n> }\n> ```\n> \n> With all these prefs set I can always decrypt HTTP3 in wireshark.\n> After a network change I can see that Firefox is still using sending HTTP/3 packets using the DCID established before the IP change.\n> Will upload pcap.\n\nAs I believe can be surmised from this set of preferences, ECH does not appear to a cause of this bug.\nWhen I set `network.dns.http3_echconfig.enabled`  to false, I can still reproduce the bug.\n\nOddly, I'm now only seeing the failed requests after the _second_ change of networks (in fact, when switching back to the original network).\nI'll try to find out why that's the case."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-10-16T19:43:16Z",
+   "body": "In this profile, https://share.firefox.dev/3U8H8Ri, the load of the first image (`other-image1.jpg`) succeeds while the second (`other-image2.jpg`) fails.\n\nAs far as I can tell in the case of the first image load we've pruned idle connections and so make a new connection:\n```\nLogMessages — (nsHttp) GetH2orH3ActiveConn() request for ent 14d37cb20 .S........[tlsflags0x00000000]connectionreuse.pages.dev:443 <ROUTE-via connectionreuse.pages.dev:443> {NPN-TOKEN h3}^partitionKey=%28https%2Cconnectionreuse.pages.dev%29 did not find an active connection\n000\n```\nFor the second image load, which fails, we find an active connection and use it:\n```\nLogMessages — (nsHttp) GetH2orH3ActiveConn() request for ent 14d37cb20 .S........[tlsflags0x00000000]connectionreuse.pages.dev:443 <ROUTE-via connectionreuse.pages.dev:443> {NPN-TOKEN h3}^partitionKey=%28https%2Cconnectionreuse.pages.dev%29 found an active experienced connection 13ba09d80 in native connection entry\n```"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-10-17T08:24:22Z",
+   "body": "My current approach is looking at the following:\n    - [mozilla::net::nsHttpConnectionMgr::DispatchTransaction](https://searchfox.org/mozilla-central/rev/3265b390bd5d08a5be520253ef71835bcb715f27/netwerk/protocol/http/nsHttpConnectionMgr.cpp#1692) calls [mozilla::net::HttpConnectionUDP::Activate](https://searchfox.org/mozilla-central/rev/3265b390bd5d08a5be520253ef71835bcb715f27/netwerk/protocol/http/HttpConnectionUDP.cpp#189)\n    - if it is experienced, we should also check if [NeqoHttp3Conn::local_addr](https://searchfox.org/mozilla-central/rev/3265b390bd5d08a5be520253ef71835bcb715f27/netwerk/socket/neqo_glue/src/lib.rs#47) is the same as the machine's current IP (still trying to figure out how to do that)."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-10-17T08:35:48Z",
+   "body": ">     - if it is experienced, we should also check if [NeqoHttp3Conn::local_addr](https://searchfox.org/mozilla-central/rev/3265b390bd5d08a5be520253ef71835bcb715f27/netwerk/socket/neqo_glue/src/lib.rs#47) is the same as the machine's current IP (still trying to figure out how to do that).\n\nThe local address is initialized [here](https://searchfox.org/mozilla-central/rev/aecbd5cdd28a09e11872bc829d9e6e4b943e6e49/netwerk/protocol/http/HttpConnectionUDP.cpp#101) and it seems that we always use `0.0.0.0`. So, I think we can't use it to compare the current IP."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-10-17T08:38:10Z",
+   "body": ">\n>  - In the transport parameters returned from the Cloudflare site, there is no [disable_active_migration](https://www.rfc-editor.org/rfc/rfc9000.html#section-18.2-4.30.1) specified, so their server should support connection migration.\n\nFYI: Cloudflare confirmed that they don't support connection migration for now and they will roll out a change to set `disable_active_migration`."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-10-17T10:29:13Z",
+   "body": "(In reply to comment #24)\n> >     - if it is experienced, we should also check if [NeqoHttp3Conn::local_addr](https://searchfox.org/mozilla-central/rev/3265b390bd5d08a5be520253ef71835bcb715f27/netwerk/socket/neqo_glue/src/lib.rs#47) is the same as the machine's current IP (still trying to figure out how to do that).\n> \n> The local address is initialized [here](https://searchfox.org/mozilla-central/rev/aecbd5cdd28a09e11872bc829d9e6e4b943e6e49/netwerk/protocol/http/HttpConnectionUDP.cpp#101) and it seems that we always use `0.0.0.0`. So, I think we can't use it to compare the current IP.\n\nI think we should be able to get the local IP address if we call [mozilla::net::nsUDPSocket::Connect](https://searchfox.org/mozilla-central/rev/aecbd5cdd28a09e11872bc829d9e6e4b943e6e49/netwerk/base/nsUDPSocket.cpp#692-698).\n\nWe don't currently do that, so it might not be a trivial change."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-12-17T12:19:29Z",
+   "body": "Take this from Valentin.\nI'd like to try the approach mentioned in comment #0."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-12-17T13:36:47Z",
+   "body": "Do I understand correctly that we would thus always create a new QUIC connection on network change, even though, if supported by the server, we could use QUIC's connection migration instead?\n\nDo I understand correctly that long term, we would want to make use of QUIC's connection migration, if available?"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-12-18T12:56:12Z",
+   "body": "Created attachment 9444347\nBug 1910991 - After network change, move HTTP/3 connection to the pending list to ensure we always create a new one, r=#necko"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-12-18T21:20:46Z",
+   "body": "Created attachment 9444445\nBug 1910991 - Test case, r=#necko"
+  },
+  {
+   "author": "pulsebot@bmo.tld",
+   "created_at": "2025-01-06T15:08:00Z",
+   "body": "Pushed by <email-scrubbed>:\nhttps://hg.mozilla.org/integration/autoland/rev/e7f9c389c2ca\nAfter network change, move HTTP/3 connection to the pending list to ensure we always create a new one, r=necko-reviewers,valentin\nhttps://hg.mozilla.org/integration/autoland/rev/1dff4e00746b\nTest case, r=necko-reviewers,valentin"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-01-06T16:57:24Z",
+   "body": "Backed out for causing bp-nu bustages in MockNetworkLayerController.h.\n* [Backout link](https://hg.mozilla.org/integration/autoland/rev/16743d73769e4100b165317db5eaf5a99df755f1)\n* [Push with failures](https://treeherder.mozilla.org/jobs?repo=autoland&group_state=expanded&resultStatus=pending%2Crunning%2Csuccess%2Ctestfailed%2Cbusted%2Cexception&fromchange=89995f2da9832e106d73a329495c61aad1ea25cd&searchStr=windows%2C2012%2Cx64%2Cdebug%2Cbuild-win64-non-unified%2Fplain%2Cbp-nu&tochange=16743d73769e4100b165317db5eaf5a99df755f1&selectedTaskRun=MqZgspy3TluSyLHcURZCFw.0) \n* [Failure Log](https://treeherder.mozilla.org/logviewer?job_id=488897024&repo=autoland) \n* Failure line: /builds/worker/checkouts/gecko/netwerk/base/MockNetworkLayerController.h(34,32): error: implicit instantiation of undefined template 'nsTBaseHashSet<nsCStringHashKey>' \n\nPlease also check [these xpcshell failures](https://treeherder.mozilla.org/jobs?repo=autoland&group_state=expanded&resultStatus=pending%2Crunning%2Csuccess%2Ctestfailed%2Cbusted%2Cexception&fromchange=045f7425a7fc1c8d951252f60803b71725b09e38&searchStr=windows%2C11%2Cx64%2C22h2%2Cwebrender%2Copt%2Cxpcshell%2Ctests%2Cfrom%2Cmsix%2Cpackages%2Ctest-windows11-64-2009-qr%2Fopt-xpcshell-msix%2Cx1&tochange=16743d73769e4100b165317db5eaf5a99df755f1&selectedTaskRun=ACPSrKP4S8e9eOMbTD3Iqg.0).\n* [Failure Log](https://treeherder.mozilla.org/logviewer?job_id=488909932&repo=autoland)"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-01-07T11:28:47Z",
+   "body": "https://treeherder.mozilla.org/jobs?repo=try&revision=a6f7fa6d9fbd2e1883d07d17692d6831b998e189&selectedTaskRun=DaZ-5vyAQCqZlTduR7hepQ.0"
+  },
+  {
+   "author": "pulsebot@bmo.tld",
+   "created_at": "2025-01-07T11:39:41Z",
+   "body": "Pushed by <email-scrubbed>:\nhttps://hg.mozilla.org/integration/autoland/rev/7d93026bd93e\nAfter network change, move HTTP/3 connection to the pending list to ensure we always create a new one, r=necko-reviewers,valentin\nhttps://hg.mozilla.org/integration/autoland/rev/39bdda0a1574\nTest case, r=necko-reviewers,valentin"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2025-01-08T04:44:22Z",
+   "body": "https://hg.mozilla.org/mozilla-central/rev/7d93026bd93e\nhttps://hg.mozilla.org/mozilla-central/rev/39bdda0a1574"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-04-01T19:17:04Z",
+   "body": "(In reply to comment #6)\n> Here's a distilled scenario where I'm seeing what looks to be the problem:\n> \n> 1. Load a website over HTTP/3\n>     I've written a simple test which is hosted on Cloudflare\n>     https://connectionreuse.pages.dev/connection_reuse\n>     Use dev tools to verify the connection was made over HTTP/3\n> \n> 2. Change networks (e.g. switch to a different access point)\n>     Wait until the connection change is complete\n> \n> 3. Have the site make a new request. \n>     On this site you can press the \"Load New Image\" button to request a new image.\n> \n> Result:\n> Image request fails\n> \n> Profile with nsHttp logs capture, https://share.firefox.dev/3TSdekj\n> \n> At times I've seen the connection drop down to HTTP/2, which is better, but not connection migration.\n\nI was revisiting scenarios like this -- just noting that this indeed now fixed in Fenix -- i.e. the new request (from \"Load New Image\") no longer fails."
+  }
+ ],
+ "_attachments_meta": [
+  {
+   "id": 9431235,
+   "content_type": "application/x-pcapng",
+   "description": "cf_connectionreuse_hang.pcapng"
+  },
+  {
+   "id": 9444347,
+   "content_type": "text/x-phabricator-request",
+   "description": "Bug 1910991 - After network change, move HTTP/3 connection to the pending list to ensure we always create a new one, r=#necko"
+  },
+  {
+   "id": 9444445,
+   "content_type": "text/x-phabricator-request",
+   "description": "Bug 1910991 - Test case, r=#necko"
+  }
+ ],
+ "images": [],
+ "slug": "bmo_core_1910991",
+ "base_commit": {
+  "provider": "github",
+  "repo": "mozilla-firefox/firefox",
+  "default_branch": "main",
+  "commit_sha": "daa46360f257576d51d6931b4b0c620f474aa2d5",
+  "as_of": "2024-07-31T21:40:45Z",
+  "method": "github_commits_until"
+ }
+}

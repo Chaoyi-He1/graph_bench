@@ -1,0 +1,223 @@
+{
+ "repo": "denoland/deno",
+ "number": 20594,
+ "url": "https://github.com/denoland/deno/issues/20594",
+ "title": "mssql ConnectionError",
+ "state": "closed",
+ "labels": [
+  "bug",
+  "node compat",
+  "node API"
+ ],
+ "reporter": "reporter",
+ "created_at": "2023-09-21T01:07:54Z",
+ "closed_at": "2025-08-28T12:26:18Z",
+ "body": "Hi, I'm trying to run this code with mssql:\r\n\r\n```ts\r\nimport sql from \"npm:mssql@10.0.1\";\r\n\r\nconst sqlConfig = {\r\n  server: \"localhost\",\r\n  user: \"sa\",\r\n  password: \"\",\r\n  database: \"my_db\",\r\n  options: {\r\n    trustServerCertificate: true,\r\n  },\r\n};\r\n\r\nconst pool = await sql.connect(sqlConfig);\r\nconst result = await pool.request().execute(\"spGetPurchases\");\r\n\r\nconsole.dir(result);\r\n\r\n```\r\n\r\nBut I get `Uncaught (in promise) ConnectionError: Failed to connect to localhost:1433 in 15000ms`\r\n\r\n![image](https://github.com/denoland/deno/assets/7959437/0b985b64-7653-4c06-b3c0-5d934d066aa5)\r\n\r\nI decided to do the same with Node v18.16.0 and worked perfectly:\r\n\r\n```js\r\nconst sql = require(\"mssql\");\r\n\r\nconst sqlConfig = {\r\n  server: \"localhost\",\r\n  user: \"sa\",\r\n  password: \"\",\r\n  database: \"my_db\",\r\n  options: {\r\n    trustServerCertificate: true,\r\n  },\r\n};\r\n\r\n(async () => {\r\n  const pool = await sql.connect(sqlConfig);\r\n  const result2 = await pool.request().execute(\"spGetPurchases\");\r\n\r\n  console.dir(result2);\r\n})();\r\n\r\n```\r\n![image](https://github.com/denoland/deno/assets/7959437/bb59e95f-6844-46d1-b6e2-77fe60b68c27)\r\n\r\nThe SQL Server is running inside a Docker container:\r\n\r\n![image](https://github.com/denoland/deno/assets/7959437/5e4d5034-b748-4bff-8a5d-5ea6c23c663a)\r\n\r\nI'm using Deno latest version as of today v1.37.0\r\n",
+ "comments": [
+  {
+   "author": "reporter",
+   "created_at": "2023-09-21T17:56:07Z",
+   "body": "Alright I found some logs that may be helpful. I created a second project using Node so debugging is easier:\r\n\r\nFor Node v18.16.0, open node_modules/tedious/lib/connection.js#1040\r\n\r\nIn line 1041 add a console.log ->\r\n\r\n![image](https://github.com/denoland/deno/assets/7959437/b19e33a3-c3e1-4333-84c2-0f74286a595b)\r\n\r\nBack in Deno project, set `vendor: true` in deno.json and open node_modules/.deno/tedious@16.4.1/node_modules/tedious/lib/connection.js#1040\r\n\r\nIn line 1041 add a console.log ->\r\n\r\n![image](https://github.com/denoland/deno/assets/7959437/4cf7c6a9-83ad-4e0f-aee5-43197cc6138b)\r\n\r\nNode logs:\r\n\r\n```\r\nState change: Initialized -> Connecting\r\nconnected to localhost:1433\r\nState change: Connecting -> SentPrelogin\r\nState change: SentPrelogin -> SentTLSSSLNegotiation\r\nTLS negotiated (ECDHE-RSA-AES128-GCM-SHA256, TLSv1.2)\r\nState change: SentTLSSSLNegotiation -> SentLogin7WithStandardLogin\r\nPacket size changed from 4096 to 4096\r\nState change: SentLogin7WithStandardLogin -> LoggedInSendingInitialSql\r\nState change: LoggedInSendingInitialSql -> LoggedIn\r\nState change: LoggedIn -> Final\r\nconnection to localhost:1433 closed\r\nState is already Final\r\nState change: Initialized -> Connecting\r\nconnected to localhost:1433\r\nState change: Connecting -> SentPrelogin\r\nState change: SentPrelogin -> SentTLSSSLNegotiation\r\nTLS negotiated (ECDHE-RSA-AES128-GCM-SHA256, TLSv1.2)\r\nState change: SentTLSSSLNegotiation -> SentLogin7WithStandardLogin\r\nPacket size changed from 4096 to 4096\r\nState change: SentLogin7WithStandardLogin -> LoggedInSendingInitialSql\r\nState change: LoggedInSendingInitialSql -> LoggedIn\r\nState change: LoggedIn -> SentClientRequest\r\nState change: SentClientRequest -> LoggedIn\r\nState change: LoggedIn -> SentClientRequest\r\nState change: SentClientRequest -> LoggedIn\r\n```\r\n\r\nDeno logs:\r\n\r\n```\r\nState change: Initialized -> Connecting\r\nconnected to localhost:1433\r\nState change: Connecting -> SentPrelogin\r\nState change: SentPrelogin -> SentTLSSSLNegotiation\r\nFailed to connect to localhost:1433 in 15000ms\r\nState change: SentTLSSSLNegotiation -> Final\r\nconnection to localhost:1433 closed\r\nState is already Final\r\n```\r\n\r\nIt seems there is a issue when attempting to negotiate the TLS certificate."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-11-23T15:41:52Z",
+   "body": "hi @reporter , i got the same issue, while is not a fix i managed to proceed with   ` encrypt: false`"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-11-23T15:55:52Z",
+   "body": "Could you run:\r\n\r\n`openssl s_client -connect localhost:1433`\r\n\r\n... and paste the output here? It may be that the underlying cipher supported by the DB engine is not supported by our TLS code."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-11-23T15:58:22Z",
+   "body": "`8085DC0201000000:error:8000003D:system library:BIO_connect:Connection refused:crypto/bio/bio_sock2.c:114:calling connect()\r\n8085DC0201000000:error:10000067:BIO routines:BIO_connect:connect error:crypto/bio/bio_sock2.c:116:\r\nconnect:errno=61\r\n`"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-11-23T16:08:39Z",
+   "body": "It looks like the TLS cipher should be supported -- I will make sure that we correctly enable it for our tls library."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-11-23T16:13:21Z",
+   "body": "@participant1 Could you run this from Deno 1.38.2, but using the address of your database?\r\n\r\n```\r\nlet hostname = 'HOSTNAME';\r\nlet port = PORT_NUMBER;\r\nlet conn = await Deno.connectTls({hostname, port});\r\nconsole.log(await conn.handshake();)\r\n```\r\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-11-23T17:21:23Z",
+   "body": "@participant2 here it is\r\n\r\n`error: Uncaught (in promise) ConnectionRefused: Connection refused (os error 61)\r\nlet conn = await Deno.connectTls({hostname, port});\r\n           ^\r\n    at async Object.connectTls (ext:deno_net/02_tls.js:36:51)\r\n    at async file:///Users/martino/d/varie/variedeno/main.ts:3:12`"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-11-23T18:02:19Z",
+   "body": "Hmm. It looks like the server is not running or is not accessible. Is the docker container running? Can you access it any other way?\n\nYou maybe need to use 0.0.0.0 as a hostname "
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-11-24T08:34:18Z",
+   "body": "Hi Matt, actually i can connect to that address at that port to SQLServer via mssql (with the encrypt: false option),  do you want me to run additional tests?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-11-27T17:01:27Z",
+   "body": "> `openssl s_client -connect localhost:1433`\r\n\r\n```text\r\nCONNECTED(00000003)\r\n009E1113B37F0000:error:0A000126:SSL routines:ssl3_read_n:unexpected eof while reading:ssl/record/rec_layer_s3.c:303:\r\n---\r\nno peer certificate available\r\n---\r\nNo client certificate CA names sent\r\n---\r\nSSL handshake has read 0 bytes and written 302 bytes\r\nVerification: OK\r\n---\r\nNew, (NONE), Cipher is (NONE)\r\nThis TLS version forbids renegotiation.\r\nCompression: NONE\r\nExpansion: NONE\r\nNo ALPN negotiated\r\nEarly data was not sent\r\nVerify return code: 0 (ok)\r\n---\r\n```\r\n\r\nRunning this code with Deno v1.38.3\r\n\r\n```js\r\nconst hostname = \"localhost\";\r\nconst port = 1433;\r\nconst conn = await Deno.connectTls({ hostname, port });\r\nconsole.log(await conn.handshake());\r\n```\r\n\r\n![image](https://github.com/denoland/deno/assets/7959437/374790b8-9c59-460a-addf-fd0afffa8bbb)\r\n\r\nMy Docker instance:\r\n\r\n![image](https://github.com/denoland/deno/assets/7959437/85904eb7-af44-4b68-91ef-8ea44ce3a5e9)\r\n\r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-11-27T17:09:22Z",
+   "body": "These are the logs from the container:\r\n\r\n```text\r\n2023-11-27 17:08:28.72 Logon       Error: 17821, Severity: 20, State: 1.\r\n2023-11-27 17:08:28.72 Logon       A valid TLS certificate is not configured to accept strict (TDS 8.0 and above) connections. The connection has been closed.\r\n```"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-12-11T09:43:26Z",
+   "body": "I have the same troubles as in https://github.com/denoland/deno/issues/20594#issuecomment-1730047671 while connecting to an Azure MS SQL server using mssql library .\r\n\r\nIn node.js, I can connect easily. In deno, when running \r\n\r\n```ts\r\nimport mssql from \"npm:mssql\";\r\nawait mssql.connect(\"Server=abcdef-dev-sql-db.123456.database.windows.net,1433;Database=somedb;User Id=someuser;Password=somepassword\"); # I've replaced the actual credentials here with fake ones ofc\r\n```\r\n\r\nI get this output:\r\n\r\n```\r\nState change: Initialized -> Connecting\r\nconnected to abcdef-dev-sql-db.123456.database.windows.net:1433\r\nState change: Connecting -> SentPrelogin\r\nState change: SentPrelogin -> SentTLSSSLNegotiation\r\nconnection to abcdef-dev-sql-db.123456.database.windows.net:1433 closed\r\nState change: SentTLSSSLNegotiation -> Final\r\nConnection lost - read ECONNRESET\r\nUncaught ConnectionError: Connection lost - read ECONNRESET\r\n    at file:///Users/jacek/src/myevaluations/windmill/node_modules/.deno/mssql@10.0.1/node_modules/mssql/lib/tedious/connection-pool.js:85:17\r\n    at Connection.onError (file:///Users/jacek/src/myevaluations/windmill/node_modules/.deno/tedious@16.6.1/node_modules/tedious/lib/connection.js:842:9)\r\n    at Object.onceWrapper (ext:deno_node/_events.mjs:508:26)\r\n    at Connection.emit (ext:deno_node/_events.mjs:395:35)\r\n    at Connection.emit (file:///Users/jacek/src/myevaluations/windmill/node_modules/.deno/tedious@16.6.1/node_modules/tedious/lib/connection.js:959:18)\r\n    at Connection.socketError (file:///Users/jacek/src/myevaluations/windmill/node_modules/.deno/tedious@16.6.1/node_modules/tedious/lib/connection.js:1345:12)\r\n    at Socket.<anonymous> (file:///Users/jacek/src/myevaluations/windmill/node_modules/.deno/tedious@16.6.1/node_modules/tedious/lib/connection.js:1048:12)\r\n    at Socket.emit (ext:deno_node/_stream.mjs:1854:9)\r\n    at emitErrorNT (ext:deno_node/_stream.mjs:1572:13)\r\n    at emitErrorCloseNT (ext:deno_node/_stream.mjs:1544:7)\r\n```\r\n\r\n`deno --version` output:\r\n\r\n```\r\ndeno 1.38.5 (release, aarch64-apple-darwin)\r\nv8 12.0.267.1\r\ntypescript 5.2.2\r\n```\r\n\r\nTesting `Deno.connectTls`:\r\n\r\ninput:\r\n```\r\nlet hostname = 'abcdef-dev-sql-db.123456.database.windows.net';\r\nlet port = 1433;\r\nlet conn = await Deno.connectTls({hostname, port});\r\nconsole.log(await conn.handshake())\r\n```\r\n\r\noutput:\r\n```\r\n[Object: null prototype] { alpnProtocol: null }\r\n```\r\n\r\nOutput for `openssl s_client -connect abcdef-dev-sql-db.123456.database.windows.net:1433`:\r\n\r\n```\r\ndepth=2 C=US, O=DigiCert Inc, OU=www.digicert.com, CN=DigiCert Global Root G2\r\nverify return:1\r\ndepth=1 C=US, O=Microsoft Corporation, CN=Microsoft Azure TLS Issuing CA 05\r\nverify return:1\r\ndepth=0 C=US, ST=WA, L=Redmond, O=Microsoft Corporation, CN=502330f57f6f.database.windows.net\r\nverify return:1\r\nConnecting to 10.10.1.254\r\nCONNECTED(00000005)\r\n---\r\nCertificate chain\r\n 0 s:C=US, ST=WA, L=Redmond, O=Microsoft Corporation, CN=502330f57f6f.database.windows.net\r\n   i:C=US, O=Microsoft Corporation, CN=Microsoft Azure TLS Issuing CA 05\r\n   a:PKEY: rsaEncryption, 2048 (bit); sigalg: RSA-SHA384\r\n   v:NotBefore: Nov 16 19:33:25 2023 GMT; NotAfter: Jun 27 23:59:59 2024 GMT\r\n 1 s:C=US, O=Microsoft Corporation, CN=Microsoft Azure TLS Issuing CA 05\r\n   i:C=US, O=DigiCert Inc, OU=www.digicert.com, CN=DigiCert Global Root G2\r\n   a:PKEY: rsaEncryption, 4096 (bit); sigalg: RSA-SHA384\r\n   v:NotBefore: Jul 29 12:30:00 2020 GMT; NotAfter: Jun 27 23:59:59 2024 GMT\r\n---\r\nServer certificate\r\n-----BEGIN CERTIFICATE-----\r\nMIIJLjCCBxa....\r\n-----END CERTIFICATE-----\r\nsubject=C=US, ST=WA, L=Redmond, O=Microsoft Corporation, CN=502330f57f6f.database.windows.net\r\nissuer=C=US, O=Microsoft Corporation, CN=Microsoft Azure TLS Issuing CA 05\r\n---\r\nNo client certificate CA names sent\r\nPeer signing digest: SHA256\r\nPeer signature type: RSA-PSS\r\nServer Temp Key: ECDH, secp384r1, 384 bits\r\n---\r\nSSL handshake has read 4534 bytes and written 865 bytes\r\nVerification: OK\r\n---\r\nNew, TLSv1.3, Cipher is TLS_AES_256_GCM_SHA384\r\nServer public key is 2048 bit\r\nThis TLS version forbids renegotiation.\r\nCompression: NONE\r\nExpansion: NONE\r\nNo ALPN negotiated\r\nEarly data was not sent\r\nVerify return code: 0 (ok)\r\n---\r\nread:errno=54\r\n---\r\nPost-Handshake New Session Ticket arrived:\r\nSSL-Session:\r\n    Protocol  : TLSv1.3\r\n    Cipher    : TLS_AES_256_GCM_SHA384\r\n    Session-ID: 3DC1...\r\n    Session-ID-ctx: \r\n    Resumption PSK: C2B4...\r\n    PSK identity: None\r\n    PSK identity hint: None\r\n    SRP username: None\r\n    TLS session ticket lifetime hint: 36000 (seconds)\r\n    TLS session ticket:\r\n    0000 - d1 ...\r\n    0010 - 2c ...\r\n\r\n    Start Time: 1702287665\r\n    Timeout   : 7200 (sec)\r\n    Verify return code: 0 (ok)\r\n    Extended master secret: no\r\n    Max Early Data: 0\r\n---\r\nread R BLOCK\r\n```\r\n\r\n@participant2 let me know if I can help anyhow differently in this.\r\n\r\nUnfortunately this currently blocks me in using mssql & deno for my project, as I need it to connect to Azure MS SQL :( \r\n\r\nP.S. My mssql server requires VPN connection. I've got enabled it globally on my OS X. I can connect to mssql server using node.js and DataGrip easily (without the need of preconfiguring any certificates in the connection settings). I tried adding `DENO_TLS_CA_STORE=system` to the `deno` but it doesn't help either."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-01-25T17:26:52Z",
+   "body": "Using Deno v1.40.1 now logs the following warnings:\r\n\r\n```\r\nwarning: Use of deprecated \"Deno.TcpConn.rid\" API. This API will be removed in Deno 2.\r\n\r\nStack trace:\r\n  at ext:deno_node/internal_binding/tcp_wrap.ts:295:14\r\n\r\nhint: Use `Deno.TcpConn` instance methods instead.\r\nhint: It appears this API is used by a remote dependency. Try upgrading to the latest version of that dependency.\r\n\r\nwarning: Use of deprecated \"Deno.TcpConn.rid\" API. This API will be removed in Deno 2.\r\n\r\nhint: Use `Deno.TcpConn` instance methods instead.\r\n\r\nwarning: Use of deprecated \"Deno.TcpConn.rid\" API. This API will be removed in Deno 2.\r\n\r\nhint: Use `Deno.TcpConn` instance methods instead.\r\n\r\nwarning: Use of deprecated \"Deno.TcpConn.rid\" API. This API will be removed in Deno 2.\r\n\r\nhint: Use `Deno.TcpConn` instance methods instead.\r\n\r\nerror: Uncaught (in promise) ConnectionError: Failed to connect to localhost:1433 in 15000ms\r\n    at file:///home/sant821/.cache/deno/npm/registry.npmjs.org/mssql/10.0.2/lib/tedious/connection-pool.js:85:17\r\n    at Connection.onConnect (file:///home/sant821/.cache/deno/npm/registry.npmjs.org/tedious/16.6.1/lib/connection.js:838:9)\r\n    at Object.onceWrapper (ext:deno_node/_events.mjs:508:26)\r\n    at Connection.emit (ext:deno_node/_events.mjs:383:28)\r\n    at Connection.emit (file:///home/sant821/.cache/deno/npm/registry.npmjs.org/tedious/16.6.1/lib/connection.js:959:18)\r\n    at Connection.connectTimeout (file:///home/sant821/.cache/deno/npm/registry.npmjs.org/tedious/16.6.1/lib/connection.js:1209:10)\r\n    at Timeout._onTimeout (file:///home/sant821/.cache/deno/npm/registry.npmjs.org/tedious/16.6.1/lib/connection.js:1154:12)\r\n    at cb (ext:deno_node/internal/timers.mjs:63:31)\r\n    at Object.action (ext:deno_web/02_timers.js:154:11)\r\n    at handleTimerMacrotask (ext:deno_web/02_timers.js:68:10)\r\n```"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-02-27T22:10:27Z",
+   "body": "> I have the same troubles as in [#20594 (comment)](https://github.com/denoland/deno/issues/20594#issuecomment-1730047671) while connecting to an Azure MS SQL server using mssql library .\r\n> \r\n> In node.js, I can connect easily. In deno, when running\r\n> \r\n> ```ts\r\n> import mssql from \"npm:mssql\";\r\n> await mssql.connect(\"Server=abcdef-dev-sql-db.123456.database.windows.net,1433;Database=somedb;User Id=someuser;Password=somepassword\"); # I've replaced the actual credentials here with fake ones ofc\r\n> ```\r\n> \r\n> I get this output:\r\n> \r\n> ```\r\n> State change: Initialized -> Connecting\r\n> connected to abcdef-dev-sql-db.123456.database.windows.net:1433\r\n> State change: Connecting -> SentPrelogin\r\n> State change: SentPrelogin -> SentTLSSSLNegotiation\r\n> connection to abcdef-dev-sql-db.123456.database.windows.net:1433 closed\r\n> State change: SentTLSSSLNegotiation -> Final\r\n> Connection lost - read ECONNRESET\r\n> Uncaught ConnectionError: Connection lost - read ECONNRESET\r\n>     at file:///Users/jacek/src/myevaluations/windmill/node_modules/.deno/mssql@10.0.1/node_modules/mssql/lib/tedious/connection-pool.js:85:17\r\n>     at Connection.onError (file:///Users/jacek/src/myevaluations/windmill/node_modules/.deno/tedious@16.6.1/node_modules/tedious/lib/connection.js:842:9)\r\n>     at Object.onceWrapper (ext:deno_node/_events.mjs:508:26)\r\n>     at Connection.emit (ext:deno_node/_events.mjs:395:35)\r\n>     at Connection.emit (file:///Users/jacek/src/myevaluations/windmill/node_modules/.deno/tedious@16.6.1/node_modules/tedious/lib/connection.js:959:18)\r\n>     at Connection.socketError (file:///Users/jacek/src/myevaluations/windmill/node_modules/.deno/tedious@16.6.1/node_modules/tedious/lib/connection.js:1345:12)\r\n>     at Socket.<anonymous> (file:///Users/jacek/src/myevaluations/windmill/node_modules/.deno/tedious@16.6.1/node_modules/tedious/lib/connection.js:1048:12)\r\n>     at Socket.emit (ext:deno_node/_stream.mjs:1854:9)\r\n>     at emitErrorNT (ext:deno_node/_stream.mjs:1572:13)\r\n>     at emitErrorCloseNT (ext:deno_node/_stream.mjs:1544:7)\r\n> ```\r\n> \r\n> `deno --version` output:\r\n> \r\n> ```\r\n> deno 1.38.5 (release, aarch64-apple-darwin)\r\n> v8 12.0.267.1\r\n> typescript 5.2.2\r\n> ```\r\n> \r\n> Testing `Deno.connectTls`:\r\n> \r\n> input:\r\n> \r\n> ```\r\n> let hostname = 'abcdef-dev-sql-db.123456.database.windows.net';\r\n> let port = 1433;\r\n> let conn = await Deno.connectTls({hostname, port});\r\n> console.log(await conn.handshake())\r\n> ```\r\n> \r\n> output:\r\n> \r\n> ```\r\n> [Object: null prototype] { alpnProtocol: null }\r\n> ```\r\n> \r\n> Output for `openssl s_client -connect abcdef-dev-sql-db.123456.database.windows.net:1433`:\r\n> \r\n> ```\r\n> depth=2 C=US, O=DigiCert Inc, OU=www.digicert.com, CN=DigiCert Global Root G2\r\n> verify return:1\r\n> depth=1 C=US, O=Microsoft Corporation, CN=Microsoft Azure TLS Issuing CA 05\r\n> verify return:1\r\n> depth=0 C=US, ST=WA, L=Redmond, O=Microsoft Corporation, CN=502330f57f6f.database.windows.net\r\n> verify return:1\r\n> Connecting to 10.10.1.254\r\n> CONNECTED(00000005)\r\n> ---\r\n> Certificate chain\r\n>  0 s:C=US, ST=WA, L=Redmond, O=Microsoft Corporation, CN=502330f57f6f.database.windows.net\r\n>    i:C=US, O=Microsoft Corporation, CN=Microsoft Azure TLS Issuing CA 05\r\n>    a:PKEY: rsaEncryption, 2048 (bit); sigalg: RSA-SHA384\r\n>    v:NotBefore: Nov 16 19:33:25 2023 GMT; NotAfter: Jun 27 23:59:59 2024 GMT\r\n>  1 s:C=US, O=Microsoft Corporation, CN=Microsoft Azure TLS Issuing CA 05\r\n>    i:C=US, O=DigiCert Inc, OU=www.digicert.com, CN=DigiCert Global Root G2\r\n>    a:PKEY: rsaEncryption, 4096 (bit); sigalg: RSA-SHA384\r\n>    v:NotBefore: Jul 29 12:30:00 2020 GMT; NotAfter: Jun 27 23:59:59 2024 GMT\r\n> ---\r\n> Server certificate\r\n> -----BEGIN CERTIFICATE-----\r\n> MIIJLjCCBxa....\r\n> -----END CERTIFICATE-----\r\n> subject=C=US, ST=WA, L=Redmond, O=Microsoft Corporation, CN=502330f57f6f.database.windows.net\r\n> issuer=C=US, O=Microsoft Corporation, CN=Microsoft Azure TLS Issuing CA 05\r\n> ---\r\n> No client certificate CA names sent\r\n> Peer signing digest: SHA256\r\n> Peer signature type: RSA-PSS\r\n> Server Temp Key: ECDH, secp384r1, 384 bits\r\n> ---\r\n> SSL handshake has read 4534 bytes and written 865 bytes\r\n> Verification: OK\r\n> ---\r\n> New, TLSv1.3, Cipher is TLS_AES_256_GCM_SHA384\r\n> Server public key is 2048 bit\r\n> This TLS version forbids renegotiation.\r\n> Compression: NONE\r\n> Expansion: NONE\r\n> No ALPN negotiated\r\n> Early data was not sent\r\n> Verify return code: 0 (ok)\r\n> ---\r\n> read:errno=54\r\n> ---\r\n> Post-Handshake New Session Ticket arrived:\r\n> SSL-Session:\r\n>     Protocol  : TLSv1.3\r\n>     Cipher    : TLS_AES_256_GCM_SHA384\r\n>     Session-ID: 3DC1...\r\n>     Session-ID-ctx: \r\n>     Resumption PSK: C2B4...\r\n>     PSK identity: None\r\n>     PSK identity hint: None\r\n>     SRP username: None\r\n>     TLS session ticket lifetime hint: 36000 (seconds)\r\n>     TLS session ticket:\r\n>     0000 - d1 ...\r\n>     0010 - 2c ...\r\n> \r\n>     Start Time: 1702287665\r\n>     Timeout   : 7200 (sec)\r\n>     Verify return code: 0 (ok)\r\n>     Extended master secret: no\r\n>     Max Early Data: 0\r\n> ---\r\n> read R BLOCK\r\n> ```\r\n> \r\n> @participant2 let me know if I can help anyhow differently in this.\r\n> \r\n> Unfortunately this currently blocks me in using mssql & deno for my project, as I need it to connect to Azure MS SQL :(\r\n> \r\n> P.S. My mssql server requires VPN connection. I've got enabled it globally on my OS X. I can connect to mssql server using node.js and DataGrip easily (without the need of preconfiguring any certificates in the connection settings). I tried adding `DENO_TLS_CA_STORE=system` to the `deno` but it doesn't help either.\r\n\r\nHaving the exact issue, unable to connect to Azure MSSQL dbs."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2024-05-16T13:02:25Z",
+   "body": "@nathanwhit are you planning on working on this in the near future?"
+  },
+  {
+   "author": "participant6",
+   "created_at": "2024-07-09T01:11:59Z",
+   "body": "Just like many others I too am blocked.\r\nThe workaround of `encrypt: false` is not possible within the Azure SQL context [as they enforce SSL\r\n](https://learn.microsoft.com/en-us/azure/azure-sql/database/security-overview?view=azuresql#transport-layer-security-encryption-in-transit)\r\n\r\nUnfortunately this is the bug that will force me to ditch Deno as no other possible workaround exists.\r\n\r\n"
+  },
+  {
+   "author": "participant7",
+   "created_at": "2024-09-20T19:48:06Z",
+   "body": "Like many others, I have been waiting for a fix for this.  I was hoping that this would work in 2.0, but I'm still getting the exact same errors as I did in 1.4x.  I would love to begin to use Deno, but this bug is preventing me from switching.\r\n\r\n@participant16 are you planning on addressing this any time soon?"
+  },
+  {
+   "author": "participant8",
+   "created_at": "2024-10-30T10:09:38Z",
+   "body": "Trying to convert a Node project to Deno and hitting the same issue. As a last measure, has anyone found a different module that doesn't have this problem ? Or is it something fundumental with the way Deno connects to MSSQL server ?"
+  },
+  {
+   "author": "participant6",
+   "created_at": "2024-10-30T10:32:50Z",
+   "body": "@participant8 I couldn't find a workable solution/workaround to this issue and was forced to port out."
+  },
+  {
+   "author": "participant9",
+   "created_at": "2024-10-30T14:25:59Z",
+   "body": "@participant8 Same here I'm afraid. I had to use Node.js instead. I just tried it again with the latest Deno (v2.0.4) and sadly, it still doesn't work. I don't think it's a fundamental Deno issue, \"just\" a Node.js compatibility issue. I suspect it's possible to write a new Deno-native SQL Server driver, but it's just that no one has (yet)."
+  },
+  {
+   "author": "participant10",
+   "created_at": "2024-12-12T14:22:00Z",
+   "body": "I believe that adoption of Deno depends of creators officially support ways to connect to database in platform. They have to learn with elixir community which has all components they need to create anything, sadly functional languages are not good."
+  },
+  {
+   "author": "participant11",
+   "created_at": "2025-02-06T11:18:52Z",
+   "body": "> Just like many others I too am blocked. The workaround of `encrypt: false` is not possible within the Azure SQL context [as they enforce SSL ](https://learn.microsoft.com/en-us/azure/azure-sql/database/security-overview?view=azuresql#transport-layer-security-encryption-in-transit)\n> \n> Unfortunately this is the bug that will force me to ditch Deno as no other possible workaround exists.\n\nWorks for me for development purpose, hope it can fix before our project needs to go to production."
+  },
+  {
+   "author": "participant9",
+   "created_at": "2025-02-06T11:48:48Z",
+   "body": "@littledivy - Any chance of an update on this with an ETA? I'm surprised this has sat so long. Deno generally seems to move faster than this... TIA!"
+  },
+  {
+   "author": "participant7",
+   "created_at": "2025-02-06T14:28:24Z",
+   "body": "@participant18 Can you please provide any kind of update on where this issue sits?  It's been added and removed from roadmaps and milestones for a year now.  For myself and many others, this is the single barrier preventing us from using Deno over Node.  "
+  },
+  {
+   "author": "participant12",
+   "created_at": "2025-02-08T15:26:38Z",
+   "body": "I’m also waiting on a fix for this issue for months now, since I can’t use `encrypt: false` in production."
+  },
+  {
+   "author": "participant13",
+   "created_at": "2025-03-14T08:23:54Z",
+   "body": "We have here the same problem. If course encryption is needed in production, so we are stuck to node because of this reason."
+  },
+  {
+   "author": "participant14",
+   "created_at": "2025-03-20T08:10:26Z",
+   "body": "I have a similar issue with a postgresql db.  \nImpossible to connect while it works fine in node and python.  \nI get \n\nCf. #28551 \n\nI find it suprising that such a foundational feature seems buggy in Deno, whose team is often super reactive.  \nIt makes is impossible to consider Deno in a microservice context - at least those using a db.  \nUnless this bug is very difficult to solve, this blind spot really is detrimental to Deno adoption in a corp prod env.  \n"
+  },
+  {
+   "author": "participant15",
+   "created_at": "2025-03-21T07:00:05Z",
+   "body": "Same here, I would love to use Deno in enterprise land where mssql ist common"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-04-15T00:47:42Z",
+   "body": "Gentle bump on this please 🙏🏼 @ry @participant18 @participant16 "
+  },
+  {
+   "author": "participant14",
+   "created_at": "2025-04-16T14:32:17Z",
+   "body": "SSL errors may have several causes - I suspect.  \nBut in my case - failure to connect to an Azure PostgreSQL - I fixed it by investigating the certificate on the DB side.  \nCf. https://github.com/denoland/deno/issues/28903#issuecomment-2809728945\n\nIn the case of mssql probably the only change is in the openssl command - to be checked.  \n\n```sh\necho | openssl s_client -connect your_mssql_server:1433\n```\n"
+  },
+  {
+   "author": "participant16",
+   "created_at": "2025-05-05T09:47:42Z",
+   "body": "The main problem blocking this issue is mssql terminates TLS on a duplex stream. But Deno internals only support terminating TLS on a TCP stream. We need infra to terminate TLS on any AsyncWrite+AsyncRead . To achieve that we tried to implement a JsStream struct that provides interoperability between rust and JS but it has been unsuccessful due to node internals relying heavily on the duplex being a fake net.Socket. So in Deno we need to essentially convert a duplex to a fake net.Socket that can be read/writen from rust for TLS termination.\n\nWork by Divy/Satya\n"
+  },
+  {
+   "author": "participant17",
+   "created_at": "2025-05-22T09:00:38Z",
+   "body": "I can confirm that using `encrypt: false` also worked for me. The issue indeed seems related to authentication. The same connection config did work on nodejs for me."
+  },
+  {
+   "author": "participant12",
+   "created_at": "2025-09-02T14:18:11Z",
+   "body": "The issue still persists for me on the latest Deno version `2.4.5`. Still only works with `encrypt: false`."
+  },
+  {
+   "author": "participant18",
+   "created_at": "2025-09-02T14:26:25Z",
+   "body": "@participant12 could you please open a new issue with your reproduction code? Thanks"
+  },
+  {
+   "author": "participant9",
+   "created_at": "2025-09-02T14:33:51Z",
+   "body": "@participant18 - Would the fix even be in v2.4.5? The PR was just on Aug 20th and approved on Aug 28th. v2.4.5 was released on Aug 21st.\n\n@participant12 Can you try Deno Canary? `deno upgrade canary` will upgrade Deno to the canary build (basically nightly) which should have the fix, then just `deno upgrade` will take you back to 2.4.5 when you've finished your test."
+  },
+  {
+   "author": "participant18",
+   "created_at": "2025-09-02T14:38:02Z",
+   "body": "Oh, you're right 🤦 the fix is only available on `canary`."
+  },
+  {
+   "author": "participant12",
+   "created_at": "2025-09-02T14:42:57Z",
+   "body": "@participant9 `canary` works!\n\n@participant18 my bad, I thought the fix was released with `2.4.5`"
+  },
+  {
+   "author": "participant9",
+   "created_at": "2025-09-03T17:28:02Z",
+   "body": "@littledivy - **Thank you** for your work on this! This was a roadblock for me on a project a while back. Really glad it won't be next time, thanks to you!"
+  },
+  {
+   "author": "participant19",
+   "created_at": "2025-10-16T06:04:43Z",
+   "body": "Hi I'm trying to use this in supabase edge functions is this possible? "
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "denoland/deno",
+  "default_branch": "main",
+  "commit_sha": "0981aefbdce4c0be961f6447bf68069c518227ef",
+  "as_of": "2023-09-21T01:07:54Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_denoland_deno_20594"
+}

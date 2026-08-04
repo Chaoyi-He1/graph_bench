@@ -1,0 +1,189 @@
+{
+ "repo": "bugzilla.mozilla.org/Core",
+ "number": 1871969,
+ "url": "https://bugzilla.mozilla.org/show_bug.cgi?id=1871969",
+ "title": "signal 4 on freebsd arm64 due to missing cache synchronisation",
+ "state": "FIXED",
+ "labels": [
+  "JavaScript Engine",
+  "regression"
+ ],
+ "reporter": "reporter",
+ "created_at": "2023-12-26T15:17:34Z",
+ "closed_at": "2024-01-31T20:44:05Z",
+ "body": "User Agent: Mozilla/5.0 (X11; FreeBSD amd64; rv:120.0) Gecko/20100101 Firefox/120.0\n\nSteps to reproduce:\n\nRun firefox > 115 i.e versions with write protected code off (i.e w+x pages and no call to mprotect between write and exec) for content processes, on freebsd Arm64. Jit code kills firefox with signal 4. https://searchfox.org/mozilla-central/rev/08899071a2c8a573ac47ac632869bb92269b3ec3/js/src/jit/arm64/vixl/MozCpu-vixl.cpp#113 add a defined __FreeBSD__ here to also execute the cache sync code on FreeBSD. see https://bugs.freebsd.org/bugzilla/show_bug.cgi?id=271081#c12 to https://bugs.freebsd.org/bugzilla/show_bug.cgi?id=271081#c12#c14\n\n\nActual results:\n\nsignal 4\n\n\nExpected results:\n\njit code should be ready to execute",
+ "comments": [
+  {
+   "author": "release-mgmt-account-bot@mozilla.tld",
+   "created_at": "2023-12-26T15:42:13Z",
+   "body": "The [Bugbug](https://github.com/mozilla/bugbug/) bot thinks this bug should belong to the 'Core::JavaScript Engine' component, and is moving the bug to that component. Please correct in case you think the bot is wrong."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-12-29T15:50:03Z",
+   "body": "> add a defined FreeBSD here to also execute the cache sync code on FreeBSD\n\nWhy is that case limited to specific OSes at all? The `#else` block below is:\n```\n#else\n  // If the host isn't AArch64, we must be using the simulator, so this function\n  // doesn't have to do anything.\n  USE(address, length);\n```\n\nso this code would be buggy for anything that is `__aarch64__` and not one of the explicitly listed OSes."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-01-09T17:12:47Z",
+   "body": "Nicolas, thoughts on resolution here?"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-01-17T14:59:55Z",
+   "body": "(In reply to comment #0)\n> Run firefox > 115 i.e versions with write protected code off (i.e w+x pages and no call to mprotect between write and exec) for content processes, on freebsd Arm64. Jit code kills firefox with signal 4. https://searchfox.org/mozilla-central/rev/08899071a2c8a573ac47ac632869bb92269b3ec3/js/src/jit/arm64/vixl/MozCpu-vixl.cpp#113 add a defined __FreeBSD__ here to also execute the cache sync code on FreeBSD. see https://bugs.freebsd.org/bugzilla/show_bug.cgi?id=271081#c12 to https://bugs.freebsd.org/bugzilla/show_bug.cgi?id=271081#c12#c14\n\nThanks a lot to the FreeBSD community and you. This would have been harder to investigate otherwise.\nYour patch to MozCPU-vixl.cpp sounds right, as well as your analysis on the fact that mprotect was hiding the lack of support.\n\nOn ARM the instruction cache has to be invalidated manually when we update the content, as otherwise it might keep a stale cache of what was previously seen as instructions, even if data was properly locked. \n\nFirefox recently moved away from W^X, back to W&X, for performance reasons. After a long debate with the security team, this security mitigation no longer provides what it was meant for given the usage of JIT Spraying. \n\nHowever, I am not sure for the need of [MAP_FIXED in gc/Memory.cpp](https://bz-attachments.freebsd.org/attachment.cgi?id=247141) , I would expect our GC code to support this case correctly without MAP_FIXED.\nI will forward the question To Jon, in case another bug has to be opened for the GC case.\n\nJesper (jsm), do you want to author the patch in Firefox as well? Or should I redo the patch?\n\n(In reply to comment #2)\n> > add a defined FreeBSD here to also execute the cache sync code on FreeBSD\n> \n> Why is that case limited to specific OSes at all?\n\nThis is because we are not able to test on all existing OSes, and probably a lack of trust that all OSes would behave the same. Especially given that Mac and Windows already require their own implementation."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-01-17T15:29:25Z",
+   "body": "(In reply to comment #4)\n> (In reply to comment #2)\n> > > add a defined FreeBSD here to also execute the cache sync code on FreeBSD\n> > \n> > Why is that case limited to specific OSes at all?\n> \n> This is because we are not able to test on all existing OSes, and probably a lack of trust that all OSes would behave the same. Especially given that Mac and Windows already require their own implementation.\n\nOK. Maybe it could be made explicit though:\n```\n#elif defined(__aarch64__)\n        #if (defined(__linux__) || defined(__android__))\n                ...\n        #else\n                #error OS-specific cache invalidation needed!\n        #endif\n#else\n  // If the host isn't AArch64, we must be using the simulator, so this function\n  // doesn't have to do anything.\n  USE(address, length);\n#endif\n```\nMainly I'd like to avoid falling into the case with the `host isn't AArch64` comment, when the host actually is AArch64.\n\n> Firefox recently moved away from W^X, back to W&X, for performance reasons. After a long debate with the security team, this security mitigation no longer provides what it was meant for given the usage of JIT Spraying.\n\nIf you have it handy could I trouble you for more info on the change (e.g. is there is a public thread discussing it, wiki page etc.)? FreeBSD has a knob to enforce W^X policy (off by default), and a way to tag binaries as requiring WX mappings (`NT_FREEBSD_FEATURE_CTL` ELF note). I'd like to look at a patch (both in our ports collection and for upstream) to handle this, and would like to include a reference."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-01-17T17:41:55Z",
+   "body": "(In reply to comment #5)\n> > Firefox recently moved away from W^X, back to W&X, for performance reasons. After a long debate with the security team, this security mitigation no longer provides what it was meant for given the usage of JIT Spraying.\n> \n> If you have it handy could I trouble you for more info on the change (e.g. is there is a public thread discussing it, wiki page etc.)? FreeBSD has a knob to enforce W^X policy (off by default), and a way to tag binaries as requiring WX mappings (`NT_FREEBSD_FEATURE_CTL` ELF note). I'd like to look at a patch (both in our ports collection and for upstream) to handle this, and would like to include a reference.\n\nThe change happened in Bug 1835876 (https://hg.mozilla.org/integration/autoland/rev/9d31a829691c)\nAnd the good news is that the behavior can be restored in `about:config` (`user.js`) to turn `javascript.options.content_process_write_protect_code` back to true if needed."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-01-17T21:07:25Z",
+   "body": "(In reply to comment #4)\n> (In reply to comment #0)\n> > Run firefox > 115 i.e versions with write protected code off (i.e w+x pages and no call to mprotect between write and exec) for content processes, on freebsd Arm64. Jit code kills firefox with signal 4. https://searchfox.org/mozilla-central/rev/08899071a2c8a573ac47ac632869bb92269b3ec3/js/src/jit/arm64/vixl/MozCpu-vixl.cpp#113 add a defined __FreeBSD__ here to also execute the cache sync code on FreeBSD. see https://bugs.freebsd.org/bugzilla/show_bug.cgi?id=271081#c12 to https://bugs.freebsd.org/bugzilla/show_bug.cgi?id=271081#c12#c14\n> \n> Thanks a lot to the FreeBSD community and you. This would have been harder to investigate otherwise.\n> Your patch to MozCPU-vixl.cpp sounds right, as well as your analysis on the fact that mprotect was hiding the lack of support.\n> \n> On ARM the instruction cache has to be invalidated manually when we update the content, as otherwise it might keep a stale cache of what was previously seen as instructions, even if data was properly locked. \n> \n> Firefox recently moved away from W^X, back to W&X, for performance reasons. After a long debate with the security team, this security mitigation no longer provides what it was meant for given the usage of JIT Spraying. \n> \n> However, I am not sure for the need of [MAP_FIXED in gc/Memory.cpp](https://bz-attachments.freebsd.org/attachment.cgi?id=247141) , I would expect our GC code to support this case correctly without MAP_FIXED. \n\nYes the MAP_FIXED solves to run with aslr on FreeBSD and is another story I have to investegate further as mentioned in the downstream bug. As you say it is unrelated to jit crashing with signal 4.\n> I will forward the question To Jon, in case another bug has to be opened for the GC case.\n> \n> Jesper (jsm), do you want to author the patch in Firefox as well? Or should I redo the patch?\n\nI would like to be the author, I might be able to attach a patch tomorrow (I am in UTC+1 ) . I like the suggestion of Ed Maste to come up with a compile time error if the OS falls through to not implemented cache invalidation code. \n> \n> (In reply to comment #2)\n> > > add a defined FreeBSD here to also execute the cache sync code on FreeBSD\n> > \n> > Why is that case limited to specific OSes at all?\n> \n> This is because we are not able to test on all existing OSes, and probably a lack of trust that all OSes would behave the same. Especially given that Mac and Windows already require their own implementation."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-01-18T09:02:43Z",
+   "body": "(In reply to comment #5)\n> Mainly I'd like to avoid falling into the case with the `host isn't AArch64` comment, when the host actually is AArch64.\n\nI think this is a regression from the OpenBSD fix in bug 1672619. The patch there fixed the code to compile on OpenBSD by disabling the cache invalidation code if not Linux or Android.\n\nWe should at least add something like:\n```c\n#elif defined(__aarch64__)\n# error ...\n#else\n...\n```"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-01-20T16:29:00Z",
+   "body": "Created attachment 9375624\ncacheinvalidation.patch\n\nI have excluded OpenBSD from the error message, because the cache code is neither needed or able to compile there. The patch is for tip[0], but I have only tested on 122 build2 since I do not have easy access to newer nss on FreeBSD.\n\nchangeset:   771854:7235102b55e9\nbookmark:    autoland\ntag:         tip\nuser:        moz-wptsync-bot <<email-scrubbed>>\ndate:        Thu Jan 18 18:58:17 2024 +0000\nsummary:     Bug 1875346 - [wpt-sync] Update web-platform-tests to d46f1aec78700b30ec633165cd51af2fd90bf3b6, a=testonly"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-01-20T19:40:54Z",
+   "body": "Comment on attachment 9375624\ncacheinvalidation.patch\n\nReview of attachment 9375624:\n-----------------------------------------------------------------\n\nThis change LGTM"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-01-22T10:06:41Z",
+   "body": "(In reply to comment #9)\n> I have excluded OpenBSD from the error message, because the cache code is neither needed or able to compile there.\n\nWhy does OpenBSD not need to invalidate the instruction cache?"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-01-22T10:09:51Z",
+   "body": "The patch in bug 1672619 changed ifdefs in some other places too. I wonder if we should just revert that patch and fix the original OpenBSD issue in a different way."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-01-22T11:00:58Z",
+   "body": "OpenBSD write protects always, so I assume that their mprotect behaves the same with regards to cache, otherwise they would have seen the same issue. I do not have a arm64 openbsd atm though.."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-01-23T10:45:53Z",
+   "body": "Created attachment 9375952\nBug 1871969 - Use instruction cache invalidation on FreeBSD"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-01-23T10:47:52Z",
+   "body": "Hum … phabricator does not seems to keep the authorship set on the patch, and instead uses the one from the person who is pushing the patch to phabricator."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-01-23T10:54:20Z",
+   "body": "Apparently phabricator confuses the person who submit the patch with the patch author.\nLooking at the patch which is pushed to our Try server, the authorship is retained: https://hg.mozilla.org/try/rev/c40f220781e5990dc3ef0cda92cd3660f45b8f7d\n\nSo everything is good despite phabricator reporting it wrongly."
+  },
+  {
+   "author": "release-mgmt-account-bot@mozilla.tld",
+   "created_at": "2024-01-23T15:45:10Z",
+   "body": "Set release status flags based on info from the regressing bug 1672619"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-01-24T15:59:29Z",
+   "body": "Created attachment 9376227\ncacheinvalidation2.patch\n\nSame strategy for CPU::GetCacheType()"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-01-26T15:18:03Z",
+   "body": "Created attachment 9376669\ncacheinvalidation3.patch\n\nDo not error out in GetCacheType."
+  },
+  {
+   "author": "pulsebot@bmo.tld",
+   "created_at": "2024-01-31T12:59:04Z",
+   "body": "Pushed by <email-scrubbed>:\nhttps://hg.mozilla.org/integration/autoland/rev/1b595199c4de\nUse instruction cache invalidation on FreeBSD r=jandem"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2024-01-31T20:44:05Z",
+   "body": "https://hg.mozilla.org/mozilla-central/rev/1b595199c4de"
+  },
+  {
+   "author": "participant6",
+   "created_at": "2024-02-01T14:30:44Z",
+   "body": ":nbp does this need a beta uplift request for Fx123, or should it ride the trains with Fx124?"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-02-02T16:41:06Z",
+   "body": "(In reply to comment #22)\n> :nbp does this need a beta uplift request for Fx123, or should it ride the trains with Fx124?\n\nAs far as I understand this could ride the train, as there is no urgency in getting these patches out, as patches are already handled by the package manager, with the same outcome.\n\nHowever, if FreeBSD maintainers prefer to have it upstream to Firefox 123, we can do it.\nJSM, is there a need for having these patches as part of Firefox sooner than 124?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-02-02T19:09:31Z",
+   "body": "It would be really nice to already have it in Firefox 123. Thanks."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-02-05T15:38:48Z",
+   "body": "Comment on attachment 9375952\nBug 1871969 - Use instruction cache invalidation on FreeBSD\n\n### Beta/Release Uplift Approval Request\n* **User impact if declined**: (see comment 24)\n* **Is this code covered by automated tests?**: Yes\n* **Has the fix been verified in Nightly?**: Yes\n* **Needs manual test from QE?**: No\n* **If yes, steps to reproduce**: \n* **List of other uplifts needed**: None\n* **Risk to taking this patch**: Low\n* **Why is the change risky/not risky? (and alternatives if risky)**: Already tested and deployed in the form of patches to the FreeBSD community.\n* **String changes made/needed**: \n* **Is Android affected?**: No"
+  },
+  {
+   "author": "participant7",
+   "created_at": "2024-02-06T18:18:20Z",
+   "body": "Comment on attachment 9375952\nBug 1871969 - Use instruction cache invalidation on FreeBSD\n\n Approved for 123 beta 8, thanks."
+  },
+  {
+   "author": "pulsebot@bmo.tld",
+   "created_at": "2024-02-06T18:20:39Z",
+   "body": "https://hg.mozilla.org/releases/mozilla-beta/rev/5cb029591fdb"
+  },
+  {
+   "author": "participant7",
+   "created_at": "2024-02-06T18:21:15Z",
+   "body": "https://hg.mozilla.org/releases/mozilla-beta/rev/5cb029591fdb"
+  }
+ ],
+ "_attachments_meta": [
+  {
+   "id": 9375624,
+   "content_type": "text/plain",
+   "description": "cacheinvalidation.patch"
+  },
+  {
+   "id": 9375952,
+   "content_type": "text/x-phabricator-request",
+   "description": "Bug 1871969 - Use instruction cache invalidation on FreeBSD"
+  },
+  {
+   "id": 9376227,
+   "content_type": "text/plain",
+   "description": "cacheinvalidation2.patch"
+  },
+  {
+   "id": 9376669,
+   "content_type": "text/plain",
+   "description": "cacheinvalidation3.patch"
+  }
+ ],
+ "images": [],
+ "slug": "bmo_core_1871969",
+ "base_commit": {
+  "provider": "github",
+  "repo": "mozilla-firefox/firefox",
+  "default_branch": "main",
+  "commit_sha": "2b3773d375304a9405eb26841b212db773922ba3",
+  "as_of": "2023-12-26T15:17:34Z",
+  "method": "github_commits_until"
+ }
+}

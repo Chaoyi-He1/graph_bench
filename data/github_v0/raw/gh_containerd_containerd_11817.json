@@ -1,0 +1,198 @@
+{
+ "repo": "containerd/containerd",
+ "number": 11817,
+ "url": "https://github.com/containerd/containerd/issues/11817",
+ "title": "Containerd process loads one of CPU cores up to 100%",
+ "state": "closed",
+ "labels": [
+  "kind/bug",
+  "kind/performance"
+ ],
+ "reporter": "reporter",
+ "created_at": "2025-05-07T13:05:06Z",
+ "closed_at": "2025-06-03T22:22:19Z",
+ "body": "### Description\n\nRecently I noticed containerd process starts to load one of CPU cores up to 100%, like a busy loop. I haven't figured out yet what triggers this behavior. It was observed two times in last three days.\nContainerd in my system is installed as a dependency for docker package. Currently I have no any containers running and even no docker images registered.\n\nLog from containerd service with golang stack dump: [containerd.log.gz](https://github.com/user-attachments/files/20084245/containerd.log.gz)\n\nNote CPU load started a couple of hours later after \"containerd successfully booted in 0.201601s\". I noticed it by fan noise increase as a response to CPU temperature increase.\n\nCPU load calmed down after I attached to the containerd process with gdb and then exited. \n(Nothing suspicious found there, one thread was in `epoll_wait()`, all others in `futexsleep()`).\n\nI already installed containerd debug info package and will try to get more information as soon as it goes crazy again.\n\nSystem: Arch Linux x86_64, kernel 6.14.5-arch1-1.\n\n\n### Steps to reproduce the issue\n\n_No response_\n\n### Describe the results you received and expected\n\nContainerd process should not consume 100% of CPU core for a long time when idle.\n\n### What version of containerd are you using?\n\ncontainerd github.com/containerd/containerd/v2 v2.0.5 fb4c30d4ede3531652d86197bf3fc9515e5276d9.m\n\n### Any other relevant information\n\n_No response_\n\n### Show configuration if it is related to CRI plugin.\n\n_No response_",
+ "comments": [
+  {
+   "author": "reporter",
+   "created_at": "2025-05-07T21:07:42Z",
+   "body": "Here is backtrace of all threads I managed to get with gdb: [threads.txt](https://github.com/user-attachments/files/20093368/threads.txt)\nThe thread which loaded 100% of CPU here is 8 (LWP 37081).\nCorresponding goroutine stack: [stack.txt](https://github.com/user-attachments/files/20093470/stack.txt)"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-05-09T06:16:30Z",
+   "body": "can you use pprof to show Flame Graph？ @reporter "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-05-09T11:07:59Z",
+   "body": "> can you use pprof to show Flame Graph？ [@reporter](https://github.com/reporter)\n\nDo you mean pprof from gperftools?\nI can try to replace `ExecStart=/usr/bin/containerd` with `ExecStart=/usr/bin/pprof /usr/bin/containerd ...` in systemd unit.\nWhat options should I pass to pprof?"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-05-11T09:20:34Z",
+   "body": "Same issue here with 6.14.4-arch1-2 and\n```\n$ containerd --version\ncontainerd github.com/containerd/containerd/v2 v2.0.5 fb4c30d4ede3531652d86197bf3fc9515e5276d9.m\n```\nOne of my 4 cores CPU is at 100% as soon as I run a container. docker stats reports very little CPU usage by the container itself. Usually after a while the 100% consumption drops, but sometimes it lasts for hours. Restarting docker system service sometimes helps.\n\nNever occurred before few days ago after a system update, don't know latest containerd version that didn't exhibit the issue unfortunately. Any advise appreciated!"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-05-12T08:26:45Z",
+   "body": "see https://github.com/google/pprof/blob/main/doc/README.md @reporter  "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-05-12T22:17:18Z",
+   "body": "> see https://github.com/google/pprof/blob/main/doc/README.md [@reporter](https://github.com/reporter)\n\nSorry, I don't have much free time to learn golang ecosystem. If you tell me what command line I should use to run containerd service and what commands I should run when the issue is reproduced, I will do that.\n\nInterestingly, as soon as I attach to the problem thread with `strace`, it calms down immediately. Output of strace at this time:\n```\n$ sudo strace -yy -p 819\nstrace: Process 819 attached\nepoll_pwait(4<anon_inode:[eventpoll]>, [], 128, 0, NULL, 0) = 0\nfutex(0xc000600148, FUTEX_WAKE_PRIVATE, 1) = 1\n```\n(the same behaviour after attaching/detaching to the process with `gdb`).\n\nSo I'm not 100% sure the culprit is containterd itself. Probably the issue is somewhere in depth of its underlying libraries/runtime."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-05-13T00:21:31Z",
+   "body": "This just happened to me as well on Arch Linux / Kernel 6.14.4 on a VPS. CPU graphs shows it pegged one core at 100% for about 30 minutes."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-05-13T01:19:52Z",
+   "body": "cat /etc/containerd/config.toml\n```\ndisabled_plugins = []\nimports = []\noom_score = 0\nplugin_dir = \"\"\nrequired_plugins = []\nroot = \"/var/lib/containerd\"\nstate = \"/run/containerd\"\ntemp = \"\"\nversion = 2\n\n[cgroup]\n  path = \"\"\n\n[debug]\n  address = \"/run/containerd/debug.sock\"\n  format = \"\"\n  gid = 0\n  level = \"info\"\n  uid = 0\n```\n\nctr pprof profile > profile.log \ncan you try this add   address = \"/run/containerd/debug.sock\" ? and show me your profile.log   @reporter  @participant3  "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-05-14T18:47:55Z",
+   "body": "> show me your profile.log \n\n@participant1  [profile.log](https://github.com/user-attachments/files/20212548/profile.log)\n\nAs soon as I catched containerd process loading CPU core, I run\n```\nctr --address=/run/containerd/debug.sock pprof profile > profile.log\n```\nand it calmed down immediately.\n\nI noticed that containerd unlikely start to load CPU when overall system is close to idle. Often it starts spinning when some other unrelated process is loading CPU too. For example, during large project compilation or a page with heavy javascript loaded in a browser."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-05-16T16:18:53Z",
+   "body": "This is yet another profile.log dumped when the issue reproduced: [profile2.log](https://github.com/user-attachments/files/20256558/profile2.log)"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-05-17T02:08:38Z",
+   "body": "![Image](https://github.com/user-attachments/assets/753e704a-1f76-4dbf-b06d-ab81ad3e1cb9)\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-05-22T14:49:03Z",
+   "body": "Yet another one: [profile3.log](https://github.com/user-attachments/files/20394671/profile3.log)\nLet me know if it's enough or need more profiles."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-05-27T11:19:35Z",
+   "body": "[profile4.log](https://github.com/user-attachments/files/20454739/profile4.log)\n\nNext time it started to spin, I attached strace to the problem thread and got almost the same trace as before:\n```\nfutex(0xc000581148, FUTEX_WAKE_PRIVATE, 1) = 1\nepoll_pwait(4<anon_inode:[eventpoll]>, [], 128, 0, NULL, 0) = 0\nnanosleep({tv_sec=0, tv_nsec=3000}, NULL) = 0\nfutex(0xc00007d148, FUTEX_WAIT_PRIVATE, 0, NULL) = 0\nwrite(5<{eventfd-count=0, eventfd-id=2, eventfd-semaphore=0}>, \"\\1\\0\\0\\0\\0\\0\\0\\0\", 8) = 8\nfutex(0xc00007d148, FUTEX_WAIT_PRIVATE, 0, NULL) = 0\nfutex(0xc00007d148, FUTEX_WAIT_PRIVATE, 0, NULL) = 0\n...\n```\nbut now there is `nanosleep()` for 3 microseconds after non-blocking `epoll_pwait()`. Attempt to workaround misuse of epoll somewhere under hood?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-05-27T11:33:20Z",
+   "body": "![Image](https://github.com/user-attachments/assets/6f4d6b60-bfee-4ea7-ae92-5147feb5b106)\ncan't find any useful message."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-05-27T16:33:49Z",
+   "body": "> can't find any useful message.\n\nAs soon as i run `ctr ...`, containerd process calms down. The fact of connection to debug socket itself affects behavior somehow, so probably profiles are dumped when busy loop is no longer spinning. Heisenbug."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-05-27T18:49:42Z",
+   "body": "Same here:\n```\nOS: Arch Linux, KERNEL: 6.14.6-zen1-1-zen\nDocker version 28.1.1, build 4eba377327\n```\n1 container running:  Up 2 days (healthy)\nIssue lasts ~30m (as mentioned already).\n\nI think its a kernel bug as im observing similiar rclone misbehavior.\nPacman log says:\n```\n[2025-04-22T17:32:03+0100] [ALPM] upgraded linux-zen (6.14.1.zen1-1 -> 6.14.3.zen1-1)\n[2025-05-01T02:58:57+0100] [ALPM] upgraded linux-zen (6.14.3.zen1-1 -> 6.14.4.zen1-2)\n[2025-05-18T00:29:13+0100] [ALPM] upgraded linux-zen (6.14.4.zen1-2 -> 6.14.6.zen1-1)\n```\nIve only started noticing the issue recently, so it was fine on either 6.14.1/6.14.3. \n\n![Image](https://github.com/user-attachments/assets/701475c9-784c-420f-a236-a07cd3cfad31)\n![Image](https://github.com/user-attachments/assets/1a7ee624-c424-425f-a134-b5acdf6f1006)"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-05-27T20:25:17Z",
+   "body": "> I think its a kernel bug \n\nMaybe something related to [Busy Polling](https://docs.kernel.org/networking/napi.html#poll)?\nI have\n```\n$ zcat /proc/config.gz | grep BUSY_POLL\nCONFIG_NET_RX_BUSY_POLL=y\n\n$ grep -H '' /proc/sys/net/core/busy_*\n/proc/sys/net/core/busy_poll:0\n/proc/sys/net/core/busy_read:0\n```\n\n> as im observing similiar rclone misbehavior.\n\n[rclone](https://github.com/rclone/rclone) is also implemented in Go. Looks like a bug in Go runtime or one of its libraries."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-05-29T19:32:44Z",
+   "body": "Today found `dockerd` process spinning with the same sympthoms (docker version 28.1.1). No containers were running.\nBacktrace with gdb showed:\n```\n#0  0x00005592de792e6e in internal/runtime/syscall.Syscall6 ()\n#1  0x00005592de792e05 in internal/runtime/syscall[EpollWait] ()\n#2  0x0000000000000000 in ?? ()\n```\nIt's an epidemy."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2025-05-30T14:15:01Z",
+   "body": "```\n6.14.6-arch1-1 #1 SMP PREEMPT_DYNAMIC\n```\nI've seen the same behaviour in `containerd` and `gopls`. Also `yb-master` (Yugabyte) but that's not Go.\n\nSome mentioned it going away after 30min. I saw a similar thing where it solved itself (don't rememer which process) but most of the time I've resolved it manually.\n\nWith `containerd`, when I called `docker compose down` in any random project (no containers were running) it calmed down.\n\n"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-05-30T18:38:10Z",
+   "body": "Seen `lxd` spinning today... \nQuick googling shows more similiar stories pointing at kernel bugs/changes in the past, so i still think its a kernel issue.\n\nNeed to change kernel to LTS or downgrade, but i feel like Arch is unusable in its current state (sometimes 2-3 processes having the issue at the same time), mpv leaking memory (or one of its lua scripts) is just another example (those scripts work fine on another ubuntu pc w/ mpv) and this has been going on for a long time now. \n\nI need a more stable distro..."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-05-31T14:19:12Z",
+   "body": "> so i still think its a kernel issue.\n\nDefinitely, something going on there: https://github.com/torvalds/linux/commit/7631dca012593c95d36199082546a24a0058fc50\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-05-31T16:55:53Z",
+   "body": "I installed kernel version 6.14.9-arch1-1. Let's watch several days. If the issue is gone, we can close the ticket."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-06-01T10:07:44Z",
+   "body": "7h on `6.14.9-zen1-1-zen` under heavy **containerd** and **rclone** usage. \nSeems stable now. "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-06-03T22:22:19Z",
+   "body": "Three days the issue is not reproduced. Seems to be caused by kernel bug and fixed by https://github.com/torvalds/linux/commit/d9ec73301099ec5975505e1c3effbe768bab9490."
+  },
+  {
+   "author": "participant6",
+   "created_at": "2026-07-19T10:23:13Z",
+   "body": "Adding another data point — this reproduces reliably (not just on idle) on **ARM64 / Raspberry Pi 5**, so it doesn't seem to be x86_64/Arch-specific.\n**System:**\n- Raspberry Pi 5, Debian 13 (Trixie)\n- Kernel: 6.18.34+rpt-rpi-v8 (arm64)\n- Docker Engine: 29.6.2\n- containerd: v2.2.6\n- runc: 1.3.6\n- /var/lib/docker on local NVMe SSD (ext4), not network storage\n\n**Trigger**: In my case this is 100% reproducible on demand, not just spontaneous. dockerd pegs one core to 100% as soon as I try to view a container's logs — both through Portainer's web UI log viewer and directly via docker logs / docker logs -f on the CLI. Happens with every container, not just specific ones. Log files themselves are small (log rotation active, max-size 10m).\n**Workaround**: sudo systemctl restart docker resolves it temporarily — after restarting, docker logs works fine again until the next trigger.\nstrace -p $(pidof dockerd) -f -tt -c while the CPU was pegged (summary):\n\n% time     seconds  usecs/call     calls    errors syscall\n 59.31    4.295596        2221      1934       211 futex\n 16.92    1.225666         633      1936           epoll_pwait\n 15.05    1.089763          22     47847           nanosleep\n  7.26    0.525562           1    340263           pread64\n  0.50    0.036570        4571         8           waitid\n  0.18    0.013126          10      1211       382 read\n  0.12    0.008911          27       322        57 openat\n  0.10    0.006964         120        58           getpid\n  0.08    0.006115           8       721           readlinkat\n  0.07    0.004935           5       938         6 fcntl\n  0.06    0.004567          11       413         1 write\n\nNotably high pread64 count as well, alongside the futex/epoll_pwait/nanosleep pattern already reported here. "
+  },
+  {
+   "author": "participant1",
+   "created_at": "2026-07-20T10:16:43Z",
+   "body": "can you use pprof  to collect cpu data ?  @participant6"
+  },
+  {
+   "author": "participant6",
+   "created_at": "2026-07-20T12:49:35Z",
+   "body": "Yes, shure.\n\n[goroutines.log](https://github.com/user-attachments/files/30188332/goroutines.log)\n[profile.log](https://github.com/user-attachments/files/30188333/profile.log)"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2026-07-20T13:49:39Z",
+   "body": "<img width=\"1919\" height=\"373\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/50663192-fd89-40dc-bf0b-dc328c1f892c\" />\n\nfrom pprof I can't find useful message about containerd  It should be golang or kernel bug.\ncan you try https://github.com/torvalds/linux/commit/d9ec73301099ec5975505e1c3effbe768bab9490\n@participant6 "
+  },
+  {
+   "author": "participant6",
+   "created_at": "2026-07-21T09:53:34Z",
+   "body": "Did some further profiling on this (Raspberry Pi 5, kernel 6.18.34, Docker 29.6.2, containerd 2.2.6). A few findings that point away from the eventpoll timeout theory suggested above:\n\nKernel is well past the window where 0a65bc27bd64/d9ec733 were introduced/fixed (~6.14.4–6.14.8, mid-2025), so the fix should already be included here.\nOn-CPU stack sampling (bpftrace, 99Hz) during an active spike shows no eventpoll/epoll frames at all — the hot stacks are pread64 → ext4_file_read_iter/vfs_read, plus a large volume of very short, hard-to-sample syscalls. nanosleep calls outnumber epoll_pwait roughly 15-25:1, which doesn't match a 1:1 epoll-timeout spin pattern.\ninotify limits are nowhere near exhausted (41/128 instances).\n\nCurrent working hypothesis: this looks more like dockerd's own pkg/filenotify polling fallback getting stuck in a tight retry loop, possibly related to the known log-rotation race (moby/moby#37646) rather than a containerd/kernel-level issue. Log rotation is active on this system (max-size: 10m).\n\nCurrently running a small watchdog that auto-triggers diagnostics (log-rotation timestamps, strace summary, a timing test against a quiescent container's log file) the moment CPU spikes, to catch the next occurrence with better data. Will report back once we have a clean sample."
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "containerd/containerd",
+  "default_branch": "main",
+  "commit_sha": "bcfba26ca848429794dd2467f7f67a70f257406c",
+  "as_of": "2025-05-07T13:05:06Z",
+  "method": "github_commits_until"
+ },
+ "images": [
+  {
+   "where": "c10",
+   "source_url": "https://github.com/user-attachments/assets/753e704a-1f76-4dbf-b06d-ab81ad3e1cb9",
+   "file": "gh_containerd_containerd_11817_img0.png"
+  },
+  {
+   "where": "c13",
+   "source_url": "https://github.com/user-attachments/assets/6f4d6b60-bfee-4ea7-ae92-5147feb5b106",
+   "file": "gh_containerd_containerd_11817_img1.png"
+  },
+  {
+   "where": "c15",
+   "source_url": "https://github.com/user-attachments/assets/701475c9-784c-420f-a236-a07cd3cfad31",
+   "file": "gh_containerd_containerd_11817_img2.png"
+  },
+  {
+   "where": "c15",
+   "source_url": "https://github.com/user-attachments/assets/1a7ee624-c424-425f-a134-b5acdf6f1006",
+   "file": "gh_containerd_containerd_11817_img3.png"
+  },
+  {
+   "where": "c27",
+   "source_url": "https://github.com/user-attachments/assets/50663192-fd89-40dc-bf0b-dc328c1f892c",
+   "file": "gh_containerd_containerd_11817_img4.png"
+  }
+ ],
+ "slug": "gh_containerd_containerd_11817"
+}

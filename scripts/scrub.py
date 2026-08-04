@@ -58,6 +58,24 @@ _SECRETS = re.compile(
 # corrupts domains ('bugzilla.mozilla.org' -> 'bugzilla.participantN.org').
 _ORG_IDENTITIES = {'mozilla', 'firefox', 'bugzilla', 'github', 'postgresql'}
 
+# Handles/local-parts that are bare common words make catastrophic prose
+# replacements ('encryption info' -> 'encryption reporter') and identify
+# nobody standing alone. They are pseudonymized only when a string field
+# IS the identity (author fields), never substituted inside prose.
+_COMMON_WORDS = {
+    'info', 'admin', 'test', 'user', 'mail', 'root', 'support', 'help',
+    'contact', 'hello', 'office', 'sales', 'news', 'team', 'home', 'work',
+    'web', 'dev', 'code', 'data', 'image', 'media', 'music', 'video',
+    'guest', 'master', 'main', 'debug', 'error', 'crash', 'update',
+    'install', 'build', 'server', 'client', 'system', 'network', 'memory',
+    'storage', 'windows', 'linux', 'android', 'chrome', 'safari', 'apple',
+}
+
+
+def _prose_safe(token: str) -> bool:
+    """False for bare lowercase common words (skip prose substitution)."""
+    return not (token.isalpha() and token.islower() and token in _COMMON_WORDS)
+
 
 def _is_bot(handle: str) -> bool:
     if handle.lower().strip() in _ORG_IDENTITIES:
@@ -79,6 +97,13 @@ class CaseMap:
             self.map[handle] = f'participant{self._n}'
 
     def scrub_text(self, text: str) -> str:
+        # A string field that IS the identity (author/creator values) is
+        # always pseudonymized — including common-word handles the prose
+        # passes below refuse to touch.
+        stripped = text.strip()
+        for handle, pseudo in self.map.items():
+            if stripped in (handle, handle.split('@')[0]):
+                return text.replace(stripped, pseudo)
         # Known handles/emails first (longest first to avoid partial hits),
         # then their local parts, then quoted-reply display names, then any
         # remaining non-bot email.
@@ -86,11 +111,12 @@ class CaseMap:
             # Full-handle replacement is boundary-guarded too: GitHub
             # logins are bare words (no '@'), and a short login like
             # 'sync' must not rewrite the inside of '(async storage'.
-            text = re.sub(
-                rf'\b{re.escape(handle)}\b', self.map[handle], text
-            )
+            if _prose_safe(handle):
+                text = re.sub(
+                    rf'\b{re.escape(handle)}\b', self.map[handle], text
+                )
             local = handle.split('@')[0]
-            if len(local) >= 4:
+            if len(local) >= 4 and _prose_safe(local):
                 # Word-boundary guarded: a short local part like 'glob' must
                 # not rewrite the inside of words ('globally').
                 text = re.sub(
@@ -158,7 +184,10 @@ def scrub_graph(path: Path, maps: dict[str, dict], apply: bool) -> int:  # noqa:
             for token in {handle, handle.split('@')[0]}:
                 if token == pseudo or _PSEUDO.match(token):
                     continue  # identity/no-op from an already-scrubbed map
-                if len(token) >= 4:
+                # Cross-case application multiplies collision risk: a pool
+                # case whose reporter is info@… must never rewrite the word
+                # 'info' in every other graph.
+                if len(token) >= 4 and _prose_safe(token):
                     rx = re.compile(rf'\b{re.escape(token)}\b')
                     n = len(rx.findall(text))
                     if n:

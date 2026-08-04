@@ -1,0 +1,198 @@
+{
+ "repo": "duckdb/duckdb",
+ "number": 10409,
+ "url": "https://github.com/duckdb/duckdb/issues/10409",
+ "title": "Unable to query duckdb file on S3",
+ "state": "closed",
+ "labels": [
+  "reproduced",
+  "Needs Documentation"
+ ],
+ "reporter": "reporter",
+ "created_at": "2024-01-31T16:40:52Z",
+ "closed_at": "2024-10-25T07:26:55Z",
+ "body": "### What happens?\n\nWhen I try to attach to a DuckDB file on S3, I receive the following error:\r\n\r\n```\r\nCatalog Error: Cannot open database \"s3://bucket/path/to/test.duckdb\" in read-only mode: database does not exist\r\n```\r\n\r\nRelated issue: https://github.com/duckdb/dbt-duckdb/issues/249\r\n\r\nNightly I used: https://github.com/duckdb/duckdb/actions/runs/7648092822/artifacts/1193564377 from https://github.com/duckdb/duckdb/actions/runs/7648092822\n\n### To Reproduce\n\n1. Create a new DuckDB database called `test.duckdb`.\r\n2. Upload into S3 bucket\r\n3. Set vars and install/load extensions:\r\n```\r\nINSTALL httpfs;\r\nLOAD httpfs;\r\n\r\nSET s3_region = 'us-east-1';\r\nSET s3_access_key_id = 's3_access_key_id';\r\nSET s3_secret_access_key = 's3_secret_access_key'; \r\n```\r\n4. Try to attach to database:\r\n```\r\nattach 's3://bucket/path/to/test.duckdb' as test (READ_ONLY)\r\n```\r\n\r\nYou should receive an error such as:\r\n\r\n```\r\nCatalog Error: Cannot open database \"s3://bucket/path/to/test.duckdb\" in read-only mode: database does not exist\r\n```\n\n### OS:\n\nmacOS 14.2.1  M1 aarch64\n\n### DuckDB Version:\n\nDuckDB v0.9.3-dev3121\n\n### DuckDB Client:\n\nNightly JDBC, used via DBeaver\n\n### Full Name:\n\nNat Elkins\n\n### Affiliation:\n\nKnoetic\n\n### Have you tried this on the latest `main` branch?\n\nI have tested with a release build (and could not test with a main build)\n\n### Have you tried the steps to reproduce? Do they include all relevant data and configuration? Does the issue you report still appear there?\n\n- [x] Yes, I have",
+ "comments": [
+  {
+   "author": "reporter",
+   "created_at": "2024-02-01T19:43:58Z",
+   "body": "Seems like this test should've caught this? https://github.com/duckdb/duckdb/blob/main/test/sql/attach/attach_httpfs.test\r\n\r\nIs there a way to easily run this one test locally?\r\n\r\nAlso, I was trying to hunt through the nightly test run to see the result of this test, but didn't see it.  Is this test not run regularly, or is there some other place I should be looking?\r\n\r\nhttps://github.com/duckdb/duckdb/actions/runs/7734313938/job/21088398577\r\n\r\nAlso, any pointers on how I can begin investigating this would be greatly appreciated!  Thank you!\r\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-02-01T23:06:43Z",
+   "body": "Can you try to reproduce the following:\r\n```\r\ncarlo@ScroogeMcDuck duckdb % ./build/release/duckdb\r\nv0.9.3-dev3586 25e1745715\r\nEnter \".help\" for usage hints.\r\nConnected to a transient in-memory database.\r\nUse \".open FILENAME\" to reopen on a persistent database.\r\nD ATTACH 's3://duckdb-blobs/data/my.db' as test (READ_ONLY);\r\nD USE test;\r\nD FROM t;\r\n┌────────┐\r\n│   x    │\r\n│ int32  │\r\n├────────┤\r\n│ 0 rows │\r\n└────────┘\r\n```\r\n`s3://duckdb-blobs/data/my.db` is a publicly accessible database file on s3, file has been uploaded via CLI.\r\n\r\nCan you test if you can read / list other files in that bucket?\r\nThere might be some corner case related to authentication, but READ_ONLY should work."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-02-02T02:16:22Z",
+   "body": "@participant1 I pulled main and ran the following:\r\n\r\n<img width=\"826\" alt=\"image\" src=\"https://github.com/duckdb/duckdb/assets/1795462/01e33577-9b70-4f98-b0da-b06320f5cd86\">\r\n\r\nSame error."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-02-02T02:24:50Z",
+   "body": "I'm able to download it using S3:\r\n\r\n```\r\n➜  release git:(main) aws s3 cp s3://duckdb-blobs/data/my.db ./my.db\r\ndownload: s3://duckdb-blobs/data/my.db to ./my.db\r\n➜  release git:(main) ./duckdb\r\nv0.9.3-dev3585 f0ab7a4f64\r\nEnter \".help\" for usage hints.\r\nConnected to a transient in-memory database.\r\nUse \".open FILENAME\" to reopen on a persistent database.\r\nD ATTACH './my.db' as test (READ_ONLY);\r\nD USE test;\r\nD FROM t;\r\n┌────────┐\r\n│   x    │\r\n│ int32  │\r\n├────────┤\r\n│ 0 rows │\r\n└────────┘\r\nD\r\n```"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-02-03T14:47:25Z",
+   "body": "I think I have it, you need to explicitly INSTALL / LOAD the httpfs extension.\r\n\r\n```\r\ncarlo@ScroogeMcDuck duckdb % duckdb-latest\r\nv0.9.3-dev3597 64785543f8\r\nEnter \".help\" for usage hints.\r\nConnected to a transient in-memory database.\r\nUse \".open FILENAME\" to reopen on a persistent database.\r\nD ATTACH 's3://duckdb-blobs/data/my.db' as test (READ_ONLY);\r\nError: Catalog Error: Cannot open database \"s3://duckdb-blobs/data/my.db\" in read-only mode: database does not exist\r\nD FROM duckdb_extensions();\r\n... shows httpfs is not loaded\r\nD INSTALL httpfs;\r\nD LOAD httpfs;\r\nD ATTACH 's3://duckdb-blobs/data/my.db' as test (READ_ONLY);\r\nD \r\n```\r\n\r\nCan you reproduce?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-02-03T19:55:25Z",
+   "body": "Hi @participant1, I don't believe this is resolved.  I followed these steps:\r\n\r\n1. Checked out `64785543f8`, the same commit that you were using, and built duckdb.\r\n2. Installed and loaded the `httpfs` and `iceberg` extensions.\r\n3. Tried selecting an iceberg table in S3, just to show that it didn't work initially.\r\n4. Set my S3 cred info.\r\n5. Ran the same query against the iceberg table, showing that it is a success.\r\n6. Tried attaching to a duckdb file in that same bucket --> Failed.\r\n7. Tried attaching to the duckdb file that you specified --> Success.\r\n\r\nSee my logs below:\r\n\r\n```\r\n➜  release git:(64785543f8) ./duckdb\r\nv0.9.3-dev3597 64785543f8\r\nEnter \".help\" for usage hints.\r\nConnected to a transient in-memory database.\r\nUse \".open FILENAME\" to reopen on a persistent database.\r\nD INSTALL httpfs;\r\nD LOAD httpfs;\r\nD INSTALL iceberg;\r\nD LOAD iceberg;\r\nD SELECT count(*) FROM iceberg_scan('s3://knoetic-airbyte-sync-iceberg-experiment/prod/default/airbyte_raw_applications', allow_moved_paths = true);\r\nError: HTTP Error: HTTP GET error on 'https://knoetic-airbyte-sync-iceberg-experiment.s3.amazonaws.com/prod/default/airbyte_raw_applications/metadata/version-hint.text' (HTTP 403)\r\nD SET s3_region = 'us-east-1';\r\nD SET s3_access_key_id = 'removed';\r\nD SET s3_secret_access_key = 'removed';\r\nD SELECT count(*) FROM iceberg_scan('s3://knoetic-airbyte-sync-iceberg-experiment/prod/default/airbyte_raw_applications', allow_moved_paths = true);\r\n┌──────────────┐\r\n│ count_star() │\r\n│    int64     │\r\n├──────────────┤\r\n│        28272 │\r\n└──────────────┘\r\nD ATTACH 's3://knoetic-airbyte-sync-iceberg-experiment/test/test.db' as asdf (READ_ONLY);\r\nError: Catalog Error: Cannot open database \"s3://knoetic-airbyte-sync-iceberg-experiment/test/test.db\" in read-only mode: database does not exist\r\nD ATTACH 's3://duckdb-blobs/data/my.db' as test (READ_ONLY);\r\nD\r\n```\r\n\r\nAre you able to attach to a duckdb file that isn't in a public bucket?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-02-03T19:59:27Z",
+   "body": "I've also confirmed that if I move `test.db` to a public bucket, I'm able to attach to it."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-02-15T17:56:04Z",
+   "body": "This is also still an issue using 0.10.0 with the Create Secret functionality: https://duckdb.org/docs/sql/statements/create_secret"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-02-15T18:43:07Z",
+   "body": "This has not been tackled yet."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-03-12T22:32:35Z",
+   "body": "Commenting so I am on future notifications - also running into this issue."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-05-28T04:32:21Z",
+   "body": "I am also running into this issue with 0.10.3\r\n\r\nThis works:\r\n\r\n```\r\nimport duckdb\r\n\r\nduckdb.sql(\"install httpfs\")\r\nduckdb.sql(\"load httpfs\")\r\nduckdb.sql(\"attach 's3://duckdb-blobs/data/my.db' as test (READ_ONLY)\")\r\nduckdb.sql(\"use test\")\r\nduckdb.sql(\"from t\")\r\n```\r\n\r\nBut even after `load_aws_credentials()` we cannot attach a database from a private bucket, even through I can read a parquet file from the same location."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-05-31T14:33:50Z",
+   "body": "Also commenting so I am on future notifications"
+  },
+  {
+   "author": "ghost",
+   "created_at": "2024-05-31T16:14:07Z",
+   "body": "commenting for notification"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2024-06-03T21:38:13Z",
+   "body": "following"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-06-03T22:53:13Z",
+   "body": "My test case still not working in 1.0.0"
+  },
+  {
+   "author": "participant6",
+   "created_at": "2024-06-04T11:09:34Z",
+   "body": "Also running into this issue with private buckets"
+  },
+  {
+   "author": "participant7",
+   "created_at": "2024-06-07T13:39:18Z",
+   "body": "+1, I have experience the same issue with 1.0.0"
+  },
+  {
+   "author": "participant8",
+   "created_at": "2024-06-07T14:04:17Z",
+   "body": "Okay I can indeed reproduce this issue, the workaround for me is to switch from the `load_aws_credentials()` to the [recommended](https://duckdb.org/docs/extensions/httpfs/s3api#config-provider) way of using secrets. \r\n\r\nSo for example:\r\n\r\n```SQL\r\nCREATE SECRET (TYPE s3, provider credential_chain);\r\nattach 's3://test-bucket-ceiveran/test_attach_issue/test.db' as test (readonly);\r\n```\r\n\r\nI see the `aws` extension docs are outdated and still advocate using the `load_aws_credentials()` function"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-06-07T15:45:39Z",
+   "body": "@participant8 Thanks for the update. I am confirming that after upgrading to 1.0.0 and using your solution, I can query from private S3 buckets. I am doing the following:\r\n\r\n```\r\nimport duckdb\r\ncon = duckdb.connect()\r\ncon.query(\r\n    f\"\"\"\r\n    INSTALL httpfs;\r\n    LOAD httpfs;\r\n    CREATE OR REPLACE TEMPORARY SECRET secret (\r\n        TYPE S3,\r\n        PROVIDER CREDENTIAL_CHAIN\r\n    );\r\n    \"\"\"\r\n)\r\n\r\ndf = con.query(\"SELECT * FROM read_parquet('s3://my-bucket/test.parquet');\")\r\n```\r\n\r\nThanks!"
+  },
+  {
+   "author": "ghost",
+   "created_at": "2024-06-07T16:46:29Z",
+   "body": " @participant2  \r\nI can confirm this works on a private bucket. Have not seen it timeout yet but need to test on larger queries.\r\n> \r\n> ```\r\n> import duckdb\r\n> con = duckdb.connect()\r\n> con.query(\r\n>     f\"\"\"\r\n>     INSTALL httpfs;\r\n>     LOAD httpfs;\r\n>     CREATE OR REPLACE TEMPORARY SECRET secret (\r\n>         TYPE S3,\r\n>         PROVIDER CREDENTIAL_CHAIN\r\n>     );\r\n>     \"\"\"\r\n> )\r\n> \r\n> df = con.query(\"SELECT * FROM read_parquet('s3://my-bucket/test.parquet');\")\r\n> ```\r\n> \r\n> Thanks!"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-06-10T17:29:25Z",
+   "body": "Adding a follow-up. While this solution did work for me locally, it does not seem to work in my deployed state. I am deploying this to AWS EKS and using a k8s service account for my AWS credentialing. This results in a `duckdb.duckdb.HTTPException: HTTP Error: HTTP GET error on .... (HTTP 400)`. I have confirmed that in the same deployment, I can pull the parquet file using `boto3`, so I believe the credentialing is valid. Also, this might be off-topic now and happy to post in a new thread."
+  },
+  {
+   "author": "participant9",
+   "created_at": "2024-07-17T15:27:25Z",
+   "body": "I got into this problem also. I can query files (parquet, csv, json, excel) from S3 but not sqlite or duckdb. I am not sure if the way they set up the secret for ATTACH and read_parquet()/read_json_auto() is different or not"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-09-09T22:40:25Z",
+   "body": "I just tried with Eatoni (1.1.0) and I'm still unable to attach databases from S3:\r\n\r\n![image](https://github.com/user-attachments/assets/e726ab8b-addc-4ac3-9608-102cd34173f7)\r\n\r\n`read_parquet` from the same private bucket using that same script works.\r\n\r\nI think there is some confusion in the thread for the issue. I'm quite sure that the original problem is related to `attach` and that `read_*` issues are not related."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-09-09T23:19:14Z",
+   "body": "@participant3: can you give it a try using the syntax:\r\n```\r\nINSTALL httpfs; \r\nLOAD httpfs;\r\nCREATE SECRET secret1 (\r\n        TYPE S3,\r\n        ENDPOINT '***',\r\n        KEY_ID '****',\r\n        SECRET '****',\r\n        REGION '****'\r\n);\r\n```\r\nWrapping that to Python, and using the relevant credentials?\r\n\r\nI believe the problem is that `load_aws_credentials` is now deprecated, see https://duckdb.org/docs/extensions/aws#legacy-features for more details"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-09-10T01:47:33Z",
+   "body": "Thanks @participant1 \r\n\r\nOK so huge win, I can get it to work, although like this:\r\n\r\n![image](https://github.com/user-attachments/assets/0c7c1858-504c-436d-bab2-531afb65a81f)\r\n\r\nExplicitly creating the secret like your example doesn't work for me and it also stops `read_*` working correctly.\r\n\r\nPossibly confounding the issue is that we are using AWS SSO, maybe this is having side effects somewhere.\r\n\r\n"
+  },
+  {
+   "author": "participant10",
+   "created_at": "2024-09-14T15:49:57Z",
+   "body": "Any solution if a private file is being shared from a presigned URL? I'm using cloudfare R2 and getting Catalog Error: Cannot open database \"presigned url to database\" in read-only mode: database does not exist. When trying to attach a presigned URL to duckdb wasm.\r\n\r\nProbably related to this issue.\r\n\r\n\r\n"
+  },
+  {
+   "author": "participant11",
+   "created_at": "2024-10-25T03:27:32Z",
+   "body": "Getting all the same issues with `IMPORT database`\r\n\r\n```sql\r\nD DROP PERSISTENT SECRET AWS; CREATE PERSISTENT SECRET aws (\r\n      TYPE S3,\r\n      PROVIDER CREDENTIAL_CHAIN);\r\n┌─────────┐\r\n│ Success │\r\n│ boolean │\r\n├─────────┤\r\n│ true    │\r\n└─────────┘\r\nD IMPORT DATABASE 's3://bucket/path/to/redacted';\r\nHTTP Error: HTTP GET error on 'https://bucket/path/to/redacted/schema.sql' (HTTP 400)\r\n```"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-10-25T07:26:55Z",
+   "body": "@participant10: can you possibly open an issue in duckdb/duckdb-wasm? Thanks\r\n\r\n@participant11: can you open a separate issue here? Thanks\r\n\r\nI think this is solved, but if issue persist please re-open a separate issue, ideally with a reproducer.\r\n\r\nNote that the docs on AWS extension in particular have been updated, please check: https://duckdb.org/docs/extensions/aws"
+  },
+  {
+   "author": "participant10",
+   "created_at": "2024-10-25T13:13:27Z",
+   "body": "@participant1 I believe this issue covers what I'm running into https://github.com/duckdb/duckdb-wasm/issues/1852. Also looks like this PR might fix the issue https://github.com/duckdb/duckdb-wasm/pull/1856. Though I did test out a demo app by the creator of this PR that should allow for querying presigned URLs, but was not able to locally https://github.com/e1arikawa/duckdb-wasm-samples. So hopefully I was just doing something wrong and adding opfs will fix my problem on duckdb-wasm."
+  },
+  {
+   "author": "participant12",
+   "created_at": "2024-10-31T07:14:09Z",
+   "body": "```\r\nconn = duckdb.connect()\r\nconn.execute(\"install httpfs\")\r\nconn.execute(\"load httpfs\")\r\nconn.execute(\r\n    f\"\"\"CREATE SECRET secret1 (\r\n    TYPE S3,\r\n    ENDPOINT '{ENDPOINT}',\r\n    KEY_ID '{AWS_ACCESS_KEY_ID}',\r\n    SECRET '{AWS_SECRET_ACCESS_KEY}',\r\n    REGION '{AWS_REGION}'\r\n);\"\"\"\r\n)\r\n\r\ns3_fs = s3fs.S3FileSystem()\r\nif s3_fs.exists(s3_path):\r\n    # Attach the S3 DuckDB database\r\n    conn.execute(f\"ATTACH '{s3_path}' AS {table_name}\")\r\n```\r\n\r\nThis gives me the **Cannot open database \"s3://xyz/\" in read-only mode: database does not exist**. Please let me know where I am going wrong"
+  },
+  {
+   "author": "participant13",
+   "created_at": "2024-10-31T14:57:15Z",
+   "body": "@participant12 the path needs to be to a `.duckdb` file. What does your `s3_path` look like?"
+  },
+  {
+   "author": "participant12",
+   "created_at": "2024-11-01T05:52:50Z",
+   "body": "@participant13 I initally was trying with .db file but later switched to a .duckdb file with no luck. My path looks something like this `s3://test-schedule/routes/routes.duckdb`"
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "duckdb/duckdb",
+  "default_branch": "main",
+  "commit_sha": "00b32d46c9c58dedb51553ddbb494ef5bbc60c41",
+  "as_of": "2024-01-31T16:40:52Z",
+  "method": "github_commits_until"
+ },
+ "images": [
+  {
+   "where": "c22",
+   "source_url": "https://github.com/user-attachments/assets/e726ab8b-addc-4ac3-9608-102cd34173f7",
+   "file": "gh_duckdb_duckdb_10409_img0.png"
+  },
+  {
+   "where": "c24",
+   "source_url": "https://github.com/user-attachments/assets/0c7c1858-504c-436d-bab2-531afb65a81f",
+   "file": "gh_duckdb_duckdb_10409_img1.png"
+  }
+ ],
+ "slug": "gh_duckdb_duckdb_10409"
+}
