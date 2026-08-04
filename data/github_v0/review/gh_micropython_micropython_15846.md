@@ -17,7 +17,7 @@ flowchart LR
     N_terminal["<b>terminal resolved</b><br/><small>info: 17</small>"]
     N0 ==>|"💥 blind: Treat the restart as incorrect use of the machine IRQ API and restore the exact state returned by machine.disable_irq()."| N1_x
     linkStyle 0 stroke:#ef4444,stroke-width:2px
-    N0 -.->|"❓ full_function_restores_irq_state_but_still_reboots, failure_occurs_at_about_32_vm_operations, iteration_limit_independent_of_elapsed_time, esp32c3_and_c6_fail_but_esp32_and_s2_work"| N1
+    N0 -.->|"❓ failure_occurs_at_about_32_vm_operations, iteration_limit_independent_of_elapsed_time, esp32c3_and_c6_fail_but_esp32_and_s2_work"| N1
     linkStyle 1 stroke:#3b82f6,stroke-width:2px
     N1_x -.->|"❓ failure_occurs_at_about_32_vm_operations, iteration_limit_independent_of_elapsed_time, esp32c3_and_c6_fail_but_esp32_and_s2_work"| N1
     linkStyle 2 stroke:#3b82f6,stroke-width:2px
@@ -56,11 +56,11 @@ flowchart LR
 | edge | type | gates / info | payload |
 |---|---|---|---|
 | `e1_N0__N1_x` | solution_only **BLIND** | req_info: ticks_us_busy_wait_with_irqs_disabled_reboots<br>elements: recommends_passing_saved_irq_state_to_enable_irq | Treat the restart as incorrect use of the machine IRQ API and restore the exact state returned by machine.disable_irq(). |
-| `e2_N0__N1` | clarification_only | asks: full_function_restores_irq_state_but_still_reboots, failure_occurs_at_about_32_vm_operations, iteration_limit_independent_of_elapsed_time, esp32c3_and_c6_fail_but_esp32_and_s2_work | Yes. My full g_dbg1() saves st_irq = machine.disable_irq(), runs the 1000us ticks_us() loop, and calls machine / I reduced it further. With IRQs disabled, a list comprehension calling ticks_us(), a list comprehension contai / The failing count stays around 30 to 32. Adding sleep_us(1000) inside the loop makes the reset happen after ab / Across our tests, the ESP32-C3 and ESP32-C6 show the problem. A genuine ESP32 and an ESP32-S2 run the same pat |
+| `e2_N0__N1` | clarification_only | asks: failure_occurs_at_about_32_vm_operations, iteration_limit_independent_of_elapsed_time, esp32c3_and_c6_fail_but_esp32_and_s2_work | I reduced it further. With IRQs disabled, a list comprehension calling ticks_us(), a list comprehension contai / The failing count stays around 30 to 32. Adding sleep_us(1000) inside the loop makes the reset happen after ab / Across our tests, the ESP32-C3 and ESP32-C6 show the problem. A genuine ESP32 and an ESP32-S2 run the same pat |
 | `e3_N1_x__N1` | clarification_only | asks: failure_occurs_at_about_32_vm_operations, iteration_limit_independent_of_elapsed_time, esp32c3_and_c6_fail_but_esp32_and_s2_work | Yes. Calling ticks_us(), building a list, or just executing `for i in range(n): pass` while IRQs are disabled  / No. A tight loop can reach the failing count in about 85us, while adding sleep_us(1000) makes it take about 30 / Our ESP32-C3 and ESP32-C6 tests fail. The original ESP32 and an ESP32-S2 test work. |
 | `e4_N1__N2` | clarification_only | asks: before_337742f_good_after_337742f_bad, debugger_stops_in_vportyield_from_gil_unlock | Yes. I tested the commit before and after 337742f6c70a7b9d407df687774bb9c9cc6a1656: before it, the test does n / The backtrace while it is stuck is `vPortYield()` called from `mp_thread_mutex_unlock()`, then `mp_execute_byt |
 | `e5_N2__N3` | clarification_only | asks: reporter_patch_skipping_forced_switch_with_irqs_disabled_runs | I built and flashed my patch that checks whether IRQs are disabled before doing the forced context switch. Wit |
-| `e6_N3__terminal` | solution_only | req_info: esp32c3_running_micropython_through_f1bdac375, ticks_us_busy_wait_with_irqs_disabled_reboots, crash_reports_interrupt_wdt_timeout_cpu0, esp32c3_and_c6_fail_but_esp32_and_s2_work, failure_occurs_at_about_32_vm_operations, iteration_limit_independent_of_elapsed_time, before_337742f_good_after_337742f_bad, debugger_stops_in_vportyield_from_gil_unlock, reporter_patch_skipping_forced_switch_with_irqs_disabled_runs<br>elements: identifies_from_isr_interrupt_mask_api_as_breaking_freertos_critical_section_contract, connects_periodic_gil_yield_to_the_approximately_32_operation_hang, uses_a_freertos_visible_critical_section_for_irq_disable_restore, preserves_the_general_gil_fairness_yield_instead_of_only_disabling_it_on_selected_targets, asks_user_to_verify_on_a_build_containing_the_fix | Fix the ESP32 IRQ implementation so machine.disable_irq() enters a FreeRTOS-visible critical section instead of using the from-ISR interrupt-mask API, allowing the existing periodic GIL yield to remain without deadlocking RISC-V targets. |
+| `e6_N3__terminal` | solution_only | req_info: esp32c3_running_micropython_through_f1bdac375, ticks_us_busy_wait_with_irqs_disabled_reboots, crash_reports_interrupt_wdt_timeout_cpu0, failure_occurs_at_about_32_vm_operations, iteration_limit_independent_of_elapsed_time, esp32c3_and_c6_fail_but_esp32_and_s2_work, before_337742f_good_after_337742f_bad, debugger_stops_in_vportyield_from_gil_unlock, reporter_patch_skipping_forced_switch_with_irqs_disabled_runs<br>elements: identifies_from_isr_interrupt_mask_api_as_breaking_freertos_critical_section_contract, connects_periodic_gil_yield_to_the_approximately_32_operation_hang, uses_a_freertos_visible_critical_section_for_irq_disable_restore, preserves_the_general_gil_fairness_yield_instead_of_only_disabling_it_on_selected_targets, asks_user_to_verify_on_a_build_containing_the_fix | Fix the ESP32 IRQ implementation so machine.disable_irq() enters a FreeRTOS-visible critical section instead of using the from-ISR interrupt-mask API, allowing the existing periodic GIL yield to remain without deadlocking RISC-V targets. |
 
 ## Nodes
 
@@ -72,6 +72,31 @@ flowchart LR
 | `N2` |  | 0 | 0 | The IRQ-disabled loop does not crash on the commit immediately before 337742f6c70a7b9d407df687774bb9c9cc6a1656, and it crashes after that co |
 | `N3` |  | 2 | 0 | With my patched firmware, the IRQ-disabled loop completes instead of hanging. The same patched firmware also keeps my webserver socket respo |
 | `N_terminal` | ✓ | 0 | 0 | On a build containing the fix, the ESP32-C3 completes the IRQ-disabled loop and restores IRQs without hanging or restarting. |
+
+## Machine review (audit pass, adversarially verified)
+
+Auditor verdict: **minor_issues** · 3 of 3 findings survived independent refutation.
+
+_Wave-1 sampling audit: ESP32-C3/C6 IRQ-disabled watchdog reset. One medium: the body pre-answered a modeled clarification whose bundle hard-gated the canonical advance, making the blind path cheaper than the canonical one. Repaired: pre-answered ask removed from the bundle; maintainer-prompted cross-board measurement regraded L2→L3; presupposing question pattern rewritten._
+
+### Confirmed findings
+
+- [ ] 🟠 **body_pre_answers** (medium) — `body + e2 bundle`
+  - claim: Saved-IRQ-state fact stated in body and volunteered at N0 yet hard-gated e2's advance; incoherent counterfactual deleted.
+  - thread evidence: None
+  - suggested fix: None
+  - verifier: 
+- [ ] 🟡 **level_grading** (low) — `e2/e3 clarification + e6.required_info`
+  - claim: Four-board measurement graded L2_inferable; regraded L3 (tiers.py would have scored blind instead of degrade).
+  - thread evidence: None
+  - suggested fix: None
+  - verifier: 
+- [ ] 🟡 **structural** (low) — `e5 question_patterns[1]`
+  - claim: Question presupposed a patch the agent cannot know exists at N2; rewritten.
+  - thread evidence: None
+  - suggested fix: None
+  - verifier: 
+
 
 ## Review checklist
 

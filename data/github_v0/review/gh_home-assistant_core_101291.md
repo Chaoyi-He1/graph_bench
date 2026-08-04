@@ -58,7 +58,7 @@ flowchart LR
 2. The diagnosis must be grounded in the affected-device diagnostic, the debug logs around the turnoffs, and the version comparison showing 2023.8.4 good but 2023.9.1 and later affected.
 3. Must recommend a Home Assistant build containing the corrected OTA handling rather than blaming automations, ordinary manual commands, the machine migration, or coordinator firmware without evidence.
 4. Must not treat the tested 2023.11 development installation as proof of resolution, because the plugs still turned off on that actual attempt.
-5. Must ask the user to verify on a build containing the fix and only declare resolution after the plugs remain on beyond their normal failure interval; the surfaced verification is eight hours on Core 2023.10.4.
+5. Must ask the user to verify on a build containing the fix and only declare resolution after the plugs remain on beyond their normal failure interval; the surfaced verification is eight hours on a Core build containing the corrected OTA handling.
 
 ## Edges
 

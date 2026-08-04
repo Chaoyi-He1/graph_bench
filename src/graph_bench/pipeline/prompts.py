@@ -125,6 +125,23 @@ SEMANTIC RULES (violations make the task unusable):
    info_inferred_by_engineer (machine-validated): engineer conclusions
    are not demandable evidence. satisfaction_conditions may only demand
    facts the graph actually surfaces.
+4e. SCORING-FIELD DISCIPLINE (machine-linted):
+   (i) required_elements_for_full_match, approach_keywords and
+   satisfaction_conditions must never cite a PR number, commit, or release
+   version that is not introduced in user-speakable content before the
+   terminal node — a fix that landed after the case's snapshot is scored
+   descriptively ("a build containing the <mechanism> fix"), never by its
+   future identifier.
+   (ii) When the thread only LINKS a fix/PR without describing its content,
+   the solution's intent/keywords stay at the level the thread states; do
+   NOT invent the mechanism.
+   (iii) The scored root cause is the thread's FINAL accepted diagnosis.
+   Re-read the tail: a hypothesis a maintainer later walked back
+   ("actually no…") must never appear in required elements or
+   satisfaction conditions as the answer.
+   (iv) No clarification question_pattern may name fix contents or a
+   downstream solution's approach keywords — questions elicit evidence,
+   they never carry the answer key (generalizes the 4d note).
 4b. USER-VOICE RULE: every user_answer_in_this_oncall is in the
    reporter's own FIRST-PERSON voice — words they actually typed or
    could type. Never third-person narration ("the reporter provided...",

@@ -77,6 +77,20 @@ def _prose_safe(token: str) -> bool:
     return not (token.isalpha() and token.islower() and token in _COMMON_WORDS)
 
 
+# Filesystem paths carry the OS account name, which often differs from any
+# collected handle (real-name variants escape handle replacement): mask the
+# username segment regardless of the identity map.
+_PATH_USER = re.compile(r'(?P<pre>/(?:Users|home)/)(?!<user>)[A-Za-z0-9._-]{2,}')
+_WIN_PATH_USER = re.compile(
+    r'(?P<pre>[Cc]:\\+Users\\+)(?!<user>)[^\\/"\s]{2,}'
+)
+
+
+def mask_path_users(text: str) -> str:
+    text = _PATH_USER.sub(r'\g<pre><user>', text)
+    return _WIN_PATH_USER.sub(r'\g<pre><user>', text)
+
+
 def _is_bot(handle: str) -> bool:
     if handle.lower().strip() in _ORG_IDENTITIES:
         return True
@@ -124,6 +138,7 @@ class CaseMap:
                 )
         text = _REPLY_NAME.sub(r'(In reply to comment #\1)', text)
         text = _SECRETS.sub('<secret-scrubbed>', text)
+        text = mask_path_users(text)
         return _EMAIL.sub(
             lambda m: m.group(0) if _is_bot(m.group(0)) else '<email-scrubbed>',
             text,
@@ -194,9 +209,10 @@ def scrub_graph(path: Path, maps: dict[str, dict], apply: bool) -> int:  # noqa:
                         hits += n
                         text = rx.sub(pseudo, text)
     text = _SECRETS.sub('<secret-scrubbed>', text)
+    text2 = mask_path_users(text)
     new = _EMAIL.sub(
         lambda mt: mt.group(0) if _is_bot(mt.group(0)) else '<email-scrubbed>',
-        text,
+        text2,
     )
     hits += 1 if new != text else 0
     if apply:

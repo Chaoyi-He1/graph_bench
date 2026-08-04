@@ -167,6 +167,59 @@ def lint_task(
                         f'{e.edge_id}: id {rid!r} required at {bucket} but '
                         f'declared {declared[rid]} on its clarification'
                     )
+    # Future-literal lint: PR numbers / version literals in SCORING fields
+    # must be introduced somewhere the simulated user can actually speak
+    # before the terminal (body, non-terminal symptoms/volunteered,
+    # clarification answers) — else the graded answer requires knowledge
+    # that postdates the case (audit classes: vllm PR24734, curl 8.7.1).
+    # Scoring text is normalized ('_'/'-' -> '.') before matching so
+    # snake_case-embedded literals ('..._containing_pr_179581',
+    # 'moby_27_4') and multi-separator forms ('PR #16397') are caught.
+    # Two-component versions ('27.4', '14.3') are dominated by ambient
+    # numbers (model names, OS versions the user already holds) — the hard
+    # gate takes only unambiguous shapes: PR forms and >=3-component
+    # versions. Two-component future-fix literals are the audit's job.
+    _lit = _re.compile(
+        r'\bpr[.\s#]*\d{3,}\b|\bv?\d+\.\d+(?:\.\d+)+\b', _re.IGNORECASE
+    )
+    speakable = [task.body or '']
+    for nid, n in g.nodes.items():
+        if not n.is_terminal:
+            speakable += n.symptoms_visible + n.volunteered_info
+    for e in g.edges:
+        for c in e.clarifications:
+            speakable.append(c.user_answer_in_this_oncall or '')
+    speakable_text = (
+        ' '.join(speakable).lower().replace('-', '.').replace('_', '.')
+    )
+    scoring: list[tuple[str, str]] = [
+        ('satisfaction_conditions', ' '.join(task.satisfaction_conditions))
+    ]
+    for e in g.edges:
+        if e.solution is not None:
+            scoring.append(
+                (
+                    e.edge_id,
+                    ' '.join(
+                        e.solution.required_elements_for_full_match
+                        + e.solution.approach_keywords
+                    ),
+                )
+            )
+    for where, text in scoring:
+        norm = text.lower().replace('_', '.').replace('-', '.')
+        for m in _lit.finditer(norm):
+            token = m.group(0)
+            if token.replace('pr', '').strip('# .') not in speakable_text:
+                problems.append(
+                    f'{where}: scoring field cites literal {m.group(0)!r} '
+                    f'that no pre-terminal user-speakable channel introduces '
+                    f'(future-knowledge literal)'
+                )
+    # NOTE: a mechanical question-leak lint (question naming downstream
+    # solution vocabulary) was prototyped and produced 60+/68 false
+    # positives — shared domain vocabulary swamps the signal. That class
+    # is governed by prompt rule 4e(iv) and the sampling audit instead.
     start_outs = out_edges.get(g.start_node, [])
     if start_outs and all(
         e.solution is not None and e.solution.is_known_blind_path

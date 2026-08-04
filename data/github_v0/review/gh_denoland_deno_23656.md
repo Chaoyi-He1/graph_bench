@@ -16,9 +16,9 @@ flowchart LR
     N_terminal["<b>terminal DuckDB working locally</b><br/><small>info: 11</small>"]
     N0 ==>|"⚡ Work around Deno's missing npm lifecycle-script support by installing DuckDB with npm, yarn, or pnpm into a project-local node_modules directory and importing the local package."| N1
     linkStyle 0 stroke:#f97316,stroke-width:2px
-    N1 ==>|"💥 blind: Install the first canary containing the initial DuckDB native-addon execution fix and run the local-node_modules example with DENO_FUTURE=1."| N2_x
+    N1 ==>|"💥 blind: Present the first canary containing the initial DuckDB native-addon fix as the complete answer: tell the user this build makes DuckDB work and treat a successful import plus `Database {}` construction as proof the issue is fixed."| N2_x
     linkStyle 1 stroke:#ef4444,stroke-width:2px
-    N2_x -.->|"❓ minimal_select_query_panics_or_segmentation_faults_on_canary"| N3
+    N2_x -.->|"❓ minimal_query_fails_and_parquet_workload_segfaults_on_canary"| N3
     linkStyle 2 stroke:#3b82f6,stroke-width:2px
     N3 ==>|"⚡ Use a Deno build containing PR 24101, while retaining the local npm-installed DuckDB workaround and DENO_FUTURE=1 until lifecycle-script support is available, then verify by executing a real DuckDB query."| N_terminal
     linkStyle 3 stroke:#f97316,stroke-width:2px
@@ -34,14 +34,14 @@ flowchart LR
 
 ## Opening (body)
 
-> I'm using Deno 1.41.3. I tried importing `npm:duckdb` and creating an in-memory database, but `deno run -A index.ts` throws `Cannot find module '/Users/naelshiab/Library/Caches/deno/npm/registry.npmjs.org/duckdb/0.10.1/lib/binding/duckdb.node'`. Is it possible to use DuckDB with Deno?
+> I'm using Deno 1.41.3. I tried importing `npm:duckdb` and creating an in-memory database, but `deno run -A index.ts` throws `Cannot find module '/Users/<user>/Library/Caches/deno/npm/registry.npmjs.org/duckdb/0.10.1/lib/binding/duckdb.node'`. Is it possible to use DuckDB with Deno?
 
 ## Satisfaction conditions
 
 1. Must distinguish the two blockers: the original `duckdb.node` file is missing because the npm lifecycle/postinstall step was not run, while the later query panic or segmentation fault is a separate Deno N-API implementation bug.
-2. The diagnosis must be grounded in the observed progression: direct `npm:duckdb` use misses the binding, local npm installation allows the addon to load, and a minimal query still crashes on the initial canary.
-3. The working local Deno 1.x procedure must retain the project-local npm installation and `DENO_FUTURE=1`, then update to a build containing PR 24101 or its released equivalent.
-4. Must not present the initial canary execution fix as sufficient; it loaded the database but actual queries still panicked or segfaulted.
+2. The diagnosis must be grounded in the observed progression: direct `npm:duckdb` use misses the binding, local npm installation allows the addon to load, and queries still fail on the canary that fixed loading.
+3. The working local Deno 1.x procedure must retain the project-local npm installation and `DENO_FUTURE=1`, then update to a build containing the Deno N-API execution fix (canary at the time, or the following release).
+4. Must not present the first canary execution fix as sufficient; it loaded the database but actual queries still failed, and the remote-Parquet workload still segfaulted.
 5. Must ask the user to execute a DuckDB query on the fixed build and only treat the issue as resolved after that verification succeeds.
 
 ## Edges
@@ -49,19 +49,69 @@ flowchart LR
 | edge | type | gates / info | payload |
 |---|---|---|---|
 | `e1_N0__N1` | solution_only | req_info: npm_duckdb_import_missing_duckdb_node_binding<br>elements: uses_npm_yarn_or_pnpm_to_install_duckdb, uses_project_local_node_modules_instead_of_deno_npm_cache | Work around Deno's missing npm lifecycle-script support by installing DuckDB with npm, yarn, or pnpm into a project-local node_modules directory and importing the local package. |
-| `e2_N1__N2_x` | solution_only **BLIND** | req_info: local_binding_found_but_deno_native_callback_errors<br>elements: updates_to_initial_canary, sets_DENO_FUTURE_1, keeps_locally_installed_duckdb | Install the first canary containing the initial DuckDB native-addon execution fix and run the local-node_modules example with DENO_FUTURE=1. |
-| `e3_N2_x__N3` | clarification_only | asks: minimal_select_query_panics_or_segmentation_faults_on_canary | I updated to canary `1.43.1+998036b`. DuckDB loads, but running a query still fails. With the small `SELECT 42 |
-| `e4_N3__N_terminal` | solution_only | req_info: npm_duckdb_import_missing_duckdb_node_binding, duckdb_installed_into_local_node_modules, query_execution_still_crashes, minimal_select_query_panics_or_segmentation_faults_on_canary<br>elements: updates_to_a_build_containing_pr_24101_or_equivalent_fix, retains_local_node_modules_workaround_while_postinstall_is_unavailable, uses_DENO_FUTURE_1_for_the_affected_deno_1x_flow, asks_user_to_verify_on_a_build_containing_the_fix | Use a Deno build containing PR 24101, while retaining the local npm-installed DuckDB workaround and DENO_FUTURE=1 until lifecycle-script support is available, then verify by executing a real DuckDB query. |
+| `e2_N1__N2_x` | solution_only **BLIND** | req_info: local_binding_found_but_deno_native_callback_errors<br>elements: updates_to_the_first_canary_containing_the_addon_load_fix, presents_that_canary_update_as_the_complete_fix, treats_successful_database_construction_as_sufficient_verification | Present the first canary containing the initial DuckDB native-addon fix as the complete answer: tell the user this build makes DuckDB work and treat a successful import plus `Database {}` construction as proof the issue is fixed. |
+| `e3_N2_x__N3` | clarification_only | asks: minimal_query_fails_and_parquet_workload_segfaults_on_canary | IT WORKS! I can import DuckDB and create the database now — thanks for your patience! But... if I actually run |
+| `e4_N3__N_terminal` | solution_only | req_info: npm_duckdb_import_missing_duckdb_node_binding, duckdb_installed_into_local_node_modules, query_execution_still_crashes, minimal_query_fails_and_parquet_workload_segfaults_on_canary<br>elements: updates_to_a_build_containing_the_napi_execution_fix, retains_local_node_modules_workaround_while_postinstall_is_unavailable, uses_DENO_FUTURE_1_for_the_affected_deno_1x_flow, asks_user_to_verify_on_a_build_containing_the_fix | Use a Deno build containing PR 24101, while retaining the local npm-installed DuckDB workaround and DENO_FUTURE=1 until lifecycle-script support is available, then verify by executing a real DuckDB query. |
 
 ## Nodes
 
 | node | terminal | volunteered | images | symptoms |
 |---|---|---|---|---|
 | `N0` |  | 1 | 0 | Running `deno run -A index.ts` with `import duckdb from "npm:duckdb"` fails because `duckdb.node` cannot be found under Deno's npm cache. |
-| `N1` |  | 2 | 0 | After installing DuckDB into local `node_modules`, Deno gets past the original missing-file stage but then reports a native callback error o |
-| `N2_x` |  | 2 | 0 | With the initial canary and `DENO_FUTURE=1`, I can import DuckDB and create `Database {}`, but executing a query still causes Deno to fail. |
-| `N3` |  | 0 | 0 | On the initial canary, a minimal `SELECT 42 AS fortytwo` query either panics inside Deno's N-API implementation or exits with a segmentation |
-| `N_terminal` | ✓ | 1 | 0 | After updating to a build containing the later Deno N-API fix, DuckDB loads and its queries return results. |
+| `N1` |  | 2 | 0 | After installing DuckDB into local `node_modules` (and running `npm install` inside `node_modules/duckdb` to actually produce `duckdb.node`) |
+| `N2_x` |  | 2 | 0 | With the canary I updated to and `DENO_FUTURE=1`, I can import DuckDB and create `Database {}`, but as soon as I actually run a query it fai |
+| `N3` |  | 0 | 0 | On the canary I updated to, the small example from the duckdb repo (`SELECT 42 AS fortytwo` against the in-memory database) still fails as s |
+| `N_terminal` | ✓ | 1 | 0 | After updating to the newer build, DuckDB loads and my queries return results. |
+
+## Machine review (audit pass, adversarially verified)
+
+Auditor verdict: **needs_rework** · 8 of 8 findings survived independent refutation.
+
+_Wave-1 sampling audit: Deno+DuckDB N-API case. Three mediums: maintainer's own panic placed in the user's mouth as the pivotal L3; segfault wrongly paired with the minimal SELECT 42 workload; real macOS username survived scrub inside error paths. All repaired; scrub gained a corpus-wide path-username masking pass from this finding._
+
+### Confirmed findings
+
+- [ ] 🟠 **unfaithful_voice** (medium) — `e3 clarification answer`
+  - claim: Maintainer-produced Option::unwrap() panic voiced as user evidence; moved engineer-side.
+  - thread evidence: None
+  - suggested fix: None
+  - verifier: 
+- [ ] 🟠 **fabricated_content** (medium) — `e3 answer + N3 symptoms`
+  - claim: Segfault paired with minimal SELECT 42; thread ties it only to remote-parquet under Deno.serve.
+  - thread evidence: None
+  - suggested fix: None
+  - verifier: 
+- [ ] 🟠 **scrub_residue** (medium) — `body + raw`
+  - claim: Real username inside /Users/<name>/ error paths and shell prompt survived handle-based scrub.
+  - thread evidence: None
+  - suggested fix: None
+  - verifier: 
+- [ ] 🟡 **future_knowledge_leak** (low) — `N2_x/N3 symptoms`
+  - claim: Retrospective "the initial canary" framing leaks that a later canary follows.
+  - thread evidence: None
+  - suggested fix: None
+  - verifier: 
+- [ ] 🟡 **symptom_contains_diagnosis** (low) — `N_terminal symptom`
+  - claim: Terminal classified the fix ("the later Deno N-API fix") in user voice.
+  - thread evidence: None
+  - suggested fix: None
+  - verifier: 
+- [ ] 🟡 **future_knowledge_literal** (low) — `e4 scoring fields`
+  - claim: PR 24101 / v1.44.2 literals postdate snapshot; de-literalized.
+  - thread evidence: None
+  - suggested fix: None
+  - verifier: 
+- [ ] 🟡 **structural** (low) — `e2 blind flag scope`
+  - claim: Blind flag covered two permanently-correct sub-actions; narrowed to the falsified "canary alone is the fix" claim.
+  - thread evidence: None
+  - suggested fix: None
+  - verifier: 
+- [ ] 🟡 **fabricated_content** (low) — `N1`
+  - claim: Merged observations from Deno 1.40.4 and 1.43.1 into one node pinned to 1.41.3; hedged per version.
+  - thread evidence: None
+  - suggested fix: None
+  - verifier: 
+
 
 ## Review checklist
 

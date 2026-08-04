@@ -343,7 +343,23 @@ class Responder:
             match.matched_edge_id = self.info_edge.get(
                 match.matched_info_ids[0]
             )
-        self._advance_cascade()
+        newly_visited = self._advance_cascade()
+        # Rule 4b: voice volunteered_info of nodes first entered via this
+        # clarification (ids are compressed English; the online speaker
+        # renders them naturally, same as describe_symptoms does).
+        arrival_images: list[str] = []
+        for nid in newly_visited:
+            node = self.graph.nodes[nid]
+            for vid in node.volunteered_info:
+                if vid not in self.session.gathered_info_ids:
+                    self.session.gathered_info_ids.append(vid)
+                if vid not in newly:
+                    newly.append(vid)
+                    answers.append(vid.replace('_', ' '))
+            # already claimed inside — must not pass through claim again
+            arrival_images += self._node_arrival_images(
+                nid, first_arrival=True
+            )
         node_after = self.session.current_node_id
         event = self._new_event(match, node_before, node_after)
         event.info_gained = newly
@@ -361,25 +377,32 @@ class Responder:
         base = BaseResponse(
             directive='answer',
             payload=payload,
-            images=self.claim_images(images),
+            images=self.claim_images(images) + arrival_images,
         )
         return base, event
 
-    def _advance_cascade(self) -> None:
+    def _advance_cascade(self) -> list[str]:
         """
         Walk forward while the current node has a clarification/mixed
         out-edge whose entire bundle is gathered. Grants each destination
         node's full info_state (engineer-inferred entries included).
+
+        Returns the node ids visited for the FIRST time during this walk:
+        rule 4b puts facts a user volunteers alongside an answer into the
+        target node's volunteered_info, so the clarification reply must
+        voice them on arrival (previously only solution/mixed arrivals
+        spoke volunteered_info, silencing clarification-entered nodes).
         """
         gathered = set(self.session.gathered_info_ids)
         seen: set[str] = set()
+        newly_visited: list[str] = []
         while True:
             node_id = self.session.current_node_id
             # Fix 1: cycle backstop — stop if we've already visited this node
             # in the current cascade walk (prevents infinite loops in cyclic
             # authored graphs; acyclic behavior is unchanged).
             if node_id in seen:
-                return
+                return newly_visited
             seen.add(node_id)
             advanced = False
             for edge in self.index.get(node_id, []):
@@ -390,6 +413,7 @@ class Responder:
                     self.session.current_node_id = edge.to_node
                     if edge.to_node not in self.session.visited:
                         self.session.visited.append(edge.to_node)
+                        newly_visited.append(edge.to_node)
                     for i in self.graph.nodes[edge.to_node].info_state:
                         if i not in self.session.gathered_info_ids:
                             self.session.gathered_info_ids.append(i)
@@ -397,7 +421,7 @@ class Responder:
                     advanced = True
                     break
             if not advanced:
-                return
+                return newly_visited
 
     def _respond_mixed(
         self, match: MatchResult, edge: Edge, node_before: str
