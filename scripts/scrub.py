@@ -136,6 +136,7 @@ class CaseMap:
                 text = re.sub(
                     rf'\b{re.escape(local)}\b', self.map[handle], text
                 )
+        text = self._scrub_mentions(text)
         text = _REPLY_NAME.sub(r'(In reply to comment #\1)', text)
         text = _SECRETS.sub('<secret-scrubbed>', text)
         text = mask_path_users(text)
@@ -143,6 +144,35 @@ class CaseMap:
             lambda m: m.group(0) if _is_bot(m.group(0)) else '<email-scrubbed>',
             text,
         )
+
+    def _scrub_mentions(self, text: str) -> str:
+        """
+        Pseudonymize @-mentions of identities that never authored a
+        message (deleted accounts surface as author 'ghost', so CaseMap
+        never maps their real handle — audit finding, deno_19766).
+
+        Conservative: only handles that LOOK like personal accounts
+        (contain an uppercase letter, digit, or hyphen) are mapped;
+        lowercase-only tokens are left alone because @dev / @property /
+        @media style technical tokens are indistinguishable from
+        lowercase handles, and destroying technical content is worse
+        than the residual risk (the sign-off review catches specifics).
+        Scoped-package mentions (@scope/pkg) are skipped via the
+        trailing-slash guard.
+        """
+
+        def _sub(m: re.Match) -> str:
+            h = m.group(1)
+            if h in self.map:
+                return '@' + self.map[h]
+            if _is_bot(h) or h.lower() in _COMMON_WORDS:
+                return m.group(0)
+            if not re.search(r'[A-Z0-9-]', h):
+                return m.group(0)
+            self.add(h)
+            return '@' + self.map.get(h, h)
+
+        return re.sub(r'@([A-Za-z0-9][A-Za-z0-9-]{2,38})\b(?!/)', _sub, text)
 
     def scrub_obj(self, obj):  # noqa: ANN001, ANN201
         if isinstance(obj, dict):
