@@ -1,60 +1,103 @@
-# Paper Outline (working)
+# Paper outline — evidence map
 
-Working title candidates (pick late):
-- *Leak-Aware Multi-Turn Evaluation: From Real Support Threads to Causal Graphs*
-- *Clarification as a First-Class Citizen: Beyond Success Rate in Conversational Debugging Benchmarks*
-- *TraceGraph-Bench: Causal-Graph-Grounded, Execution-Free Evaluation of Conversational Debugging Agents*
+Working title: *Causal-graph-grounded, execution-free evaluation of
+conversational debugging agents from real support threads.*
 
-Primary venue: NeurIPS Datasets & Benchmarks (CAB's venue). Fallbacks: ICLR (methodology framing), ACL/EMNLP (dialogue evaluation), ICSE/FSE (SE framing).
-
-## Abstract skeleton
-
-Multi-turn benchmarks for debugging assistants either require executable environments — excluding precisely the environment-bound problems users actually bring (drivers, devices, OS integrations, cloud account state) — or condition their simulated users on resolved transcripts, leaking future knowledge and inflating scores. We formalize future-knowledge leakage and present a benchmark built from real public support threads annotated as causal graphs: nodes are (system-state, information-state) pairs, edges are assistant moves (clarifications — including user-executable measurements — solutions, and known blind paths). The same graph structurally constrains the user simulator (it can only reveal what its node contains), grounds an execution-free judge (edge matching with five-tier solution-call grading), and yields causal metrics (information-grounded decision rate; counterfactual sensitivity). [Pilot/scale numbers.] [Leakage quantification: score inflation under transcript-conditioned simulation.] [Model results + reliability report.]
+Status key: **[have]** evidence exists in-repo · **[partial]** started,
+incomplete · **[todo]** not started. Every claim in the paper must trace
+to a file listed here.
 
 ## 1. Introduction
 
-- Hook: the CAB gap — 70–83% on single-turn Stack-Overflow-style vs 7–16% on real multi-turn project issues; but CAB itself must drop every thread it cannot containerize, and its own limitations section names the bias. Meanwhile "To Run or Not to Run" (ISSTA'26): execution adds 1.25 pts (n.s.) at 8.8 runs/task.
-- The two-failure framing: execution-dependence (coverage bias + cost) and simulator leakage (validity).
-- One artifact solves both: the causal graph. Contributions list.
+Claim chain: agents that debug *with a person* must elicit evidence, not
+just patch code; existing benchmarks either require live execution
+(costly, environment-biased) or script the user; nobody grades the
+diagnostic conversation itself against a case-specific answer key.
 
-## 2. Contributions
+- **[have]** Niche argument, neighbor-by-neighbor: `docs/related-work.md`
+- **[have]** Headroom result to motivate: strongest available model
+  resolves 1 in 5 of its own drafted cases (`docs/wp0-online-replay.md`)
 
-1. **Formalization of future-knowledge (vertical) leakage** in simulated-user evaluation + graph-position constraint as a structural (not prompt-level) defense.
-2. **The unified causal graph**: three edge types; (system,info) node semantics; known-blind-path edges with aftermath states; auto-generated rollback closure; shortcut expansion with skipped-info accounting and inferred-vs-blind shortcut grading.
-3. **Clarification as a first-class citizen**, including the measurement-class rule (bisections, test builds, config probes are clarifications), and the information-grounded decision rate metric.
-4. **Empirical graph extraction from real public threads** (vs. predefined fault trees à la JFTA-Bench / SOP graphs à la Beyond IVR): annotation protocol, funnel, agreement, cost.
-5. **Execution-free judging with objective anchors** (culprit commit/PR localization) and a released reliability report (noise floor, simulator-compliance audit, gold-revision process).
-6. **The benchmark itself**: environment-bound threads no execution-based benchmark can host; frozen + rolling splits; counterfactual variants.
+## 2. Related work
 
-## 3. Method (from docs/method.md)
+- **[have]** `docs/related-work.md` §1–§4 (CAB, Dialogue SWE-bench,
+  CirrusBench, JFTA, τ-family, ExCyTIn, clarification line,
+  simulator-fidelity critiques, execution-free evidence base)
+- **[have]** Defense checklist for the 2026 debate: same file §5
+- **[todo]** Cut to venue length; foreground the three axes we occupy
 
-Graph definition → leak model & simulator conditioning → judge (multi-match, partial subtypes, terminal semantics) → metrics (grounded rate, counterfactual sensitivity, five-tier solution calls) → machine closure (rollback/shortcut) → annotation pipeline (LLM draft + human review + validators).
+## 3. Task formulation and DSL
 
-## 4. Dataset
+- **[have]** Node = (system_state, info_state); clarification /
+  solution / mixed edges; known-blind paths; shortcuts; L1/L2/L3
+  obtainability; satisfaction conditions: `docs/method.md`,
+  `src/graph_bench/oncall_graph/models.py`
+- **[have]** Answer-key-not-transcript principle and the canonical walk
+- **[todo]** Formal figure: one worked case from graph to dialogue
 
-Wave-1 Mozilla corpus (target 50 → 100+): selection funnel with measured yields; shape balancing (persona × domain × blind-path species); scrubbing & licensing (docs/data-collection-and-privacy.md); data card incl. single-user-merge convention.
+## 4. Corpus construction
 
-## 5. Experiments
+- **[have]** Three harvesters + filter gates + drafting + machine gates:
+  `docs/pipeline.md`, `src/graph_bench/pipeline/`
+- **[have]** Statistics: `docs/dataset-stats.md` (79 cases, 7 domains,
+  49 msgs/thread mean, 79% of clarifications are L3 must-ask)
+- **[have]** Generation-method convergence: `docs/convergence-report.md`
+  (confirmed defects 71 → cleared; generalization on unseen threads)
+- **[have]** Sign-off procedure and what it caught: `docs/corpus-v1.md`,
+  `data/REVIEW_FINDINGS.json`
+- **[have]** Privacy/licensing: `docs/data-collection-and-privacy.md`
+- **[todo]** Threats-to-validity paragraph: the corpus is machine-drafted
+  and machine-signed; state it plainly with the audit trail as mitigation
 
-- **E1 Leakage quantification (headline):** same agents under simulator settings A (full-transcript conditioning, CAB-style) / B (satisfaction-conditions only) / C (graph-node only, ours). A−C = leakage inflation. Optionally replicate on JFTA-Bench data to show generality.
-- **E2 Oracle-agent separability:** scripted blind-guesser / conservative clarifier / inferred-shortcut expert / blind-shortcut gambler — the metric suite must separate them at equal correctness.
-- **E3 Counterfactual sensitivity:** extreme vs minor vs irrelevant interventions; classify agents as causal reasoner / pattern matcher / oversensitive.
-- **E4 Reliability:** repeated-run noise floor; simulator-model swap (Lost-in-Simulation-style ±); judge–human agreement on a stratified sample; culprit-localization anchor vs graph-judge correlation.
-- **E5 Model study:** frontier + open models; per-metric profiles (elicitation vs decision vs recovery-from-blind-path); qualitative failure taxonomy (ask-forever, hollow re-paste, premature solution, brush-off).
-- **E6 Human baseline (stretch):** experienced triagers on a case subset.
+## 5. Evaluation protocol
 
-## 6. Threats & limitations
+- **[have]** Leak-safe simulator (node-scoped conditioning, allow-list
+  render context), edge matching, tiering, judge rubrics:
+  `src/graph_bench/user_simulator/`, `src/graph_bench/judge/`
+- **[have]** Metric definitions: `src/graph_bench/recorder/metrics.py`
+- **[todo]** Metric table with formal definitions + worked example
 
-Single-user merge convention; measurement-vs-solution edge cases; judge LLM dependence (mitigated by anchors + audit); pretraining contamination (frozen/rolling + counterfactuals + canary); domain breadth (Mozilla first; GitHub/Discourse and dialogue-RCA waves as generality evidence).
+## 6. Experiments
 
-## 7. Timeline (from design est.)
+| Exp | What it shows | Status |
+|---|---|---|
+| E5 main table | model × metrics on the frozen corpus | **[partial]** one full round on the pre-freeze corpus (`docs/wp0-online-replay.md`); frozen-corpus runs paused by budget |
+| E2 oracle separability | scripted profiles split on grounding, not luck | **[have]** conservative: grounded 1.00, informed 11/11, 9/12 resolved · cheater: grounded 0.17, informed 0, 11 forced reveals, 45 fishing turns → 0 leaks |
+| E4 reliability | round-to-round variance, judge–human agreement, simulator swap | **[todo]** needs ≥2 frozen-corpus rounds; agreement study needs human labels |
+| E1 leakage A/B/C | what the anti-leak invariant is worth | **[todo]** harness supports `--sim-config leak_profile`; runs not made |
+| E3 counterfactual sensitivity | answers change when evidence changes | **[todo]** 608 authored counterfactual variants ready |
+| E6 contamination | 0-turn probe, date buckets, canary | **[todo]** |
+| E7 ablations | single- vs multi-turn, no-images, structured vs plain judge | **[todo]** |
 
-Pipeline + wave-1 data 2–4 wk → experiments 3–4 wk → human eval 2 wk → writing 2–3 wk. Workshop first if venue timing requires.
+## 7. Analysis
 
-## Assets checklist for submission
+- **[have]** Failure-mode observation from the smoke round: high
+  proactiveness (0.94) but weak conversion of gathered evidence into
+  grounded solution calls (solution-step 0.46); 12/25 died circling in
+  clarification
+- **[todo]** Per-domain and per-difficulty breakdowns once the frozen
+  main table exists
 
-- [ ] dataset (scrubbed) + data card + licenses
-- [ ] protocol code (simulator, judge, validators, expansions)
-- [ ] reliability report trio
-- [ ] annotation guidelines + agreement numbers
-- [ ] leakage experiment scripts (settings A/B/C)
+## 8. Limitations
+
+- Machine-drafted, machine-signed corpus (audit trail published)
+- Simulator fidelity: the user is an LLM conditioned on the current node
+- Judge is an LLM; agreement study pending
+- English-only threads; open-source projects only
+- 79 cases: positioned as small-and-deep (τ-bench 165, ITBench-AA 59,
+  SWE-bench Verified 500 as precedent)
+
+## 9. Release
+
+- **[have]** Apache-2.0 code, permissive-source data, private identity
+  maps, per-case review pages
+- **[todo]** HF dataset card + datasheet (`docs/datasheet.md` drafted),
+  anonymized artifact mirror, benchmark name
+
+## Immediate critical path
+
+1. Frozen-corpus main table (E5) + a second round (E4 variance) — the
+   only blocker is compute budget; harness and matrix rows are ready.
+2. Human agreement study — needs a human labeler; sample and protocol
+   can be prepared now.
+3. E1/E3/E6 runs — each is a config flag away, all cheap relative to E5.
