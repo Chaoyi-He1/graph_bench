@@ -4,7 +4,7 @@
 
 - source: https://github.com/denoland/deno/issues/19766
 - kind: LLM draft (needs review)
-- reviewed: `False`
+- reviewed: `True`
 - graph: `data/github_v0/graphs/gh_denoland_deno_19766.json` · raw thread: `data/github_v0/raw/gh_denoland_deno_19766.json`
 
 ```mermaid
@@ -55,7 +55,7 @@ flowchart LR
 | edge | type | gates / info | payload |
 |---|---|---|---|
 | `e1_N0__N1` | clarification_only | asks: native_windows_terminals_abort_while_wsl_works | On native Windows it happens in PowerShell, Git Bash, and CMD. The same use works in WSL. |
-| `e2_N1__N2_x` | solution_only **BLIND** | req_info: deno_1_35_0_windows_discord_14_11_0, native_windows_terminals_abort_while_wsl_works<br>elements: recommends_updating_to_deno_1_35_2 | Update from Deno 1.35.0 to the next Deno 1.35 patch release and retry the same discord.js bot. |
+| `e2_N1__N2_x` | solution_only **BLIND** | req_info: deno_1_35_0_windows_discord_14_11_0, native_windows_terminals_abort_while_wsl_works<br>elements: recommends_updating_deno_to_a_newer_release_and_retrying_the_same_bot | Update from Deno 1.35.0 to the next Deno 1.35 patch release and retry the same discord.js bot. |
 | `e3_N2_x__N3` | clarification_only | asks: stock_windows_11_pro_reproduces_same_undici_abort | I cannot run stock Windows 11 on my low-end laptop, but on our other Windows 11 Pro machine the same command t |
 | `e4_N3__N4` | clarification_only | asks: discord_dev_build_still_uses_undici_and_aborts | I get a similar error with @dev as well. It still says 'AbortError: Request aborted', and the path in the stac |
 | `e5_N3__N_terminal` | solution_only | req_info: discord_login_aborts_on_deno_1_35_windows, deno_1_35_0_windows_discord_14_11_0, deno_1_35_2_still_aborts_in_undici_rest_timeout, stock_windows_11_pro_reproduces_same_undici_abort<br>elements: identifies_undici_selection_in_discordjs_rest_as_the_affected_path, recommends_a_released_discord_version_with_deno_global_fetch_support, does_not_blame_mini11, asks_user_to_verify_client_login_on_the_updated_versions_before_declaring_resolution | Use a released discord.js version containing the non-Node REST transport selection, together with the current Deno release, so @discordjs/rest uses Deno's global fetch instead of its Node-oriented undici request path. |
@@ -71,6 +71,13 @@ flowchart LR
 | `N3` |  | 0 | 0 | The same request-aborted stack occurs on a separate Windows 11 Pro machine running Deno 1.35.2, and that stack also passes through undici an |
 | `N4` |  | 0 | 0 | Testing discord.js@dev still produces 'AbortError: Request aborted', and the printed module path still contains undici under the discord.js  |
 | `N_terminal` | ✓ | 1 | 0 | With Deno 1.36.1 and discord.js 14.12.1, the client logs in successfully on my Windows machine and the previous 'Request aborted' exception  |
+
+## Machine review (audit pass, adversarially verified)
+
+Auditor verdict: **n/a** · 0 of 0 findings survived independent refutation.
+
+__
+
 
 ## Review checklist
 

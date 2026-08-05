@@ -4,19 +4,19 @@
 
 - source: https://github.com/denoland/deno/issues/23656
 - kind: LLM draft (needs review)
-- reviewed: `False`
+- reviewed: `True`
 - graph: `data/github_v0/graphs/gh_denoland_deno_23656.json` · raw thread: `data/github_v0/raw/gh_denoland_deno_23656.json`
 
 ```mermaid
 flowchart LR
     N0["<b>N0 native binding missing</b><br/><small>info: 3</small>"]
     N1["<b>N1 local native addon installed</b><br/><small>info: 5</small>"]
-    N2_x["<b>N2_x initial canary execution aftermath</b><br/><small>info: 7</small>"]
+    N2_x["<b>N2_x canary execution aftermath</b><br/><small>info: 7</small>"]
     N3["<b>N3 query crash reproduced</b><br/><small>info: 8</small>"]
     N_terminal["<b>terminal DuckDB working locally</b><br/><small>info: 11</small>"]
     N0 ==>|"⚡ Work around Deno's missing npm lifecycle-script support by installing DuckDB with npm, yarn, or pnpm into a project-local node_modules directory and importing the local package."| N1
     linkStyle 0 stroke:#f97316,stroke-width:2px
-    N1 ==>|"💥 blind: Present the first canary containing the initial DuckDB native-addon fix as the complete answer: tell the user this build makes DuckDB work and treat a successful import plus `Database {}` construction as proof the issue is fixed."| N2_x
+    N1 ==>|"💥 blind: Present the first canary containing the initial DuckDB addon-load fix as the complete answer: tell the user this build makes DuckDB work and treat a successful import plus `Database {}` construction as proof the issue is fixed."| N2_x
     linkStyle 1 stroke:#ef4444,stroke-width:2px
     N2_x -.->|"❓ minimal_query_fails_and_parquet_workload_segfaults_on_canary"| N3
     linkStyle 2 stroke:#3b82f6,stroke-width:2px
@@ -41,7 +41,7 @@ flowchart LR
 1. Must distinguish the two blockers: the original `duckdb.node` file is missing because the npm lifecycle/postinstall step was not run, while the later query panic or segmentation fault is a separate Deno N-API implementation bug.
 2. The diagnosis must be grounded in the observed progression: direct `npm:duckdb` use misses the binding, local npm installation allows the addon to load, and queries still fail on the canary that fixed loading.
 3. The working local Deno 1.x procedure must retain the project-local npm installation and `DENO_FUTURE=1`, then update to a build containing the Deno N-API execution fix (canary at the time, or the following release).
-4. Must not present the first canary execution fix as sufficient; it loaded the database but actual queries still failed, and the remote-Parquet workload still segfaulted.
+4. Must not present the first canary's addon-load fix as sufficient; it loaded the database but actual queries still failed, and the remote-Parquet workload still segfaulted.
 5. Must ask the user to execute a DuckDB query on the fixed build and only treat the issue as resolved after that verification succeeds.
 
 ## Edges
@@ -49,7 +49,7 @@ flowchart LR
 | edge | type | gates / info | payload |
 |---|---|---|---|
 | `e1_N0__N1` | solution_only | req_info: npm_duckdb_import_missing_duckdb_node_binding<br>elements: uses_npm_yarn_or_pnpm_to_install_duckdb, uses_project_local_node_modules_instead_of_deno_npm_cache | Work around Deno's missing npm lifecycle-script support by installing DuckDB with npm, yarn, or pnpm into a project-local node_modules directory and importing the local package. |
-| `e2_N1__N2_x` | solution_only **BLIND** | req_info: local_binding_found_but_deno_native_callback_errors<br>elements: updates_to_the_first_canary_containing_the_addon_load_fix, presents_that_canary_update_as_the_complete_fix, treats_successful_database_construction_as_sufficient_verification | Present the first canary containing the initial DuckDB native-addon fix as the complete answer: tell the user this build makes DuckDB work and treat a successful import plus `Database {}` construction as proof the issue is fixed. |
+| `e2_N1__N2_x` | solution_only **BLIND** | req_info: local_binding_found_but_deno_native_callback_errors<br>elements: updates_to_the_first_canary_containing_the_addon_load_fix, presents_that_canary_update_as_the_complete_fix, treats_successful_database_construction_as_sufficient_verification | Present the first canary containing the initial DuckDB addon-load fix as the complete answer: tell the user this build makes DuckDB work and treat a successful import plus `Database {}` construction as proof the issue is fixed. |
 | `e3_N2_x__N3` | clarification_only | asks: minimal_query_fails_and_parquet_workload_segfaults_on_canary | IT WORKS! I can import DuckDB and create the database now — thanks for your patience! But... if I actually run |
 | `e4_N3__N_terminal` | solution_only | req_info: npm_duckdb_import_missing_duckdb_node_binding, duckdb_installed_into_local_node_modules, query_execution_still_crashes, minimal_query_fails_and_parquet_workload_segfaults_on_canary<br>elements: updates_to_a_build_containing_the_napi_execution_fix, retains_local_node_modules_workaround_while_postinstall_is_unavailable, uses_DENO_FUTURE_1_for_the_affected_deno_1x_flow, asks_user_to_verify_on_a_build_containing_the_fix | Use a Deno build containing PR 24101, while retaining the local npm-installed DuckDB workaround and DENO_FUTURE=1 until lifecycle-script support is available, then verify by executing a real DuckDB query. |
 
@@ -58,9 +58,9 @@ flowchart LR
 | node | terminal | volunteered | images | symptoms |
 |---|---|---|---|---|
 | `N0` |  | 1 | 0 | Running `deno run -A index.ts` with `import duckdb from "npm:duckdb"` fails because `duckdb.node` cannot be found under Deno's npm cache. |
-| `N1` |  | 2 | 0 | After installing DuckDB into local `node_modules` (and running `npm install` inside `node_modules/duckdb` to actually produce `duckdb.node`) |
+| `N1` |  | 2 | 0 | My other setup — a separate macOS arm64 machine running Deno 1.40.4 — now has DuckDB installed into local `node_modules` (I ran `npm install |
 | `N2_x` |  | 2 | 0 | With the canary I updated to and `DENO_FUTURE=1`, I can import DuckDB and create `Database {}`, but as soon as I actually run a query it fai |
-| `N3` |  | 0 | 0 | On the canary I updated to, the small example from the duckdb repo (`SELECT 42 AS fortytwo` against the in-memory database) still fails as s |
+| `N3` |  | 0 | 0 | On the canary I updated to, the small example from the duckdb repo, run against the in-memory database, still fails as soon as the query run |
 | `N_terminal` | ✓ | 1 | 0 | After updating to the newer build, DuckDB loads and my queries return results. |
 
 ## Machine review (audit pass, adversarially verified)

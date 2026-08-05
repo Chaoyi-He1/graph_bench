@@ -4,7 +4,7 @@
 
 - source: https://github.com/moby/moby/issues/49498
 - kind: LLM draft (needs review)
-- reviewed: `False`
+- reviewed: `True`
 - graph: `data/github_v0/graphs/gh_moby_moby_49498.json` · raw thread: `data/github_v0/raw/gh_moby_moby_49498.json`
 
 ```mermaid

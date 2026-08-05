@@ -4,7 +4,7 @@
 
 - source: https://github.com/micropython/micropython/issues/13471
 - kind: LLM draft (needs review)
-- reviewed: `False`
+- reviewed: `True`
 - graph: `data/github_v0/graphs/gh_micropython_micropython_13471.json` · raw thread: `data/github_v0/raw/gh_micropython_micropython_13471.json`
 
 ```mermaid
@@ -68,6 +68,13 @@ flowchart LR
 | `N3` |  | 0 | 0 | The normal optimized build still gives incorrect multi-byte hardware-SPI reads. A build that compiles the STM32F7 DMA HAL code with -O2 pass |
 | `N4` |  | 0 | 0 | The EEPROM multi-byte reads work correctly for me on the branch containing the root-cause patch. A second affected setup also reads correctl |
 | `N_terminal` | ✓ | 0 | 0 | Multi-byte spi.read() calls now return the bytes present on MISO, and the EEPROM passes its full test using hardware SPI. |
+
+## Machine review (audit pass, adversarially verified)
+
+Auditor verdict: **n/a** · 0 of 0 findings survived independent refutation.
+
+__
+
 
 ## Review checklist
 

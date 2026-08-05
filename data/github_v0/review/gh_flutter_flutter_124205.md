@@ -4,7 +4,7 @@
 
 - source: https://github.com/flutter/flutter/issues/124205
 - kind: LLM draft (needs review)
-- reviewed: `False`
+- reviewed: `True`
 - graph: `data/github_v0/graphs/gh_flutter_flutter_124205.json` · raw thread: `data/github_v0/raw/gh_flutter_flutter_124205.json`
 
 ```mermaid
@@ -15,8 +15,7 @@ flowchart LR
     N2["<b>N2 renderer-independent mobile web reproduction</b><br/><small>info: 9</small>"]
     N2_x["<b>N2_x focus workaround aftermath</b><br/><small>info: 10</small>"]
     N3["<b>N3 bad post-keyboard geometry captured</b><br/><small>info: 11</small>"]
-    N4["<b>N4 corrected viewport behavior verified</b><br/><small>info: 12</small>"]
-    N_terminal["<b>terminal resolved</b><br/><small>info: 12</small>"]
+    N_terminal["<b>terminal resolved</b><br/><small>info: 11</small>"]
     N0 -.->|"❓ physical_ios_and_android_devices_reproduce, reproduction_is_intermittent_and_tap_sensitive"| N1
     linkStyle 0 stroke:#3b82f6,stroke-width:2px
     N0 ==>|"💥 blind: Treat the offset as ordinary Scaffold keyboard resizing and disable automatic bottom-inset resizing."| N1_x
@@ -27,21 +26,18 @@ flowchart LR
     linkStyle 3 stroke:#ef4444,stroke-width:2px
     N2 -.->|"❓ keyboard_control_dismissal_triggers_bad_geometry"| N3
     linkStyle 4 stroke:#3b82f6,stroke-width:2px
-    N3 -.->|"❓ fixed_flutter_build_verified_on_physical_pixel_and_master"| N4
-    linkStyle 5 stroke:#3b82f6,stroke-width:2px
-    N4 ==>|"⚡ Update to a Flutter release containing the mobile-web viewport geometry fix from PR 179581, first shipped on stable in 3.38.6, and verify keyboard opening and dismissal on the affected physical devices."| N_terminal
-    linkStyle 6 stroke:#f97316,stroke-width:2px
+    N3 ==>|"⚡ Update to a Flutter release containing the mobile-web viewport geometry fix, rebuild the web app, and verify keyboard opening and dismissal on the affected physical mobile browsers."| N_terminal
+    linkStyle 5 stroke:#f97316,stroke-width:2px
     N1_x ==>|"⚡ Abandon this direction and return to the investigation."| N0
-    linkStyle 7 stroke:#f97316,stroke-width:2px
+    linkStyle 6 stroke:#f97316,stroke-width:2px
     N2_x ==>|"⚡ Abandon this direction and return to the investigation."| N2
-    linkStyle 8 stroke:#f97316,stroke-width:2px
+    linkStyle 7 stroke:#f97316,stroke-width:2px
     class N0 start
     class N1 normal
     class N1_x normal
     class N2 normal
     class N2_x normal
     class N3 normal
-    class N4 normal
     class N_terminal terminal
     classDef start fill:#fee2e2,stroke:#b91c1c,color:#000
     classDef terminal fill:#dcfce7,stroke:#15803d,color:#000
@@ -64,13 +60,12 @@ flowchart LR
 
 | edge | type | gates / info | payload |
 |---|---|---|---|
-| `e1_N0__N1` | clarification_only | asks: physical_ios_and_android_devices_reproduce, reproduction_is_intermittent_and_tap_sensitive | Yes. I have the same issue on physical iPhones, including iPhone 14 and iPhone 10, and on a Samsung S22 Ultra. / It varies by device. On some real devices it is intermittent and may need repeated taps, while on slower Andro |
+| `e1_N0__N1` | clarification_only | asks: physical_ios_and_android_devices_reproduce, reproduction_is_intermittent_and_tap_sensitive | Yes. I have the same issue on physical iPhones, including iPhone 14 and iPhone 10, and on a participant10 S22  / It varies by device. On some real devices it is intermittent and may need repeated taps, while on slower Andro |
 | `e2_N0__N1_x` | solution_only **BLIND** | req_info: mobile_web_text_input_has_extra_keyboard_offset<br>elements: sets_resize_to_avoid_bottom_inset_false_as_complete_fix | Treat the offset as ordinary Scaffold keyboard resizing and disable automatic bottom-inset resizing. |
 | `e3_N1__N2` | clarification_only | asks: html_renderer_also_reproduces | I just created an HTML build and got the same result. The issue also appears on a physical Android device, alt |
 | `e4_N2__N2_x` | solution_only **BLIND** | req_info: mobile_web_text_input_has_extra_keyboard_offset, reproduction_is_intermittent_and_tap_sensitive<br>elements: removes_programmatic_focus_as_complete_fix | Avoid calling requestFocus or using autofocus on mobile web and treat duplicate focus requests as the complete cause of the keyboard offset. |
 | `e5_N2__N3` | clarification_only | asks: keyboard_control_dismissal_triggers_bad_geometry | When I dismiss the keyboard by defocusing, the metrics look normal: Size(412.0, 770.0) with bottom inset 312.0 |
-| `e6_N3__N4` | clarification_only | asks: fixed_flutter_build_verified_on_physical_pixel_and_master | I tested the latest published Flutter on Chrome on a physical Pixel 8 and the issue is resolved for me. I also |
-| `e7_N4__N_terminal` | solution_only | req_info: physical_ios_and_android_devices_reproduce, raw_metrics_show_reduced_height_and_negative_bottom_inset, issue_affects_fields_that_browser_must_move, fixed_flutter_build_verified_on_physical_pixel_and_master, html_renderer_also_reproduces<br>elements: identifies_incorrect_mobile_web_viewport_geometry_as_root_cause, mentions_negative_or_stale_bottom_inset_after_keyboard_transition, recommends_a_flutter_release_containing_the_mobile_web_viewport_geometry_fix, requires_retesting_on_an_affected_physical_mobile_browser, does_not_present_resize_to_avoid_bottom_inset_as_the_root_fix | Update to a Flutter release containing the mobile-web viewport geometry fix from PR 179581, first shipped on stable in 3.38.6, and verify keyboard opening and dismissal on the affected physical devices. |
+| `e7_N3__N_terminal` | solution_only | req_info: physical_ios_and_android_devices_reproduce, issue_affects_fields_that_browser_must_move, html_renderer_also_reproduces, raw_metrics_show_reduced_height_and_negative_bottom_inset<br>elements: identifies_incorrect_mobile_web_viewport_geometry_as_root_cause, mentions_negative_or_stale_bottom_inset_after_keyboard_transition, recommends_a_flutter_release_containing_the_mobile_web_viewport_geometry_fix, requires_retesting_on_an_affected_physical_mobile_browser, does_not_present_resize_to_avoid_bottom_inset_as_the_root_fix | Update to a Flutter release containing the mobile-web viewport geometry fix, rebuild the web app, and verify keyboard opening and dismissal on the affected physical mobile browsers. |
 | `rb_N1_x__N0` | solution_only | req_info: <br>elements: mentions_rollback_or_abandon_direction | Abandon this direction and return to the investigation. |
 | `rb_N2_x__N2` | solution_only | req_info: <br>elements: mentions_rollback_or_abandon_direction | Abandon this direction and return to the investigation. |
 
@@ -84,8 +79,7 @@ flowchart LR
 | `N2` |  | 1 | 0 | The HTML-renderer build has the same extra space above the keyboard. The offset also appears in mobile web browsers on Android, although its |
 | `N2_x` |  | 1 | 0 | The keyboard offset still happens in an app that does not programmatically request focus. |
 | `N3` |  | 1 | 0 | After dismissing the virtual keyboard with its own control, the page can retain the wrong height and display blank or displaced space. In th |
-| `N4` |  | 0 | 0 | On an updated Flutter build, the field and page return to the correct position when the mobile keyboard opens and closes. I no longer see th |
-| `N_terminal` | ✓ | 0 | 0 | After updating Flutter, mobile web text fields remain directly above the virtual keyboard and the page geometry resets correctly when the ke |
+| `N_terminal` | ✓ | 0 | 0 | After updating Flutter and rebuilding, mobile web text fields remain directly above the virtual keyboard and the page geometry resets correc |
 
 ## Machine review (audit pass, adversarially verified)
 

@@ -4,7 +4,7 @@
 
 - source: https://github.com/duckdb/duckdb/issues/13911
 - kind: LLM draft (needs review)
-- reviewed: `False`
+- reviewed: `True`
 - graph: `data/github_v0/graphs/gh_duckdb_duckdb_13911.json` · raw thread: `data/github_v0/raw/gh_duckdb_duckdb_13911.json`
 
 ```mermaid
@@ -69,6 +69,13 @@ flowchart LR
 | `N2` |  | 0 | 0 | The BinaryBuilder-produced DuckDB_jll DLL gives the missing-symbol error, while Julia precompiles successfully when `JULIA_DUCKDB_LIBRARY` p |
 | `N3` |  | 0 | 0 | The generated Windows DLL still cannot provide `duckdb_vector_size` to Julia, even though that symbol is present in the C-API object file an |
 | `N_terminal` | ✓ | 0 | 0 | With a Windows DuckDB library containing the export fix, Julia finds `duckdb_vector_size` and DuckDB.jl precompiles successfully. |
+
+## Machine review (audit pass, adversarially verified)
+
+Auditor verdict: **n/a** · 0 of 0 findings survived independent refutation.
+
+__
+
 
 ## Review checklist
 

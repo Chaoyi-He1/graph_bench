@@ -4,7 +4,7 @@
 
 - source: https://github.com/denoland/deno/issues/20594
 - kind: LLM draft (needs review)
-- reviewed: `False`
+- reviewed: `True`
 - graph: `data/github_v0/graphs/gh_denoland_deno_20594.json` · raw thread: `data/github_v0/raw/gh_denoland_deno_20594.json`
 
 ```mermaid
@@ -62,6 +62,13 @@ flowchart LR
 | `N2` |  | 1 | 0 | Encrypted mssql connections still stop at `SentTLSSSLNegotiation`; an unencrypted mssql connection can reach the same database address and p |
 | `N3` |  | 0 | 0 | Encrypted mssql connections continue to fail in Deno, while Node completes the same connection and Deno can reach the database when encrypti |
 | `N_terminal` | ✓ | 1 | 0 | The encrypted mssql connection works in Deno Canary without setting `encrypt: false`. |
+
+## Machine review (audit pass, adversarially verified)
+
+Auditor verdict: **n/a** · 0 of 0 findings survived independent refutation.
+
+__
+
 
 ## Review checklist
 

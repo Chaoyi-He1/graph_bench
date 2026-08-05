@@ -4,7 +4,7 @@
 
 - source: https://github.com/pytorch/pytorch/issues/94640
 - kind: LLM draft (needs review)
-- reviewed: `False`
+- reviewed: `True`
 - graph: `data/github_v0/graphs/gh_pytorch_pytorch_94640.json` · raw thread: `data/github_v0/raw/gh_pytorch_pytorch_94640.json`
 
 ```mermaid

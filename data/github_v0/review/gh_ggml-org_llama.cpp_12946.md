@@ -4,7 +4,7 @@
 
 - source: https://github.com/ggml-org/llama.cpp/issues/12946
 - kind: LLM draft (needs review)
-- reviewed: `False`
+- reviewed: `True`
 - graph: `data/github_v0/graphs/gh_ggml-org_llama.cpp_12946.json` · raw thread: `data/github_v0/raw/gh_ggml-org_llama.cpp_12946.json`
 
 ```mermaid

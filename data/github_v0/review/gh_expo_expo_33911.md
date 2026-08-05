@@ -4,7 +4,7 @@
 
 - source: https://github.com/expo/expo/issues/33911
 - kind: LLM draft (needs review)
-- reviewed: `False`
+- reviewed: `True`
 - graph: `data/github_v0/graphs/gh_expo_expo_33911.json` · raw thread: `data/github_v0/raw/gh_expo_expo_33911.json`
 
 ```mermaid
@@ -55,7 +55,7 @@ flowchart LR
 |---|---|---|---|
 | `e1_N0__N1` | clarification_only | asks: foreground_and_background_requests_can_be_separate_feature_events, same_session_foreground_then_background_reproduces, sdk51_old_arch_did_wait_for_response, other_ios_apps_present_separate_permission_upgrade_flow | My app has a map that only needs foreground location and a separate background-check feature that most users n / Yes. I request foreground access, grant it, and then request background access in the same session. The backgr / The same flow worked without this issue on SDK 51 with the old architecture. After upgrading to SDK 52, the ba / Yes. Apple documents requesting Always authorization after When In Use, and I attached an example of the Citiz |
 | `e2_N1__N1_x` | solution_only **BLIND** | req_info: foreground_and_background_requests_can_be_separate_feature_events<br>elements: recommends_requesting_only_background_permission_on_ios | Avoid the foreground-to-background upgrade flow on iOS and request only background permission, relying on that request to obtain foreground access automatically. |
-| `e3_N1_x__N2` | clarification_only | asks: public_repo_reproduces_same_session_sequence, recording_shows_background_promise_finishes_while_dialog_is_unanswered, community_investigation_points_to_pr29272_exbaselocationrequester | I created a minimal repository with reproduction instructions: https://github.com/participant3/expo-location-r / Yes. In my recording, the background permission dialog is still on screen and I have not selected anything, bu / After investigating, I found that the behavior was introduced by PR #29272 and involves `EXBaseLocationRequest |
+| `e3_N1_x__N2` | clarification_only | asks: public_repo_reproduces_same_session_sequence, recording_shows_background_promise_finishes_while_dialog_is_unanswered, community_investigation_points_to_pr29272_exbaselocationrequester | I created a minimal repository with reproduction instructions: https://github.com/expo/expo-location-repro. It / Yes. In my recording, the background permission dialog is still on screen and I have not selected anything, bu / After investigating, I found that the behavior was introduced by PR #29272 and involves `EXBaseLocationRequest |
 | `e4_N2__N3` | solution_only | req_info: background_request_first_call_returns_denied_then_second_reads_granted, recording_shows_background_promise_finishes_while_dialog_is_unanswered<br>elements: waits_for_appstate_to_return_active, rechecks_background_permission_after_prompt, labels_workaround_as_temporary, removes_appstate_listener_after_use | Use an AppState-based temporary workaround: after requesting background permission, wait for iOS to return the app to the active state and then query the permission again. |
 | `e5_N3__N_terminal` | solution_only | req_info: sdk51_old_arch_did_wait_for_response, background_request_first_call_returns_denied_then_second_reads_granted, public_repo_reproduces_same_session_sequence, recording_shows_background_promise_finishes_while_dialog_is_unanswered, community_investigation_points_to_pr29272_exbaselocationrequester<br>elements: identifies_premature_native_promise_completion_as_root_cause, fixes_exbaselocationrequester_authorization_completion_timing, supports_foreground_then_background_in_same_session, does_not_treat_background_only_guidance_as_the_fix, asks_user_to_verify_on_a_build_containing_the_fix | Fix the SDK 52 iOS native location requester so `requestBackgroundPermissionsAsync()` remains pending through the authorization UI and resolves from the completed authorization result, then have the reporter verify the same-session foreground-to-background flow on a build containing the fix. |
 
@@ -69,6 +69,13 @@ flowchart LR
 | `N2` |  | 1 | 0 | In the minimal repository and recording, the background permission dialog is still awaiting input when the JavaScript request has already pr |
 | `N3` |  | 1 | 0 | With my AppState workaround, I wait for the app to become active and then read the background permission again; the production flow now obse |
 | `N_terminal` | ✓ | 1 | 0 | On a build containing the native fix, the background permission request waits for my response and returns the final permission status withou |
+
+## Machine review (audit pass, adversarially verified)
+
+Auditor verdict: **n/a** · 0 of 0 findings survived independent refutation.
+
+__
+
 
 ## Review checklist
 

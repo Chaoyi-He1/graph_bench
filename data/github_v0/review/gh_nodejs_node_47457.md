@@ -4,7 +4,7 @@
 
 - source: https://github.com/nodejs/node/issues/47457
 - kind: LLM draft (needs review)
-- reviewed: `False`
+- reviewed: `True`
 - graph: `data/github_v0/graphs/gh_nodejs_node_47457.json` · raw thread: `data/github_v0/raw/gh_nodejs_node_47457.json`
 
 ```mermaid
@@ -13,9 +13,9 @@ flowchart LR
     N1["<b>N1 regression and REPL-preview scope established</b><br/><small>info: 5</small>"]
     N2["<b>N2 environment dependence established</b><br/><small>info: 8</small>"]
     N2_x["<b>N2_x invalid-input guard aftermath</b><br/><small>info: 10</small>"]
-    N3["<b>N3 official-build and transcoding path isolated</b><br/><small>info: 14</small>"]
-    N4["<b>N4 toolchain and SIMD interaction confirmed</b><br/><small>info: 18</small>"]
-    N_terminal["<b>terminal resolved</b><br/><small>info: 20</small>"]
+    N3["<b>N3 official-build dependence isolated</b><br/><small>info: 13</small>"]
+    N4["<b>N4 toolchain-dependent conversion mismatch measured</b><br/><small>info: 17</small>"]
+    N_terminal["<b>terminal resolved</b><br/><small>info: 21</small>"]
     N0 -.->|"❓ node_19_6_1_repl_date_works"| N1
     linkStyle 0 stroke:#3b82f6,stroke-width:2px
     N1 -.->|"❓ native_windows_terminals_crash_but_wsl_works, other_windows_installations_do_not_all_reproduce, affected_node_18_versions_and_node_20_3_1_test_result"| N2
@@ -24,7 +24,7 @@ flowchart LR
     linkStyle 2 stroke:#ef4444,stroke-width:2px
     N2_x -.->|"❓ non_ascii_repl_input_can_trigger_abort, official_windows_binary_differs_from_local_vs2022_build, official_windows_release_uses_vs2019"| N3
     linkStyle 3 stroke:#3b82f6,stroke-width:2px
-    N3 -.->|"❓ ci_reproduces_with_vs2019_release_build, affected_cpu_supports_avx512, failure_reproduced_on_icelake_kernel_with_vs2019, simdutf_kernel_disable_change_makes_test_pass"| N4
+    N3 -.->|"❓ ci_reproduces_with_vs2019_release_build, affected_cpu_supports_avx512, standalone_reproducer_output_under_vs2019_and_vs2022, linked_patch_makes_reproducer_and_test_pass"| N4
     linkStyle 4 stroke:#3b82f6,stroke-width:2px
     N4 ==>|"⚡ Update Node.js to a Windows build containing the simdutf dependency correction that disables the problematic AVX-512 Ice Lake conversion path when compiled with Visual Studio 2019, then verify the original REPL inputs before declaring the issue resolved."| N_terminal
     linkStyle 5 stroke:#f97316,stroke-width:2px
@@ -60,8 +60,8 @@ flowchart LR
 | `e2_N1__N2` | clarification_only | asks: native_windows_terminals_crash_but_wsl_works, other_windows_installations_do_not_all_reproduce, affected_node_18_versions_and_node_20_3_1_test_result | Yes on all the native Windows terminals I have installed: CMD, Git Bash, and PowerShell. In Ubuntu WSL2, Node. / On another Windows 11 installation, a fresh Node.js v19.8.1 works in both Command Prompt and PowerShell: `new  / On Windows 11, v18.16.0 and v18.16.1 show the same problem while v18.15.0 works. I also tried v20.3.1 and had  |
 | `e3_N2__N2_x` | solution_only **BLIND** | req_info: node_string_utf16_length_assertion, affected_node_18_versions_and_node_20_3_1_test_result<br>elements: handles_invalid_input_by_returning_an_empty_string | Treat invalid UTF-8 reaching the inspector conversion as the complete cause and avoid the assertion by accepting invalid strings and converting them to empty strings. |
 | `e4_N2_x__N3` | clarification_only | asks: non_ascii_repl_input_can_trigger_abort, official_windows_binary_differs_from_local_vs2022_build, official_windows_release_uses_vs2019 | On an affected official Windows build, typing `é` directly as the first character is enough to abort. Another  / The official Windows binary reproduces it, but when I build current Node from source on Windows with Visual St / The official Windows release builds currently use Windows Server 2012 R2 with Visual Studio 2019. The Jenkins  |
-| `e5_N3__N4` | clarification_only | asks: ci_reproduces_with_vs2019_release_build, affected_cpu_supports_avx512, failure_reproduced_on_icelake_kernel_with_vs2019, simdutf_kernel_disable_change_makes_test_pass | Our Windows x64 CI consistently fails `test-repl-history-navigation.js` with `Assertion '(expected_utf8_length / The machine has an 11th Gen Intel Core i7-1185G7. Coreinfo reports support for AVX-512 Foundation, DQ, IFMA, C / I can reproduce the issue with the Ice Lake implementation when compiling in release mode with Visual Studio 2 / I confirmed that the change from the linked simdutf patch fixes the test case. Building Node with it also make |
-| `e6_N4__N_terminal` | solution_only | req_info: node_19_8_1_windows_11_x64, repl_aborts_while_typing_new_date, node_string_utf16_length_assertion, direct_repl_preview_crashes_but_console_log_works, official_windows_binary_differs_from_local_vs2022_build, official_windows_release_uses_vs2019, ci_reproduces_with_vs2019_release_build, affected_cpu_supports_avx512, failure_reproduced_on_icelake_kernel_with_vs2019, simdutf_kernel_disable_change_makes_test_pass<br>elements: identifies_toolchain_dependent_simd_utf_transcoding_as_root_cause, uses_a_build_that_disables_the_problematic_optimized_path_for_vs2019, asks_user_to_verify_on_a_build_containing_the_dependency_fix, does_not_treat_invalid_terminal_input_as_the_complete_root_cause | Update Node.js to a Windows build containing the simdutf dependency correction that disables the problematic AVX-512 Ice Lake conversion path when compiled with Visual Studio 2019, then verify the original REPL inputs before declaring the issue resolved. |
+| `e5_N3__N4` | clarification_only | asks: ci_reproduces_with_vs2019_release_build, affected_cpu_supports_avx512, standalone_reproducer_output_under_vs2019_and_vs2022, linked_patch_makes_reproducer_and_test_pass | Our Windows x64 CI consistently fails `test-repl-history-navigation.js` with `Assertion '(expected_utf8_length / The machine has an 11th Gen Intel Core i7-1185G7. Coreinfo reports support for AVX-512 Foundation, DQ, IFMA, C / I reduced the failing test payload to a standalone program that converts it and prints the expected and actual / I confirmed that the change from the patch you linked fixes the test case. Building Node with it also makes `t |
+| `e6_N4__N_terminal` | solution_only | req_info: node_19_8_1_windows_11_x64, repl_aborts_while_typing_new_date, node_string_utf16_length_assertion, direct_repl_preview_crashes_but_console_log_works, official_windows_binary_differs_from_local_vs2022_build, official_windows_release_uses_vs2019, ci_reproduces_with_vs2019_release_build, affected_cpu_supports_avx512, standalone_reproducer_output_under_vs2019_and_vs2022, linked_patch_makes_reproducer_and_test_pass<br>elements: identifies_toolchain_dependent_simd_utf_transcoding_as_root_cause, uses_a_build_that_disables_the_problematic_optimized_path_for_vs2019, asks_user_to_verify_on_a_build_containing_the_dependency_fix, does_not_treat_invalid_terminal_input_as_the_complete_root_cause | Update Node.js to a Windows build containing the simdutf dependency correction that disables the problematic AVX-512 Ice Lake conversion path when compiled with Visual Studio 2019, then verify the original REPL inputs before declaring the issue resolved. |
 
 ## Nodes
 
@@ -71,9 +71,16 @@ flowchart LR
 | `N1` |  | 1 | 1 | Node.js v19.6.1 evaluates `new Date()` normally, but in v19.8.1 the REPL can abort before I finish typing the direct expression. Calling `co |
 | `N2` |  | 0 | 0 | The assertion occurs in PowerShell, Command Prompt, and Git Bash on native Windows, while the same Node.js version evaluates `new Date()` no |
 | `N2_x` |  | 2 | 0 | On Windows 11, official Node.js v18.17.1 and v20.6.1 builds can still abort in the REPL with a string-length assertion. |
-| `N3` |  | 1 | 0 | In affected official Windows builds, entering characters such as `é` directly in the Node REPL can immediately produce a UTF string-length a |
+| `N3` |  | 0 | 0 | In affected official Windows builds, entering characters such as `é` directly in the Node REPL can immediately produce a UTF string-length a |
 | `N4` |  | 0 | 0 | The Windows x64 release-mode REPL history test aborts in the string conversion path when built with Visual Studio 2019 on the affected hardw |
 | `N_terminal` | ✓ | 0 | 0 | In a Node.js Windows build containing the dependency fix, typing and evaluating `new Date` and non-ASCII input in the REPL no longer aborts  |
+
+## Machine review (audit pass, adversarially verified)
+
+Auditor verdict: **n/a** · 0 of 0 findings survived independent refutation.
+
+__
+
 
 ## Review checklist
 

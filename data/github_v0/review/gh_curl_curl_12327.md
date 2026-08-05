@@ -4,7 +4,7 @@
 
 - source: https://github.com/curl/curl/issues/12327
 - kind: LLM draft (needs review)
-- reviewed: `False`
+- reviewed: `True`
 - graph: `data/github_v0/graphs/gh_curl_curl_12327.json` · raw thread: `data/github_v0/raw/gh_curl_curl_12327.json`
 
 ```mermaid
@@ -62,6 +62,13 @@ flowchart LR
 | `N2` |  | 1 | 0 | Memory is about 1.5 MB initially, 6.6 MB after 1,000 downloads, and 12 MB after 2,000 downloads. The same test stays stable with curl 7.45 a |
 | `N3` |  | 1 | 0 | My DLL built with static zlib, nghttp2, and OpenSSL shows the memory growth. The otherwise similar DLL built without SSL support does not sh |
 | `N_terminal` | ✓ | 1 | 0 | After rebuilding the DLL with a wrapper that calls OPENSSL_thread_stop for the worker threads, I no longer see the memory growth. |
+
+## Machine review (audit pass, adversarially verified)
+
+Auditor verdict: **n/a** · 0 of 0 findings survived independent refutation.
+
+__
+
 
 ## Review checklist
 

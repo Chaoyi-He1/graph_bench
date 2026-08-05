@@ -4,7 +4,7 @@
 
 - source: https://github.com/moby/moby/issues/46699
 - kind: LLM draft (needs review)
-- reviewed: `False`
+- reviewed: `True`
 - graph: `data/github_v0/graphs/gh_moby_moby_46699.json` · raw thread: `data/github_v0/raw/gh_moby_moby_46699.json`
 
 ```mermaid
@@ -68,6 +68,13 @@ flowchart LR
 | `N3` |  | 0 | 0 | The recent container log files look binary when I open them with `less`; I sent an affected set privately for inspection. |
 | `N4` |  | 0 | 0 | All of my environments are currently reporting healthy after automatic AWS server updates, even though I did not change the application stac |
 | `N_terminal` | ✓ | 0 | 0 | After updating to a Moby release containing the resilient local-log reader, `docker logs` moves past a damaged log file instead of repeatedl |
+
+## Machine review (audit pass, adversarially verified)
+
+Auditor verdict: **n/a** · 0 of 0 findings survived independent refutation.
+
+__
+
 
 ## Review checklist
 

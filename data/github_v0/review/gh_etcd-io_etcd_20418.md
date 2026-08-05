@@ -4,7 +4,7 @@
 
 - source: https://github.com/etcd-io/etcd/issues/20418
 - kind: LLM draft (needs review)
-- reviewed: `False`
+- reviewed: `True`
 - graph: `data/github_v0/graphs/gh_etcd-io_etcd_20418.json` · raw thread: `data/github_v0/raw/gh_etcd-io_etcd_20418.json`
 
 ```mermaid

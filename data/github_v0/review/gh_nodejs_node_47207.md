@@ -4,7 +4,7 @@
 
 - source: https://github.com/nodejs/node/issues/47207
 - kind: LLM draft (needs review)
-- reviewed: `False`
+- reviewed: `True`
 - graph: `data/github_v0/graphs/gh_nodejs_node_47207.json` · raw thread: `data/github_v0/raw/gh_nodejs_node_47207.json`
 
 ```mermaid
@@ -62,8 +62,8 @@ flowchart LR
 | `e1_N0__N1` | clarification_only | asks: gdb_faulting_instruction_and_register_dump, ssl_select_next_proto_dereferences_unmapped_rax | The crash is at SSL_select_next_proto+76: `movzbl (%rax),%eax`. In this core, rax/rdi/rdx are `0x75684f4f71567 / No. When I ask GDB to examine the address in rax, it says memory at that address is not available. Every core  |
 | `e2_N1__N2` | clarification_only | asks: captured_client_hello_has_valid_h2_and_http11_alpn, million_iteration_local_replay_does_not_crash | I recovered the full 512-byte TLS record from the core and decoded it. The ALPN extension is `0010 000e 000c 0 / I replayed the full message locally in a single-threaded loop for one million iterations and nothing failed. I |
 | `e3_N2__N2_x` | solution_only **BLIND** | req_info: rare_production_sigsegv_about_one_per_million_requests, captured_client_hello_has_valid_h2_and_http11_alpn<br>elements: recommends_empty_server_alpn_list | Avoid the crash by configuring the HTTPS server with an empty ALPNProtocols array. |
-| `e4_N2__N3` | clarification_only | asks: node_18_12_production_deployment_has_no_crashes, crashes_begin_after_alpn_callback_optimization | I reverted ten production servers to Node.js 18.12.0. They have produced zero core dumps since the deployment. / The behavior changes at the ALPN callback optimization introduced for the releases after 18.12. The screenshot |
-| `e5_N2_x__N3` | clarification_only | asks: node_18_12_production_deployment_has_no_crashes, crashes_begin_after_alpn_callback_optimization | I reverted ten production servers to Node.js 18.12.0 and have seen zero core dumps since then. Other affected  / The first unstable versions contain the ALPN callback optimization. The older code obtained TLSWrap from the S |
+| `e4_N2__N3` | clarification_only | asks: node_18_12_production_deployment_has_no_crashes, crashes_begin_after_alpn_callback_optimization | I reverted ten production servers to Node.js 18.12.0. They have produced zero core dumps since the deployment. / The crashing releases start at 18.13. Looking through what landed there, I found a commit titled `src: optimiz |
+| `e5_N2_x__N3` | clarification_only | asks: node_18_12_production_deployment_has_no_crashes, crashes_begin_after_alpn_callback_optimization | I reverted ten production servers to Node.js 18.12.0 and have seen zero core dumps since then. Other affected  / The first unstable releases are 18.13 and later. Going through what landed in 18.13 I noticed a commit `src: o |
 | `e6_N3__N4` | clarification_only | asks: two_connections_observe_same_ssl_ctx_callback_argument, crash_core_callback_argument_no_longer_looks_like_tlswrap, candidate_callback_lifetime_fix_stable_under_production_load | I opened connection A, waited, opened B, sent B's ClientHello, closed B, waited again, and then sent A's Clien / In the production core, the TLSWrap and SSL objects involved still look intact, but `ssl->ctx->ext.alpn_select / I tested the candidate fix with the affected production workload, and it resolves the crash. That workload nor |
 | `e7_N4__terminal` | solution_only | req_info: rare_production_sigsegv_about_one_per_million_requests, crashes_begin_after_alpn_callback_optimization, multiple_users_observe_old_node_stable_and_new_node_crashing, gdb_faulting_instruction_and_register_dump, ssl_select_next_proto_dereferences_unmapped_rax, captured_client_hello_has_valid_h2_and_http11_alpn, node_18_12_production_deployment_has_no_crashes, two_connections_observe_same_ssl_ctx_callback_argument, crash_core_callback_argument_no_longer_looks_like_tlswrap, candidate_callback_lifetime_fix_stable_under_production_load<br>elements: identifies_connection_specific_tlswrap_pointer_in_shared_ssl_ctx_as_root_cause, explains_that_another_connection_can_leave_the_shared_callback_argument_stale, recovers_tlswrap_from_the_current_ssl_connection_instead, asks_user_to_verify_on_a_build_containing_the_fix | Fix the ALPN callback lifetime bug by no longer treating a connection-specific TLSWrap pointer as the callback argument stored on the shared SSL_CTX; recover the wrapper from the current SSL connection instead, then have the affected deployment verify a build containing the fix. |
 
@@ -78,6 +78,13 @@ flowchart LR
 | `N3` |  | 2 | 0 | After deploying Node.js 18.12.0 across ten production servers, I have seen zero core dumps, while newer versions crashed about hourly with t |
 | `N4` |  | 0 | 0 | With two overlapping TLS connections, both callbacks receive the same callback-argument value from the shared context. An affected productio |
 | `N_terminal` | ✓ | 0 | 0 | The TLS server remains stable under representative production traffic on a build containing the callback-lifetime fix; the SSL_select_next_p |
+
+## Machine review (audit pass, adversarially verified)
+
+Auditor verdict: **n/a** · 0 of 0 findings survived independent refutation.
+
+__
+
 
 ## Review checklist
 

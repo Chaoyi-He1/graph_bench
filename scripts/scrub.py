@@ -56,7 +56,18 @@ _SECRETS = re.compile(
 
 # Org/infra account names are not personal identities; mapping them
 # corrupts domains ('bugzilla.mozilla.org' -> 'bugzilla.participantN.org').
-_ORG_IDENTITIES = {'mozilla', 'firefox', 'bugzilla', 'github', 'postgresql'}
+_ORG_IDENTITIES = {
+    'mozilla', 'firefox', 'bugzilla', 'github', 'postgresql',
+    # Org/product accounts that also appear inside URLs, package names and
+    # prose; mapping them corrupts technical content
+    # (github.com/home-assistant/core -> github.com/participantN/core).
+    'home-assistant', 'react-native', 'react', 'native', 'expo', 'google',
+    'aws', 'microsoft', 'apple', 'nvidia', 'docker', 'moby', 'containerd',
+    'kubernetes', 'nodejs', 'denoland', 'duckdb', 'clickhouse', 'traefik',
+    'micropython', 'flutter', 'ollama', 'vllm', 'pytorch', 'curl', 'caddy',
+    'etcd', 'python', 'typescript', 'javascript', 'config', 'testing',
+    'ghost',
+}
 
 # Handles/local-parts that are bare common words make catastrophic prose
 # replacements ('encryption info' -> 'encryption reporter') and identify
@@ -70,6 +81,10 @@ _COMMON_WORDS = {
     'install', 'build', 'server', 'client', 'system', 'network', 'memory',
     'storage', 'windows', 'linux', 'android', 'chrome', 'safari', 'apple',
 }
+
+
+def _re_search_upper_digit(token: str) -> bool:
+    return re.search(r'[A-Z0-9]', token) is not None
 
 
 def _prose_safe(token: str) -> bool:
@@ -104,6 +119,8 @@ class CaseMap:
         self.reporter = reporter
         self.map: dict[str, str] = {reporter: 'reporter'}
         self._n = 0
+        # Reviewer-filed non-identity PII strings (see _EXTRA_IDENTITIES).
+        self.redactions: list[str] = []
 
     def add(self, handle: str) -> None:
         if handle and not _is_bot(handle) and handle not in self.map:
@@ -125,17 +142,26 @@ class CaseMap:
             # Full-handle replacement is boundary-guarded too: GitHub
             # logins are bare words (no '@'), and a short login like
             # 'sync' must not rewrite the inside of '(async storage'.
+            # Underscore counts as a boundary in RAW text so handles
+            # embedded in filenames (…_hawkfish.csv) are caught; the graph
+            # pass keeps \b to avoid rewriting snake_case info ids.
             if _prose_safe(handle):
                 text = re.sub(
-                    rf'\b{re.escape(handle)}\b', self.map[handle], text
+                    rf'(?<![A-Za-z0-9]){re.escape(handle)}(?![A-Za-z0-9])',
+                    self.map[handle],
+                    text,
                 )
             local = handle.split('@')[0]
             if len(local) >= 4 and _prose_safe(local):
-                # Word-boundary guarded: a short local part like 'glob' must
+                # Boundary-guarded: a short local part like 'glob' must
                 # not rewrite the inside of words ('globally').
                 text = re.sub(
-                    rf'\b{re.escape(local)}\b', self.map[handle], text
+                    rf'(?<![A-Za-z0-9]){re.escape(local)}(?![A-Za-z0-9])',
+                    self.map[handle],
+                    text,
                 )
+        for secret in self.redactions:
+            text = text.replace(secret, '<redacted>')
         text = self._scrub_mentions(text)
         text = _REPLY_NAME.sub(r'(In reply to comment #\1)', text)
         text = _SECRETS.sub('<secret-scrubbed>', text)
@@ -165,9 +191,17 @@ class CaseMap:
             h = m.group(1)
             if h in self.map:
                 return '@' + self.map[h]
+            # Never re-map an existing pseudonym: a re-scrub would cascade
+            # (@participant5 -> participant6 -> ...), destroying stability.
+            if _PSEUDO.match(h):
+                return m.group(0)
             if _is_bot(h) or h.lower() in _COMMON_WORDS:
                 return m.group(0)
-            if not re.search(r'[A-Z0-9-]', h):
+            # Personal-account shape requires an uppercase letter or digit.
+            # Hyphens alone do NOT qualify: npm orgs (@config-plugins,
+            # @react-native-community) are lowercase-hyphen and mapping
+            # them poisons the identity map with technical tokens.
+            if not re.search(r'[A-Z0-9]', h) or h.endswith('-'):
                 return m.group(0)
             self.add(h)
             return '@' + self.map.get(h, h)
@@ -200,6 +234,14 @@ def _collect_handles(obj, keys: tuple[str, ...], cm: CaseMap) -> None:  # noqa: 
             _collect_handles(v, keys, cm)
 
 
+# Display names and signatures ("Best wishes, Yuri") never appear in author
+# fields, so the automatic map misses them. Reviewers file them per case in
+# a PRIVATE side file mapping slug -> {name: 'reporter'|'participant'}.
+_EXTRA_IDENTITIES = (
+    Path.home() / 'graph_bench_private' / 'extra_identities.json'
+)
+
+
 def scrub_raw(path: Path, apply: bool) -> dict:  # noqa: FBT001
     d = json.loads(path.read_text())
     reporter = (
@@ -209,6 +251,27 @@ def scrub_raw(path: Path, apply: bool) -> dict:  # noqa: FBT001
     _collect_handles(
         d, ('creator', 'author', 'attacher', 'setter', 'reporter'), cm
     )
+    redactions: list[str] = []
+    if _EXTRA_IDENTITIES.exists():
+        extras = json.loads(_EXTRA_IDENTITIES.read_text()).get(path.stem, {})
+        for name, role in extras.items():
+            if role == 'reporter':
+                cm.map.setdefault(name, 'reporter')
+            elif role == 'redact':
+                # Non-identity PII (private hostnames, internal URLs).
+                redactions.append(name)
+            elif role.startswith('alias:'):
+                # A display name for someone who ALSO posts under a handle
+                # ("Rob Murray" quoted in mail, robmry in the author field):
+                # both must resolve to the SAME pseudonym, else one person
+                # appears as two participants.
+                handle = role.split(':', 1)[1]
+                cm.map[name] = cm.map.get(handle) or cm.map.setdefault(
+                    handle, f'participant{len(cm.map)}'
+                )
+            else:
+                cm.add(name)
+    cm.redactions = redactions
     scrubbed = cm.scrub_obj(d)
     if apply:
         path.write_text(
@@ -231,8 +294,23 @@ def scrub_graph(path: Path, maps: dict[str, dict], apply: bool) -> int:  # noqa:
                     continue  # identity/no-op from an already-scrubbed map
                 # Cross-case application multiplies collision risk: a pool
                 # case whose reporter is info@… must never rewrite the word
-                # 'info' in every other graph.
-                if len(token) >= 4 and _prose_safe(token):
+                # 'info' in every other graph. Beyond the common-word list,
+                # ambiguous shapes are excluded outright: a cross-case token
+                # must carry an uppercase letter or digit, or be a long
+                # (>=8) pure word — short lowercase tokens ('config',
+                # 'native') are indistinguishable from prose/technical text.
+                # Cross-case tokens must be unmistakably account-shaped:
+                # an uppercase letter or a digit. Lowercase-only handles
+                # are still pseudonymized inside their OWN case (where the
+                # author field proves they are identities); applying them
+                # to 68 other graphs is what poisons technical text.
+                distinctive = _re_search_upper_digit(token)
+                if (
+                    len(token) >= 4
+                    and _prose_safe(token)
+                    and distinctive
+                    and not token.endswith(('-', '_'))
+                ):
                     rx = re.compile(rf'\b{re.escape(token)}\b')
                     n = len(rx.findall(text))
                     if n:

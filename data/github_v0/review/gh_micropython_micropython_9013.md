@@ -4,7 +4,7 @@
 
 - source: https://github.com/micropython/micropython/issues/9013
 - kind: LLM draft (needs review)
-- reviewed: `False`
+- reviewed: `True`
 - graph: `data/github_v0/graphs/gh_micropython_micropython_9013.json` · raw thread: `data/github_v0/raw/gh_micropython_micropython_9013.json`
 
 ```mermaid
@@ -75,6 +75,13 @@ flowchart LR
 | `N4` |  | 0 | 0 | The updated candidate branch builds with the STM32-specific SPI and interrupt adaptations included. |
 | `N5` |  | 0 | 0 | On my PYBV11 with a W5500 breakout, the candidate can activate the interface and communicate instead of raising OSError: 16. The lwIP interr |
 | `N_terminal` | ✓ | 0 | 0 | The tree uses the shared lib/wiznet5k and extmod driver instead of the duplicate old STM32 copy, and W5500 networking works on PYBV11 with t |
+
+## Machine review (audit pass, adversarially verified)
+
+Auditor verdict: **n/a** · 0 of 0 findings survived independent refutation.
+
+__
+
 
 ## Review checklist
 

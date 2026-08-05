@@ -119,7 +119,8 @@
     ],
     "symptoms_visible": [
      "After deploying Node.js 18.12.0 across ten production servers, I have seen zero core dumps, while newer versions crashed about hourly with the default ALPN configuration.",
-     "Other affected production deployments also remain stable on 18.12.x and crash after upgrading."
+     "Other affected production deployments also remain stable on 18.12.x and crash after upgrading.",
+     "Another affected production deployment reports that setting ALPNProtocols to an empty array does not stop the crashes either."
     ],
     "is_terminal": false,
     "label": "N3 version boundary confirmed in production",
@@ -336,10 +337,8 @@
        "Can you compare production behavior with a Node.js version from before the ALPN callback change?",
        "Please deploy the last known older version under the same workload and report the crash count."
       ],
-      "user_answer_in_this_oncall": "I reverted ten production servers to Node.js 18.12.0. They have produced zero core dumps since the deployment. With newer versions and default ALPN, I was seeing about one core dump per hour.",
-      "images": [
-       "data/github_v0/images/gh_nodejs_node_47207_img0.png"
-      ],
+      "user_answer_in_this_oncall": "I reverted ten production servers to Node.js 18.12.0. They have produced zero core dumps since the deployment. With newer versions and default ALPN, I was seeing about one core dump per hour, and with an empty ALPN list about one every few hours.",
+      "images": [],
       "counterfactual_candidates": [
        {
         "type": "extreme",
@@ -360,8 +359,10 @@
        "What code change or version boundary are you comparing against?",
        "Which TLS-related change first appears in the versions that crash?"
       ],
-      "user_answer_in_this_oncall": "The behavior changes at the ALPN callback optimization introduced for the releases after 18.12. The screenshot is the change I suspected: before it, the callback recovered TLSWrap from the SSL object; afterward, a callback argument was passed through the context.",
-      "images": [],
+      "user_answer_in_this_oncall": "The crashing releases start at 18.13. Looking through what landed there, I found a commit titled `src: optimize ALPN callback` (bf17f8dcb8509f3231348a1c20dcf832f9a3c5ab), and reverting to the release before it, 18.12.0, is what stopped the core dumps. The screenshot is the hunk from that commit I flagged: it removes the `ssl._secureContext.alpnBuffer = options.ALPNProtocols` line that was kept so the buffer would not be garbage collected. I can not prove 100% that it is this line; that is only where I landed, and I could not explain a mechanism when I was asked.",
+      "images": [
+       "data/github_v0/images/gh_nodejs_node_47207_img0.png"
+      ],
       "counterfactual_candidates": []
      }
     ],
@@ -398,7 +399,7 @@
        "Which source change aligns with the first crashing versions?",
        "What changed in the ALPN callback between the stable and unstable versions?"
       ],
-      "user_answer_in_this_oncall": "The first unstable versions contain the ALPN callback optimization. The older code obtained TLSWrap from the SSL object, while the newer code passes a callback argument through the SSL context.",
+      "user_answer_in_this_oncall": "The first unstable releases are 18.13 and later. Going through what landed in 18.13 I noticed a commit `src: optimize ALPN callback` (bf17f8dcb8509f3231348a1c20dcf832f9a3c5ab), and reverting to the release before it, 18.12.0, is what stopped the core dumps. I can not prove that this commit is really the cause, and when I was asked to explain why that diff would matter I had no answer.",
       "images": [],
       "counterfactual_candidates": []
      }
@@ -439,7 +440,7 @@
       "level": "L3_specific",
       "question_patterns": [
        "In a production core, does the callback argument still point to a valid TLSWrap object?",
-       "Can you inspect the SSL context's stored ALPN callback argument at the time of the crash?"
+       "Can you check what the argument passed to SelectALPNCallback points to at the time of the crash?"
       ],
       "user_answer_in_this_oncall": "In the production core, the TLSWrap and SSL objects involved still look intact, but `ssl->ctx->ext.alpn_select_cb_arg` points to memory that no longer looks like a TLSWrap object.",
       "images": [],
@@ -481,7 +482,7 @@
       "ssl_app_data",
       "avoid_stale_callback_argument"
      ],
-     "concrete_example": "Apply the callback fix from the accepted patch so SelectALPNCallback obtains TLSWrap from the current SSL object rather than a per-connection pointer retained in the shared SSL_CTX callback argument. Test the resulting build under representative concurrent TLS traffic before declaring the incident resolved.",
+     "concrete_example": "Change SelectALPNCallback so it recovers the TLSWrap from the current SSL object, the way the pre-optimization code did via `SSL_get_app_data(s)`, instead of reading a connection-specific pointer retained as the callback argument on the shared SSL_CTX. Land that change and have an affected deployment run the resulting build under representative concurrent TLS traffic before declaring the incident resolved.",
      "required_elements_for_full_match": [
       "identifies_connection_specific_tlswrap_pointer_in_shared_ssl_ctx_as_root_cause",
       "explains_that_another_connection_can_leave_the_shared_callback_argument_stale",
@@ -537,7 +538,7 @@
  "metadata": {
   "graph_version": "v1",
   "created_from": "https://github.com/nodejs/node/issues/47207 (LLM-draft via graph_bench pipeline; pending human review)",
-  "hitl_reviewed": false,
+  "hitl_reviewed": true,
   "repo_snapshot": {
    "provider": "github",
    "repo": "nodejs/node",

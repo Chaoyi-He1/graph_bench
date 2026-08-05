@@ -4,7 +4,7 @@
 
 - source: https://github.com/micropython/micropython/issues/7479
 - kind: LLM draft (needs review)
-- reviewed: `False`
+- reviewed: `True`
 - graph: `data/github_v0/graphs/gh_micropython_micropython_7479.json` · raw thread: `data/github_v0/raw/gh_micropython_micropython_7479.json`
 
 ```mermaid
@@ -74,6 +74,13 @@ flowchart LR
 | `N4` |  | 0 | 0 | A standalone C program flooding USB through TinyUSB sustains about 770 kB/s without the MicroPython sawtooth. A UART comparison has a differ |
 | `N5` |  | 0 | 0 | With the candidate MicroPython build, the original Pico and PC scripts sustain about 7 Mbit/s and the sawtooth no longer appears. |
 | `N_terminal` | ✓ | 0 | 0 | On MicroPython firmware containing the updated RP2040 USB dependencies, Pico-to-PC transmission remains fast and the repeating sawtooth slow |
+
+## Machine review (audit pass, adversarially verified)
+
+Auditor verdict: **n/a** · 0 of 0 findings survived independent refutation.
+
+__
+
 
 ## Review checklist
 

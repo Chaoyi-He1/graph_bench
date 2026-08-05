@@ -4,7 +4,7 @@
 
 - source: https://github.com/expo/expo/issues/25905
 - kind: LLM draft (needs review)
-- reviewed: `False`
+- reviewed: `True`
 - graph: `data/github_v0/graphs/gh_expo_expo_25905.json` · raw thread: `data/github_v0/raw/gh_expo_expo_25905.json`
 
 ```mermaid
@@ -65,6 +65,13 @@ flowchart LR
 | `N2` |  | 0 | 0 | The workflow using the macOS 12 runner fails during pod installation with the `ExpoModulesCore` and `glog` module error. |
 | `N3` |  | 1 | 0 | The pod installation succeeds in the macOS 13 comparison run; the corresponding macOS 12 run fails with the `glog` module error. |
 | `N_terminal` | ✓ | 0 | 0 | With the workflow kept on `runs-on: macos-13`, pod installation completes successfully and the `ExpoModulesCore` and `glog` module error no  |
+
+## Machine review (audit pass, adversarially verified)
+
+Auditor verdict: **n/a** · 0 of 0 findings survived independent refutation.
+
+__
+
 
 ## Review checklist
 

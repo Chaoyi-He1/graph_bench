@@ -53,7 +53,11 @@ def untracked(sub: str) -> list[Path]:
 def main() -> int:
     graphs = {p.stem for p in REPO.glob('data/*/graphs/*.json')}
     kept = deleted = failed = 0
-    for raw_path in untracked(':(glob)data/*/raw/*.json'):
+    if '--all' in sys.argv:
+        targets = sorted(REPO.glob('data/*/raw/*.json'))
+    else:
+        targets = untracked(':(glob)data/*/raw/*.json')
+    for raw_path in targets:
         slug = raw_path.stem
         if slug not in graphs:
             raw_path.unlink()

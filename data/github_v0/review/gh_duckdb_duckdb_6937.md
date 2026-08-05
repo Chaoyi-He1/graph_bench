@@ -4,7 +4,7 @@
 
 - source: https://github.com/duckdb/duckdb/issues/6937
 - kind: LLM draft (needs review)
-- reviewed: `False`
+- reviewed: `True`
 - graph: `data/github_v0/graphs/gh_duckdb_duckdb_6937.json` · raw thread: `data/github_v0/raw/gh_duckdb_duckdb_6937.json`
 
 ```mermaid

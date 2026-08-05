@@ -4,7 +4,7 @@
 
 - source: https://github.com/expo/expo/issues/24172
 - kind: LLM draft (needs review)
-- reviewed: `False`
+- reviewed: `True`
 - graph: `data/github_v0/graphs/gh_expo_expo_24172.json` · raw thread: `data/github_v0/raw/gh_expo_expo_24172.json`
 
 ```mermaid
@@ -42,7 +42,7 @@ flowchart LR
 
 ## Opening (body)
 
-> After upgrading my managed app to Expo SDK 49 with expo-image-picker ~14.3.2, Android users can select an image in the new picker UI, but launchImageLibraryAsync rejects with "java.lang.IllegalArgumentException: Uri lacks 'file' scheme: content://media/picker/...". The photo is never shown after picking. I use mediaTypes: Images, allowsEditing: false, exif: true and quality: 0.91.Is there a workaround or a way to switch back to the old picker?
+> After upgrading my managed app to Expo SDK 49 with expo-image-picker ~14.3.2, Android users can select an image in the new picker UI, but launchImageLibraryAsync rejects with "java.lang.IllegalArgumentException: Uri lacks 'file' scheme: content://media/picker/...". I use mediaTypes: Images, allowsEditing: false, exif: true and quality: 0.91. Is there a workaround or a way to switch back to the old picker?
 
 ## Satisfaction conditions
 

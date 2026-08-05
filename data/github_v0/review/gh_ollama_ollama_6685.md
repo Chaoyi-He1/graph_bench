@@ -4,7 +4,7 @@
 
 - source: https://github.com/ollama/ollama/issues/6685
 - kind: LLM draft (needs review)
-- reviewed: `False`
+- reviewed: `True`
 - graph: `data/github_v0/graphs/gh_ollama_ollama_6685.json` · raw thread: `data/github_v0/raw/gh_ollama_ollama_6685.json`
 
 ```mermaid
@@ -80,6 +80,13 @@ flowchart LR
 | `N2_y` |  | 1 | 0 | The container continues to report the same no-device failure after I try the gfx1100-series overrides and a long list of older `HSA_OVERRIDE |
 | `N3` |  | 0 | 0 | Inside the Ollama image, `/dev/kfd` and `/dev/dri/card1` appear with group `bin`, while a ROCm PyTorch container can access the GPU when I a |
 | `N_terminal` | ✓ | 0 | 0 | With both AMD device paths passed through and the container-visible `bin` group added, llama3.1 runs on the GPU and replies normally instead |
+
+## Machine review (audit pass, adversarially verified)
+
+Auditor verdict: **n/a** · 0 of 0 findings survived independent refutation.
+
+__
+
 
 ## Review checklist
 

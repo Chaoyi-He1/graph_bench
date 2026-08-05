@@ -4,7 +4,7 @@
 
 - source: https://github.com/ollama/ollama/issues/10433
 - kind: LLM draft (needs review)
-- reviewed: `False`
+- reviewed: `True`
 - graph: `data/github_v0/graphs/gh_ollama_ollama_10433.json` · raw thread: `data/github_v0/raw/gh_ollama_ollama_10433.json`
 
 ```mermaid

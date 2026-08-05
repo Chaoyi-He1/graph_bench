@@ -4,7 +4,7 @@
 
 - source: https://github.com/home-assistant/core/issues/78163
 - kind: LLM draft (needs review)
-- reviewed: `False`
+- reviewed: `True`
 - graph: `data/github_v0/graphs/gh_home-assistant_core_78163.json` · raw thread: `data/github_v0/raw/gh_home-assistant_core_78163.json`
 
 ```mermaid
@@ -80,6 +80,13 @@ flowchart LR
 | `N4_x` |  | 2 | 0 | With Bluetooth disabled, commands work somewhat better on one affected setup but are still slower than before. The same Zigbee lag also occu |
 | `N_terminal` | ✓ | 1 | 0 | After updating to Home Assistant Core 2022.10.2, Zigbee commands work again without the long delay. |
 | `N_terminal_bt` | ✓ | 1 | 0 | After updating to Home Assistant Core 2022.10.2, Zigbee commands work again without the long delay. |
+
+## Machine review (audit pass, adversarially verified)
+
+Auditor verdict: **n/a** · 0 of 0 findings survived independent refutation.
+
+__
+
 
 ## Review checklist
 

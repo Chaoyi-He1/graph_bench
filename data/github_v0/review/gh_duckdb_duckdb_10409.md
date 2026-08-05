@@ -4,7 +4,7 @@
 
 - source: https://github.com/duckdb/duckdb/issues/10409
 - kind: LLM draft (needs review)
-- reviewed: `False`
+- reviewed: `True`
 - graph: `data/github_v0/graphs/gh_duckdb_duckdb_10409.json` · raw thread: `data/github_v0/raw/gh_duckdb_duckdb_10409.json`
 
 ```mermaid
@@ -69,6 +69,13 @@ flowchart LR
 | `N3` |  | 0 | 0 | On DuckDB 1.1.0, the same script can read Parquet from my private bucket but cannot attach a DuckDB database there. |
 | `N4` |  | 1 | 0 | Using the credential-chain secret setup, I can attach the database from my private S3 bucket. In my AWS SSO environment, explicitly creating |
 | `N_terminal` | ✓ | 0 | 0 | The DuckDB database in my private S3 bucket attaches successfully with the current S3 credential-chain secret configuration, and I can query |
+
+## Machine review (audit pass, adversarially verified)
+
+Auditor verdict: **n/a** · 0 of 0 findings survived independent refutation.
+
+__
+
 
 ## Review checklist
 

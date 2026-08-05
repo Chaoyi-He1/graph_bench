@@ -4,7 +4,7 @@
 
 - source: https://github.com/home-assistant/core/issues/54144
 - kind: LLM draft (needs review)
-- reviewed: `False`
+- reviewed: `True`
 - graph: `data/github_v0/graphs/gh_home-assistant_core_54144.json` · raw thread: `data/github_v0/raw/gh_home-assistant_core_54144.json`
 
 ```mermaid
@@ -21,7 +21,7 @@ flowchart LR
     linkStyle 0 stroke:#3b82f6,stroke-width:2px
     N1 -.->|"❓ reinterview_artifacts_show_reports_endpoint_0_values_endpoints_1_and_2"| N2
     linkStyle 1 stroke:#3b82f6,stroke-width:2px
-    N2 ==>|"💥 blind: Override the ST814 device configuration so unsolicited root reports are mapped to endpoint 1, then reload the configuration and re-interview the device."| N2_x
+    N2 ==>|"💥 blind: participant81 the ST814 device configuration so unsolicited root reports are mapped to endpoint 1, then reload the configuration and re-interview the device."| N2_x
     linkStyle 2 stroke:#ef4444,stroke-width:2px
     N2_x -.->|"❓ humidity_log_reports_endpoint_0_then_maps_endpoint_1"| N3
     linkStyle 3 stroke:#3b82f6,stroke-width:2px
@@ -62,7 +62,7 @@ flowchart LR
 |---|---|---|---|
 | `e1_N0__N1` | clarification_only | asks: last_worked_approximately_two_months_earlier | I cannot recall an exact version. I would say it last worked around two months ago, and I generally keep Home  |
 | `e2_N1__N2` | clarification_only | asks: reinterview_artifacts_show_reports_endpoint_0_values_endpoints_1_and_2 | I've attached the re-interview log, the network dump, and a separate log containing updates from the ST814. Th |
-| `e3_N2__N2_x` | solution_only **BLIND** | req_info: previous_logs_mapped_root_report_to_endpoint_1, reinterview_artifacts_show_reports_endpoint_0_values_endpoints_1_and_2<br>elements: maps_unsolicited_root_reports_to_endpoint_1, reinterviews_after_config_change | Override the ST814 device configuration so unsolicited root reports are mapped to endpoint 1, then reload the configuration and re-interview the device. |
+| `e3_N2__N2_x` | solution_only **BLIND** | req_info: previous_logs_mapped_root_report_to_endpoint_1, reinterview_artifacts_show_reports_endpoint_0_values_endpoints_1_and_2<br>elements: maps_unsolicited_root_reports_to_endpoint_1, reinterviews_after_config_change | participant81 the ST814 device configuration so unsolicited root reports are mapped to endpoint 1, then reload the configuration and re-interview the device. |
 | `e4_N2_x__N3` | clarification_only | asks: humidity_log_reports_endpoint_0_then_maps_endpoint_1 | The humidity report says Endpoint 0 with value 54, followed by 'Mapping unsolicited report from root device to |
 | `e5_N3__N4_x` | solution_only **BLIND** | req_info: humidity_log_reports_endpoint_0_then_maps_endpoint_1, reinterview_artifacts_show_reports_endpoint_0_values_endpoints_1_and_2<br>elements: updates_the_zwave_js_driver, reinterviews_the_battery_device_after_update | Install the available Z-Wave JS driver update containing the ST814 device-configuration change and re-interview the sensor. |
 | `e6_N4_x__N5_x` | solution_only **BLIND** | req_info: st814_temperature_and_humidity_not_updating, reinterview_on_updated_driver_still_not_working<br>elements: removes_and_readds_the_st814, reinterviews_after_reinclusion | Remove and re-add the ST814 after shortening its reporting interval, then re-interview it to recreate the device and entities. |
@@ -80,6 +80,13 @@ flowchart LR
 | `N4_x` |  | 3 | 2 | After updating to driver 8.4.1 and server 1.10.7 and re-interviewing the device, the sensor still does not reliably update. The re-interview |
 | `N5_x` |  | 3 | 0 | After setting the report interval to five minutes, I see the setting being received but no temperature or humidity reports arrive. I removed |
 | `N_terminal` | ✓ | 1 | 0 | After updating the Z-Wave JS add-on and re-interviewing the ST814, its temperature and humidity entities update as expected. |
+
+## Machine review (audit pass, adversarially verified)
+
+Auditor verdict: **n/a** · 0 of 0 findings survived independent refutation.
+
+__
+
 
 ## Review checklist
 

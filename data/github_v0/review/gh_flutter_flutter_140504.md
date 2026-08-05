@@ -4,7 +4,7 @@
 
 - source: https://github.com/flutter/flutter/issues/140504
 - kind: LLM draft (needs review)
-- reviewed: `False`
+- reviewed: `True`
 - graph: `data/github_v0/graphs/gh_flutter_flutter_140504.json` · raw thread: `data/github_v0/raw/gh_flutter_flutter_140504.json`
 
 ```mermaid
@@ -16,7 +16,7 @@ flowchart LR
     N4["<b>N4 network JPEG trigger isolated</b><br/><small>info: 13</small>"]
     N4_x["<b>N4_x canvas rasterization flag aftermath</b><br/><small>info: 14</small>"]
     N5["<b>N5 browser image decoding workaround verified</b><br/><small>info: 14</small>"]
-    N6["<b>N6 Chrome-side correction verified (fix applied, unverified)</b><br/><small>info: 14</small>"]
+    N6["<b>N6 corrected Chrome installed, retest pending</b><br/><small>info: 14</small>"]
     N_terminal["<b>terminal resolved</b><br/><small>info: 17</small>"]
     N5_x2["<b>N5_x2 newer-beta aftermath</b><br/><small>info: 15</small>"]
     N0 -.->|"❓ failure_specific_to_chrome_beta_121_x86_64, other_browsers_work, chrome_stable_120_and_canary_122_work, canvaskit_only"| N1

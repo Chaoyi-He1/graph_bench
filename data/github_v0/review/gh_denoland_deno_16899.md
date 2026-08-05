@@ -4,7 +4,7 @@
 
 - source: https://github.com/denoland/deno/issues/16899
 - kind: LLM draft (needs review)
-- reviewed: `False`
+- reviewed: `True`
 - graph: `data/github_v0/graphs/gh_denoland_deno_16899.json` · raw thread: `data/github_v0/raw/gh_denoland_deno_16899.json`
 
 ```mermaid
@@ -62,6 +62,13 @@ flowchart LR
 | `N2_x` |  | 1 | 0 | When I manually start Chromium with a debugging port and use `connectOverCDP`, the server returns `101 Switching Protocols`, but Playwright  |
 | `N3` |  | 0 | 0 | After the HTTP upgrade changes, the manual WebSocket procedure works, but ordinary Playwright startup through `launch()` or `launchServer()` |
 | `N_terminal` | ✓ | 1 | 0 | On fixed macOS and Linux builds, Playwright installs its browsers, launches Chromium directly, opens a page, and exits cleanly with results  |
+
+## Machine review (audit pass, adversarially verified)
+
+Auditor verdict: **n/a** · 0 of 0 findings survived independent refutation.
+
+__
+
 
 ## Review checklist
 

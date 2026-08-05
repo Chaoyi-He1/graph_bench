@@ -4,7 +4,7 @@
 
 - source: https://github.com/micropython/micropython/issues/10335
 - kind: LLM draft (needs review)
-- reviewed: `False`
+- reviewed: `True`
 - graph: `data/github_v0/graphs/gh_micropython_micropython_10335.json` · raw thread: `data/github_v0/raw/gh_micropython_micropython_10335.json`
 
 ```mermaid
@@ -68,6 +68,13 @@ flowchart LR
 | `N3` |  | 1 | 0 | The same Teensy and five-second test work normally on a Windows 10 laptop, but the USB output stalls on my Manjaro Linux NUC. The full bench |
 | `N4` |  | 0 | 0 | After I disabled USB autosuspend on my Manjaro system, the delayed print and USB REPL work normally and the problem is gone. |
 | `N_terminal` | ✓ | 0 | 0 | The five-second test prints 'Finish', returns to the USB REPL, and the benchmark completes on the affected Linux machine. |
+
+## Machine review (audit pass, adversarially verified)
+
+Auditor verdict: **n/a** · 0 of 0 findings survived independent refutation.
+
+__
+
 
 ## Review checklist
 

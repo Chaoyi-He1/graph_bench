@@ -88,18 +88,18 @@ def _findings_section(slug: str) -> list[str]:
         '',
         '## Machine review (audit pass, adversarially verified)',
         '',
-        f'Auditor verdict: **{data["reviewer_verdict"]}** · '
-        f'{data["n_confirmed"]} of {data["n_raised"]} findings survived '
-        f'independent refutation.',
+        f'Auditor verdict: **{data.get("reviewer_verdict", "n/a")}** · '
+        f'{data.get("n_confirmed", 0)} of {data.get("n_raised", 0)} findings '
+        f'survived independent refutation.',
         '',
-        f'_{data["summary"]}_',
+        f'_{data.get("summary", "")}_',
         '',
     ]
-    if data['confirmed_findings']:
+    if data.get('confirmed_findings') or []:
         lines += ['### Confirmed findings', '']
         order = {'high': 0, 'medium': 1, 'low': 2}
         for f in sorted(
-            data['confirmed_findings'],
+            data.get('confirmed_findings') or [],
             key=lambda x: order.get(x.get('severity'), 3),
         ):
             sev = f.get('severity', '?')
@@ -112,12 +112,12 @@ def _findings_section(slug: str) -> list[str]:
                 f'  - verifier: {f.get("verifier_reasoning", "")[:400]}',
             ]
         lines.append('')
-    if data['refuted_claims']:
+    if data.get('refuted_claims') or []:
         lines += [
             '### Refuted claims (auditor was wrong — do not act on these)',
             '',
         ]
-        for r in data['refuted_claims']:
+        for r in data.get('refuted_claims') or []:
             lines += [
                 f'- ~~{r.get("defect_class")}~~: {r.get("claim", "")[:220]}',
                 f'  - why refuted: {r.get("why_refuted", "")[:320]}',

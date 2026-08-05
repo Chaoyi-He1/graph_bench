@@ -4,7 +4,7 @@
 
 - source: https://github.com/traefik/traefik/issues/11869
 - kind: LLM draft (needs review)
-- reviewed: `False`
+- reviewed: `True`
 - graph: `data/github_v0/graphs/gh_traefik_traefik_11869.json` · raw thread: `data/github_v0/raw/gh_traefik_traefik_11869.json`
 
 ```mermaid
@@ -23,7 +23,7 @@ flowchart LR
     linkStyle 2 stroke:#3b82f6,stroke-width:2px
     N3 -.->|"❓ godebug_multipathtcp_zero_prevents_recurrence"| N4
     linkStyle 3 stroke:#3b82f6,stroke-width:2px
-    N4 ==>|"⚡ Treat this as a Multipath TCP socket-option regression, use `GODEBUG=multipathtcp=0` as the immediate mitigation, and move to a Traefik build containing the permanent MPTCP-disablement fix from #11918."| N_terminal
+    N4 ==>|"⚡ Treat this as a Multipath TCP socket-option regression, use `GODEBUG=multipathtcp=0` as the immediate mitigation, and move to a Traefik build in which the failing Multipath TCP socket setup is no longer performed once such a build is available."| N_terminal
     linkStyle 4 stroke:#f97316,stroke-width:2px
     class N0 start
     class N1 normal
@@ -45,7 +45,7 @@ flowchart LR
 1. Must identify the root cause as Multipath TCP socket handling attempting an unsupported socket option, which can take down Traefik's entry-point listener after an affected client connection.
 2. The diagnosis must be grounded in the v3.4.3 regression evidence, reproduction from an iOS/Nextcloud request across multiple deployment types, and the successful `GODEBUG=multipathtcp=0` probe.
 3. Must not attribute the failure to HTTP/3, the deprecated Docker/Swarm network label, or an invalid TLS certificate: affected users reproduced it without HTTP/3, the label change did not prevent it, and standalone Docker deployments were also affected.
-4. Must present `GODEBUG=multipathtcp=0` as an immediate mitigation and recommend moving to a Traefik build containing the permanent fix from #11918.
+4. Must present `GODEBUG=multipathtcp=0` as an immediate mitigation and recommend moving to a Traefik build in which the failing Multipath TCP socket behavior is no longer used, as the permanent fix.
 5. Must ask the user to retest a build containing the fix with the known iOS trigger and verify that HTTP and HTTPS remain reachable before declaring resolution.
 
 ## Edges
@@ -56,7 +56,7 @@ flowchart LR
 | `e2_N1__N2_x` | solution_only **BLIND** | req_info: docker_swarm_environment<br>elements: recommends_replacing_deprecated_network_label_as_fix | Attribute the outage to the deprecated Docker network label and replace `traefik.docker.network` with `traefik.swarm.network`. |
 | `e3_N2_x__N3` | clarification_only | asks: nextcloud_ios_request_reliably_triggers_failure, traefik_process_can_remain_running_while_entrypoint_stops, traefik_341_unaffected_for_other_users | Yes. If I open the Nextcloud iOS app and go to the files or images page, Traefik immediately logs the setsocko / The Traefik process can still be running, but the websecure endpoint has stopped and connections no longer wor / With v3.4.3 the iOS request takes the services down, but after rolling back to v3.4.1 the problem disappears.  |
 | `e4_N3__N4` | clarification_only | asks: godebug_multipathtcp_zero_prevents_recurrence | I tried v3.4.4 with `GODEBUG=multipathtcp=0` and could not reproduce the issue. I have had no more crashes sin |
-| `e5_N4__N_terminal` | solution_only | req_info: traefik_343_intermittently_stops_serving, setsockopt_operation_not_supported_on_websecure, provided_configuration_has_no_http3_setting, traefik_process_can_remain_running_while_entrypoint_stops, nextcloud_ios_request_reliably_triggers_failure, traefik_341_unaffected_for_other_users, godebug_multipathtcp_zero_prevents_recurrence<br>elements: identifies_multipath_tcp_socket_option_as_root_cause, offers_godebug_multipathtcp_zero_as_temporary_mitigation, recommends_a_build_containing_fix_11918, asks_user_to_verify_on_a_build_containing_the_fix | Treat this as a Multipath TCP socket-option regression, use `GODEBUG=multipathtcp=0` as the immediate mitigation, and move to a Traefik build containing the permanent MPTCP-disablement fix from #11918. |
+| `e5_N4__N_terminal` | solution_only | req_info: traefik_343_intermittently_stops_serving, setsockopt_operation_not_supported_on_websecure, provided_configuration_has_no_http3_setting, traefik_process_can_remain_running_while_entrypoint_stops, nextcloud_ios_request_reliably_triggers_failure, traefik_341_unaffected_for_other_users, godebug_multipathtcp_zero_prevents_recurrence<br>elements: identifies_multipath_tcp_socket_option_as_root_cause, recommends_upgrading_to_a_build_with_mptcp_disabled, asks_user_to_verify_on_a_build_containing_the_fix | Treat this as a Multipath TCP socket-option regression, use `GODEBUG=multipathtcp=0` as the immediate mitigation, and move to a Traefik build in which the failing Multipath TCP socket setup is no longer performed once such a build is available. |
 
 ## Nodes
 
@@ -64,10 +64,17 @@ flowchart LR
 |---|---|---|---|---|
 | `N0` |  | 1 | 0 | Several times a day, Traefik logs `setsockopt: operation not supported` for the websecure entry point and then none of the URLs behind it ca |
 | `N1` |  | 1 | 0 | The failure started after updating to v3.4.3 and also occurs with HTTP/3 disabled. The same error can leave both HTTP and HTTPS inaccessible |
-| `N2_x` |  | 1 | 0 | After I replaced the deprecated Docker network label with the Swarm network label, an iPhone request still immediately produced the same set |
+| `N2_x` |  | 1 | 0 | After I replaced the deprecated Docker network label with the Swarm network label, the same setsockopt error occurred again and all services |
 | `N3` |  | 0 | 0 | Opening the Nextcloud iOS app and accessing its files or images immediately triggers the setsockopt error and makes every service behind Tra |
 | `N4` |  | 0 | 0 | With `GODEBUG=multipathtcp=0` set during the test, I cannot reproduce the failure and Traefik continues serving requests without another cra |
 | `N_terminal` | ✓ | 0 | 0 | After installing a build containing the fix, Nextcloud iOS requests no longer stop the HTTP or HTTPS entry points and the setsockopt error d |
+
+## Machine review (audit pass, adversarially verified)
+
+Auditor verdict: **n/a** · 0 of 0 findings survived independent refutation.
+
+__
+
 
 ## Review checklist
 

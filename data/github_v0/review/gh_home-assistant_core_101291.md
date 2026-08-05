@@ -4,20 +4,20 @@
 
 - source: https://github.com/home-assistant/core/issues/101291
 - kind: LLM draft (needs review)
-- reviewed: `False`
+- reviewed: `True`
 - graph: `data/github_v0/graphs/gh_home-assistant_core_101291.json` · raw thread: `data/github_v0/raw/gh_home-assistant_core_101291.json`
 
 ```mermaid
 flowchart LR
     N0["<b>N0 synchronized plug turnoffs reported</b><br/><small>info: 7</small>"]
-    N1["<b>N1 affected plug identified</b><br/><small>info: 9</small>"]
-    N2["<b>N2 2023.10.1 debug reproduction</b><br/><small>info: 12</small>"]
-    N3["<b>N3 2023.9.3 debug reproduction</b><br/><small>info: 13</small>"]
-    N4["<b>N4 2023.8.4 good comparison log</b><br/><small>info: 14</small>"]
-    N5["<b>N5 2023.9.2 also affected</b><br/><small>info: 15</small>"]
-    N6["<b>N6 regression narrowed to 2023.8.4 through 2023.9.1</b><br/><small>info: 16</small>"]
-    N7_x["<b>N7_x development-build upgrade aftermath</b><br/><small>info: 17</small>"]
-    N_terminal["<b>terminal resolved after corrected OTA handling</b><br/><small>info: 21</small>"]
+    N1["<b>N1 affected plug identified</b><br/><small>info: 10</small>"]
+    N2["<b>N2 2023.10.1 debug reproduction</b><br/><small>info: 13</small>"]
+    N3["<b>N3 2023.9.3 debug reproduction</b><br/><small>info: 14</small>"]
+    N4["<b>N4 2023.8.4 good comparison log</b><br/><small>info: 15</small>"]
+    N5["<b>N5 2023.9.2 also affected</b><br/><small>info: 16</small>"]
+    N6["<b>N6 regression narrowed to 2023.8.4 through 2023.9.1</b><br/><small>info: 17</small>"]
+    N7_x["<b>N7_x development-build upgrade aftermath</b><br/><small>info: 18</small>"]
+    N_terminal["<b>terminal resolved after corrected OTA handling</b><br/><small>info: 22</small>"]
     N0 -.->|"❓ affected_device_diagnostic_sonoff_sa_030_1, only_woolley_branded_ewelink_sonoff_plugs_affected"| N1
     linkStyle 0 stroke:#3b82f6,stroke-width:2px
     N1 -.->|"❓ coordinator_corrected_to_sonoff_dongle_e_stock_firmware, core_2023_10_1_still_turns_plugs_off, debug_log_2023_10_1_event_around_20_57"| N2
@@ -65,9 +65,9 @@ flowchart LR
 | edge | type | gates / info | payload |
 |---|---|---|---|
 | `e1_N0__N1` | clarification_only | asks: affected_device_diagnostic_sonoff_sa_030_1, only_woolley_branded_ewelink_sonoff_plugs_affected | I've uploaded the device diagnostic file for one of the plugs. Hopefully that works; it is identified there as / Yes, only those plugs. They are sold as Woolley here, but ZHA reports them as Sonoff SA-030-1. I'm not using Z |
-| `e2_N1__N2` | clarification_only | asks: coordinator_corrected_to_sonoff_dongle_e_stock_firmware, core_2023_10_1_still_turns_plugs_off, debug_log_2023_10_1_event_around_20_57 | Yes, it is a Dongle-E with the firmware that came with it. / I upgraded to 2023.10.1. About 20 minutes later they turned off again. / I enabled debug logging from the integration page and uploaded the generated home-assistant log. The turnoff w |
+| `e2_N1__N2` | clarification_only | asks: coordinator_corrected_to_sonoff_dongle_e_stock_firmware, core_2023_10_1_still_turns_plugs_off, debug_log_2023_10_1_event_around_20_57 | Yes, it is a Dongle-E with the firmware that came with it. / I upgraded to 2023.10.1. About 20 minutes later they turned off again. / I enabled debug logging from the integration page, reproduced it, and uploaded the main Home Assistant log fil |
 | `e3_N2__N3` | clarification_only | asks: debug_log_2023_9_3_event_around_09_16 | I upgraded to 2023.9.3, turned the lights on the next morning, and they switched off not long after as predict |
-| `e4_N3__N4` | clarification_only | asks: debug_log_2023_8_4_several_hours_without_turnoff | Here's a log from a few hours of running 2023.8.4. The issue did not happen during that time. |
+| `e4_N3__N4` | clarification_only | asks: debug_log_2023_8_4_several_hours_without_turnoff | Here's a log from a few hours of running 2023.8.4. The issue did not happen during that time. I searched it fo |
 | `e5_N4__N5` | clarification_only | asks: debug_log_2023_9_2_immediate_turnoff | I found the version list and tried 2023.9.2. It did the same thing almost immediately, and I've uploaded the l |
 | `e6_N5__N6` | clarification_only | asks: debug_log_2023_9_1_contains_two_turnoffs | Here's the log for 2023.9.1. It also happened, twice in this log I think. Since 2023.8.4 works, it seems to ha |
 | `e7_N6__N7_x` | solution_only **BLIND** | req_info: all_zigbee_plugs_randomly_turn_off_on_2023_9_3, debug_log_2023_9_1_contains_two_turnoffs<br>elements: recommends_current_2023_11_dev_build_as_already_fixed | Install the currently available 2023.11 development build on the assumption that it already contains the change which closed the issue. |
@@ -78,7 +78,7 @@ flowchart LR
 | node | terminal | volunteered | images | symptoms |
 |---|---|---|---|---|
 | `N0` |  | 1 | 0 | On Home Assistant Core 2023.9.3, all my Zigbee smart plugs turn themselves off randomly, usually within a few minutes of one another. The lo |
-| `N1` |  | 0 | 0 | Only my Woolley-branded plugs are turning off; ZHA identifies the affected device as a Sonoff SA-030-1. |
+| `N1` |  | 1 | 0 | Only my Woolley-branded plugs are turning off; ZHA identifies the affected device as a Sonoff SA-030-1. |
 | `N2` |  | 0 | 0 | After upgrading to Core 2023.10.1, the plugs turned off again about 20 minutes later. The coordinator is a Sonoff Dongle-E with its stock fi |
 | `N3` |  | 0 | 0 | On a fresh Core 2023.9.3 test, the plugs switched off shortly after I turned them on; the event was at about 09:16. |
 | `N4` |  | 0 | 0 | On Core 2023.8.4, the plugs remained on throughout a few hours of debug logging. |
@@ -86,6 +86,13 @@ flowchart LR
 | `N6` |  | 0 | 0 | The plugs also turned off on Core 2023.9.1, apparently twice during the attached debug log. |
 | `N7_x` |  | 1 | 0 | After I installed the available 2023.11 development build, the plugs still turned off as they had before. |
 | `N_terminal` | ✓ | 1 | 0 | On Core 2023.10.4, the plugs stayed on for eight hours without turning off, much longer than the usual failure interval. |
+
+## Machine review (audit pass, adversarially verified)
+
+Auditor verdict: **n/a** · 0 of 0 findings survived independent refutation.
+
+__
+
 
 ## Review checklist
 

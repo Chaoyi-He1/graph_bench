@@ -4,7 +4,7 @@
 
 - source: https://github.com/ClickHouse/ClickHouse/issues/54483
 - kind: LLM draft (needs review)
-- reviewed: `False`
+- reviewed: `True`
 - graph: `data/github_v0/graphs/gh_ClickHouse_ClickHouse_54483.json` · raw thread: `data/github_v0/raw/gh_ClickHouse_ClickHouse_54483.json`
 
 ```mermaid
@@ -81,6 +81,13 @@ flowchart LR
 | `N3` |  | 0 | 0 | Resident memory continues to increase when client queries are disabled and only Kafka ingestion through materialized views remains active. T |
 | `N3_x` |  | 1 | 0 | After applying the initially suggested Kafka statistics setting, memory still continues to rise. |
 | `N_terminal` | ✓ | 1 | 0 | After placing statistics_interval_ms=0 inside the Kafka configuration group and restarting ClickHouse, resident memory remains stable for at |
+
+## Machine review (audit pass, adversarially verified)
+
+Auditor verdict: **n/a** · 0 of 0 findings survived independent refutation.
+
+__
+
 
 ## Review checklist
 

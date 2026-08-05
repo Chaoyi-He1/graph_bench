@@ -1,7 +1,7 @@
 {
  "task_id": "gh_vllm-project_vllm_2248",
  "title": "Recent vLLM versions report no available memory for cache blocks on models that fit with vLLM 0.2.4",
- "body": "Since vLLM 0.2.5, I can no longer run a Llama 2 70B 4-bit AWQ model on 4 A10G GPUs even though it worked with older vLLM versions. I also see similar problems when starting two 7B models on one 80GB A100. For example, two instances can start when the first uses gpu_memory_utilization=0.4 and the second uses 0.6, but setting the second to 0.4 raises \"No available memory for the cache blocks. Try increasing gpu_memory_utilization\" despite GPU memory still being available.",
+ "body": "Since vLLM 0.2.5, I can no longer run a Llama 2 70B 4-bit AWQ model on 4 A10G GPUs even though it worked with older vLLM versions; I hit this with docker images built on cuda 11.8 with vllm 0.2.5 or 0.2.6. I also see similar problems when starting two 7B models on one 80GB A100. For example, two instances can start when the first uses gpu_memory_utilization=0.4 and the second uses 0.6, but setting the second to 0.4 raises \"No available memory for the cache blocks. Try increasing gpu_memory_utilization\" despite GPU memory still being available.",
  "graph": {
   "start_node": "N0",
   "nodes": {
@@ -149,7 +149,7 @@
      "shared_gpu_instances_work_when_started_sequentially_with_cumulative_utilization"
     ],
     "symptoms_visible": [
-     "The 70B AWQ service starts and handles the long-context workload on four A10G GPUs with eager execution enabled.",
+     "--enforce-eager works to solve this issue for my 4*A10G 70B AWQ deployment.",
      "Both 7B services can run on the shared GPU when they are started sequentially with the later instance's utilization value accounting for memory already occupied."
     ],
     "is_terminal": true,
@@ -321,7 +321,7 @@
     "to": "N_terminal",
     "clarifications": [],
     "solution": {
-     "intent": "Keep the corrected memory accounting and avoid the problematic graph-capture startup footprint for the four-A10G deployment by running with --enforce-eager; treat shared-GPU instances separately by starting them sequentially and making each later gpu_memory_utilization value cumulative with memory already occupied.",
+     "intent": "Keep the corrected memory accounting and drop the extra CUDA graph capture footprint that vLLM enables by default from 0.2.6 onward, by running the four-A10G deployment with --enforce-eager; treat shared-GPU instances separately by starting them sequentially and making each later gpu_memory_utilization value cumulative with memory already occupied.",
      "approach_keywords": [
       "enforce_eager",
       "disable_cuda_graph",
@@ -329,7 +329,7 @@
       "sequential_startup",
       "cumulative_gpu_memory_utilization"
      ],
-     "concrete_example": "For the 70B AWQ server, restore the normal vLLM 0.2.5+ code and launch with --enforce-eager, then verify the same long-context request. If two 7B instances must share one GPU, wait for the first to finish loading; for example, start it at 0.4 and start the second at about 0.9 so the later calculation includes memory already occupied by the first.",
+     "concrete_example": "For the 70B AWQ server, restore the unmodified vLLM code and launch with --enforce-eager, then verify the same long-context request. If two 7B instances must share one GPU, wait for the first to finish loading; for example, start it at 0.4 and start the second at about 0.9 so the later calculation includes memory already occupied by the first.",
      "required_elements_for_full_match": [
       "uses_enforce_eager_for_the_four_a10g_70b_awq_case",
       "does_not_revert_pr_2031_as_the_final_fix",
@@ -354,7 +354,7 @@
      "info_inferred_by_engineer": [
       "profile_forward_and_tensor_parallel_allocations_leave_fragmented_or_reserved_memory",
       "post_2031_cache_estimator_counts_non_torch_and_existing_allocations",
-      "cuda_graph_capture_overhead_pushes_clean_four_a10g_case_to_zero_cache_blocks",
+      "cuda_graph_capture_is_default_from_026_and_adds_startup_overhead_on_top_of_the_new_accounting",
       "later_shared_instance_utilization_is_evaluated_against_total_memory_after_existing_usage"
      ],
      "is_composite": false,
@@ -362,14 +362,14 @@
      "is_known_blind_path": false,
      "is_shortcut": false,
      "shortcut_skipped_info": [],
-     "inference_hint": "The user supplied raw memory readings, the version boundary, and the outcomes of the revert and --enforce-eager tests. Engineers connected those observations to PR 2031's total-minus-free accounting, tensor-parallel/profile-run fragmentation or reserved allocations, and CUDA graph capture overhead. For shared GPUs, the current calculation includes memory already occupied when a later instance profiles itself, which explains why its utilization value must include the earlier instance rather than represent only its own intended fraction."
+     "inference_hint": "The user supplied raw memory readings, the version boundary, and the outcomes of the revert and --enforce-eager tests. Engineers connected those observations to PR 2031's total-minus-free accounting, which shipped in 0.2.5 and is the mechanism for the earliest failing version, together with tensor-parallel/profile-run fragmentation or reserved allocations. CUDA graph capture is a separate, additional startup consumer that only exists and is enabled by default from 0.2.6 onward, so it explains extra pressure on the versions the reporter is running now, not the original 0.2.5 break; disabling it with --enforce-eager frees enough headroom for the four-A10G deployment. For shared GPUs, the current calculation includes memory already occupied when a later instance profiles itself, which explains why its utilization value must include the earlier instance rather than represent only its own intended fraction."
     },
     "comment": "The reporter's resolution was --enforce-eager for the clean four-A10G 70B AWQ deployment. The two-model scenario was resolved separately by sequential startup and cumulative utilization values. Release scheduling and later unrelated hardware reports are omitted."
    }
   ]
  },
  "satisfaction_conditions": [
-  "Must identify the clean multi-GPU failure as a vLLM 0.2.5+ cache-profiling/startup-memory regression: the newer total-minus-free accounting observes tensor-parallel/profile-run and non-torch allocations, while CUDA graph capture adds enough startup overhead for the four-A10G 70B AWQ case to yield zero cache blocks.",
+  "Must identify the clean multi-GPU failure as a startup cache-profiling/memory-accounting regression that begins in vLLM 0.2.5: the newer total-minus-free accounting charges tensor-parallel/profile-run fragmentation and non-torch allocations against the budget, so the four-A10G 70B AWQ case is left with zero cache blocks. The extra CUDA graph capture footprint is an additional consumer only from vLLM 0.2.6 onward, where graph capture is on by default; it must not be offered as the mechanism for the original 0.2.5 break.",
   "The diagnosis must be grounded in the version comparison, clean dedicated GPUs, the raw free-memory drop around profile_run, and the successful --enforce-eager test.",
   "Must recommend --enforce-eager for the reporter's four-A10G 70B AWQ deployment and verify both startup and the representative long-context workload.",
   "Must not recommend reverting PR 2031 or restoring the old torch-only peak-memory calculation as the final fix, because that bypassed the cache-block error but produced GPU OOM on the same long-context query.",
@@ -383,7 +383,7 @@
  "metadata": {
   "graph_version": "v1",
   "created_from": "https://github.com/vllm-project/vllm/issues/2248 (LLM-draft via graph_bench pipeline; pending human review)",
-  "hitl_reviewed": false,
+  "hitl_reviewed": true,
   "repo_snapshot": {
    "provider": "github",
    "repo": "vllm-project/vllm",

@@ -4,7 +4,7 @@
 
 - source: https://github.com/python/cpython/issues/110313
 - kind: LLM draft (needs review)
-- reviewed: `False`
+- reviewed: `True`
 - graph: `data/github_v0/graphs/gh_python_cpython_110313.json` · raw thread: `data/github_v0/raw/gh_python_cpython_110313.json`
 
 ```mermaid
@@ -68,6 +68,13 @@ flowchart LR
 | `N3` |  | 0 | 0 | The failure reproduces in a full-LTO build without PGO. After reverting commit 3e3a7da590e1c3e5f03802e538f26c5204889c82 and rebuilding from  |
 | `N4` |  | 0 | 0 | The same full-LTO failure occurs when I build with LLVM 16, and test_embed passes after backing out the same commit. On another affected mac |
 | `N_terminal` | ✓ | 1 | 0 | I can successfully build Python 3.13.0a1 and current main with both PGO and LTO, and test_embed no longer fails. |
+
+## Machine review (audit pass, adversarially verified)
+
+Auditor verdict: **n/a** · 0 of 0 findings survived independent refutation.
+
+__
+
 
 ## Review checklist
 

@@ -4,7 +4,7 @@
 
 - source: https://github.com/home-assistant/core/issues/61551
 - kind: LLM draft (needs review)
-- reviewed: `False`
+- reviewed: `True`
 - graph: `data/github_v0/graphs/gh_home-assistant_core_61551.json` · raw thread: `data/github_v0/raw/gh_home-assistant_core_61551.json`
 
 ```mermaid
@@ -68,6 +68,13 @@ flowchart LR
 | `N3` |  | 2 | 2 | Immediately after I patched the Tibber component and restarted Home Assistant, the Energy dashboard showed one unusually large positive cons |
 | `N4` |  | 1 | 0 | With the patched Tibber component, midnight passed without the large negative consumption value. Apart from the one-time peak when the patch |
 | `N_terminal` | ✓ | 0 | 0 | After installing and verifying a Home Assistant build containing the Tibber rollover fix, accumulated consumption crosses midnight without a |
+
+## Machine review (audit pass, adversarially verified)
+
+Auditor verdict: **n/a** · 0 of 0 findings survived independent refutation.
+
+__
+
 
 ## Review checklist
 

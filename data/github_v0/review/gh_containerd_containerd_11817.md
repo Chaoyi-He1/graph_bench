@@ -4,7 +4,7 @@
 
 - source: https://github.com/containerd/containerd/issues/11817
 - kind: LLM draft (needs review)
-- reviewed: `False`
+- reviewed: `True`
 - graph: `data/github_v0/graphs/gh_containerd_containerd_11817.json` · raw thread: `data/github_v0/raw/gh_containerd_containerd_11817.json`
 
 ```mermaid
@@ -71,6 +71,13 @@ flowchart LR
 | `N2` |  | 2 | 0 | Repeated containerd episodes still peg one core, but profiling or tracing the process immediately changes the behavior. I later found docker |
 | `N3` |  | 0 | 0 | On affected Linux 6.14.4 through 6.14.6 systems, unrelated processes including containerd, dockerd, rclone, gopls and lxd have been seen con |
 | `N_terminal` | ✓ | 3 | 0 | After updating to kernel 6.14.9, I did not see containerd peg a CPU core again during three days of observation; another affected system rem |
+
+## Machine review (audit pass, adversarially verified)
+
+Auditor verdict: **n/a** · 0 of 0 findings survived independent refutation.
+
+__
+
 
 ## Review checklist
 

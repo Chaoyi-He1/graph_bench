@@ -4,7 +4,7 @@
 
 - source: https://github.com/moby/moby/issues/50129
 - kind: LLM draft (needs review)
-- reviewed: `False`
+- reviewed: `True`
 - graph: `data/github_v0/graphs/gh_moby_moby_50129.json` · raw thread: `data/github_v0/raw/gh_moby_moby_50129.json`
 
 ```mermaid
@@ -56,7 +56,7 @@ flowchart LR
 | `e1_N0__N1` | clarification_only | asks: container_localhost_healthcheck_succeeds, traefik_routes_to_services_on_proxy_network, proxy_is_docker_overlay_network, broken_host_uses_iptables_nft_working_host_legacy, hosts_otherwise_same_debian_kernel_and_management | Yes. Inside the container, `curl http://localhost:8080/api-admin/actuator/health` works and the containers are / Traefik 3.4.1 runs above the services and routes to them using the external network named `proxy`. The applica / Yes. It is created by our Traefik stack with `name: proxy`, `driver: overlay`, and subnet `192.168.220.0/22`.  / The broken environment's output says `iptables-save v1.8.9 (nf_tables)`, while the working environment's outpu / Apart from the Docker versions, the VMs are identical: the same Debian 12 and kernel version, managed the same |
 | `e2_N1__N2` | clarification_only | asks: failure_can_appear_after_service_restart_or_move, same_node_overlay_traffic_can_work_while_cross_node_fails, traefik_receives_target_ips_but_cannot_connect, affected_cluster_without_networkmanager | It may work for a period and then fail. We have seen services become unreachable after a container was redeplo / When I constrain the client container to the same worker as the target service, it can connect. From another w / Traefik gets the correct IP addresses for the containers, but it cannot reach the affected ones. The applicati / We have neither NetworkManager nor netscript installed. On the nodes using netplan, `networkctl` reports all D |
 | `e3_N2__N2_x` | solution_only **BLIND** | req_info: swarm_external_requests_return_504_on_28_2_2, proxy_is_docker_overlay_network<br>elements: recreates_the_overlay_network, reattaches_or_redeploys_services | Recreate the affected overlay network and reattach or redeploy all services to restore connectivity. |
-| `e4_N2_x__N3` | clarification_only | asks: docker_28_3_0_rc1_restores_overlay_connectivity | We deployed v28.3.0-rc.1 in our testing environment and confirmed that it solves the problem for us. The servi |
+| `e4_N2_x__N3` | clarification_only | asks: docker_28_3_0_rc1_restores_overlay_connectivity | We have now deployed v28.3.0-rc.1 in our testing environment and confirmed that it solves the problem for us;  |
 | `e5_N3__N_terminal` | solution_only | req_info: swarm_worked_on_28_1_1, swarm_external_requests_return_504_on_28_2_2, standalone_28_2_2_unaffected, proxy_is_docker_overlay_network, failure_can_appear_after_service_restart_or_move, same_node_overlay_traffic_can_work_while_cross_node_fails, traefik_receives_target_ips_but_cannot_connect, docker_28_3_0_rc1_restores_overlay_connectivity<br>elements: identifies_28_2_overlay_network_changes_as_the_regression, recommends_28_3_or_later_with_the_reverts, treats_28_1_1_downgrade_only_as_a_temporary_workaround, asks_user_to_verify_on_a_build_containing_the_fix | Replace the affected 28.2.x or 25.0.11 engine with a fixed Docker 28.3.x build that reverts the regressing Swarm overlay-network changes; use 28.1.1 only as a temporary rollback, then verify cross-node service connectivity. |
 
 ## Nodes
@@ -69,6 +69,13 @@ flowchart LR
 | `N2_x` |  | 1 | 0 | After recreating the overlay network and attaching the services again, most services became reachable, but communication later broke again. |
 | `N3` |  | 0 | 0 | In the test environment, the services remain reachable after installing Docker 28.3.0-rc.1, and the gateway timeouts no longer occur. |
 | `N_terminal` | ✓ | 0 | 0 | After updating to a Docker version containing the overlay-network reverts, Traefik can reach services across Swarm nodes and the public endp |
+
+## Machine review (audit pass, adversarially verified)
+
+Auditor verdict: **n/a** · 0 of 0 findings survived independent refutation.
+
+__
+
 
 ## Review checklist
 

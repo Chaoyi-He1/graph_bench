@@ -4,7 +4,7 @@
 
 - source: https://github.com/vllm-project/vllm/issues/29595
 - kind: LLM draft (needs review)
-- reviewed: `False`
+- reviewed: `True`
 - graph: `data/github_v0/graphs/gh_vllm-project_vllm_29595.json` · raw thread: `data/github_v0/raw/gh_vllm-project_vllm_29595.json`
 
 ```mermaid
@@ -68,6 +68,13 @@ flowchart LR
 | `N3` |  | 1 | 0 | With --enforce-eager, the grounding locations are correct on both vLLM 0.11.1 and 0.11.2. With the normal compiled execution path, the groun |
 | `N4` |  | 0 | 0 | The same grounding test returns accurate locations after using Triton 3.4.0 or rebuilding Triton 3.5 with pull request 9035 cherry-picked. |
 | `N_terminal` | ✓ | 0 | 0 | Qwen3-VL returns grounding coordinates at the expected image locations with compiled vLLM execution after installing a Triton build containi |
+
+## Machine review (audit pass, adversarially verified)
+
+Auditor verdict: **n/a** · 0 of 0 findings survived independent refutation.
+
+__
+
 
 ## Review checklist
 

@@ -4,7 +4,7 @@
 
 - source: https://github.com/curl/curl/issues/11203
 - kind: LLM draft (needs review)
-- reviewed: `False`
+- reviewed: `True`
 - graph: `data/github_v0/graphs/gh_curl_curl_11203.json` · raw thread: `data/github_v0/raw/gh_curl_curl_11203.json`
 
 ```mermaid

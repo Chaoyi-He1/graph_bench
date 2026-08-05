@@ -4,7 +4,7 @@
 
 - source: https://github.com/ggml-org/llama.cpp/issues/1571
 - kind: LLM draft (needs review)
-- reviewed: `False`
+- reviewed: `True`
 - graph: `data/github_v0/graphs/gh_ggml-org_llama.cpp_1571.json` · raw thread: `data/github_v0/raw/gh_ggml-org_llama.cpp_1571.json`
 
 ```mermaid
@@ -78,8 +78,15 @@ flowchart LR
 | `N3` |  | 3 | 0 | After installing CLBlast into the Termux prefix, llama.cpp finds it and builds with CLBlast enabled. When I run ./main, the OpenCL program e |
 | `N4` |  | 0 | 0 | With the Termux clvk platform, clpeak identifies an Adreno 640 through 'CLVK on Vulkan' and prints 'No half precision support! Skipped'. The |
 | `N5` |  | 0 | 0 | A manually built clinfo sees one native 'QUALCOMM Snapdragon(TM)' OpenCL 2.0 platform and an Adreno 640 device. The native device informatio |
-| `N5_x` |  | 1 | 0 | My native Qualcomm OpenCL platform reports cl_khr_fp16 support, while the earlier no-half result came from the clvk platform. The CLBlast-en |
+| `N5_x` |  | 1 | 0 | My device does natively support OpenCL, and the clinfo output I posted lists 'Half-precision Floating-point support (cl_khr_fp16)'. I'm tryi |
 | `N_terminal` | ✓ | 1 | 0 | After a fresh Termux setup, rebuilding CLBlast and llama.cpp, and launching main with /vendor/lib64 and the Termux library directory in LD_L |
+
+## Machine review (audit pass, adversarially verified)
+
+Auditor verdict: **n/a** · 0 of 0 findings survived independent refutation.
+
+__
+
 
 ## Review checklist
 
