@@ -51,22 +51,29 @@ def build_chat_client(
     api_key: str | None = None,
     effort: str | None = None,
     max_tokens: int | None = None,
+    api: str | None = None,
 ):  # noqa: ANN201  (LangChain chat client; lazy import)
     """Build a LangChain ``ChatOpenAI`` bound to the configured endpoint.
+
+    ``api`` selects the wire protocol: ``'responses'`` (default) or
+    ``'chat'`` for endpoints that only serve /chat/completions — several
+    non-OpenAI models behind an OpenAI-compatible gateway reject the
+    Responses API, and reasoning-effort is meaningless for them.
 
     Returned objects expose ``invoke``/``ainvoke`` and are consumed through
     ``graph_bench.user_simulator.provider.extract_text``.
     """
     from langchain_openai import ChatOpenAI  # noqa: PLC0415
 
+    api = api or os.environ.get('GRAPH_BENCH_LLM_API') or 'responses'
     kwargs: dict = {
         'base_url': base_url or resolve('GRAPH_BENCH_LLM_BASE_URL'),
         'api_key': api_key or resolve('GRAPH_BENCH_LLM_API_KEY'),
         'model': model or resolve('GRAPH_BENCH_LLM_MODEL'),
-        'use_responses_api': True,
+        'use_responses_api': api == 'responses',
     }
     effort = effort or os.environ.get('GRAPH_BENCH_LLM_EFFORT')
-    if effort:
+    if effort and api == 'responses':
         kwargs['reasoning'] = {'effort': effort}
     if max_tokens:
         kwargs['max_tokens'] = max_tokens

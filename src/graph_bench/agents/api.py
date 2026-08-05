@@ -48,6 +48,7 @@ class APIChatAgent:
             base_url=self._cfg.get('base_url'),
             api_key=os.environ.get(key_env) if key_env else None,
             effort=self._cfg.get('effort'),
+            api=self._cfg.get('api'),
         )
         return self._llm
 
