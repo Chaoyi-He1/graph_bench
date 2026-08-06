@@ -44,6 +44,28 @@ def resolve(name: str, *fallbacks: str, required: bool = True) -> str | None:
     return None
 
 
+def _identity_headers() -> dict[str, str]:
+    """End-user identity headers some gateways require on every call.
+
+    ``GRAPH_BENCH_USER_NAME`` / ``GRAPH_BENCH_USER_EMAIL`` (falling back to
+    ``USER``/``GIT_AUTHOR_*``) are forwarded as ``x-user-name`` /
+    ``x-user-email``. Both are optional: a plain OpenAI endpoint ignores
+    them, and nothing here is committed to the repository.
+    """
+    name = os.environ.get('GRAPH_BENCH_USER_NAME') or os.environ.get(
+        'GIT_AUTHOR_NAME'
+    )
+    email = os.environ.get('GRAPH_BENCH_USER_EMAIL') or os.environ.get(
+        'GIT_AUTHOR_EMAIL'
+    )
+    headers: dict[str, str] = {}
+    if name:
+        headers['x-user-name'] = name
+    if email:
+        headers['x-user-email'] = email
+    return headers
+
+
 def build_chat_client(
     *,
     model: str | None = None,
@@ -72,6 +94,9 @@ def build_chat_client(
         'model': model or resolve('GRAPH_BENCH_LLM_MODEL'),
         'use_responses_api': api == 'responses',
     }
+    headers = _identity_headers()
+    if headers:
+        kwargs['default_headers'] = headers
     effort = effort or os.environ.get('GRAPH_BENCH_LLM_EFFORT')
     if effort and api == 'responses':
         kwargs['reasoning'] = {'effort': effort}

@@ -19,6 +19,19 @@ from graph_bench.user_simulator.provider import extract_text
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+_GENERIC_FIX_WORDS = frozenset({
+    'failure', 'failing', 'change', 'changes', 'changed', 'behavior',
+    'behaviour', 'created', 'enabling', 'enabled', 'disable', 'disabled',
+    'update', 'updated', 'upgrade', 'upgraded', 'version', 'release',
+    'builds', 'building', 'report', 'reports', 'reported', 'verify',
+    'verified', 'confirm', 'confirmed', 'workaround', 'problem', 'issue',
+    'default', 'defaults', 'setting', 'settings', 'config', 'configure',
+    'configuration', 'install', 'installed', 'restart', 'restarted',
+    'reproduce', 'reproducer', 'reproduction', 'testing', 'output',
+    'result', 'results', 'current', 'latest', 'without', 'instead',
+    'require', 'required', 'requires', 'support', 'supported',
+})
+
 _FENCE = re.compile(r'^```(?:json)?\s*|\s*```$', re.MULTILINE)
 
 FILTER_GATES = (
@@ -216,10 +229,44 @@ def lint_task(
                     f'that no pre-terminal user-speakable channel introduces '
                     f'(future-knowledge literal)'
                 )
-    # NOTE: a mechanical question-leak lint (question naming downstream
-    # solution vocabulary) was prototyped and produced 60+/68 false
-    # positives — shared domain vocabulary swamps the signal. That class
-    # is governed by prompt rule 4e(iv) and the sampling audit instead.
+    # Fix-naming lint (narrow re-scope of an earlier prototype that fired
+    # on 60+/68 graphs): only the TERMINAL solution's distinctive
+    # vocabulary counts, and only tokens that appear nowhere the user can
+    # speak them. Sign-off repeatedly confirmed this class as high
+    # severity ("run the tests with the patch that generates a fresh
+    # request ID per retry" hands over the answer).
+    term_sols = [
+        e.solution
+        for e in g.edges
+        if e.solution is not None
+        and g.nodes[e.to_node].is_terminal
+        and not e.solution.is_known_blind_path
+    ]
+    fix_vocab: set[str] = set()
+    for sol in term_sols:
+        # approach_keywords only: required_elements are written as English
+        # sentences ('identifies_the_failure') whose generic verbs are not
+        # fix vocabulary. Corpus-generic tokens are excluded by frequency.
+        for kw in sol.approach_keywords:
+            for w in _re.split(r'[^a-z0-9]+', kw.lower()):
+                if len(w) >= 6 and w not in speakable_text and w not in _GENERIC_FIX_WORDS:
+                    fix_vocab.add(w)
+    if fix_vocab:
+        for e in g.edges:
+            for c in e.clarifications:
+                for q in c.question_patterns:
+                    hits_ = {
+                        w
+                        for w in _re.split(r'[^a-z0-9]+', q.lower())
+                        if w in fix_vocab
+                    }
+                    if hits_:
+                        problems.append(
+                            f'{e.edge_id}/{c.info_id}: question names the '
+                            f'terminal fix vocabulary {sorted(hits_)[:3]} '
+                            f'that no user-speakable channel introduces '
+                            f'(rule 4e(iv))'
+                        )
     start_outs = out_edges.get(g.start_node, [])
     if start_outs and all(
         e.solution is not None and e.solution.is_known_blind_path

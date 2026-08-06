@@ -83,6 +83,101 @@ _COMMON_WORDS = {
 }
 
 
+# English function words: an @-mention of one ("@This is the fix") is
+# markdown noise, never an account. Capitalization does not make a word
+# account-shaped, which the mention pass previously assumed.
+_STOPWORDS = {
+    'this', 'that', 'these', 'those', 'the', 'and', 'but', 'for', 'not',
+    'you', 'your', 'yours', 'our', 'ours', 'they', 'them', 'their', 'its',
+    'here', 'there', 'when', 'where', 'while', 'with', 'without', 'from',
+    'into', 'over', 'under', 'after', 'before', 'again', 'also', 'just',
+    'only', 'same', 'each', 'both', 'other', 'another', 'some', 'any',
+    'all', 'none', 'yes', 'no', 'ok', 'okay', 'thanks', 'thank', 'please',
+    'hi', 'hey', 'hello', 'edit', 'note', 'fixed', 'closed', 'done',
+}
+
+
+# @-tokens that are technical, not people: npm scopes, decorators,
+# annotations, doc tags. Anything else after an '@' on an issue tracker is
+# treated as a handle.
+_TECH_AT_TOKENS = {
+    'types', 'babel', 'angular', 'vue', 'nestjs', 'nuxt', 'storybook',
+    'testing-library', 'typescript-eslint', 'eslint', 'jest', 'swc',
+    'rollup', 'vitejs', 'emotion', 'mui', 'radix-ui', 'tanstack',
+    'expo-google-fonts', 'react-navigation', 'react-native-community',
+    'react-native-async-storage', 'react-native-firebase', 'aws-sdk',
+    'azure', 'google-cloud', 'grpc', 'kubernetes', 'octokit', 'sentry',
+    'sinclair', 'std', 'core', 'lib', 'dev', 'next', 'latest', 'beta',
+    'alpha', 'rc', 'stable', 'canary', 'nightly', 'main', 'master',
+    'param', 'return', 'returns', 'throws', 'deprecated', 'override',
+    'property', 'media', 'import', 'charset', 'keyframes', 'supports',
+    'apply', 'tailwind', 'layer', 'font-face', 'entry', 'nogc', 'safe',
+    'nonnull', 'nullable', 'suppress', 'link', 'see', 'since', 'author',
+    'todo', 'fixme', 'xxx', 'sha', 'ref', 'head', 'entry',
+}
+
+# Private/lab hostnames leak organizational identity. Public code-hosting
+# and package registries stay intact (they are provenance, not PII).
+_PUBLIC_HOST_SUFFIXES = (
+    'github.com', 'github.io', 'githubusercontent.com', 'gitlab.com',
+    'bitbucket.org', 'stackoverflow.com', 'npmjs.com', 'pypi.org',
+    'crates.io', 'golang.org', 'python.org', 'mozilla.org', 'postgresql.org',
+    'kernel.org', 'debian.org', 'ubuntu.com', 'redhat.com', 'apache.org',
+    'docker.com', 'docker.io', 'microsoft.com', 'apple.com', 'google.com',
+    'googleapis.com', 'cloudflare.com', 'amazonaws.com', 'nvidia.com',
+    'llvm.org', 'gnu.org', 'freedesktop.org', 'w3.org', 'ietf.org',
+    'wikipedia.org', 'readthedocs.io', 'rust-lang.org', 'nodejs.org',
+    'deno.land', 'huggingface.co', 'localhost', 'example.com',
+)
+_HOSTNAME = re.compile(
+    r'\b(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+'
+    r'(?:com|org|net|edu|gov|io|dev|ai|co|us|uk|de|fr|cn|jp|ru|local|lan|'
+    r'internal|intranet|corp)\b'
+)
+
+
+# Review/commit metadata carries identities that are not author fields:
+# hg/git commit lines ("Author: Real Name <mail>"), Mozilla IRC nicks
+# (":sdetar"), and review flags ("r=iain", "r?iain!", "a=RyanVM").
+_COMMIT_AUTHOR = re.compile(
+    r'(?im)^(\s*(?:Author|Committer|Reviewed-by|Signed-off-by|Acked-by|'
+    r'Reported-by|Tested-by|Co-authored-by)\s*:\s*).+$'
+)
+_IRC_NICK = re.compile(r'(?<![A-Za-z0-9:])::?([a-z][a-z0-9_.-]{2,20})\b')
+# Only Mozilla review-flag letters, and only with a name-shaped value:
+# 'f=ma' / 'n=2' in prose or code must not be rewritten.
+_REVIEW_FLAG = re.compile(
+    r'(?<![A-Za-z0-9])(r|a|sr|ui-r)([=?])'
+    r'([A-Za-z][A-Za-z0-9_.-]{2,20})([!+-]?)'
+)
+
+
+def mask_review_metadata(text: str) -> str:
+    """Pseudonymize identity forms specific to review/commit metadata."""
+    text = _COMMIT_AUTHOR.sub(r'\1<redacted-name>', text)
+    text = _REVIEW_FLAG.sub(
+        lambda m: f'{m.group(1)}{m.group(2)}<reviewer>{m.group(4)}', text
+    )
+    return _IRC_NICK.sub(':<nick>', text)
+
+
+def mask_private_hosts(text: str) -> str:
+    """Replace non-public FQDNs with <redacted-host>."""
+
+    def _sub(m: re.Match) -> str:
+        host = m.group(0)
+        low = host.lower()
+        if any(low == s or low.endswith('.' + s) for s in _PUBLIC_HOST_SUFFIXES):
+            return host
+        # Bare two-label domains are usually products/projects, not hosts;
+        # organizational leakage lives in deeper names (host.dept.org.edu).
+        if low.count('.') < 2:
+            return host
+        return '<redacted-host>'
+
+    return _HOSTNAME.sub(_sub, text)
+
+
 def _re_search_upper_digit(token: str) -> bool:
     return re.search(r'[A-Z0-9]', token) is not None
 
@@ -106,6 +201,9 @@ def mask_path_users(text: str) -> str:
     return _WIN_PATH_USER.sub(r'\g<pre><user>', text)
 
 
+_PSEUDO = re.compile(r'^(reporter|participant\d+)$')
+
+
 def _is_bot(handle: str) -> bool:
     if handle.lower().strip() in _ORG_IDENTITIES:
         return True
@@ -123,6 +221,13 @@ class CaseMap:
         self.redactions: list[str] = []
 
     def add(self, handle: str) -> None:
+        # Idempotence: an already-scrubbed corpus re-scrubs to itself.
+        # Without this, author fields that are ALREADY pseudonyms get
+        # re-assigned by traversal order and every re-scrub renumbers
+        # people (participant1 -> participant2 -> ...).
+        if _PSEUDO.match(handle or ''):
+            self.map.setdefault(handle, handle)
+            return
         if handle and not _is_bot(handle) and handle not in self.map:
             self._n += 1
             self.map[handle] = f'participant{self._n}'
@@ -166,6 +271,8 @@ class CaseMap:
         text = _REPLY_NAME.sub(r'(In reply to comment #\1)', text)
         text = _SECRETS.sub('<secret-scrubbed>', text)
         text = mask_path_users(text)
+        text = mask_private_hosts(text)
+        text = mask_review_metadata(text)
         return _EMAIL.sub(
             lambda m: m.group(0) if _is_bot(m.group(0)) else '<email-scrubbed>',
             text,
@@ -195,13 +302,16 @@ class CaseMap:
             # (@participant5 -> participant6 -> ...), destroying stability.
             if _PSEUDO.match(h):
                 return m.group(0)
-            if _is_bot(h) or h.lower() in _COMMON_WORDS:
+            if _is_bot(h) or h.lower() in _COMMON_WORDS | _STOPWORDS:
                 return m.group(0)
-            # Personal-account shape requires an uppercase letter or digit.
-            # Hyphens alone do NOT qualify: npm orgs (@config-plugins,
-            # @react-native-community) are lowercase-hyphen and mapping
-            # them poisons the identity map with technical tokens.
-            if not re.search(r'[A-Z0-9]', h) or h.endswith('-'):
+            # On issue trackers an @-mention IS a handle by construction,
+            # and most real handles are all-lowercase (@apolcyn, @bash).
+            # Only technical @-tokens are exempt: npm scopes/orgs, decorator
+            # and annotation names. Cross-case poisoning is no longer a risk
+            # (a graph is scrubbed with its own map only), so the pass can
+            # be aggressive here — a missed handle is a privacy defect,
+            # while a false positive costs one rewritten technical token.
+            if h.lower() in _TECH_AT_TOKENS or h.endswith('-'):
                 return m.group(0)
             self.add(h)
             return '@' + self.map.get(h, h)
@@ -280,14 +390,21 @@ def scrub_raw(path: Path, apply: bool) -> dict:  # noqa: FBT001
     return cm.map
 
 
-_PSEUDO = re.compile(r'^(reporter|participant\d+)$')
 
 
 def scrub_graph(path: Path, maps: dict[str, dict], apply: bool) -> int:  # noqa: FBT001
-    """Apply every known handle map to graph free text; count hits."""
+    """Apply THIS CASE's handle map to its graph free text; count hits.
+
+    Only the case's own map is applied. Cross-case application caused
+    every identity-map defect this corpus has suffered: one case's
+    handle ('info@…', an npm org, an @-mention of the word 'This')
+    rewrote technical prose in 78 unrelated graphs. A graph can only
+    legitimately mention identities from its own thread.
+    """
     text = path.read_text()
     hits = 0
-    for m in maps.values():
+    own = maps.get(path.name)
+    for m in ([own] if own else []):
         for handle, pseudo in m.items():
             for token in {handle, handle.split('@')[0]}:
                 if token == pseudo or _PSEUDO.match(token):
@@ -317,7 +434,7 @@ def scrub_graph(path: Path, maps: dict[str, dict], apply: bool) -> int:  # noqa:
                         hits += n
                         text = rx.sub(pseudo, text)
     text = _SECRETS.sub('<secret-scrubbed>', text)
-    text2 = mask_path_users(text)
+    text2 = mask_review_metadata(mask_private_hosts(mask_path_users(text)))
     new = _EMAIL.sub(
         lambda mt: mt.group(0) if _is_bot(mt.group(0)) else '<email-scrubbed>',
         text2,

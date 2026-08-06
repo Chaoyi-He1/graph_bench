@@ -142,6 +142,25 @@ SEMANTIC RULES (violations make the task unusable):
    (iv) No clarification question_pattern may name fix contents or a
    downstream solution's approach keywords — questions elicit evidence,
    they never carry the answer key (generalizes the 4d note).
+4f. LONG MULTI-PARTY THREADS (the dominant failure mode on large
+   infrastructure repos — read this before drafting any thread with more
+   than ~6 participants):
+   (i) NEVER invent a terminal resolution. If the thread ends without an
+   affected user confirming the fix on their own system, the terminal
+   node states exactly what the thread establishes (e.g. "a maintainer
+   reports the patch landed; I have not retested yet") and
+   user_perceives_resolved stays false. A confirmation by a DIFFERENT
+   operator is modeled as that — relayed evidence in a comment — never
+   as the reporter's own verified outcome.
+   (ii) NEVER splice one participant's setup or symptoms into another's
+   causal chain. Before writing an edge, name (in the comment) which
+   messages it comes from and whose system they describe. If a later
+   sub-problem belongs to a different deployment, either drop it or make
+   the fold explicit and persona-compatible.
+   (iii) One thread often contains SEVERAL independent problems. Pick the
+   ONE diagnostic chain that starts with the opening report and ends in
+   its own resolution; do not chain problem B's fix onto problem A's
+   symptoms just because they share a thread.
 4b. USER-VOICE RULE: every user_answer_in_this_oncall is in the
    reporter's own FIRST-PERSON voice — words they actually typed or
    could type. Never third-person narration ("the reporter provided...",
