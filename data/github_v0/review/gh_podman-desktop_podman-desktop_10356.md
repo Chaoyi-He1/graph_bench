@@ -4,40 +4,36 @@
 
 - source: https://github.com/podman-desktop/podman-desktop/issues/10356
 - kind: LLM draft (needs review)
-- reviewed: `False`
+- reviewed: `True`
 - graph: `data/github_v0/graphs/gh_podman-desktop_podman-desktop_10356.json` · raw thread: `data/github_v0/raw/gh_podman-desktop_podman-desktop_10356.json`
 
 ```mermaid
 flowchart LR
-    N0["<b>N0 idle resource growth reported</b><br/><small>info: 6</small>"]
-    N1["<b>N1 environment and VM state established</b><br/><small>info: 9</small>"]
-    N2["<b>N2 recurring connection errors captured</b><br/><small>info: 12</small>"]
-    N3["<b>N3 Podman integration isolated</b><br/><small>info: 16</small>"]
-    N3_x["<b>N3_x firewall-disable aftermath</b><br/><small>info: 17</small>"]
-    N4_x["<b>N4_x Podman Desktop downgrade aftermath</b><br/><small>info: 19</small>"]
-    N5["<b>N5 Podman engine downgrade verified</b><br/><small>info: 20</small>"]
-    N_terminal["<b>terminal resolved by Podman engine downgrade</b><br/><small>info: 21</small>"]
-    N0 -.->|"❓ podman_vm_running_on_wsl_rootless, no_kind_docker_openshift_or_kubernetes_cluster, podman_vm_itself_appears_idle"| N1
+    N0["<b>N0 idle resource growth reported</b><br/><small>info: 7</small>"]
+    N1["<b>N1 environment and idle machine established</b><br/><small>info: 11</small>"]
+    N2["<b>N2 repeated connection errors captured</b><br/><small>info: 14</small>"]
+    N3["<b>N3 Podman extension path isolated</b><br/><small>info: 16</small>"]
+    N4["<b>N4 VM load and firewall ruled out</b><br/><small>info: 19</small>"]
+    N5_x["<b>N5_x Podman Desktop downgrade aftermath</b><br/><small>info: 21</small>"]
+    N_terminal["<b>terminal resolved by Podman downgrade</b><br/><small>info: 23</small>"]
+    N0 -.->|"❓ podman_vm_is_running, podman_machine_uses_wsl_and_rootless_mode, no_kind_docker_openshift_or_kubernetes_cluster_running"| N1
     linkStyle 0 stroke:#3b82f6,stroke-width:2px
-    N1 -.->|"❓ process_monitor_shows_growth_and_app_asar_reads, logs_repeat_pipe_enoent_and_reconnect_every_five_seconds"| N2
+    N1 -.->|"❓ process_monitor_shows_host_usage_growing_from_300mb_toward_1gb, logs_repeat_pipe_enoent_and_reconnect_every_5_seconds"| N2
     linkStyle 1 stroke:#3b82f6,stroke-width:2px
-    N2 -.->|"❓ podman_extension_alone_triggers_errors_and_resource_growth, all_extensions_disabled_avoids_problem, podman_machine_top_and_free_show_idle_low_usage"| N3
+    N2 -.->|"❓ all_extensions_disabled_avoids_problem, podman_extension_alone_with_machine_running_reproduces_problem"| N3
     linkStyle 2 stroke:#3b82f6,stroke-width:2px
-    N3 ==>|"💥 blind: Disable the Windows firewall in case it is blocking communication between Podman Desktop and the running Podman machine."| N3_x
-    linkStyle 3 stroke:#ef4444,stroke-width:2px
-    N3_x ==>|"💥 blind: Treat the regression as a Podman Desktop release problem and revert Podman Desktop to the earlier 1.13.x line."| N4_x
+    N3 -.->|"❓ machine_probe_shows_zero_cpu_and_about_554mb_used, disabling_windows_firewall_makes_no_difference"| N4
+    linkStyle 3 stroke:#3b82f6,stroke-width:2px
+    N4 ==>|"💥 blind: Treat the regression as a Podman Desktop application-version problem and revert Podman Desktop to an earlier release."| N5_x
     linkStyle 4 stroke:#ef4444,stroke-width:2px
-    N4_x ==>|"🔀 ❓podman_5_2_5_removes_errors_and_resource_growth + ⚡Test the Podman engine as the changed component by reverting it while leaving the Podman Desktop installation in place."| N5
-    linkStyle 5 stroke:#a855f7,stroke-width:2px
-    N5 ==>|"⚡ Keep the verified Podman engine downgrade as the resolution and attribute the resource growth to the engine-version-dependent named-pipe reconnection loop rather than to activity inside the WSL machine."| N_terminal
-    linkStyle 6 stroke:#f97316,stroke-width:2px
+    N5_x ==>|"⚡ Treat the original report as a regression associated with the newer Podman engine's interaction with Podman Desktop: roll Podman back to the prior working engine build, then verify that the pipe-error retry loop and idle resource growth stop."| N_terminal
+    linkStyle 5 stroke:#f97316,stroke-width:2px
     class N0 start
     class N1 normal
     class N2 normal
     class N3 normal
-    class N3_x normal
-    class N4_x normal
-    class N5 normal
+    class N4 normal
+    class N5_x normal
     class N_terminal terminal
     classDef start fill:#fee2e2,stroke:#b91c1c,color:#000
     classDef terminal fill:#dcfce7,stroke:#15803d,color:#000
@@ -46,40 +42,40 @@ flowchart LR
 
 ## Opening (body)
 
-> I updated Podman and Podman Desktop on my Windows 11 machine, and Podman Desktop 1.14.2 now consistently uses 20–30% CPU and up to 4 GB of memory while doing nothing. I have no images or containers in use. After it runs for a while, the UI becomes very sluggish and nearly unresponsive, and my PC's fans run at full speed. I installed it using Scoop. Is this expected?
+> I updated Podman and Podman Desktop on my Windows 11 machine, and Podman Desktop 1.14.2 installed through Scoop now consistently uses 20–30% CPU and up to 4 GB of memory while doing nothing. I have no images or containers in use. After it has been running for a while, the UI becomes almost unresponsive and sluggish, and my PC's fans run at full speed. Is this expected?
 
 ## Satisfaction conditions
 
-1. Must identify the accepted trigger as the Podman engine update interacting with the Podman extension, not workload inside the idle WSL machine.
-2. Diagnosis must be grounded in the repeated `podman-machine-default` pipe ENOENT and five-second reconnect logs, the extension-isolation test, and the low resource usage inside the Podman machine.
-3. Must recommend retaining the reporter-verified Podman engine downgrade and must not claim that downgrading Podman Desktop to 1.13.3 fixes the issue.
-4. Must not present disabling the Windows firewall as the fix because it was tried without changing the errors or resource growth.
-5. Must ask the user to verify that the pipe errors, CPU load, and memory growth remain absent over the previous reproduction interval before declaring the issue resolved.
+1. Must identify the opening reporter's accepted diagnosis as a regression in the newer Podman engine's interaction with Podman Desktop, evidenced by the repeated missing named-pipe errors and five-second reconnection loop while the Podman machine itself remains idle.
+2. Must ground the diagnosis in the collected evidence: quiet VM statistics, reproduction with only the Podman extension enabled, repeated ENOENT/reconnect logs, no effect from disabling the firewall, and no effect from reverting only Podman Desktop.
+3. Must recommend rolling the Podman engine back to the prior working build, rather than claiming that downgrading Podman Desktop alone fixes the issue.
+4. Must not present restarts, firewall changes, or a Podman Desktop-only downgrade as the resolution; they did not stop the original reporter's symptoms.
+5. Must not conflate the opening report with the later participant's independent Kubernetes-context and Azure CLI Python-process problem or score toggling that participant's experimental feature as the original reporter's fix.
+6. Must ask the reporter to verify that the repeated pipe errors and long-term idle CPU and memory growth are gone before declaring the issue resolved.
+7. May describe uncollected Dockerode instances as a hypothesis only, not as a proven memory-leak mechanism.
 
 ## Edges
 
 | edge | type | gates / info | payload |
 |---|---|---|---|
-| `e1_N0__N1` | clarification_only | asks: podman_vm_running_on_wsl_rootless, no_kind_docker_openshift_or_kubernetes_cluster, podman_vm_itself_appears_idle | Yes, the Podman machine is running. It is on WSL, and I configured it in rootless mode. / I have nothing else running: no kind, Docker, OpenShift Local, or Kubernetes cluster. / A top inside podman-machine-default shows almost nothing happening and very low CPU usage. |
-| `e2_N1__N2` | clarification_only | asks: process_monitor_shows_growth_and_app_asar_reads, logs_repeat_pipe_enoent_and_reconnect_every_five_seconds | I tracked it with Process Monitor. It grew from about 300 MB toward 1 GB before I stopped tracking, and it see / The logs repeatedly say `connect ENOENT \\.\pipe\podman-machine-default`, `Error when handling events`, and `W |
-| `e3_N2__N3` | clarification_only | asks: podman_extension_alone_triggers_errors_and_resource_growth, all_extensions_disabled_avoids_problem, podman_machine_top_and_free_show_idle_low_usage | With everything disabled, I have no problem. When I enable only the Podman extension and start the Podman mach / When all extensions are disabled, the problem does not occur. / The machine reports 100.0% idle CPU. It has about 7.7 GiB total memory, about 554 MiB used, 7.2 GiB available, |
-| `e4_N3__N3_x` | solution_only **BLIND** | req_info: podman_vm_running_on_wsl_rootless, logs_repeat_pipe_enoent_and_reconnect_every_five_seconds<br>elements: suggests_testing_with_windows_firewall_disabled | Disable the Windows firewall in case it is blocking communication between Podman Desktop and the running Podman machine. |
-| `e5_N3_x__N4_x` | solution_only **BLIND** | req_info: podman_desktop_version_1_14_2, same_behavior_seen_on_second_windows_laptop, logs_repeat_pipe_enoent_and_reconnect_every_five_seconds<br>elements: suggests_reverting_podman_desktop | Treat the regression as a Podman Desktop release problem and revert Podman Desktop to the earlier 1.13.x line. |
-| `e6_N4_x__N5` | mixed | req_info: podman_version_before_fix_was_5_3_1, podman_extension_alone_triggers_errors_and_resource_growth, podman_machine_top_and_free_show_idle_low_usage, logs_repeat_pipe_enoent_and_reconnect_every_five_seconds<br>elements: changes_the_podman_engine_version_rather_than_only_podman_desktop, checks_whether_pipe_errors_and_resource_growth_stop | Test the Podman engine as the changed component by reverting it while leaving the Podman Desktop installation in place. |
-| `e7_N5__terminal` | solution_only | req_info: podman_version_before_fix_was_5_3_1, logs_repeat_pipe_enoent_and_reconnect_every_five_seconds, podman_extension_alone_triggers_errors_and_resource_growth, podman_machine_top_and_free_show_idle_low_usage, podman_desktop_1_13_3_still_has_problem, podman_5_2_5_removes_errors_and_resource_growth<br>elements: identifies_the_podman_engine_update_as_the_demonstrated_trigger, connects_the_resource_growth_to_repeated_named_pipe_reconnections, retains_the_verified_podman_engine_downgrade, asks_user_to_verify_logs_cpu_and_memory_over_the_previous_reproduction_interval | Keep the verified Podman engine downgrade as the resolution and attribute the resource growth to the engine-version-dependent named-pipe reconnection loop rather than to activity inside the WSL machine. |
+| `e1_N0__N1` | clarification_only | asks: podman_vm_is_running, podman_machine_uses_wsl_and_rootless_mode, no_kind_docker_openshift_or_kubernetes_cluster_running | Yes, the Podman VM is running. / It is using WSL, and I configured the machine in rootless mode. / I have nothing else running: no Kind, no Docker, no OpenShift Local, and no Kubernetes cluster. |
+| `e2_N1__N2` | clarification_only | asks: process_monitor_shows_host_usage_growing_from_300mb_toward_1gb, logs_repeat_pipe_enoent_and_reconnect_every_5_seconds | I tracked it with Process Monitor. It kept growing from around 300 MB toward 1 GB before I stopped the trace,  / The logs repeatedly say `connect ENOENT \\.\pipe\podman-machine-default`, `Error when handling events`, and `W |
+| `e3_N2__N3` | clarification_only | asks: all_extensions_disabled_avoids_problem, podman_extension_alone_with_machine_running_reproduces_problem | When everything is disabled, I do not get the problem. / With only the Podman extension enabled, starting the Podman machine brings back all the log errors, and CPU an |
+| `e4_N3__N4` | clarification_only | asks: machine_probe_shows_zero_cpu_and_about_554mb_used, disabling_windows_firewall_makes_no_difference | The machine reports 100% idle CPU. It has about 554 MiB used out of 7.7 GiB, about 7.2 GiB available, and no s / I disabled the firewall, and it made no difference. |
+| `e5_N4__N5_x` | solution_only **BLIND** | req_info: podman_and_desktop_recently_updated, logs_repeat_pipe_enoent_and_reconnect_every_5_seconds, podman_extension_alone_with_machine_running_reproduces_problem<br>elements: recommends_reverting_only_podman_desktop | Treat the regression as a Podman Desktop application-version problem and revert Podman Desktop to an earlier release. |
+| `e6_N5_x__terminal` | solution_only | req_info: podman_and_desktop_recently_updated, podman_5_3_1_installed_before_engine_downgrade, podman_machine_top_shows_very_low_cpu, second_laptop_after_update_has_same_errors_and_resource_growth, logs_repeat_pipe_enoent_and_reconnect_every_5_seconds, all_extensions_disabled_avoids_problem, podman_extension_alone_with_machine_running_reproduces_problem, machine_probe_shows_zero_cpu_and_about_554mb_used, disabling_windows_firewall_makes_no_difference, podman_desktop_downgrade_to_1_13_3_does_not_change_problem<br>elements: attributes_original_issue_to_newer_podman_engine_interaction, recommends_rolling_back_the_podman_engine_not_only_podman_desktop, connects_the_diagnosis_to_repeated_named_pipe_errors_and_retries, asks_user_to_verify_logs_cpu_and_memory_after_the_engine_change | Treat the original report as a regression associated with the newer Podman engine's interaction with Podman Desktop: roll Podman back to the prior working engine build, then verify that the pipe-error retry loop and idle resource growth stop. |
 
 ## Nodes
 
 | node | terminal | volunteered | images | symptoms |
 |---|---|---|---|---|
-| `N0` |  | 1 | 0 | While idle, Podman Desktop uses 20–30% CPU and its memory grows as high as 4 GB. After running for a while, the UI becomes very sluggish and |
-| `N1` |  | 1 | 0 | Podman Desktop's CPU and memory continue increasing even though the WSL Podman machine shows very low CPU usage and I have no other containe |
-| `N2` |  | 1 | 0 | Starting near 300 MB, Podman Desktop keeps growing toward 1 GB and beyond while its CPU usage rises. The logs repeatedly print connection er |
-| `N3` |  | 1 | 0 | With every extension disabled, Podman Desktop remains normal; enabling only the Podman extension and starting the machine brings back the re |
-| `N3_x` |  | 1 | 0 | With the Windows firewall disabled, the repeated pipe errors and increasing Podman Desktop CPU and memory use are unchanged. |
-| `N4_x` |  | 2 | 0 | After reverting Podman Desktop to 1.13.3, the repeated errors and high CPU and memory consumption still occur. |
-| `N5` |  | 0 | 0 | After reverting Podman from 5.3.1 to 5.2.5, the pipe errors no longer appear and Podman Desktop no longer consumes increasing CPU or memory  |
-| `N_terminal` | ✓ | 0 | 0 | Podman Desktop remains responsive without repeated pipe errors or increasing idle CPU and memory use after the Podman engine downgrade. |
+| `N0` |  | 1 | 0 | While I am doing nothing in Podman Desktop, its CPU stays around 20–30% and its memory grows as high as 4 GB. After a while the UI becomes a |
+| `N1` |  | 1 | 0 | Podman Desktop's memory and CPU usage still grow while the WSL-based Podman machine is running, even though the machine itself shows very lo |
+| `N2` |  | 1 | 0 | During Process Monitor tracking, Podman Desktop grew from about 300 MB toward 1 GB and continued consuming CPU. The logs repeatedly print th |
+| `N3` |  | 0 | 0 | With every extension disabled, the resource problem does not occur. When I enable only the Podman extension and start the Podman machine, th |
+| `N4` |  | 1 | 0 | The Podman machine reports 100% idle CPU, about 554 MiB used memory, and no swap use while the Windows application has the problem. Disablin |
+| `N5_x` |  | 2 | 0 | After reverting Podman Desktop to 1.13.3, the repeated pipe errors and high CPU and memory use remain. |
+| `N_terminal` | ✓ | 1 | 0 | After reverting Podman from 5.3.1 to 5.2.5, the repeated pipe errors stop and Podman Desktop no longer consumes increasing CPU or memory whi |
 
 ## Machine review (audit pass, adversarially verified)
 

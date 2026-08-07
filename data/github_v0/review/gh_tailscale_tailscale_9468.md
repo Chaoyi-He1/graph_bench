@@ -4,26 +4,26 @@
 
 - source: https://github.com/tailscale/tailscale/issues/9468
 - kind: LLM draft (needs review)
-- reviewed: `False`
+- reviewed: `True`
 - graph: `data/github_v0/graphs/gh_tailscale_tailscale_9468.json` · raw thread: `data/github_v0/raw/gh_tailscale_tailscale_9468.json`
 
 ```mermaid
 flowchart LR
-    N0["<b>N0 Chrome connection resets reported</b><br/><small>info: 8</small>"]
+    N0["<b>N0 Chrome failures through exit node reported</b><br/><small>info: 8</small>"]
     N1["<b>N1 affected sites identified</b><br/><small>info: 9</small>"]
-    N2["<b>N2 packet capture collected</b><br/><small>info: 11</small>"]
-    N3["<b>N3 local proxy and Avast ruled out</b><br/><small>info: 15</small>"]
-    N4["<b>N4 QUIC probe transient</b><br/><small>info: 16</small>"]
-    N_terminal["<b>terminal maintainer-documented resolution awaiting reporter verification</b><br/><small>info: 23</small>"]
-    N0 -.->|"❓ google_sites_fail_continuously_aws_intermittent"| N1
+    N2["<b>N2 failure captured after IPv6 disruption</b><br/><small>info: 12</small>"]
+    N3["<b>N3 local proxy and Avast excluded</b><br/><small>info: 15</small>"]
+    N4["<b>N4 QUIC probe only briefly changes behavior</b><br/><small>info: 16</small>"]
+    N_terminal["<b>terminal maintainer-reported resolution without public reporter retest</b><br/><small>info: 21</small>"]
+    N0 -.->|"❓ google_sites_fail_continuously_aws_intermitttent"| N1
     linkStyle 0 stroke:#3b82f6,stroke-width:2px
-    N1 -.->|"❓ first_pcap_captured_on_tailscale_interface_and_sent"| N2
+    N1 -.->|"❓ wireshark_capture_collected_during_failure, pcap_captured_on_affected_mac"| N2
     linkStyle 1 stroke:#3b82f6,stroke-width:2px
-    N2 -.->|"❓ pcap_from_mac_during_connection_reset, chrome_has_no_configured_proxy, avast_had_long_been_disabled, second_pcap_sent_to_support"| N3
+    N2 -.->|"❓ chrome_has_no_configured_proxy, second_pcap_captured_during_error_and_sent, avast_already_disabled_long_term"| N3
     linkStyle 2 stroke:#3b82f6,stroke-width:2px
-    N3 -.->|"❓ quic_disabled_only_helped_until_browser_relaunch"| N4
+    N3 -.->|"❓ quic_disabled_worked_briefly_then_error_returned"| N4
     linkStyle 3 stroke:#3b82f6,stroke-width:2px
-    N4 ==>|"⚡ Restore real public IPv6 connectivity through the exit node and correct or remove the intermediary that accepts Chrome's IPv6 TCP connection before it has successfully connected to the true destination; then have the affected user retest."| N_terminal
+    N4 ==>|"⚡ Restore genuine external IPv6 connectivity through the exit node so Chrome's preferred IPv6 connections reach their destinations, then have the affected user retest before declaring the case resolved."| N_terminal
     linkStyle 4 stroke:#f97316,stroke-width:2px
     class N0 start
     class N1 normal
@@ -38,37 +38,36 @@ flowchart LR
 
 ## Opening (body)
 
-> I am using a Tailscale exit node from my macOS Ventura 13.5.2 device with Tailscale 1.48.2. In Chrome, certain websites fail with ERR_CONNECTION_RESET while the exit node is active, but the same websites work in Safari. Other people at my company use Tailscale without this problem, so it may affect only certain devices. This is my first time using exit nodes, and Avast AV is installed.
+> I am using a Tailscale exit node from my macOS Ventura 13.5.2 device with Tailscale 1.48.2 (macsys). Certain websites fail in Chrome with ERR_CONNECTION_RESET while the exit node is active, but the same websites work in Safari. Other people at my company do not seem to have the problem, so I suspect it affects only certain devices. This is my first time using exit nodes, and I am not certain how to reproduce it beyond using Chrome through the exit node. Avast AV is installed. Bug report: BUG-6d2218208b897581dbf3fbb18f1df079c6904f36c5046d770be2e42a4199d3a4-20230919210540Z-903996c7ac93c724.
 
 ## Satisfaction conditions
 
-1. Must identify the final accepted root cause: an intermediary accepted Chrome's IPv6 TCP connection before it had opened the true destination stream, making IPv6 appear functional; the stream then closed and Chrome did not fall back to IPv4.
-2. Must ground the diagnosis in the collected captures and observations: valid IPv4 and IPv6 DNS answers, IPv6 destination-unreachable responses from the exit-node path, Chrome-specific failures, and only transient improvement from disabling QUIC.
-3. Must recommend establishing working public IPv6 connectivity through the exit node and correcting the premature-handshake intermediary behavior.
-4. Must not blame Avast, Chrome's configured proxy settings, or Tailscale's userspace routing proxy: Avast was already disabled, Chrome had no configured proxy, and the exit node was a Linux TUN kernel router.
-5. Must not present disabling QUIC or merely breaking IPv6 on the exit node as the fix; both were tested without durable resolution.
-6. Must ask the affected reporter to verify the same sites on the affected Mac after the network change, and must not claim reporter-confirmed resolution because no such final retest appears in the thread.
+1. Must identify the final accepted root cause: the exit node lacked working external IPv6 connectivity, while an intermediary proxy handshake made Chrome regard IPv6 as functional, so failed IPv6 streams did not trigger the expected IPv4 fallback.
+2. The diagnosis must be grounded in the packet captures and behavioral probes: the failure was captured on the affected Mac, engineers observed IPv6 destination-unreachable behavior with valid IPv4 and IPv6 DNS answers, and disabling QUIC only helped briefly.
+3. Must recommend establishing genuine external IPv6 connectivity through the exit node rather than treating Avast, a configured Chrome proxy, deliberate IPv6 breakage, or permanent QUIC disabling as the fix.
+4. Must ask the affected user to retest Chrome through the corrected exit node before declaring user-verified resolution.
+5. Must not claim that the reporter publicly confirmed the final fix; the thread only contains the maintainer's statement that establishing IPv6 connectivity resolved the issue.
 
 ## Edges
 
 | edge | type | gates / info | payload |
 |---|---|---|---|
-| `e1_N0__N1` | clarification_only | asks: google_sites_fail_continuously_aws_intermittent | It is mostly Google sites such as Gmail, YouTube, and Google Drive. They fail continuously. AWS partly works b |
-| `e2_N1__N2` | clarification_only | asks: first_pcap_captured_on_tailscale_interface_and_sent | I captured the packets with Wireshark as instructed while using Chrome on my Mac and sent the capture to suppo |
-| `e3_N2__N3` | clarification_only | asks: pcap_from_mac_during_connection_reset, chrome_has_no_configured_proxy, avast_had_long_been_disabled, second_pcap_sent_to_support | Yes, the pcap was gathered from the Mac where I use Google Chrome, and I captured it while I encountered ERR_C / I can confirm there are no proxy settings enabled in Chrome. / Avast has been disabled on my machine for a long time already. / I captured it again during the error and sent the second pcap to support. |
-| `e4_N3__N4` | clarification_only | asks: quic_disabled_only_helped_until_browser_relaunch | I disabled it and everything worked for about ten minutes. After I relaunched Chrome, the issue came back even |
-| `e5_N4__N_terminal` | solution_only | req_info: chrome_sites_reset_when_using_exit_node, same_sites_work_in_safari, google_sites_fail_continuously_aws_intermittent, first_pcap_captured_on_tailscale_interface_and_sent, pcap_from_mac_during_connection_reset, chrome_has_no_configured_proxy, avast_had_long_been_disabled, second_pcap_sent_to_support, quic_disabled_only_helped_until_browser_relaunch<br>elements: identifies_false_ipv6_health_caused_by_an_intermediary_accepting_the_tcp_connection_too_early, explains_that_chrome_kept_preferring_ipv6_instead_of_falling_back_to_ipv4, restores_working_public_ipv6_connectivity_through_the_exit_node, does_not_treat_disabling_quic_as_the_fix, asks_reporter_to_verify_on_the_affected_mac_after_the_network_change | Restore real public IPv6 connectivity through the exit node and correct or remove the intermediary that accepts Chrome's IPv6 TCP connection before it has successfully connected to the true destination; then have the affected user retest. |
+| `e1_N0__N1` | clarification_only | asks: google_sites_fail_continuously_aws_intermitttent | It is mostly Google sites such as Gmail, YouTube, and Google Drive. Google sites fail continuously. AWS partly |
+| `e2_N1__N2` | clarification_only | asks: wireshark_capture_collected_during_failure, pcap_captured_on_affected_mac | I activated the exit node, captured packets with Wireshark while visiting a Google site, and sent the packet c / The pcap was gathered from the Mac where I am using Google Chrome. |
+| `e3_N2__N3` | clarification_only | asks: chrome_has_no_configured_proxy, second_pcap_captured_during_error_and_sent, avast_already_disabled_long_term | I can confirm that there are no proxy settings enabled. / Yes, the packets were captured while I encountered ERR_CONNECTION_RESET using the exit node. I captured a seco / Avast has already been disabled on my machine for a long time. |
+| `e4_N3__N4` | clarification_only | asks: quic_disabled_worked_briefly_then_error_returned | I disabled the flag and everything worked for about ten minutes. After I relaunched Chrome, the issue came bac |
+| `e5_N4__terminal` | solution_only | req_info: chrome_err_connection_reset_with_exit_node, same_sites_work_in_safari, google_sites_fail_continuously_aws_intermitttent, wireshark_capture_collected_during_failure, pcap_captured_on_affected_mac, second_pcap_captured_during_error_and_sent, chrome_has_no_configured_proxy, avast_already_disabled_long_term, quic_disabled_worked_briefly_then_error_returned<br>elements: identifies_missing_external_ipv6_connectivity_through_exit_node, explains_chrome_kept_preferring_apparently_healthy_ipv6, mentions_intermediary_handshake_before_true_destination_connection, restores_working_exit_node_ipv6_instead_of_using_quic_toggle_as_fix, asks_user_to_verify_on_the_affected_mac_after_ipv6_connectivity_is_restored | Restore genuine external IPv6 connectivity through the exit node so Chrome's preferred IPv6 connections reach their destinations, then have the affected user retest before declaring the case resolved. |
 
 ## Nodes
 
 | node | terminal | volunteered | images | symptoms |
 |---|---|---|---|---|
-| `N0` |  | 2 | 0 | While I use a Tailscale exit node, Chrome shows ERR_CONNECTION_RESET for certain websites, while Safari can access the same websites. |
-| `N1` |  | 0 | 0 | Gmail, YouTube, Google Drive, and other Google sites fail continuously in Chrome through the exit node; AWS sometimes works and sometimes fa |
-| `N2` |  | 1 | 0 | The Chrome error remains after I broke IPv6 on the exit node. I reproduced the failure while capturing traffic on the Mac's Tailscale interf |
-| `N3` |  | 0 | 0 | ERR_CONNECTION_RESET occurs during the Mac packet captures even though Chrome has no configured proxy and Avast has already been disabled fo |
-| `N4` |  | 0 | 0 | After I disabled Experimental QUIC in Chrome, everything worked for about ten minutes, but ERR_CONNECTION_RESET returned after I relaunched  |
-| `N_terminal` | ✓ | 0 | 0 | I have not posted my own final retest after public IPv6 connectivity was established through the exit node. |
+| `N0` |  | 1 | 0 | Certain websites show ERR_CONNECTION_RESET in Chrome while I use the Tailscale exit node, but the same websites open in Safari. Other people |
+| `N1` |  | 0 | 0 | Gmail, YouTube, Google Drive, and other Google sites fail continuously in Chrome through the exit node. AWS sometimes works and sometimes fa |
+| `N2` |  | 1 | 0 | The Chrome error still occurs after I broke IPv6 on the exit node. I reproduced the error while capturing traffic on the Mac's Tailscale int |
+| `N3` |  | 0 | 0 | ERR_CONNECTION_RESET still occurs in Chrome through the exit node even though Chrome has no configured proxy and Avast has already been disa |
+| `N4` |  | 0 | 0 | After I disabled Experimental QUIC in Chrome, everything worked for about ten minutes. The issue returned after I relaunched Chrome even tho |
+| `N_terminal` | ✓ | 0 | 0 | External IPv6 connectivity was established through the exit node and the Chrome issue was reported resolved, but I did not post my own publi |
 
 ## Machine review (audit pass, adversarially verified)
 

@@ -1,6 +1,6 @@
 # Review: gh_istio_istio_51622
 
-**Ambient CNI repeatedly rejects IPv4-mapped IPv6 addresses on MicroK8s**
+**Ambient CNI failures on MicroK8s with IPv4-mapped IPv6 addresses**
 
 - source: https://github.com/istio/istio/issues/51622
 - kind: LLM draft (needs review)
@@ -9,35 +9,31 @@
 
 ```mermaid
 flowchart LR
-    N0["<b>N0 mapped-address CNI failures reported</b><br/><small>info: 6</small>"]
-    N1["<b>N1 IPv6 option state established</b><br/><small>info: 7</small>"]
-    N1_x["<b>N1_x unavailable configuration aftermath</b><br/><small>info: 8</small>"]
-    N2["<b>N2 host IPv6 workaround initially succeeds</b><br/><small>info: 9</small>"]
-    N3_x["<b>N3_x nonpersistent sysctl workaround aftermath</b><br/><small>info: 10</small>"]
-    N4["<b>N4 host workaround stabilized</b><br/><small>info: 11</small>"]
-    N5_x["<b>N5_x 1.22.2 update aftermath</b><br/><small>info: 12</small>"]
-    N_terminal["<b>terminal fix announced without reporter retest</b><br/><small>info: 13</small>"]
+    N0["<b>N0 Ambient CNI failure reported</b><br/><small>info: 8</small>"]
+    N1["<b>N1 IPv6 configuration established</b><br/><small>info: 9</small>"]
+    N2_x["<b>N2_x unavailable option aftermath</b><br/><small>info: 10</small>"]
+    N3["<b>N3 host-level workaround stable</b><br/><small>info: 13</small>"]
+    N4_x["<b>N4_x 1.22.2 update aftermath</b><br/><small>info: 15</small>"]
+    N5["<b>N5 reverted to working workaround</b><br/><small>info: 16</small>"]
+    N_terminal["<b>terminal maintainer-declared fix not reporter-verified</b><br/><small>info: 18</small>"]
     N0 -.->|"❓ ambient_ipv6_option_not_enabled"| N1
     linkStyle 0 stroke:#3b82f6,stroke-width:2px
-    N1 ==>|"💥 blind: Enable the CNI Ambient IPv6 configuration value in the existing Istio 1.22.1 installation."| N1_x
+    N1 ==>|"💥 blind: Try enabling the Ambient IPv6 configuration option in the existing Istio 1.22.1 installation."| N2_x
     linkStyle 1 stroke:#ef4444,stroke-width:2px
-    N1_x ==>|"⚡ Temporarily prevent the affected nodes from exposing IPv6 by disabling it through node sysctls, then restart and observe whether the mapped-address CNI failures stop."| N2
+    N2_x ==>|"⚡ Use a temporary host-level workaround by disabling IPv6 on every node and ensuring Ubuntu networking does not re-enable it."| N3
     linkStyle 2 stroke:#f97316,stroke-width:2px
-    N2 ==>|"💥 blind: Rely on the sysctl file alone as the durable resolution across node reboots."| N3_x
+    N3 ==>|"💥 blind: Update to the next patch release in the expectation that its IPv6-disabled-host release note covers this sysctl-disabled environment."| N4_x
     linkStyle 3 stroke:#ef4444,stroke-width:2px
-    N3_x ==>|"⚡ Stabilize the temporary host workaround by preventing NetworkManager from rewriting the IPv6 sysctls."| N4
+    N4_x ==>|"⚡ Restore the previously stable temporary configuration by reverting the patch update while keeping host IPv6 disabled."| N5
     linkStyle 4 stroke:#f97316,stroke-width:2px
-    N4 ==>|"💥 blind: Treat the next 1.22 patch update as containing the applicable Ambient IPv6 fix and update the cluster."| N5_x
-    linkStyle 5 stroke:#ef4444,stroke-width:2px
-    N5_x ==>|"⚡ Move off the affected 1.22 Ambient implementation to a release containing the later IPv6 handling fixes, rather than treating the unavailable value or host sysctls as the product fix, and ask the reporter to verify it on the MicroK8s environment."| N_terminal
-    linkStyle 6 stroke:#f97316,stroke-width:2px
+    N5 ==>|"⚡ Move from the host-level workaround to a build containing the completed Ambient IPv6 handling fixes, then have the reporter retest the original MicroK8s scenario before declaring resolution."| N_terminal
+    linkStyle 5 stroke:#f97316,stroke-width:2px
     class N0 start
     class N1 normal
-    class N1_x normal
-    class N2 normal
-    class N3_x normal
-    class N4 normal
-    class N5_x normal
+    class N2_x normal
+    class N3 normal
+    class N4_x normal
+    class N5 normal
     class N_terminal terminal
     classDef start fill:#fee2e2,stroke:#b91c1c,color:#000
     classDef terminal fill:#dcfce7,stroke:#15803d,color:#000
@@ -46,41 +42,40 @@ flowchart LR
 
 ## Opening (body)
 
-> I updated Istio to 1.22.1 to test Ambient on MicroK8s running Ubuntu 22.04 with the stock Calico CNI. After enabling Ambient on a namespace, pods repeatedly disconnect and reconnect and Istio CNI produces a furious amount of logging, putting heavy write load on Loki. The errors repeatedly try to add addresses such as :<nick>:10.1.43.8 to istio-inpod-probes and fail with "exist", followed by CNI event status 500 errors. I have used Istio sidecars and CNI on this environment for some time without this problem, using the documented MicroK8s CNI directory overrides. I disabled Ambient because I could not leave the logging load running. I plan to retest with host IPv6 disabled.
+> I updated my Ubuntu 22.04 MicroK8s environment to Istio 1.22.1 to test Ambient. After enabling Ambient on a namespace, pods were constantly disconnected and reconnected and Istio CNI produced a furious amount of logging. The errors repeatedly say that adding addresses such as :<nick>:10.1.43.8 with protocol 6 to istio-inpod-probes failed with "exist", followed by CNI event status 500 errors. The cluster otherwise uses stock Calico, and Istio sidecars with CNI had worked here for some time using MicroK8s-specific CNI directories. I had to disable Ambient because of the logging write load. I suspect both an IPv4 address and its IPv4-in-IPv6 representation are being inserted, and I plan to retest with host IPv6 disabled.
 
 ## Satisfaction conditions
 
-1. Must identify the accepted technical direction: the Istio 1.22 Ambient CNI path mishandles IPv4-mapped IPv6 addresses, repeatedly attempting duplicate ipset insertion and returning CNI status 500 when host IPv6 is present.
-2. Diagnosis must be grounded in the reporter's evidence: :<nick>:IPv4 ipset "exist" logs, the failure stopping when host IPv6 is disabled, and its return when IPv6 is restored or when 1.22.2 is tested.
-3. Must not recommend enabling the proposed CNI Ambient IPv6 field on 1.22.1 as the fix, because that release rejects the field as unknown and the maintainer acknowledged the suggestion was a misdirection.
-4. Must not treat the sysctl file alone or the 1.22.2 update as a durable product fix; both paths were falsified on the reporter's system.
-5. The final recommendation should use a release containing the later Ambient IPv6 fixes and ask the reporter to retest the original MicroK8s workload for mapped-address ipset and CNI 500 errors.
-6. Must not declare the reporter's environment resolved: the maintainer announced the fix, but the original reporter did not verify it on their own system.
+1. Must identify the accepted cause as an Istio Ambient IPv6-handling defect involving IPv4-mapped IPv6 addresses and duplicate ipset insertion, grounded in the mapped-address 'exist' logs and the host-IPv6-disable experiment.
+2. Must not recommend enabling the Ambient IPv6 values field on the affected 1.22.1 installation; that field was absent and istioctl rejected it.
+3. Must not treat the 1.22.2 release-note feature for kernels without IPv6 as the fix for a host using net.ipv6 sysctls; the reporter reproduced the errors after that update.
+4. May present disabling host IPv6 and preventing NetworkManager from rewriting the sysctls only as a temporary workaround, not as the upstream product fix.
+5. The permanent recommendation must use a complete Ambient installation containing the IPv6 handling fixes, since relevant changes are in CNI and configuration rather than only ztunnel.
+6. Must ask the original reporter to retest the fixed build with Ambient enabled and confirm that pods remain connected and the ipset and CNI 500 errors are gone before declaring resolution.
+7. Must preserve the unresolved verification status: the thread contains a maintainer statement that the fix is available, but no confirmation from the original MicroK8s reporter.
 
 ## Edges
 
 | edge | type | gates / info | payload |
 |---|---|---|---|
 | `e1_N0__N1` | clarification_only | asks: ambient_ipv6_option_not_enabled | No, that option wasn't enabled in this configuration. |
-| `e2_N1__N1_x` | solution_only **BLIND** | req_info: ambient_1221_microk8s_calico_on_ubuntu, ambient_ipv6_option_not_enabled<br>elements: suggests_enabling_the_cni_ambient_ipv6_value | Enable the CNI Ambient IPv6 configuration value in the existing Istio 1.22.1 installation. |
-| `e3_N1_x__N2` | solution_only | req_info: cni_logs_mapped_ipv4_ipset_exist_and_500_errors, ambient_ipv6_value_unavailable_in_1221<br>elements: uses_host_ipv6_disable_only_as_a_workaround, checks_whether_mapped_address_errors_stop | Temporarily prevent the affected nodes from exposing IPv6 by disabling it through node sysctls, then restart and observe whether the mapped-address CNI failures stop. |
-| `e4_N2__N3_x` | solution_only **BLIND** | req_info: disabling_host_ipv6_stops_specific_failure<br>elements: treats_the_sysctl_file_as_the_permanent_fix | Rely on the sysctl file alone as the durable resolution across node reboots. |
-| `e5_N3_x__N4` | solution_only | req_info: disabling_host_ipv6_stops_specific_failure, ubuntu_reenabled_ipv6_after_reboots_and_errors_returned<br>elements: prevents_networkmanager_from_reenabling_ipv6, labels_this_as_a_host_workaround_not_the_istio_fix | Stabilize the temporary host workaround by preventing NetworkManager from rewriting the IPv6 sysctls. |
-| `e6_N4__N5_x` | solution_only **BLIND** | req_info: ambient_1221_microk8s_calico_on_ubuntu, networkmanager_tweak_keeps_ipv6_disabled_and_ambient_stable<br>elements: recommends_the_122_patch_update_as_the_fix | Treat the next 1.22 patch update as containing the applicable Ambient IPv6 fix and update the cluster. |
-| `e7_N5_x__terminal` | solution_only | req_info: ambient_1221_microk8s_calico_on_ubuntu, cni_logs_mapped_ipv4_ipset_exist_and_500_errors, sidecar_and_cni_previously_worked, ambient_ipv6_option_not_enabled, ambient_ipv6_value_unavailable_in_1221, disabling_host_ipv6_stops_specific_failure, ubuntu_reenabled_ipv6_after_reboots_and_errors_returned, update_1222_reintroduced_errors_then_reverted_1221<br>elements: identifies_the_bug_as_ambient_ipv6_handling_of_mapped_ipv4_addresses, recommends_a_release_containing_the_later_ipv6_fixes, does_not_present_the_unavailable_1221_configuration_value_as_the_fix, does_not_present_host_sysctls_as_the_product_fix, asks_user_to_verify_on_a_build_containing_the_ipv6_fixes | Move off the affected 1.22 Ambient implementation to a release containing the later IPv6 handling fixes, rather than treating the unavailable value or host sysctls as the product fix, and ask the reporter to verify it on the MicroK8s environment. |
+| `e2_N1__N2_x` | solution_only **BLIND** | req_info: ambient_istio_1_22_1_microk8s_ubuntu, ambient_ipv6_option_not_enabled<br>elements: suggests_enabling_the_ambient_ipv6_setting | Try enabling the Ambient IPv6 configuration option in the existing Istio 1.22.1 installation. |
+| `e3_N2_x__N3` | solution_only | req_info: reporter_suspects_duplicate_ipv4_and_mapped_ipv6_entries, cni_ipset_exist_errors_for_ipv4_mapped_ipv6_addresses, ambient_ipv6_field_absent_from_1_22_1<br>elements: disables_ipv6_on_each_node_as_a_workaround, ensures_the_sysctl_values_remain_applied, labels_this_as_a_workaround_not_the_product_fix | Use a temporary host-level workaround by disabling IPv6 on every node and ensuring Ubuntu networking does not re-enable it. |
+| `e4_N3__N4_x` | solution_only **BLIND** | req_info: host_ipv6_disabled_by_sysctl, mapped_address_errors_absent_with_ipv6_kept_disabled<br>elements: treats_the_patch_release_ipv6_note_as_applicable_to_this_host | Update to the next patch release in the expectation that its IPv6-disabled-host release note covers this sysctl-disabled environment. |
+| `e5_N4_x__N5` | solution_only | req_info: mapped_address_errors_absent_with_ipv6_kept_disabled, update_to_1_22_2_restored_mapped_address_errors<br>elements: restores_the_previous_workaround, does_not_claim_the_revert_is_the_permanent_product_fix | Restore the previously stable temporary configuration by reverting the patch update while keeping host IPv6 disabled. |
+| `e6_N5__terminal` | solution_only | req_info: ambient_istio_1_22_1_microk8s_ubuntu, reporter_suspects_duplicate_ipv4_and_mapped_ipv6_entries, cni_ipset_exist_errors_for_ipv4_mapped_ipv6_addresses, mapped_address_errors_absent_with_ipv6_kept_disabled, ambient_ipv6_option_not_enabled, ambient_ipv6_field_absent_from_1_22_1, update_to_1_22_2_restored_mapped_address_errors<br>elements: identifies_the_problem_as_ambient_ipv6_handling_of_mapped_addresses, recommends_a_build_containing_the_ambient_ipv6_fix, updates_the_full_ambient_installation_not_only_ztunnel, asks_user_to_verify_on_a_build_containing_the_fix, does_not_declare_the_reporters_environment_resolved_without_retest | Move from the host-level workaround to a build containing the completed Ambient IPv6 handling fixes, then have the reporter retest the original MicroK8s scenario before declaring resolution. |
 
 ## Nodes
 
 | node | terminal | volunteered | images | symptoms |
 |---|---|---|---|---|
-| `N0` |  | 0 | 0 | After I enable Ambient on the namespace, pods repeatedly disconnect and reconnect from the network. Istio CNI repeatedly logs attempts to ad |
-| `N1` |  | 0 | 0 | The mapped-address ipset errors and CNI status 500 failures occur even though I did not enable the Ambient IPv6 option. |
-| `N1_x` |  | 1 | 0 | Istio 1.22.1 rejects the proposed configuration with "unknown field ipv6 in v1alpha1.CNIAmbientConfig"; the mapped-address CNI problem remai |
-| `N2` |  | 1 | 0 | After disabling IPv6 through sysctl on every node and restarting, the :<nick>:IPv4 ipset errors and associated CNI failures do not occur. |
-| `N3_x` |  | 1 | 0 | After a few reboots the nodes no longer honor the IPv6 sysctl file, and the pods again spin the same mapped-address logs. I have had to disa |
-| `N4` |  | 1 | 0 | After changing NetworkManager so it no longer rewrites the IPv6 sysctls, Ambient is stable for the time being and the mapped-address log sto |
-| `N5_x` |  | 1 | 0 | With the same IPv6-disabling sysctls, updating to 1.22.2 and restarting deployments immediately brings back the :<nick>:IPv4 CNI errors. Aft |
-| `N_terminal` | ✓ | 0 | 0 | My last reported working state is 1.22.1 with host IPv6 kept disabled; 1.22.2 produced the mapped-address errors and I reverted it. |
+| `N0` |  | 1 | 0 | After I enable Ambient on the namespace, pods repeatedly disconnect and reconnect. The CNI logs continuously report that adding addresses su |
+| `N1` |  | 0 | 0 | The mapped-address ipset errors and CNI status 500 errors occur without an Ambient IPv6 option enabled. |
+| `N2_x` |  | 1 | 0 | On Istio 1.22.1, istioctl rejects the attempted configuration with 'unknown field "ipv6" in v1alpha1.CNIAmbientConfig', so my installation i |
+| `N3` |  | 3 | 0 | With IPv6 disabled by sysctl and NetworkManager no longer rewriting those settings, my pods start normally and the mapped-address CNI errors |
+| `N4_x` |  | 2 | 0 | Immediately after updating to Istio 1.22.2 and restarting deployments, the IPv4-to-IPv6 address entries and CNI errors return even though I  |
+| `N5` |  | 1 | 0 | After reverting to Istio 1.22.1 while keeping IPv6 disabled, the logs are quiet again and my pods start. |
+| `N_terminal` | ✓ | 0 | 0 | My current installation is quiet only with the host-level IPv6 workaround and the revert in place. A maintainer reports that the issue is fi |
 
 ## Machine review (audit pass, adversarially verified)
 

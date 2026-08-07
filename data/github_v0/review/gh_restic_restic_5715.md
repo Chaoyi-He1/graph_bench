@@ -4,36 +4,32 @@
 
 - source: https://github.com/restic/restic/issues/5715
 - kind: LLM draft (needs review)
-- reviewed: `False`
+- reviewed: `True`
 - graph: `data/github_v0/graphs/gh_restic_restic_5715.json` · raw thread: `data/github_v0/raw/gh_restic_restic_5715.json`
 
 ```mermaid
 flowchart LR
-    N0["<b>N0 prune blocked by incomplete index</b><br/><small>info: 8</small>"]
-    N1["<b>N1 check confirms repository damage</b><br/><small>info: 11</small>"]
-    N2["<b>N2 damaged packs repaired</b><br/><small>info: 12</small>"]
-    N3["<b>N3 remaining snapshot damage isolated</b><br/><small>info: 13</small>"]
-    N4["<b>N4 repository index rebuilt</b><br/><small>info: 14</small>"]
-    N5["<b>N5 damaged snapshots repaired</b><br/><small>info: 15</small>"]
-    N_terminal["<b>terminal prune and check succeed</b><br/><small>info: 19</small>"]
-    N0 -.->|"❓ check_reports_two_packfiles_with_unexpected_sizes, check_reports_damaged_tree_and_missing_blobs, stats_reports_repository_about_three_tib"| N1
+    N0["<b>N0 prune refuses incomplete repository</b><br/><small>info: 8</small>"]
+    N1["<b>N1 check identifies repository damage</b><br/><small>info: 11</small>"]
+    N2["<b>N2 damaged packs removed, tree errors remain</b><br/><small>info: 16</small>"]
+    N3["<b>N3 index rebuilt</b><br/><small>info: 18</small>"]
+    N4["<b>N4 damaged snapshots repaired</b><br/><small>info: 21</small>"]
+    N_terminal["<b>terminal repository repaired and verified</b><br/><small>info: 23</small>"]
+    N0 -.->|"❓ check_reports_two_unexpected_size_packfiles, check_reports_errors_in_three_trees, debug_stats_show_repository_nearly_3tib"| N1
     linkStyle 0 stroke:#3b82f6,stroke-width:2px
-    N1 ==>|"⚡ Repair the two packfiles specifically identified by the repository check before attempting broader index or snapshot repair."| N2
-    linkStyle 1 stroke:#f97316,stroke-width:2px
-    N2 -.->|"❓ repeat_check_confirms_broken_packs_removed_but_tree_errors_remain"| N3
-    linkStyle 2 stroke:#3b82f6,stroke-width:2px
-    N3 ==>|"⚡ Rebuild the repository index from the available pack headers before repairing snapshots, so subsequent snapshot repair operates on a correct index."| N4
+    N1 ==>|"🔀 ❓repeat_check_no_longer_reports_damaged_packfiles, repeat_check_still_reports_tree_content_errors + ⚡Repair the two malformed pack files named by `restic check`, preserving any intact blobs while removing the damaged packs, and then reassess the remaining repository errors."| N2
+    linkStyle 1 stroke:#a855f7,stroke-width:2px
+    N2 ==>|"⚡ Rebuild the repository index from the surviving pack headers before attempting snapshot repair."| N3
+    linkStyle 2 stroke:#f97316,stroke-width:2px
+    N3 ==>|"⚡ Repair the snapshots against the rebuilt index and forget the broken originals, accepting removal of content that is genuinely absent from the repository."| N4
     linkStyle 3 stroke:#f97316,stroke-width:2px
-    N4 ==>|"⚡ Repair the damaged snapshots using the rebuilt index, forgetting the broken originals so irrecoverable missing file contents no longer block prune."| N5
+    N4 ==>|"⚡ Preview pruning after the pack, index, and snapshot repairs, then perform the real prune and verify repository integrity with a clean check."| N_terminal
     linkStyle 4 stroke:#f97316,stroke-width:2px
-    N5 ==>|"⚡ With packs, index, and snapshots repaired in that order, preview prune, run the real prune, and verify repository integrity with a fresh check before declaring recovery."| N_terminal
-    linkStyle 5 stroke:#f97316,stroke-width:2px
     class N0 start
     class N1 normal
     class N2 normal
     class N3 normal
     class N4 normal
-    class N5 normal
     class N_terminal terminal
     classDef start fill:#fee2e2,stroke:#b91c1c,color:#000
     classDef terminal fill:#dcfce7,stroke:#15803d,color:#000
@@ -42,38 +38,37 @@ flowchart LR
 
 ## Opening (body)
 
-> I am using restic 0.18.1 on Linux with a version 1 repository stored on Backblaze B2. When I run `restic prune`, it loads 422 index files and 170 snapshots, then reports many data packs not found in the index and stops with `Integrity check failed: Data seems to be missing` and `Fatal: index is not complete`. Before this, I used `repair snapshots --forget` and `rewrite --forget` on groups of snapshots because rewrite could not encode some old trees without losing information. These snapshots were originally made with restic 0.12, and I upgraded to 0.18.1 yesterday to use rewrite. I also interrupted an earlier `restic repair snapshots` run after it became silent for a long time. I expected prune to complete and report the saved space.
+> I am using restic 0.18.1 on Linux with a version 1 repository on Backblaze B2. Running `restic prune` for a repository with 170 snapshots stops after reporting many pack files that are not found in the index, says data seems to be missing, and exits with `Fatal: index is not complete`. Before this, I used `repair snapshots --forget` and `rewrite --forget` on snapshots originally created with restic 0.12. I had also interrupted an attempt to repair all snapshots because it went silent for a long time. A smaller repair/rewrite/prune test had completed successfully. I want to repair the repository so prune can run safely.
 
 ## Satisfaction conditions
 
-1. Must identify the accepted cause: the repository had historical incomplete-index and pack metadata damage, leaving pack entries and snapshot blobs unavailable; the remaining irrecoverable blobs were old Firefox cache content.
-2. Diagnosis must be grounded in the verbose check and follow-up check: two packfiles had unexpected sizes, targeted pack repair removed those errors, and damaged-tree or missing-blob errors remained until index and snapshot repair.
-3. Must preserve the safe repair order established in the thread: repair the specifically reported packs, rerun check, repair the index, then repair snapshots with `--forget` before pruning.
-4. Must not blame the interrupted `restic repair snapshots` run or ordinary disappearance of cache files during a backup as the cause of repository corruption; maintainers stated that interruption does not damage the repository and that this damage likely occurred far in the past.
-5. Must preview or otherwise cautiously stage prune, then have the user run both prune and a fresh repository check; resolution may only be declared after the user reports that both run cleanly.
+1. Must diagnose the case as pre-existing pack/index damage in an old version 1 repository: verbose check exposed two malformed pack files and missing content referenced by three trees; maintainers considered the damage likely to predate restic 0.18.1.
+2. Must not blame the interrupted `restic repair snapshots` run for corrupting the repository; the thread establishes that interruption may leave garbage but does not damage existing repository data.
+3. Must not claim that source files disappearing during an ordinary backup caused this repository corruption; the unrecoverable paths were old Firefox cache entries, while the pack/index damage was considered much older.
+4. Must follow the safe repair order established by the evidence: repair the two damaged packs, rerun check, rebuild the index, then repair and forget broken snapshots before pruning.
+5. Must not advise forcing or repeatedly retrying prune while the index is incomplete, because prune intentionally refuses to proceed to prevent additional data loss.
+6. Must ask the reporter to verify the result by running the real prune and a subsequent repository check, and must treat the issue as resolved only after both run cleanly.
 
 ## Edges
 
 | edge | type | gates / info | payload |
 |---|---|---|---|
-| `e1_N0__N1` | clarification_only | asks: check_reports_two_packfiles_with_unexpected_sizes, check_reports_damaged_tree_and_missing_blobs, stats_reports_repository_about_three_tib | I ran the verbose check and attached the complete output. It reports unexpected file sizes for two packfiles,  / Yes. The output contains missing-blob errors for damaged trees, including tree f63d7a881a585ff2681b0a62f991328 / I ran `restic stats --mode debug` and included it with the check output. The repository is nearly 3 TiB, with  |
-| `e2_N1__N2` | solution_only | req_info: prune_reports_many_packs_missing_from_index, check_reports_two_packfiles_with_unexpected_sizes<br>elements: runs_repair_packs_for_both_check_reported_packfiles, repairs_packs_before_snapshot_repair | Repair the two packfiles specifically identified by the repository check before attempting broader index or snapshot repair. |
-| `e3_N2__N3` | clarification_only | asks: repeat_check_confirms_broken_packs_removed_but_tree_errors_remain | I ran another `restic check`. The two broken packfile errors are gone, but the output still reports missing co |
-| `e4_N3__N4` | solution_only | req_info: prune_reports_many_packs_missing_from_index, repair_packs_completed_for_two_reported_packfiles, repeat_check_confirms_broken_packs_removed_but_tree_errors_remain<br>elements: runs_repair_index_before_repairing_snapshots, explains_that_snapshot_repair_depends_on_a_correct_index | Rebuild the repository index from the available pack headers before repairing snapshots, so subsequent snapshot repair operates on a correct index. |
-| `e5_N4__N5` | solution_only | req_info: repair_index_rebuilt_236_indexes_and_deleted_one_old_index, check_reports_damaged_tree_and_missing_blobs, repeat_check_confirms_broken_packs_removed_but_tree_errors_remain<br>elements: runs_repair_snapshots_with_forget_after_index_repair, allows_long_random_order_snapshot_scan_to_complete, accepts_removal_of_irrecoverable_missing_content | Repair the damaged snapshots using the rebuilt index, forgetting the broken originals so irrecoverable missing file contents no longer block prune. |
-| `e6_N5__N_terminal` | solution_only | req_info: snapshots_originated_with_restic_012, repair_packs_completed_for_two_reported_packfiles, repair_index_rebuilt_236_indexes_and_deleted_one_old_index, repair_snapshots_removed_missing_mozilla_cache_content, prune_reports_many_packs_missing_from_index, check_reports_two_packfiles_with_unexpected_sizes, check_reports_damaged_tree_and_missing_blobs, repeat_check_confirms_broken_packs_removed_but_tree_errors_remain<br>elements: identifies_old_incomplete_index_and_resulting_pack_tree_damage_as_the_cause, does_not_blame_interrupting_repair_snapshots, previews_prune_before_allowing_repository_deletions, asks_user_to_run_prune_and_verify_with_a_fresh_check, declares_resolution_only_after_prune_and_check_are_clean | With packs, index, and snapshots repaired in that order, preview prune, run the real prune, and verify repository integrity with a fresh check before declaring recovery. |
+| `e1_N0__N1` | clarification_only | asks: check_reports_two_unexpected_size_packfiles, check_reports_errors_in_three_trees, debug_stats_show_repository_nearly_3tib | I ran it and attached the full output. The check includes `unexpected file size` lines for packs `f3ade64cdd31 / Yes. The output reports missing content referenced from trees beginning `8a2d9c58`, `a37e0905`, and `f63d7a88` / I attached that output too. The repository is nearly 3 TiB, with about 16 GiB of tree metadata. |
+| `e2_N1__N2` | mixed | req_info: prune_stops_with_index_not_complete, old_snapshots_created_with_restic_012, omnibus_snapshot_repair_was_interrupted, check_reports_two_unexpected_size_packfiles, check_reports_errors_in_three_trees<br>elements: repairs_the_two_packfiles_named_by_check, explains_that_intact_blobs_are_extracted_before_damaged_packs_are_removed, reruns_check_after_pack_repair | Repair the two malformed pack files named by `restic check`, preserving any intact blobs while removing the damaged packs, and then reassess the remaining repository errors. |
+| `e3_N2__N3` | solution_only | req_info: repair_packs_removed_two_damaged_packfiles, repeat_check_no_longer_reports_damaged_packfiles, repeat_check_still_reports_tree_content_errors<br>elements: runs_repair_index_after_damaged_packs_are_removed, runs_index_repair_before_snapshot_repair, does_not_claim_that_repair_index_restores_already_missing_blob_content | Rebuild the repository index from the surviving pack headers before attempting snapshot repair. |
+| `e4_N3__N4` | solution_only | req_info: repair_index_completed_normally, missing_40hex_files_absent_and_suspected_mozilla_cache, check_reports_errors_in_three_trees<br>elements: runs_snapshot_repair_only_after_index_repair, uses_forget_to_replace_broken_snapshots, acknowledges_that_unrecoverable_missing_content_is_removed | Repair the snapshots against the rebuilt index and forget the broken originals, accepting removal of content that is genuinely absent from the repository. |
+| `e5_N4__N_terminal` | solution_only | req_info: repair_index_completed_normally, repair_snapshots_removed_missing_content, missing_content_confirmed_as_firefox_cache_entries<br>elements: previews_prune_before_destructive_execution, runs_real_prune_only_after_repository_repairs, runs_restic_check_after_pruning, asks_user_to_verify_that_prune_and_check_complete_cleanly | Preview pruning after the pack, index, and snapshot repairs, then perform the real prune and verify repository integrity with a clean check. |
 
 ## Nodes
 
 | node | terminal | volunteered | images | symptoms |
 |---|---|---|---|---|
-| `N0` |  | 3 | 0 | My prune loads the indexes and snapshots, then lists many data packs as not found in the index and exits with `Integrity check failed: Data  |
-| `N1` |  | 0 | 0 | My check output reports unexpected file sizes for two packfiles, errors involving missing blobs in damaged trees, and repository errors rath |
-| `N2` |  | 1 | 0 | The repair-packs command completed without an error and wrote two recovered `pack-...` files into my home directory. |
-| `N3` |  | 0 | 0 | After repairing the two packs, my new check no longer reports those broken packfiles, but it still reports missing content in several trees, |
-| `N4` |  | 1 | 0 | My `restic repair index` run processed 236 indexes, deleted one old index, and ended with `done`. |
-| `N5` |  | 1 | 0 | The snapshot repair reports that missing content was removed from files under my Firefox cache, including `.cache/mozilla/firefox/.../cache2 |
-| `N_terminal` | ✓ | 2 | 0 | Both `restic prune` and `restic check` now run cleanly; prune completed and saved about 2% of the repository space. |
+| `N0` |  | 0 | 0 | When I run `restic prune`, it lists many data packs as not found in the index, says data seems to be missing, refuses to start pruning, and  |
+| `N1` |  | 0 | 0 | My check output contains `unexpected file size` errors for two pack files and errors while reading content referenced by three trees. |
+| `N2` |  | 1 | 0 | After running the pack repair, a new check no longer lists the two unexpected-size pack files, but it still prints errors for missing conten |
+| `N3` |  | 2 | 0 | `restic repair index` processes 236 indexes, deletes one old index, and prints `done`. I cannot find the named 40-hex-digit files on my comp |
+| `N4` |  | 3 | 0 | `restic repair snapshots --forget` reports that missing content was removed from snapshot files under my Firefox `cache2/entries` directory. |
+| `N_terminal` | ✓ | 2 | 0 | `restic prune` and `restic check` now run cleanly; prune completes and reclaims about 2% of the repository. |
 
 ## Machine review (audit pass, adversarially verified)
 

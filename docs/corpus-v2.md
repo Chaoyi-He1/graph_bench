@@ -1,14 +1,19 @@
-# Corpus v2.0 — 207 released cases
+# Corpus v2.1 — 229 released cases
 
 Frozen 2026-08-06. Every released case carries `metadata.hitl_reviewed:
 true`, meaning it passed the machine gates AND a two-stage model review
-with no confirmed high-severity finding. 261 graphs were drafted; 207
-released, 54 held back with their findings recorded.
+with no confirmed high-severity finding. 284 graphs were drafted; 229
+released, the rest held back with their findings recorded.
+
+Cases blocked in the first review round were **redrafted** under the
+hardened rules rather than patched: 25 of 29 then passed, which is
+evidence that their defects came from the old prompt, not from the
+source threads.
 
 ## Composition
 
-207 cases across **74 distinct projects** and three sources (GitHub
-issues, bugzilla.mozilla.org, postgresql-bugs). No project exceeds 5% of
+229 cases across **75 distinct projects** and three sources (GitHub
+issues, bugzilla.mozilla.org, postgresql-bugs). No project exceeds 4% of
 the corpus — the largest are mozilla (10), ggml-org (9), grafana (7),
 triton-lang (7), micropython (6), istio (6), postgresql (6).
 
@@ -38,7 +43,7 @@ A case is released only if:
    first reviewer's reasoning.
 
 Confirmed medium and low findings are published per case in
-`data/REVIEW_FINDINGS.json` rather than silently repaired — 47 released
+`data/REVIEW_FINDINGS.json` rather than silently repaired — 49 released
 cases have zero confirmed findings, the rest carry annotated ones.
 
 **Review is model-executed, not human-executed.** It is auditable, not

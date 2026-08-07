@@ -4,7 +4,7 @@
 
 - source: https://github.com/ollama/ollama/issues/6685
 - kind: LLM draft (needs review)
-- reviewed: `False`
+- reviewed: `True`
 - graph: `data/github_v0/graphs/gh_ollama_ollama_6685.json` · raw thread: `data/github_v0/raw/gh_ollama_ollama_6685.json`
 
 ```mermaid
@@ -83,6 +83,13 @@ flowchart LR
 | `N4_x` |  | 1 | 0 | The privileged container still prints `hsa_init failed with 1008` and terminates with the same Tensile `No devices found` error. |
 | `N5` |  | 0 | 0 | Inside the Ollama container, `rocminfo` says it cannot open `/dev/kfd` read-write because permission is denied. The passed-through device no |
 | `N_terminal` | ✓ | 0 | 0 | With both `/dev/kfd` and `/dev/dri` passed through and the Ollama container given the `bin` supplemental group, llama3.1 runs on the GPU and |
+
+## Machine review (audit pass, adversarially verified)
+
+Auditor verdict: **n/a** · 0 of 0 findings survived independent refutation.
+
+__
+
 
 ## Review checklist
 

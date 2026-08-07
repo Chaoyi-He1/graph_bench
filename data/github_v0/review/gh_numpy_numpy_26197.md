@@ -4,7 +4,7 @@
 
 - source: https://github.com/numpy/numpy/issues/26197
 - kind: LLM draft (needs review)
-- reviewed: `True`
+- reviewed: `False`
 - graph: `data/github_v0/graphs/gh_numpy_numpy_26197.json` · raw thread: `data/github_v0/raw/gh_numpy_numpy_26197.json`
 
 ```mermaid

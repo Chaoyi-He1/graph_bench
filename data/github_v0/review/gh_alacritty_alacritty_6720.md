@@ -1,34 +1,40 @@
 # Review: gh_alacritty_alacritty_6720
 
-**0.12.0 release candidate 1 breaks some MacOS keys (like [] {}) on Portuguese Layout**
+**0.12.0 release candidate 1 breaks some macOS keys like [] {} on Portuguese layout**
 
 - source: https://github.com/alacritty/alacritty/issues/6720
 - kind: LLM draft (needs review)
-- reviewed: `False`
+- reviewed: `True`
 - graph: `data/github_v0/graphs/gh_alacritty_alacritty_6720.json` · raw thread: `data/github_v0/raw/gh_alacritty_alacritty_6720.json`
 
 ```mermaid
 flowchart LR
-    N0["<b>N0 Portuguese-layout Option input regression reported</b><br/><small>info: 6</small>"]
-    N1["<b>N1 Option-to-Escape behavior confirmed</b><br/><small>info: 8</small>"]
-    N2["<b>N2 configuration and raw event log collected</b><br/><small>info: 9</small>"]
-    N2_x["<b>N2_x option_as_alt Both aftermath</b><br/><small>info: 10</small>"]
-    N_terminal["<b>N_terminal corrected key bindings verified</b><br/><small>info: 10</small>"]
-    N0 -.->|"❓ iterm_left_option_escape_with_character_exceptions, cat_left_option_a_outputs_escape_a"| N1
+    N0["<b>N0 Portuguese Option characters broken</b><br/><small>info: 5</small>"]
+    N1["<b>N1 working iTerm2 comparison supplied</b><br/><small>info: 7</small>"]
+    N1_x["<b>N1_x None or Both workaround aftermath</b><br/><small>info: 8</small>"]
+    N2["<b>N2 Option-to-Escape behavior confirmed</b><br/><small>info: 10</small>"]
+    N3["<b>N3 configuration and event log collected</b><br/><small>info: 12</small>"]
+    N_terminal["<b>terminal bindings corrected and verified</b><br/><small>info: 14</small>"]
+    N_terminal_shortcut["<b>terminal direct binding correction</b><br/><small>info: 7</small>"]
+    N0 -.->|"❓ iterm_left_option_escape_with_character_exceptions"| N1
     linkStyle 0 stroke:#3b82f6,stroke-width:2px
-    N1 -.->|"❓ alacritty_yaml_and_print_events_log_shared"| N2
-    linkStyle 1 stroke:#3b82f6,stroke-width:2px
-    N2 ==>|"💥 blind: Switch `option_as_alt` to `Both` and keep the existing Key8, Key9, and Key2 character bindings."| N2_x
-    linkStyle 2 stroke:#ef4444,stroke-width:2px
-    N2_x ==>|"⚡ Keep the desired Option-as-Meta mode, but rebuild the custom character mappings using the virtual keycodes shown by `alacritty --print-events`; for example, bind the bracket event as `LBracket` instead of the obsolete `Key8` mapping, then verify every affected character in Emacs."| N_terminal
-    linkStyle 3 stroke:#f97316,stroke-width:2px
-    N2 ==>|"🚀 Keep the desired Option-as-Meta mode, but rebuild the custom character mappings using the virtual keycodes shown by `alacritty --print-events`; for example, bind the bracket event as `LBracket` instead of the obsolete `Key8` mapping, then verify every affected character in Emacs. (skip 1)"| N_terminal
-    linkStyle 4 stroke:#0ea5e9,stroke-width:2px
+    N1 ==>|"💥 blind: Work around the issue by selecting `option_as_alt: None` or `option_as_alt: Both` instead of using the left-Option configuration."| N1_x
+    linkStyle 1 stroke:#ef4444,stroke-width:2px
+    N1_x -.->|"❓ onlyleft_characters_work_in_terminal_but_not_emacs, cat_left_option_a_outputs_escape_a"| N2
+    linkStyle 2 stroke:#3b82f6,stroke-width:2px
+    N2 -.->|"❓ alacritty_config_and_print_events_log_shared"| N3
+    linkStyle 3 stroke:#3b82f6,stroke-width:2px
+    N3 ==>|"⚡ Keep the working Option-as-Alt behavior, but replace the old physical `Key8`, `Key9`, and similar binding identifiers with the current virtual keycodes reported by Alacritty's keyboard event log."| N_terminal
+    linkStyle 4 stroke:#f97316,stroke-width:2px
+    N0 ==>|"🚀 Treat the old custom key names as stale after the input-library behavior change, rebind the affected characters using the current virtual keycodes, and verify that both the characters and Emacs meta commands work. (skip 5)"| N_terminal_shortcut
+    linkStyle 5 stroke:#0ea5e9,stroke-width:2px
     class N0 start
     class N1 normal
+    class N1_x normal
     class N2 normal
-    class N2_x normal
+    class N3 normal
     class N_terminal terminal
+    class N_terminal_shortcut terminal
     classDef start fill:#fee2e2,stroke:#b91c1c,color:#000
     classDef terminal fill:#dcfce7,stroke:#15803d,color:#000
     classDef normal fill:#fef3c7,stroke:#a16207,color:#000
@@ -36,35 +42,38 @@ flowchart LR
 
 ## Opening (body)
 
-> I'm trying Alacritty 0.12.0 release candidate 1 on macOS 12.6.3 with a Portuguese keyboard layout and `option_as_alt: OnlyLeft`. I can use the expected Emacs Meta keys, but I cannot type characters such as `[`, `]`, `{`, `}`, and `@`, which require Option or Shift+Option on this layout. Before this, `alt_send_esc = false` together with custom Key8, Key9, and Key2 bindings worked. In Emacs those characters cannot be typed at all. Directly in the terminal, `[` and `]` appear after pressing the key three times, while `{`, `}`, and `@` work.
+> I'm trying Alacritty 0.12.0-rc1 on macOS 12.6.3 with a Portuguese keyboard layout and `option_as_alt: OnlyLeft`. I can use the expected Emacs meta keys, but I cannot type characters such as `[`, `]`, `{`, `}`, and `@`, which require Option or Shift+Option on this layout. Before this, `alt_send_esc = false` together with custom `Key8`, `Key9`, and `Key2` bindings worked. In Emacs I cannot type these characters at all. Directly in the terminal, `[` and `]` appear only after pressing the key three times, while `{`, `}`, and `@` work.
 
 ## Satisfaction conditions
 
-1. Must identify the accepted root cause: Option-to-Escape handling is working, but the reporter's old Key8, Key9, and Key2 bindings no longer match the virtual keycodes emitted for these inputs; the event log demonstrates using the current key name such as LBracket.
-2. The diagnosis must be grounded in the collected evidence: Left Option+A produces `^[a` in `cat`, while the supplied configuration and `--print-events` log expose the key-binding mismatch.
-3. Must recommend rebuilding the affected mappings from the `virtual_keycode` values reported by `alacritty --print-events`, including the demonstrated LBracket-for-Key8 correction, while retaining the reporter's desired Option-as-Meta behavior.
-4. Must not present switching to `option_as_alt: None` or `Both` while keeping the old bindings as the resolution; those choices either lose the desired Meta behavior or leave the required characters unavailable.
-5. Must ask the reporter to verify the redefined bracket, brace, and other Option-character bindings in Emacs before declaring the issue resolved.
+1. Must identify the final accepted cause: the custom bindings use key identifiers such as `Key8` and `Key9` that no longer match the current keyboard events; the remaining failure is not that Alacritty cannot send Escape for Option.
+2. The diagnosis must be grounded in the observed split: `OnlyLeft` permits the characters in the terminal, Left Option+A produces `^[a` in `cat`, and the failure remains in the explicitly bound characters inside Emacs.
+3. Must correct the bindings using the current virtual keycodes reported by Alacritty, including `LBracket` instead of `Key8` as the thread's concrete example, and apply the same method to the other affected characters.
+4. Must not present `option_as_alt: None` or `option_as_alt: Both` as the resolution; those choices respectively break the reporter's Option-based Emacs workflow or leave the Portuguese-layout characters unavailable.
+5. Must ask the reporter to verify the redefined characters in both the terminal and Emacs, while confirming that Option-based meta commands still work, before declaring the issue resolved.
 
 ## Edges
 
 | edge | type | gates / info | payload |
 |---|---|---|---|
-| `e1_N0__N1` | clarification_only | asks: iterm_left_option_escape_with_character_exceptions, cat_left_option_a_outputs_escape_a | In iTerm2 I set Left Option to send Escape, then add separate mappings for the characters accessed with Option / Typing Left Option+A into `cat` gives `^[a`. |
-| `e2_N1__N2` | clarification_only | asks: alacritty_yaml_and_print_events_log_shared | In Emacs everything works except `[`, `]`, `{`, and `}`. I've attached my `alacritty.yml` and an event log fro |
-| `e3_N2__N2_x` | solution_only **BLIND** | req_info: portuguese_layout_requires_option_for_brackets_braces_at, legacy_alt_send_esc_false_with_key8_key9_key2_bindings_worked<br>elements: recommends_option_as_alt_both_without_rebinding_keys | Switch `option_as_alt` to `Both` and keep the existing Key8, Key9, and Key2 character bindings. |
-| `e4_N2_x__N_terminal` | solution_only | req_info: legacy_alt_send_esc_false_with_key8_key9_key2_bindings_worked, portuguese_layout_requires_option_for_brackets_braces_at, emacs_cannot_type_brackets_braces_or_at, cat_left_option_a_outputs_escape_a, alacritty_yaml_and_print_events_log_shared<br>elements: identifies_stale_or_incorrect_key_names_as_the_problem, uses_print_events_virtual_keycodes_to_rebuild_bindings, gives_lbracket_instead_of_key8_as_the_concrete_pattern, preserves_option_as_meta_behavior, asks_user_to_verify_all_redefined_characters_in_emacs | Keep the desired Option-as-Meta mode, but rebuild the custom character mappings using the virtual keycodes shown by `alacritty --print-events`; for example, bind the bracket event as `LBracket` instead of the obsolete `Key8` mapping, then verify every affected character in Emacs. |
-| `e5_N2__N_terminal` | solution_only | req_info: legacy_alt_send_esc_false_with_key8_key9_key2_bindings_worked, portuguese_layout_requires_option_for_brackets_braces_at, emacs_cannot_type_brackets_braces_or_at, cat_left_option_a_outputs_escape_a, alacritty_yaml_and_print_events_log_shared<br>elements: identifies_stale_or_incorrect_key_names_as_the_problem, uses_print_events_virtual_keycodes_to_rebuild_bindings, gives_lbracket_instead_of_key8_as_the_concrete_pattern, preserves_option_as_meta_behavior, asks_user_to_verify_all_redefined_characters_in_emacs | Keep the desired Option-as-Meta mode, but rebuild the custom character mappings using the virtual keycodes shown by `alacritty --print-events`; for example, bind the bracket event as `LBracket` instead of the obsolete `Key8` mapping, then verify every affected character in Emacs. |
+| `e1_N0__N1` | clarification_only | asks: iterm_left_option_escape_with_character_exceptions | In iTerm2 I set left Option to send Escape, then added mappings that insert the extra characters accessed with |
+| `e2_N1__N1_x` | solution_only **BLIND** | req_info: option_as_alt_onlyleft_initially, emacs_meta_keys_work_but_portuguese_option_characters_fail<br>elements: recommends_none_or_both_as_the_workaround | Work around the issue by selecting `option_as_alt: None` or `option_as_alt: Both` instead of using the left-Option configuration. |
+| `e3_N1_x__N2` | clarification_only | asks: onlyleft_characters_work_in_terminal_but_not_emacs, cat_left_option_a_outputs_escape_a | With `option_as_alt: OnlyLeft`, I can type those characters directly in the terminal without a problem, but no / Yes. Typing Left Option+A into `cat` gives `^[a`. |
+| `e4_N2__N3` | clarification_only | asks: alacritty_config_and_print_events_log_shared | I attached my `alacritty.yml` and an event log where I tried to type those characters. I hope it is not full o |
+| `e5_N3__N_terminal` | solution_only | req_info: old_alt_send_esc_false_and_key8_key9_key2_bindings_worked, emacs_meta_keys_work_but_portuguese_option_characters_fail, iterm_left_option_escape_with_character_exceptions, cat_left_option_a_outputs_escape_a, onlyleft_characters_work_in_terminal_but_not_emacs, alacritty_config_and_print_events_log_shared<br>elements: identifies_the_existing_key_identifiers_as_wrong_for_current_events, uses_current_virtual_keycodes_for_the_character_bindings, gives_lbracket_instead_of_key8_as_the_concrete_example, preserves_working_option_based_emacs_meta_behavior, asks_user_to_verify_all_redefined_characters_in_emacs_and_the_terminal | Keep the working Option-as-Alt behavior, but replace the old physical `Key8`, `Key9`, and similar binding identifiers with the current virtual keycodes reported by Alacritty's keyboard event log. |
+| `e6_N0__N_terminal_shortcut` | solution_only | req_info: old_alt_send_esc_false_and_key8_key9_key2_bindings_worked, emacs_meta_keys_work_but_portuguese_option_characters_fail<br>elements: identifies_the_custom_binding_key_names_as_the_problem, uses_current_virtual_keycodes_for_the_character_bindings, gives_lbracket_instead_of_key8_as_the_concrete_example, asks_user_to_verify_the_characters_and_emacs_meta_behavior | Treat the old custom key names as stale after the input-library behavior change, rebind the affected characters using the current virtual keycodes, and verify that both the characters and Emacs meta commands work. |
 
 ## Nodes
 
 | node | terminal | volunteered | images | symptoms |
 |---|---|---|---|---|
-| `N0` |  | 1 | 0 | In Emacs I cannot type `[`, `]`, `{`, `}`, or `@` on my Portuguese keyboard layout. Directly in the terminal, `[` and `]` appear only after  |
-| `N1` |  | 0 | 0 | Left Option works as Meta input: typing Left Option+A into `cat` produces `^[a`. The bracket and brace characters are still unavailable insi |
-| `N2` |  | 0 | 0 | Meta shortcuts work in Emacs, but `[`, `]`, `{`, and `}` still cannot be entered with my existing custom bindings. |
-| `N2_x` |  | 1 | 0 | With `option_as_alt: Both` and my existing Key8, Key9, and Key2 bindings, I still cannot type `[`, `]`, `{`, `}`, or `@`. |
-| `N_terminal` | ✓ | 0 | 0 | After redefining the bindings with the key names reported by `--print-events`, Meta works and I can type all the required brackets, braces,  |
+| `N0` |  | 3 | 0 | With Alacritty 0.12.0-rc1 and my Portuguese keyboard layout, Emacs accepts my meta keys but I cannot type `[`, `]`, `{`, `}`, or `@` there.  |
+| `N1` |  | 1 | 0 | The same Portuguese-layout characters work in iTerm2 when left Option sends Escape and explicit exceptions insert the Option and Shift+Optio |
+| `N1_x` |  | 1 | 0 | With `option_as_alt: None`, I have to press Escape instead of Option for Emacs meta commands. With `option_as_alt: Both`, my configured `[`, |
+| `N2` |  | 0 | 0 | In a test with `option_as_alt: OnlyLeft`, the characters type normally in the terminal but `[`, `]`, `{`, and `}` still do not type in Emacs |
+| `N3` |  | 1 | 0 | Emacs otherwise works normally; the remaining failures are the `[`, `]`, `{`, and `}` characters generated by my custom bindings. |
+| `N_terminal` | ✓ | 1 | 0 | After redefining the bindings using the current key names, all of the characters type correctly and my Emacs meta keys still work. |
+| `N_terminal_shortcut` | ✓ | 1 | 0 | After redefining the bindings using the current key names, all of the characters type correctly and my Emacs meta keys still work. |
 
 ## Machine review (audit pass, adversarially verified)
 

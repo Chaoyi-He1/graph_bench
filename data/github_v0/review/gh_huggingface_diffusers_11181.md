@@ -1,38 +1,40 @@
 # Review: gh_huggingface_diffusers_11181
 
-**Flux ControlNet trained on fill50k produces uncontrollable results**
+**Flux ControlNet trained on fill50k is not controllable**
 
 - source: https://github.com/huggingface/diffusers/issues/11181
 - kind: LLM draft (needs review)
-- reviewed: `False`
+- reviewed: `True`
 - graph: `data/github_v0/graphs/gh_huggingface_diffusers_11181.json` · raw thread: `data/github_v0/raw/gh_huggingface_diffusers_11181.json`
 
 ```mermaid
 flowchart LR
-    N0["<b>N0 uncontrollable ControlNet reported</b><br/><small>info: 4</small>"]
-    N1_x["<b>N1_x FLUX dev with guidance 1 aftermath</b><br/><small>info: 5</small>"]
-    N2_x["<b>N2_x correct base guidance aftermath</b><br/><small>info: 7</small>"]
-    N3["<b>N3 validation-strength effect measured</b><br/><small>info: 8</small>"]
-    N3_x["<b>N3_x scale-one retraining aftermath under DeepSpeed</b><br/><small>info: 10</small>"]
-    N_terminal["<b>terminal resolved by training without DeepSpeed</b><br/><small>info: 12</small>"]
-    N0 ==>|"💥 blind: Address the initial model mismatch by trying the standard FLUX.1-dev base and a guidance scale of 1.0."| N1_x
+    N0["<b>N0 uncontrollable fill50k result reported</b><br/><small>info: 4</small>"]
+    N1_x["<b>N1_x FLUX dev with guidance one aftermath</b><br/><small>info: 5</small>"]
+    N2_x["<b>N2_x corrected guidance still uncontrolled</b><br/><small>info: 7</small>"]
+    N3["<b>N3 conditioning strength checked</b><br/><small>info: 9</small>"]
+    N4["<b>N4 DeepSpeed configuration identified</b><br/><small>info: 10</small>"]
+    N_terminal["<b>terminal resolved without DeepSpeed</b><br/><small>info: 11</small>"]
+    N_terminal_shortcut["<b>terminal resolved by direct DeepSpeed diagnosis</b><br/><small>info: 5</small>"]
+    N0 ==>|"💥 blind: Replace the Dev2Pro training base with FLUX.1-dev and train with guidance scale 1.0."| N1_x
     linkStyle 0 stroke:#ef4444,stroke-width:2px
-    N1_x ==>|"💥 blind: Use the guidance value appropriate for the standard FLUX.1-dev model: restore the default guidance_scale of 3.5 and retrain."| N2_x
+    N1_x ==>|"💥 blind: Use the model-appropriate default guidance scale of 3.5 with FLUX.1-dev and retrain."| N2_x
     linkStyle 1 stroke:#ef4444,stroke-width:2px
-    N2_x -.->|"❓ published_checkpoint_controlled_at_scale_1_but_not_0_7"| N3
+    N2_x -.->|"❓ conditioning_scale_comparison_results"| N3
     linkStyle 2 stroke:#3b82f6,stroke-width:2px
-    N3 ==>|"💥 blind: Change validation to use controlnet_conditioning_scale=1.0 and repeat training so weak validation strength does not make a working checkpoint look uncontrolled."| N3_x
-    linkStyle 3 stroke:#ef4444,stroke-width:2px
-    N3_x ==>|"⚡ Remove DeepSpeed from the Accelerate training configuration, retain bf16 mixed precision, retrain the Flux ControlNet, and verify the resulting checkpoint with an adequate conditioning scale."| N_terminal
+    N3 -.->|"❓ training_used_deepspeed_backend"| N4
+    linkStyle 3 stroke:#3b82f6,stroke-width:2px
+    N4 ==>|"⚡ Disable the DeepSpeed backend, retrain the Flux ControlNet with the ordinary Accelerate configuration, and verify control on the resulting checkpoint before declaring the issue resolved."| N_terminal
     linkStyle 4 stroke:#f97316,stroke-width:2px
-    N0 ==>|"🚀 If the training launch uses DeepSpeed, bypass the intervening model and validation-strength experiments by retraining with the default Accelerate backend and bf16, then verify control on the resulting checkpoint. (skip 5)"| N_terminal
+    N0 ==>|"🚀 Avoid DeepSpeed for this Flux ControlNet training run, retrain under the default Accelerate backend, and verify the resulting checkpoint follows the conditioning image. (skip 6)"| N_terminal_shortcut
     linkStyle 5 stroke:#0ea5e9,stroke-width:2px
     class N0 start
     class N1_x normal
     class N2_x normal
     class N3 normal
-    class N3_x normal
+    class N4 normal
     class N_terminal terminal
+    class N_terminal_shortcut terminal
     classDef start fill:#fee2e2,stroke:#b91c1c,color:#000
     classDef terminal fill:#dcfce7,stroke:#15803d,color:#000
     classDef normal fill:#fef3c7,stroke:#a16207,color:#000
@@ -40,38 +42,38 @@ flowchart LR
 
 ## Opening (body)
 
-> I am using examples/controlnet/train_controlnet_flux.py to train a ControlNet on a local copy of the fill50k toy dataset with the README parameters. The only initial difference is that I train from FLUX.1-dev2pro and test with FLUX.1-dev. After training, the validation images follow the text prompt but are not controllable by the conditioning image.
+> I am using examples/controlnet/train_controlnet_flux.py to train a ControlNet, starting with the fill50k toy dataset and the parameters from README_flux.md. The dataset is downloaded locally. The main difference is that I trained with the FLUX.1-dev2pro checkpoint and tested with FLUX.1-dev. Even after 60000 steps, the validation result is not controllable. I attached the TensorBoard validation image and my training command.
 
 ## Satisfaction conditions
 
-1. Must identify the final accepted cause for the reporter's failed training as the DeepSpeed backend used through Accelerate, rather than the FLUX flow-loss sign convention, the dataset alone, or the base guidance value.
-2. Diagnosis must be grounded in the comparison evidence: correct FLUX.1-dev guidance still produced uncontrolled checkpoints, scale 1.0 made the published checkpoint controllable but did not repair the reporter's DeepSpeed-trained run, and retraining without DeepSpeed worked.
-3. The final recommendation must remove DeepSpeed, use the ordinary Accelerate configuration with bf16, and retrain the ControlNet.
-4. Must not present switching base models, changing guidance_scale between 1.0 and 3.5, or setting validation conditioning strength to 1.0 as the sole fix; those directions did not repair the reporter's DeepSpeed-trained checkpoint.
-5. Validation should use a sufficient conditioning scale so a working checkpoint is not mistaken for a failed one.
-6. Must have the reporter verify that the newly trained checkpoint follows the conditioning image before treating the issue as resolved.
+1. Must identify the thread's final accepted diagnosis at the level actually established: the reporter's unsuccessful Flux ControlNet training used DeepSpeed, while retraining without DeepSpeed produced a working controllable checkpoint.
+2. The recommendation must be grounded in the comparison evidence: changing FLUX.1-dev guidance to 3.5 did not fix the result, and setting validation conditioning scale to 1.0 did not make the reporter's own checkpoint controllable.
+3. Must not present guidance scale 1.0, FLUX.1-dev guidance 3.5, or controlnet_conditioning_scale=1.0 alone as the final fix; those directions were tested and did not resolve the reporter's trained checkpoint.
+4. Must not claim that the flow-matching interpolation or loss sign was the root cause; the thread accepted that code convention and later resolved the reporter's case through the backend comparison.
+5. Must ask the reporter to retrain without DeepSpeed and verify that the resulting checkpoint follows the conditioning image before treating the issue as resolved.
 
 ## Edges
 
 | edge | type | gates / info | payload |
 |---|---|---|---|
-| `e1_N0__N1_x` | solution_only **BLIND** | req_info: initial_training_uses_flux_dev2pro_testing_uses_flux_dev, generated_images_not_controlled_by_conditioning_image<br>elements: suggests_testing_flux_dev_or_guidance_compatibility | Address the initial model mismatch by trying the standard FLUX.1-dev base and a guidance scale of 1.0. |
-| `e2_N1_x__N2_x` | solution_only **BLIND** | req_info: attempt_flux_dev_guidance_1_weird_loss<br>elements: uses_default_guidance_for_flux_dev | Use the guidance value appropriate for the standard FLUX.1-dev model: restore the default guidance_scale of 3.5 and retrain. |
-| `e3_N2_x__N3` | clarification_only | asks: published_checkpoint_controlled_at_scale_1_but_not_0_7 | I tested the published checkpoint. Its logged validation image looks poor at 0.7, but when I run inference wit |
-| `e4_N3__N3_x` | solution_only **BLIND** | req_info: published_checkpoint_controlled_at_scale_1_but_not_0_7<br>elements: sets_validation_conditioning_scale_to_1 | Change validation to use controlnet_conditioning_scale=1.0 and repeat training so weak validation strength does not make a working checkpoint look uncontrolled. |
-| `e5_N3_x__N_terminal` | solution_only | req_info: training_used_deepspeed, prompt_semantics_work_control_does_not, attempt_flux_dev_guidance_3_5_still_uncontrolled, published_checkpoint_controlled_at_scale_1_but_not_0_7, own_retrain_scale_1_still_bad<br>elements: identifies_deepspeed_as_the_failed_training_backend, removes_deepspeed_and_retrains, keeps_bf16_as_the_nondefault_accelerate_choice, asks_user_to_verify_the_retrained_checkpoint_with_the_control_image | Remove DeepSpeed from the Accelerate training configuration, retain bf16 mixed precision, retrain the Flux ControlNet, and verify the resulting checkpoint with an adequate conditioning scale. |
-| `e6_N0__N_terminal` | solution_only | req_info: train_controlnet_flux_fill50k_local_dataset, generated_images_not_controlled_by_conditioning_image<br>elements: proposes_training_without_deepspeed, requires_retraining_and_output_verification | If the training launch uses DeepSpeed, bypass the intervening model and validation-strength experiments by retraining with the default Accelerate backend and bf16, then verify control on the resulting checkpoint. |
+| `e1_N0__N1_x` | solution_only **BLIND** | req_info: trained_with_flux_dev2pro_tested_with_flux_dev<br>elements: mentions_switching_to_flux_dev, mentions_guidance_scale_one | Replace the Dev2Pro training base with FLUX.1-dev and train with guidance scale 1.0. |
+| `e2_N1_x__N2_x` | solution_only **BLIND** | req_info: flux_dev_guidance_one_run_has_weird_loss<br>elements: uses_default_guidance_for_flux_dev | Use the model-appropriate default guidance scale of 3.5 with FLUX.1-dev and retrain. |
+| `e3_N2_x__N3` | clarification_only | asks: conditioning_scale_comparison_results | The shared checkpoint gives a good controlled result when I test it at conditioning scale 1.0, even though its |
+| `e4_N3__N4` | clarification_only | asks: training_used_deepspeed_backend | My unsuccessful training run used Accelerate with DeepSpeed as the backend. I am now trying the same training  |
+| `e5_N4__N_terminal` | solution_only | req_info: fill50k_flux_controlnet_not_controllable, flux_dev_guidance_one_run_has_weird_loss, flux_dev_default_guidance_run_still_uncontrolled, own_checkpoint_still_bad_at_conditioning_scale_one, training_used_deepspeed_backend, prompt_content_is_followed_but_conditioning_is_not, conditioning_scale_comparison_results<br>elements: identifies_deepspeed_backend_as_the_final_training_problem, recommends_retraining_without_deepspeed, asks_user_to_verify_the_new_checkpoint_follows_the_conditioning_image, does_not_treat_conditioning_scale_or_guidance_alone_as_the_root_fix | Disable the DeepSpeed backend, retrain the Flux ControlNet with the ordinary Accelerate configuration, and verify control on the resulting checkpoint before declaring the issue resolved. |
+| `e6_N0__N_terminal_shortcut` | solution_only | req_info: fill50k_flux_controlnet_not_controllable, used_train_controlnet_flux_readme_parameters<br>elements: recommends_retraining_without_deepspeed, asks_user_to_verify_the_new_checkpoint_follows_the_conditioning_image | Avoid DeepSpeed for this Flux ControlNet training run, retrain under the default Accelerate backend, and verify the resulting checkpoint follows the conditioning image. |
 
 ## Nodes
 
 | node | terminal | volunteered | images | symptoms |
 |---|---|---|---|---|
-| `N0` |  | 0 | 0 | My validation images are relevant to the prompts, but they do not follow the conditioning images. |
-| `N1_x` |  | 1 | 1 | After switching training to FLUX.1-dev and setting guidance_scale to 1.0, the loss curve looks strange and the conditioning still does not p |
-| `N2_x` |  | 2 | 2 | With FLUX.1-dev and its default guidance_scale of 3.5, the generated content matches the prompt, but the result still does not follow the co |
-| `N3` |  | 0 | 0 | The published test checkpoint looks uncontrolled with conditioning scale 0.7 but follows the conditioning image when I run inference with co |
-| `N3_x` |  | 2 | 2 | My newly trained run still gives poor validation images after I change controlnet_conditioning_scale to 1.0. This run was launched through A |
-| `N_terminal` | ✓ | 2 | 0 | After training without DeepSpeed, the ControlNet works, and increasing the conditioning scale produces a stronger control effect. |
+| `N0` |  | 1 | 0 | My ControlNet trained on the local fill50k dataset does not follow the conditioning image in validation, even after 60000 steps. |
+| `N1_x` |  | 1 | 1 | After switching the base model to FLUX.1-dev and training with guidance scale 1.0, the loss curve looks weird and the ControlNet result is s |
+| `N2_x` |  | 2 | 2 | With FLUX.1-dev and its default guidance scale of 3.5, the generated content is relevant to the prompt, but it still does not follow the con |
+| `N3` |  | 1 | 0 | A known checkpoint follows the control image when tested with conditioning scale 1.0, but my newly trained checkpoint still gives poor valid |
+| `N4` |  | 0 | 0 | My checkpoint remains poorly controlled at conditioning scale 1.0, and the unsuccessful training run used Accelerate with DeepSpeed. |
+| `N_terminal` | ✓ | 1 | 0 | After retraining without DeepSpeed, the ControlNet follows the conditioning image and works. |
+| `N_terminal_shortcut` | ✓ | 1 | 0 | After retraining without DeepSpeed, the ControlNet follows the conditioning image and works. |
 
 ## Machine review (audit pass, adversarially verified)
 

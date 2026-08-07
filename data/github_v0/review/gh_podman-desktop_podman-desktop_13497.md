@@ -4,7 +4,7 @@
 
 - source: https://github.com/podman-desktop/podman-desktop/issues/13497
 - kind: LLM draft (needs review)
-- reviewed: `True`
+- reviewed: `False`
 - graph: `data/github_v0/graphs/gh_podman-desktop_podman-desktop_13497.json` · raw thread: `data/github_v0/raw/gh_podman-desktop_podman-desktop_13497.json`
 
 ```mermaid

@@ -1,32 +1,32 @@
 # Review: gh_ollama_ollama_6756
 
-**Large models segfault while loading on AMD GPU despite fitting in VRAM**
+**Yet another "segmentation fault" issue with AMD GPU**
 
 - source: https://github.com/ollama/ollama/issues/6756
 - kind: LLM draft (needs review)
-- reviewed: `False`
+- reviewed: `True`
 - graph: `data/github_v0/graphs/gh_ollama_ollama_6756.json` · raw thread: `data/github_v0/raw/gh_ollama_ollama_6756.json`
 
 ```mermaid
 flowchart LR
-    N0["<b>N0 large AMD model load crash reported</b><br/><small>info: 6</small>"]
-    N1["<b>N1 parameters and server logs collected</b><br/><small>info: 9</small>"]
-    N2_x["<b>N2_x GPU-overhead workaround aftermath</b><br/><small>info: 11</small>"]
-    N3["<b>N3 older version works as temporary workaround</b><br/><small>info: 12</small>"]
-    N4_x["<b>N4_x official bundled ROCm build aftermath</b><br/><small>info: 13</small>"]
-    N5["<b>N5 regression boundary and environment established</b><br/><small>info: 16</small>"]
-    N_terminal["<b>terminal reporter confirms fixed build works</b><br/><small>info: 17</small>"]
-    N0 -.->|"❓ no_custom_model_parameters_used, server_log_full_gpu_offload_then_runner_segfault"| N1
+    N0["<b>N0 large AMD models segfault</b><br/><small>info: 7</small>"]
+    N1["<b>N1 configuration and load log collected</b><br/><small>info: 11</small>"]
+    N2_x["<b>N2_x VRAM-overhead workaround aftermath</b><br/><small>info: 13</small>"]
+    N3["<b>N3 older Ollama version works</b><br/><small>info: 14</small>"]
+    N4_x["<b>N4_x official bundled build aftermath</b><br/><small>info: 15</small>"]
+    N5["<b>N5 regression boundary established</b><br/><small>info: 17</small>"]
+    N_terminal["<b>terminal fixed build verified</b><br/><small>info: 19</small>"]
+    N0 -.->|"❓ no_custom_model_parameters, full_load_log_shows_all_41_layers_offloaded, arch_rocm_6_0_2_packages"| N1
     linkStyle 0 stroke:#3b82f6,stroke-width:2px
-    N1 ==>|"💥 blind: Treat the crash as a VRAM prediction or over-allocation problem and reserve additional VRAM with OLLAMA_GPU_OVERHEAD so fewer layers are selected."| N2_x
+    N1 ==>|"💥 blind: Treat the crash as a VRAM prediction or over-allocation problem and reserve progressively more GPU memory with `OLLAMA_GPU_OVERHEAD`."| N2_x
     linkStyle 1 stroke:#ef4444,stroke-width:2px
-    N2_x ==>|"🔀 ❓downgrade_to_0_3_6_loads_command_r_on_gpu + ⚡Use the older working Ollama build temporarily and compare its behavior with the failing releases to establish whether this is an Ollama regression."| N3
-    linkStyle 2 stroke:#a855f7,stroke-width:2px
-    N3 ==>|"💥 blind: Treat the crash as an Arch packaging or system-ROCm mismatch and replace the distribution package with Ollama's official build and bundled ROCm."| N4_x
+    N2_x ==>|"⚡ Use the last empirically working older Ollama build as a temporary regression workaround."| N3
+    linkStyle 2 stroke:#f97316,stroke-width:2px
+    N3 ==>|"💥 blind: Test whether the Arch package and its system ROCm libraries are mismatched by replacing them with Ollama's official build and bundled ROCm."| N4_x
     linkStyle 3 stroke:#ef4444,stroke-width:2px
-    N4_x -.->|"❓ version_test_0_3_6_works_0_3_7_segfaults, reporter_environment_arch_kernel_6_11_3_rocm_6_0_2, latest_log_starts_all_41_gpu_layers_with_no_mmap_then_crashes"| N5
+    N4_x -.->|"❓ detailed_arch_kernel_rocm_environment, affected_user_confirms_0_3_6_good_0_3_7_bad"| N5
     linkStyle 4 stroke:#3b82f6,stroke-width:2px
-    N5 ==>|"⚡ Remove the AMD build regression introduced after the known-good release, publish a corrected Ollama build, and have the reporter retest the original large model before declaring the issue resolved."| N_terminal
+    N5 ==>|"⚡ Treat the main failure as an Ollama AMD/ROCm version regression beginning in the first bad release, update to the build containing its fix rather than relying on VRAM reservations or package-library replacement, and ask the reporter to verify the original model before declaring resolution."| N_terminal
     linkStyle 5 stroke:#f97316,stroke-width:2px
     class N0 start
     class N1 normal
@@ -42,39 +42,39 @@ flowchart LR
 
 ## Opening (body)
 
-> On Linux with Ollama 0.3.10 and an AMD RX 7900 XTX with 24 GB VRAM, loading larger models terminates the llama runner with a segmentation fault even though Ollama reports that they fit in available VRAM. command-r:35b-08-2024-q4_K_M is about 19 GB, and gemma2:27b-instruct-q4_K_M is about 16 GB; models around 13 GB or smaller load successfully. Ollama reports about 23.5 GiB available VRAM. I think models of this size worked on an older Ollama version, but I do not know the latest working version.
+> On Linux with an AMD RX 7900 XTX and Ollama 0.3.10, loading larger models terminates the llama runner with `signal: segmentation fault (core dumped)`, even though the models appear to fit within the card's 24 GB of VRAM. `command-r:35b-08-2024-q4_K_M` is 19 GB and `gemma2:27b-instruct-q4_K_M` is 16 GB, but both fail; models around 13 GB such as `codestral:22b-v0.1-q4_K_M` load. The logs report 23.5 GiB available VRAM and then say the LLM server is not responding. I think models this size worked on an older Ollama version, but I do not know the last working version.
 
 ## Satisfaction conditions
 
-1. Must identify the main issue as an AMD/ROCm runner build regression introduced after the known-good release, tied to the reintroduced AMD compile flag, rather than treating the reported VRAM estimate alone as proof of over-allocation.
-2. The diagnosis must be grounded in the collected evidence: the model fits according to the logs, reserving up to 10 GB of GPU overhead does not stop the crash, the official bundled-ROCm build also fails, the older build works, and the adjacent release segfaults.
-3. Must not present OLLAMA_GPU_OVERHEAD or switching from the Arch package to bundled ROCm as the resolution; both directions were tried without resolving the reporter's crash.
-4. Must not use the speculative --no-mmap theory as the final root cause because the thread later reports that the corresponding llama.cpp build works with --no-mmap.
-5. Must recommend a build containing the AMD regression correction and ask the reporter to retry the original large model before declaring resolution.
-6. Resolution requires the reporter's confirmation that the corrected release-candidate build loads and runs the large model successfully.
+1. Must identify the final supported diagnosis at the thread's evidence level: the main crash is an Ollama AMD/ROCm regression that appears in the first bad build after 0.3.6, rather than a model simply exceeding the reported VRAM capacity.
+2. The diagnosis must be grounded in the fit estimates, the failed large-model load, the working downgrade, and the adjacent good-versus-bad version test.
+3. Must not present increasing `OLLAMA_GPU_OVERHEAD` as the resolution; reservations up to 10 GB did not stop the reporter's segmentation fault.
+4. Must not present switching from the Arch package to the official build with bundled ROCm as the resolution; the reporter reproduced the same crash after that replacement.
+5. The forward resolution is to update to a build containing the regression fix, then have the reporter retry the original failing large model before declaring the issue resolved.
+6. Must not promote the tentative `--no-mmap` or library-mismatch hypotheses to the final root cause, because the thread did not establish either as the reporter's accepted diagnosis.
 
 ## Edges
 
 | edge | type | gates / info | payload |
 |---|---|---|---|
-| `e1_N0__N1` | clarification_only | asks: no_custom_model_parameters_used, server_log_full_gpu_offload_then_runner_segfault | I'm not specifying a custom context size or any other parameters. I reproduce it with a plain ollama run comma / The logs say the model fits in one GPU, with 22.7 GiB available and 21.7 GiB required. They request and offloa |
-| `e2_N1__N2_x` | solution_only **BLIND** | req_info: large_amd_models_segfault_during_load, ollama_reports_model_fits_available_vram, server_log_full_gpu_offload_then_runner_segfault<br>elements: suggests_reserving_vram_with_gpu_overhead | Treat the crash as a VRAM prediction or over-allocation problem and reserve additional VRAM with OLLAMA_GPU_OVERHEAD so fewer layers are selected. |
-| `e3_N2_x__N3` | mixed | req_info: larger_models_may_have_worked_on_older_ollama, server_log_full_gpu_offload_then_runner_segfault<br>elements: tests_an_older_known_good_ollama_build, keeps_the_model_and_hardware_constant | Use the older working Ollama build temporarily and compare its behavior with the failing releases to establish whether this is an Ollama regression. |
-| `e4_N3__N4_x` | solution_only **BLIND** | req_info: downgrade_to_0_3_6_loads_command_r_on_gpu, arch_rocm_packages_6_0_2_and_32gb_ram<br>elements: tests_official_build_with_bundled_rocm | Treat the crash as an Arch packaging or system-ROCm mismatch and replace the distribution package with Ollama's official build and bundled ROCm. |
-| `e5_N4_x__N5` | clarification_only | asks: version_test_0_3_6_works_0_3_7_segfaults, reporter_environment_arch_kernel_6_11_3_rocm_6_0_2, latest_log_starts_all_41_gpu_layers_with_no_mmap_then_crashes | I tested the same affected setup: 0.3.6 works, while 0.3.7 segfaults. / I'm on Arch Linux with an RX 7900 XTX, 32 GB RAM, kernel 6.11.3 and its bundled amdgpu driver. My system ROCm  / On the current build, the log says the 20.1 GiB requirement fits in 22.7 GiB, selects all 41 GPU layers, start |
-| `e6_N5__N_terminal` | solution_only | req_info: large_amd_models_segfault_during_load, downgrade_to_0_3_6_loads_command_r_on_gpu, server_log_full_gpu_offload_then_runner_segfault, gpu_overhead_up_to_10gb_still_segfaults, official_build_with_bundled_rocm_also_segfaults, version_test_0_3_6_works_0_3_7_segfaults, reporter_environment_arch_kernel_6_11_3_rocm_6_0_2, latest_log_starts_all_41_gpu_layers_with_no_mmap_then_crashes<br>elements: identifies_an_amd_rocm_runner_build_regression_rather_than_simple_vram_overallocation, removes_or_backs_out_the_reintroduced_amd_compile_flag, recommends_updating_to_a_build_containing_the_correction, asks_user_to_verify_on_a_build_containing_the_fix | Remove the AMD build regression introduced after the known-good release, publish a corrected Ollama build, and have the reporter retest the original large model before declaring the issue resolved. |
+| `e1_N0__N1` | clarification_only | asks: no_custom_model_parameters, full_load_log_shows_all_41_layers_offloaded, arch_rocm_6_0_2_packages | I'm not specifying a custom context size or any other parameters. A plain `ollama run command-r:35b-08-2024-q4 / The log says the model will fit in one GPU, with 22.7 GiB available and 21.7 GiB required. It requests and off / I'm using Arch Linux's `ollama-rocm` package and the local ROCm-related packages are version 6.0.2, including  |
+| `e2_N1__N2_x` | solution_only **BLIND** | req_info: large_models_segfault_on_linux_amd, logs_report_model_fits_available_vram, full_load_log_shows_all_41_layers_offloaded<br>elements: mentions_reserving_gpu_memory_with_gpu_overhead | Treat the crash as a VRAM prediction or over-allocation problem and reserve progressively more GPU memory with `OLLAMA_GPU_OVERHEAD`. |
+| `e3_N2_x__N3` | solution_only | req_info: suspected_regression_from_unknown_older_version, gpu_overhead_up_to_10gb_still_segfaults<br>elements: frames_downgrade_as_temporary_workaround, retests_the_same_large_model | Use the last empirically working older Ollama build as a temporary regression workaround. |
+| `e4_N3__N4_x` | solution_only **BLIND** | req_info: arch_rocm_6_0_2_packages, downgrade_to_0_3_6_loads_command_r_on_gpu<br>elements: replaces_distribution_package_with_official_bundled_build | Test whether the Arch package and its system ROCm libraries are mismatched by replacing them with Ollama's official build and bundled ROCm. |
+| `e5_N4_x__N5` | clarification_only | asks: detailed_arch_kernel_rocm_environment, affected_user_confirms_0_3_6_good_0_3_7_bad | I'm on Arch Linux with an RX 7900 XTX, 32 GB system RAM, the kernel-bundled amdgpu driver on kernel 6.11.3, an / I can confirm on an affected setup: Ollama 0.3.6 works, while 0.3.7 segfaults. |
+| `e6_N5__N_terminal` | solution_only | req_info: downgrade_to_0_3_6_loads_command_r_on_gpu, logs_report_model_fits_available_vram, gpu_overhead_up_to_10gb_still_segfaults, official_build_with_bundled_rocm_still_segfaults, detailed_arch_kernel_rocm_environment, affected_user_confirms_0_3_6_good_0_3_7_bad<br>elements: identifies_an_ollama_regression_beginning_with_the_first_bad_build, recommends_updating_to_a_build_containing_the_regression_fix, does_not_treat_gpu_overhead_as_the_fix, asks_user_to_verify_on_a_build_containing_the_fix | Treat the main failure as an Ollama AMD/ROCm version regression beginning in the first bad release, update to the build containing its fix rather than relying on VRAM reservations or package-library replacement, and ask the reporter to verify the original model before declaring resolution. |
 
 ## Nodes
 
 | node | terminal | volunteered | images | symptoms |
 |---|---|---|---|---|
-| `N0` |  | 0 | 0 | Loading command-r:35b-08-2024-q4_K_M or gemma2:27b-instruct-q4_K_M terminates the llama runner with a segmentation fault, while models aroun |
-| `N1` |  | 1 | 0 | A plain ollama run of the larger model reaches the loading stage and then the runner exits with a segmentation fault. |
-| `N2_x` |  | 2 | 0 | The larger model still terminates with a segmentation fault after I reserve as much as 10 GB using OLLAMA_GPU_OVERHEAD. Two larger requests  |
-| `N3` |  | 0 | 0 | After downgrading, command-r:35b-08-2024-q4_K_M loads and appears in ollama ps as 21 GB and 100% GPU. |
-| `N4_x` |  | 1 | 0 | After replacing the Arch package with Ollama's official build and bundled ROCm, loading the same large model still ends in the same segmenta |
-| `N5` |  | 0 | 0 | The affected build still crashes while loading the model on the GPU; an older build loads it successfully. The crash occurs with a plain oll |
-| `N_terminal` | ✓ | 1 | 0 | The release-candidate build loads and runs the large model successfully on my RX 7900 XTX without the runner segmentation fault. |
+| `N0` |  | 2 | 0 | Loading 16–19 GB models on my 24 GB RX 7900 XTX ends with `llama runner process has terminated: signal: segmentation fault (core dumped)`. M |
+| `N1` |  | 1 | 0 | A plain `ollama run command-r:35b-08-2024-q4_K_M` still segfaults while loading, without custom model parameters. The log says all 41 layers |
+| `N2_x` |  | 2 | 0 | The same model still segfaults after increasing `OLLAMA_GPU_OVERHEAD` as high as 10 GB. Two large requests can run sequentially, but after t |
+| `N3` |  | 1 | 0 | After downgrading to Ollama 0.3.6, `command-r:35b-08-2024-q4_K_M` loads as a 21 GB model with 100% GPU processing. |
+| `N4_x` |  | 1 | 0 | After uninstalling the Arch package and installing Ollama's official build with bundled ROCm, the same large model still segfaults. |
+| `N5` |  | 0 | 0 | The crash remains reproducible on a current official build with a plain `ollama run` command, while Ollama 0.3.6 loads the model successfull |
+| `N_terminal` | ✓ | 1 | 0 | The previously failing large model loads and runs correctly after updating to the fixed candidate build. |
 
 ## Machine review (audit pass, adversarially verified)
 

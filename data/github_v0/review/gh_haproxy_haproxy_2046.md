@@ -4,7 +4,7 @@
 
 - source: https://github.com/haproxy/haproxy/issues/2046
 - kind: LLM draft (needs review)
-- reviewed: `False`
+- reviewed: `True`
 - graph: `data/github_v0/graphs/gh_haproxy_haproxy_2046.json` · raw thread: `data/github_v0/raw/gh_haproxy_haproxy_2046.json`
 
 ```mermaid
@@ -72,6 +72,13 @@ flowchart LR
 | `N2_x` |  | 1 | 0 | The CPU remains pinned in one or two current workers; old workers do not consume significant CPU, and the spike also occurs when only one wo |
 | `N3` |  | 1 | 1 | After reverting the deployment to HAProxy 2.6.9, the irregular CPU levels and pinned-core behavior are gone and the load graph is stable aga |
 | `N_terminal` | ✓ | 1 | 0 | After upgrading production to HAProxy 2.7.5, our CPU load pattern looks normal and the irregular pinned-core spikes no longer occur. |
+
+## Machine review (audit pass, adversarially verified)
+
+Auditor verdict: **n/a** · 0 of 0 findings survived independent refutation.
+
+__
+
 
 ## Review checklist
 

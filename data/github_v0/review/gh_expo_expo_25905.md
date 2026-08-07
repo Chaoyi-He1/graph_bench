@@ -1,35 +1,33 @@
 # Review: gh_expo_expo_25905
 
-**[SDK 50] Pod install error: The Swift pod `ExpoModulesCore` depends upon `glog`, which does not define modules.**
+**[SDK 50] Pod install error: The Swift pod `ExpoModulesCore` depends upon `glog`, which does not define modules**
 
 - source: https://github.com/expo/expo/issues/25905
 - kind: LLM draft (needs review)
-- reviewed: `False`
+- reviewed: `True`
 - graph: `data/github_v0/graphs/gh_expo_expo_25905.json` · raw thread: `data/github_v0/raw/gh_expo_expo_25905.json`
 
 ```mermaid
 flowchart LR
-    N0["<b>N0 CI pod installation error reported</b><br/><small>info: 4</small>"]
-    N1["<b>N1 direct dependency ruled out</b><br/><small>info: 5</small>"]
-    N1_x["<b>N1_x dependency-removal suggestion rejected</b><br/><small>info: 5</small>"]
-    N2["<b>N2 runner comparison isolates environment</b><br/><small>info: 6</small>"]
-    N_terminal["<b>terminal resolved on newer macOS runner</b><br/><small>info: 7</small>"]
-    N0 -.->|"❓ expo_modules_core_not_direct_dependency"| N1
-    linkStyle 0 stroke:#3b82f6,stroke-width:2px
-    N0 ==>|"💥 blind: Remove expo-modules-core from package.json, reinstall JavaScript dependencies, and reinstall the pods so Expo can select it transitively."| N1_x
-    linkStyle 1 stroke:#ef4444,stroke-width:2px
-    N1 -.->|"❓ macos_runner_comparison_only_macos13_succeeds"| N2
-    linkStyle 2 stroke:#3b82f6,stroke-width:2px
-    N1_x -.->|"❓ macos_runner_comparison_only_macos13_succeeds"| N2
+    N0["<b>N0 glog module error reported</b><br/><small>info: 2</small>"]
+    N1_x["<b>N1_x direct-dependency theory rejected</b><br/><small>info: 3</small>"]
+    N2["<b>N2 pod install succeeds on macos-13</b><br/><small>info: 4</small>"]
+    N3["<b>N3 runner-only comparison confirmed</b><br/><small>info: 5</small>"]
+    N_terminal["<b>terminal resolved on newer CI toolchain</b><br/><small>info: 6</small>"]
+    N0 ==>|"💥 blind: Remove `expo-modules-core` as a direct package dependency, reinstall JavaScript dependencies, and reinstall pods."| N1_x
+    linkStyle 0 stroke:#ef4444,stroke-width:2px
+    N1_x ==>|"⚡ Move the CI workflow to a newer macOS runner and rerun pod installation with its newer Xcode toolchain."| N2
+    linkStyle 1 stroke:#f97316,stroke-width:2px
+    N0 ==>|"🚀 Move the CI workflow to a newer macOS runner and rerun pod installation with its newer Xcode toolchain. (skip 1)"| N2
+    linkStyle 2 stroke:#0ea5e9,stroke-width:2px
+    N2 -.->|"❓ failed_and_successful_ci_logs_with_runner_only_diff"| N3
     linkStyle 3 stroke:#3b82f6,stroke-width:2px
-    N2 ==>|"⚡ Use a newer macOS CI runner with a newer compatible Xcode toolchain instead of treating expo-modules-core as an invalid direct dependency, and retain the change only after the same workflow completes pod installation successfully."| N_terminal
+    N3 ==>|"⚡ Keep the CI workflow on the newer macOS/Xcode toolchain; in this reporter's case the older runner toolchain caused the glog module-integration failure, rather than a direct ExpoModulesCore dependency."| N_terminal
     linkStyle 4 stroke:#f97316,stroke-width:2px
-    N0 ==>|"🚀 Test and adopt a newer macOS GitHub Actions runner so pod installation uses a newer compatible Apple toolchain, then verify the result with an otherwise unchanged workflow. (skip 2)"| N_terminal
-    linkStyle 5 stroke:#0ea5e9,stroke-width:2px
     class N0 start
-    class N1 normal
     class N1_x normal
     class N2 normal
+    class N3 normal
     class N_terminal terminal
     classDef start fill:#fee2e2,stroke:#b91c1c,color:#000
     classDef terminal fill:#dcfce7,stroke:#15803d,color:#000
@@ -38,36 +36,35 @@ flowchart LR
 
 ## Opening (body)
 
-> I have an SDK 50 project with a minimal reproducible example at https://github.com/NervJS/taro-native-shell/tree/0.73.0. The GitHub Actions build fails during pod installation with: `[!] The following Swift pods cannot yet be integrated as static libraries: The Swift pod ExpoModulesCore depends upon glog, which does not define modules.` The failing action is https://github.com/NervJS/taro-native-shell/actions/runs/7194009870/job/19593603408. Environment details are in the action log.
+> I have a minimal reproduction in the taro-native-shell 0.73.0 branch. During the linked CI build, pod installation exits with code 1 because the Swift pod `ExpoModulesCore` depends on `glog`, which does not define modules. The error suggests enabling modular headers globally or for particular dependencies. The environment details are in the action log.
 
 ## Satisfaction conditions
 
-1. Must identify the accepted cause for the opening reporter as an older macOS CI/Xcode toolchain compatibility problem exposed while integrating ExpoModulesCore with glog, grounded in the otherwise-identical runner comparison rather than inferred from the CocoaPods text alone.
-2. Must recommend using macos-13 or an equivalently newer compatible CI toolchain and rerunning the same pod installation.
-3. Must not treat removal of a direct expo-modules-core dependency as the fix for this reporter, because the reporter confirmed that no such direct dependency exists.
-4. Must not substitute unrelated later-thread remedies from other projects, such as global modular headers, patching podspecs, changing Expo major versions, or cleaning pods, for the reporter's demonstrated runner-based resolution.
-5. Must require a successful pod-install run on the changed runner before declaring the issue resolved.
+1. Must identify the accepted cause for the opening reporter's case as the older CI macOS/Xcode toolchain, grounded in the runner-only comparison between the failed and successful jobs.
+2. Must recommend using and retaining a newer macOS/Xcode CI runner, with pod installation verified on that updated environment.
+3. Must not diagnose a direct `expo-modules-core` package dependency as the cause for this reporter, because the reporter explicitly had no such direct dependency.
+4. Must not substitute unrelated later participants' fixes, such as Podfile module-map patches, CocoaPods changes, dependency downgrades, or removing a project-specific pod, for the reporter's verified resolution.
+5. Must treat the case as resolved only after the reporter confirms that the updated runner completes pod installation successfully.
 
 ## Edges
 
 | edge | type | gates / info | payload |
 |---|---|---|---|
-| `e1_N0__N1` | clarification_only | asks: expo_modules_core_not_direct_dependency | I don't have expo-modules-core in my dependencies. |
-| `e2_N0__N1_x` | solution_only **BLIND** | req_info: sdk50_pod_install_fails_expo_modules_core_glog_no_modules<br>elements: recommends_removing_direct_expo_modules_core_dependency | Remove expo-modules-core from package.json, reinstall JavaScript dependencies, and reinstall the pods so Expo can select it transitively. |
-| `e3_N1__N2` | clarification_only | asks: macos_runner_comparison_only_macos13_succeeds | Yes. The pod install fails in tag v0.73.0-5 and succeeds in tag v0.73.0-6. I shared both action logs and the c |
-| `e4_N1_x__N2` | clarification_only | asks: macos_runner_comparison_only_macos13_succeeds | The v0.73.0-5 pod install log fails, and the v0.73.0-6 log succeeds. The comparison shows that the only change |
-| `e5_N2__N_terminal` | solution_only | req_info: expo_modules_core_not_direct_dependency, failing_github_actions_log_shared, environment_details_available_in_action_log, macos_runner_comparison_only_macos13_succeeds<br>elements: attributes_failure_to_the_older_ci_toolchain_environment, recommends_using_macos_13_or_an_equivalently_newer_compatible_toolchain, uses_the_unchanged_successful_ci_run_as_verification, does_not_require_removing_a_nonexistent_direct_dependency | Use a newer macOS CI runner with a newer compatible Xcode toolchain instead of treating expo-modules-core as an invalid direct dependency, and retain the change only after the same workflow completes pod installation successfully. |
-| `e6_N0__N_terminal` | solution_only | req_info: sdk50_pod_install_fails_expo_modules_core_glog_no_modules, failing_github_actions_log_shared, environment_details_available_in_action_log<br>elements: proposes_testing_a_newer_macos_runner, keeps_project_dependencies_unchanged_during_comparison, asks_user_to_verify_pod_install_on_the_new_runner | Test and adopt a newer macOS GitHub Actions runner so pod installation uses a newer compatible Apple toolchain, then verify the result with an otherwise unchanged workflow. |
+| `e1_N0__N1_x` | solution_only **BLIND** | req_info: sdk50_ci_pod_install_fails_expo_modules_core_glog_modules<br>elements: recommends_removing_direct_expo_modules_core_dependency | Remove `expo-modules-core` as a direct package dependency, reinstall JavaScript dependencies, and reinstall pods. |
+| `e2_N1_x__N2` | solution_only | req_info: sdk50_ci_pod_install_fails_expo_modules_core_glog_modules, expo_modules_core_not_direct_dependency<br>elements: moves_ci_to_newer_macos_runner, reruns_pod_install_in_updated_toolchain | Move the CI workflow to a newer macOS runner and rerun pod installation with its newer Xcode toolchain. |
+| `e3_N0__N2` | solution_only | req_info: sdk50_ci_pod_install_fails_expo_modules_core_glog_modules<br>elements: moves_ci_to_newer_macos_runner, reruns_pod_install_in_updated_toolchain | Move the CI workflow to a newer macOS runner and rerun pod installation with its newer Xcode toolchain. |
+| `e4_N2__N3` | clarification_only | asks: failed_and_successful_ci_logs_with_runner_only_diff | Yes. The pod-install log for tag v0.73.0-5 fails, and the log for tag v0.73.0-6 succeeds. I also shared the co |
+| `e5_N3__terminal` | solution_only | req_info: sdk50_ci_pod_install_fails_expo_modules_core_glog_modules, expo_modules_core_not_direct_dependency, failed_and_successful_ci_logs_with_runner_only_diff<br>elements: attributes_reporter_case_to_older_ci_xcode_toolchain, retains_newer_macos_runner, rejects_direct_dependency_diagnosis, asks_user_to_verify_pod_install_on_updated_runner | Keep the CI workflow on the newer macOS/Xcode toolchain; in this reporter's case the older runner toolchain caused the glog module-integration failure, rather than a direct ExpoModulesCore dependency. |
 
 ## Nodes
 
 | node | terminal | volunteered | images | symptoms |
 |---|---|---|---|---|
-| `N0` |  | 3 | 0 | My GitHub Actions build exits with code 1 during pod installation because CocoaPods says the Swift pod ExpoModulesCore depends on glog, whic |
-| `N1` |  | 0 | 0 | The workflow still reaches the ExpoModulesCore and glog module error during pod installation. |
-| `N1_x` |  | 1 | 0 | There is no expo-modules-core entry in my package.json for me to remove, and the original workflow still has the pod installation error. |
-| `N2` |  | 0 | 0 | The v0.73.0-5 workflow run fails during pod installation, while the v0.73.0-6 run succeeds when tested with runs-on set to macos-13; that ru |
-| `N_terminal` | ✓ | 2 | 0 | After keeping the workflow on macos-13, pod installation succeeds and the ExpoModulesCore-to-glog module error no longer occurs in my GitHub |
+| `N0` |  | 1 | 0 | My CI pod installation exits with code 1 and says the Swift pod `ExpoModulesCore` depends upon `glog`, which does not define modules. |
+| `N1_x` |  | 1 | 0 | On the original CI environment, pod installation still reports that `ExpoModulesCore` depends upon `glog`, which does not define modules. Th |
+| `N2` |  | 1 | 0 | After changing my workflow to use `macos-13`, pod installation completes successfully and the module error no longer appears. |
+| `N3` |  | 0 | 0 | The older-runner tag has a failed pod-install log, while the next tag using `macos-13` has a successful pod-install log. |
+| `N_terminal` | ✓ | 0 | 0 | My workflow runs successfully on `macos-13`, and pod installation no longer reports that `glog` does not define modules. |
 
 ## Machine review (audit pass, adversarially verified)
 

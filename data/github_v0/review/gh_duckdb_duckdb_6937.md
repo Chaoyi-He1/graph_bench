@@ -9,27 +9,27 @@
 
 ```mermaid
 flowchart LR
-    N0["<b>N0 very slow Parquet export reported</b><br/><small>info: 5</small>"]
-    N1["<b>N1 newer build and direct conversion tested</b><br/><small>info: 8</small>"]
-    N2["<b>N2 experimental gzip parallelism truncates input</b><br/><small>info: 11</small>"]
-    N3["<b>N3 compressed parallel-reader defect isolated</b><br/><small>info: 15</small>"]
-    N4_x["<b>N4_x newer parallel reader produces unreadable Parquet</b><br/><small>info: 17</small>"]
-    N_terminal["<b>terminal fast and complete conversion verified</b><br/><small>info: 20</small>"]
-    N0 ==>|"🔀 ❓dev1322_direct_gzip_conversion_about_550_seconds, preserve_order_false_alone_does_not_speed_direct_gzip_conversion + ⚡Move off DuckDB 0.7.1 to a current build containing the recent VARCHAR-to-Parquet performance work, avoid the intermediate persistent table, and use a direct SELECT-node COPY so CSV options such as all_varchar can be supplied."| N1
-    linkStyle 0 stroke:#a855f7,stroke-width:2px
-    N1 -.->|"❓ experimental_parallel_gzip_run_finishes_in_31_seconds, experimental_parallel_gzip_reads_only_30559373_rows"| N2
+    N0["<b>N0 very slow Parquet export reported</b><br/><small>info: 4</small>"]
+    N1["<b>N1 newer build removes initial multi-hour bottleneck</b><br/><small>info: 7</small>"]
+    N2["<b>N2 direct conversion benchmarked</b><br/><small>info: 10</small>"]
+    N3["<b>N3 compressed parallel reader loses rows</b><br/><small>info: 15</small>"]
+    N4["<b>N4 complete input load produces unreadable Parquet</b><br/><small>info: 18</small>"]
+    N_terminal["<b>terminal fast and complete conversion verified</b><br/><small>info: 21</small>"]
+    N0 ==>|"⚡ Retry the conversion on the latest development build containing the recent VARCHAR-to-Parquet performance improvement, and disable insertion-order preservation to permit parallel Parquet writing."| N1
+    linkStyle 0 stroke:#f97316,stroke-width:2px
+    N1 -.->|"❓ direct_gzip_to_parquet_takes_about_550_seconds, preserve_order_toggle_did_not_change_direct_conversion_time, expected_source_row_count_is_212363079"| N2
     linkStyle 1 stroke:#3b82f6,stroke-width:2px
-    N2 -.->|"❓ uncompressed_parallel_csv_produces_full_row_count, all_compressed_parallel_csv_matrix_outputs_are_incomplete, external_gzip_then_parallel_csv_is_much_faster"| N3
+    N2 -.->|"❓ direct_table_function_copy_syntax_failed, select_node_copy_supports_all_varchar, experimental_parallel_gzip_read_returned_30559373_rows, serial_gzip_read_returned_full_212363079_rows, uncompressed_parallel_read_returned_full_212363079_rows"| N3
     linkStyle 2 stroke:#3b82f6,stroke-width:2px
-    N3 ==>|"💥 blind: Update to a build containing the rewritten parallel CSV reader so compressed CSV input is handled by the supported parallel path rather than the older experimental implementation."| N4_x
-    linkStyle 3 stroke:#ef4444,stroke-width:2px
-    N4_x ==>|"⚡ Update to a current source build containing the high-memory/OOM correction for parallel compressed-CSV conversion, retain the one-pass direct COPY workflow, and verify both readability and the complete row count before declaring success."| N_terminal
+    N3 ==>|"⚡ Update to the newly merged CSV-reader implementation that corrects parallel processing of compressed input, then rerun the complete one-pass conversion and validate the resulting Parquet file."| N4
+    linkStyle 3 stroke:#f97316,stroke-width:2px
+    N4 ==>|"⚡ Use a build containing the high-memory/OOM correction for the parallel conversion, rerun the one-pass compressed CSV-to-Parquet operation, and verify both Parquet readability and the complete row count before declaring success."| N_terminal
     linkStyle 4 stroke:#f97316,stroke-width:2px
     class N0 start
     class N1 normal
     class N2 normal
     class N3 normal
-    class N4_x normal
+    class N4 normal
     class N_terminal terminal
     classDef start fill:#fee2e2,stroke:#b91c1c,color:#000
     classDef terminal fill:#dcfce7,stroke:#15803d,color:#000
@@ -38,37 +38,36 @@ flowchart LR
 
 ## Opening (body)
 
-> I am loading several large datasets containing 20GB or more of CSV data and want to export them to Parquet. On DuckDB 0.7.1, loading a gzip-compressed CSV into a local on-disk database takes about three minutes, but copying the resulting all-VARCHAR table to Parquet takes upwards of three hours. I am using the DuckDB CLI on an Apple Silicon M1 iMac with 16GB RAM, a 1TB SSD, and macOS Ventura 13.2.1. Is there a better approach than creating the table with read_csv_auto(..., all_varchar=true) and then copying it to Parquet?
+> I am converting 20GB+ CSV datasets to Parquet with DuckDB 0.7.1 on an Apple Silicon M1 iMac with 16GB RAM and a 1TB SSD. Loading a gzip-compressed CSV into an on-disk table takes about three minutes, but copying that table to Parquet takes upwards of three hours. I use read_csv_auto with all_varchar=true and then COPY the table to a Parquet file. Is there a faster way to perform this conversion?
 
 ## Satisfaction conditions
 
-1. Must identify the final accepted cause of the unreadable output: high memory usage in the parallel compressed-CSV conversion could trigger the OOM killer and leave an incomplete Parquet file without trailing magic bytes.
-2. Must connect the original three-hour behavior to the old DuckDB build and use a current build with the VARCHAR-writing and parallel CSV improvements, preferably with a direct SELECT-node COPY rather than an intermediate persistent table.
-3. Must preserve required CSV parsing options such as all_varchar=true in the direct conversion.
-4. Must not recommend the old experimental parallel CSV flag on the development build as a valid fix: with gzip input it read only 30,559,373 of 212,363,079 rows.
-5. Must not treat successful COPY completion after only the first parallel-reader update as resolution, because those generated Parquet files failed with 'No magic bytes found at end of file'.
-6. Must ask the reporter to verify a build containing the memory fix by opening the generated Parquet file and confirming the complete row count before declaring the issue resolved.
+1. Must explain the layered diagnosis: DuckDB 0.7.1 had a severe all-VARCHAR Parquet-writing performance problem, while insertion-order preservation also prevented parallel Parquet writing.
+2. For the requested one-pass conversion, must use a parenthesized SELECT over read_csv_auto so all_varchar can be supplied, rather than requiring a persistent intermediate table.
+3. Must not treat the old experimental parallel reader as a valid fix for gzip input: in the reporter's measurements it returned only 30,559,373 of 212,363,079 rows.
+4. Must identify the final unreadable-Parquet failure as high memory usage leading to the OOM killer and an incomplete file, grounded in the missing-magic-bytes result and maintainer analysis.
+5. Must recommend a build containing both the corrected compressed parallel-reader behavior and the memory-usage correction, then have the reporter verify that the Parquet file is readable and contains all 212,363,079 rows before declaring resolution.
 
 ## Edges
 
 | edge | type | gates / info | payload |
 |---|---|---|---|
-| `e1_N0__N1` | mixed | req_info: duckdb_071_csv_to_parquet_takes_three_hours, source_is_large_gzip_csv_loaded_all_varchar, current_workflow_materializes_table_before_parquet<br>elements: recommends_testing_a_current_build_with_the_varchar_write_improvement, uses_a_select_node_copy_for_direct_csv_to_parquet_conversion, preserves_the_all_varchar_csv_option | Move off DuckDB 0.7.1 to a current build containing the recent VARCHAR-to-Parquet performance work, avoid the intermediate persistent table, and use a direct SELECT-node COPY so CSV options such as all_varchar can be supplied. |
-| `e2_N1__N2` | clarification_only | asks: experimental_parallel_gzip_run_finishes_in_31_seconds, experimental_parallel_gzip_reads_only_30559373_rows | With experimental_parallel_csv=true and preserve_insertion_order=false, the direct all-VARCHAR conversion comp / The parallel run produced only 30,559,373 rows. Reading the same gzip CSV without the experimental parallel re |
-| `e3_N2__N3` | clarification_only | asks: uncompressed_parallel_csv_produces_full_row_count, all_compressed_parallel_csv_matrix_outputs_are_incomplete, external_gzip_then_parallel_csv_is_much_faster | The uncompressed CSV works as expected with parallel reading. It converts in 168.212 seconds, and the Parquet  / I benchmarked all 16 combinations. Every compressed-input case with experimental_parallel_csv=true produced a  / gzip decompresses the source to disk in 1 minute 9 seconds. DuckDB then processes the uncompressed file in abo |
-| `e4_N3__N4_x` | solution_only **BLIND** | req_info: uncompressed_parallel_csv_produces_full_row_count, all_compressed_parallel_csv_matrix_outputs_are_incomplete, experimental_parallel_gzip_reads_only_30559373_rows<br>elements: moves_to_the_new_parallel_csv_reader, retests_compressed_csv_inputs, checks_that_the_parquet_output_is_readable | Update to a build containing the rewritten parallel CSV reader so compressed CSV input is handled by the supported parallel path rather than the older experimental implementation. |
-| `e5_N4_x__N_terminal` | solution_only | req_info: duckdb_071_csv_to_parquet_takes_three_hours, post_parallel_reader_fix_parquet_missing_magic_bytes, all_compressed_parallel_csv_matrix_outputs_are_incomplete, experimental_parallel_gzip_reads_only_30559373_rows<br>elements: identifies_high_memory_and_oom_as_the_cause_of_the_incomplete_parquet_file, recommends_a_build_containing_the_parallel_csv_memory_fix, retains_direct_one_pass_compressed_csv_to_parquet_conversion, asks_user_to_verify_on_a_build_containing_the_fix, requires_readability_and_full_row_count_verification | Update to a current source build containing the high-memory/OOM correction for parallel compressed-CSV conversion, retain the one-pass direct COPY workflow, and verify both readability and the complete row count before declaring success. |
+| `e1_N0__N1` | solution_only | req_info: csv_to_parquet_export_takes_about_three_hours, source_is_large_gzip_csv_read_as_all_varchar, duckdb_071_cli_on_m1_mac_16gb<br>elements: recommends_retrying_on_a_build_with_the_recent_varchar_writer_improvement, mentions_disabling_insertion_order_preservation_for_parallel_writing | Retry the conversion on the latest development build containing the recent VARCHAR-to-Parquet performance improvement, and disable insertion-order preservation to permit parallel Parquet writing. |
+| `e2_N1__N2` | clarification_only | asks: direct_gzip_to_parquet_takes_about_550_seconds, preserve_order_toggle_did_not_change_direct_conversion_time, expected_source_row_count_is_212363079 | I tried the direct conversion on the development build. It took 549.536 seconds and produced a 4,794,409,184-b / With insertion-order preservation disabled, it took 551.849 seconds. The two output files are exactly the same / The uncompressed CSV has 212,363,080 lines including the header, and a complete Parquet conversion has 212,363 |
+| `e3_N2__N3` | clarification_only | asks: direct_table_function_copy_syntax_failed, select_node_copy_supports_all_varchar, experimental_parallel_gzip_read_returned_30559373_rows, serial_gzip_read_returned_full_212363079_rows, uncompressed_parallel_read_returned_full_212363079_rows | I tried COPY read_csv_auto('ccaed182.csv.gz', all_varchar=1) TO ..., but the parser reports a syntax error at  / Yes. COPY (SELECT * FROM read_csv_auto('ccaed182.csv.gz', all_varchar=true)) TO ... works and lets me do the c / The conversion finished in 31.687 seconds, but the output contains only 30,559,373 rows instead of the full da / With the parallel reader disabled, the same gzip file returns all 212,363,079 rows, although the count takes 2 / The uncompressed CSV works with parallel reading: conversion takes 168.212 seconds and the Parquet file contai |
+| `e4_N3__N4` | solution_only | req_info: experimental_parallel_gzip_read_returned_30559373_rows, serial_gzip_read_returned_full_212363079_rows, uncompressed_parallel_read_returned_full_212363079_rows<br>elements: recommends_updating_to_the_corrected_csv_reader, requires_checking_that_the_output_is_complete_and_readable | Update to the newly merged CSV-reader implementation that corrects parallel processing of compressed input, then rerun the complete one-pass conversion and validate the resulting Parquet file. |
+| `e5_N4__N_terminal` | solution_only | req_info: updated_parallel_reader_loaded_all_input, updated_parallel_conversion_produced_parquet_without_magic_bytes, expected_source_row_count_is_212363079<br>elements: identifies_high_memory_usage_and_oom_as_the_cause_of_the_truncated_parquet_file, recommends_a_build_containing_the_memory_usage_correction, keeps_the_direct_one_pass_conversion_workflow, asks_user_to_verify_on_a_build_containing_the_fix, requires_both_successful_parquet_reading_and_the_expected_row_count | Use a build containing the high-memory/OOM correction for the parallel conversion, rerun the one-pass compressed CSV-to-Parquet operation, and verify both Parquet readability and the complete row count before declaring success. |
 
 ## Nodes
 
 | node | terminal | volunteered | images | symptoms |
 |---|---|---|---|---|
-| `N0` |  | 0 | 0 | On DuckDB 0.7.1, loading the gzip CSV into an on-disk all-VARCHAR table takes about three minutes, while writing that table to Parquet takes |
-| `N1` |  | 1 | 0 | On the newer development build, a direct gzip-CSV-to-Parquet conversion finishes in about 550 seconds instead of three hours. The direct con |
-| `N2` |  | 1 | 0 | With the experimental parallel CSV reader, the gzip conversion finishes in about 32 seconds, but the resulting Parquet file contains only 30 |
-| `N3` |  | 1 | 0 | Parallel reading of the uncompressed CSV produces all 212,363,079 rows, while every tested compressed-input run using the experimental paral |
-| `N4_x` |  | 2 | 2 | After updating to a build with the newer parallel CSV reader, all of the input files appear to load successfully. Trying to read the generat |
-| `N_terminal` | ✓ | 2 | 1 | On the latest source build, the compressed CSV converts to a readable Parquet file in about 2 minutes 57 seconds. The resulting Parquet file |
+| `N0` |  | 0 | 0 | Loading the compressed CSV into a DuckDB table takes about three minutes, but writing that table to Parquet takes upwards of three hours. |
+| `N1` |  | 2 | 0 | With the development build and insertion-order preservation disabled, the large all-VARCHAR load completes instead of leaving me with the pr |
+| `N2` |  | 0 | 0 | A direct conversion of the gzip CSV takes about 550 seconds with either insertion-order setting, and both outputs have the same size. |
+| `N3` |  | 0 | 1 | The fast parallel conversion of the compressed CSV produces only 30,559,373 rows instead of 212,363,079. The same compressed file returns al |
+| `N4` |  | 2 | 2 | After updating to the merged parallel-reader implementation, all of the input appears to load, but reading the resulting Parquet file report |
+| `N_terminal` | ✓ | 2 | 1 | The compressed CSV converts to Parquet in about 2 minutes 57 seconds, and the resulting file is readable and contains all 212,363,079 rows. |
 
 ## Machine review (audit pass, adversarially verified)
 

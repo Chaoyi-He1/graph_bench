@@ -1,39 +1,47 @@
 # Review: gh_haproxy_haproxy_2004
 
-**QUIC protocol error with Chrome-based browsers**
+**QUIC protocol errors and HTTP/2 fallback with Chromium image-heavy pages**
 
 - source: https://github.com/haproxy/haproxy/issues/2004
 - kind: LLM draft (needs review)
-- reviewed: `False`
+- reviewed: `True`
 - graph: `data/github_v0/graphs/gh_haproxy_haproxy_2004.json` · raw thread: `data/github_v0/raw/gh_haproxy_haproxy_2004.json`
 
 ```mermaid
 flowchart LR
     N0["<b>N0 Chromium QUIC image failures reported</b><br/><small>info: 6</small>"]
-    N1["<b>N1 complete QUIC trace supplied</b><br/><small>info: 7</small>"]
-    N2_x["<b>N2_x first candidate build still fails</b><br/><small>info: 9</small>"]
-    N3["<b>N3 combined protocol and mux traces collected</b><br/><small>info: 10</small>"]
-    N4_x["<b>N4_x mux candidate improves frequency but does not resolve</b><br/><small>info: 13</small>"]
-    N5["<b>N5 updated candidates fail and local reproducer supplied</b><br/><small>info: 17</small>"]
-    N_terminal["<b>N_terminal development reproducer fixed</b><br/><small>info: 20</small>"]
-    N0 -.->|"❓ unfiltered_haring_trace_with_transport_parameter_lines"| N1
+    N1["<b>N1 complete QUIC trace captured</b><br/><small>info: 7</small>"]
+    N2_x["<b>N2_x STOP_SENDING patch aftermath</b><br/><small>info: 9</small>"]
+    N3["<b>N3 combined protocol traces captured</b><br/><small>info: 10</small>"]
+    N4_x["<b>N4_x first RESET_STREAM patch aftermath</b><br/><small>info: 13</small>"]
+    N5_x["<b>N5_x old patch on newer master aftermath</b><br/><small>info: 14</small>"]
+    N6_x["<b>N6_x refined experimental patch aftermath</b><br/><small>info: 15</small>"]
+    N7["<b>N7 intermittent local reproducer available</b><br/><small>info: 18</small>"]
+    N_terminal["<b>terminal dev reproducer no longer fails</b><br/><small>info: 21</small>"]
+    N0 -.->|"❓ unfiltered_haring_trace_contains_two_error_events"| N1
     linkStyle 0 stroke:#3b82f6,stroke-width:2px
-    N1 -.->|"❓ control_stream_stop_sending_candidate_still_errors"| N2_x
-    linkStyle 1 stroke:#3b82f6,stroke-width:2px
-    N2_x -.->|"❓ combined_quic_qmux_h3_developer_traces_shared"| N3
+    N1 ==>|"💥 blind: Prevent HAProxy from sending STOP_SENDING frames on HTTP/3 control and other unidirectional streams."| N2_x
+    linkStyle 1 stroke:#ef4444,stroke-width:2px
+    N2_x -.->|"❓ combined_quic_qmux_h3_trace_captured"| N3
     linkStyle 2 stroke:#3b82f6,stroke-width:2px
-    N3 -.->|"❓ first_mux_candidate_reduces_errors_but_causes_stalls, stalls_followed_by_h2_fallback, dev_lb_has_no_cpu_memory_or_udp_pressure"| N4_x
-    linkStyle 3 stroke:#3b82f6,stroke-width:2px
-    N4_x -.->|"❓ updated_candidate_one_produces_early_handshake_failures, updated_candidate_two_stalls_then_handshake_failures, local_proxy_reproducer_shared_with_intermittent_results"| N5
-    linkStyle 4 stroke:#3b82f6,stroke-width:2px
-    N5 ==>|"⚡ Apply the final pair of HAProxy QUIC/mux fixes that remove or reduce unjustified RESET_STREAM emission, then have the reporter repeat the previously failing Chromium image-grid reproducer on a build containing both fixes."| N_terminal
-    linkStyle 5 stroke:#f97316,stroke-width:2px
+    N3 ==>|"🔀 ❓chrome_still_disables_h3_after_first_reset_patch, full_trace_with_h3_minimal_verbosity_captured + ⚡Avoid sending an unnecessary RESET_STREAM when the QUIC mux shuts down its write side."| N4_x
+    linkStyle 3 stroke:#a855f7,stroke-width:2px
+    N4_x ==>|"💥 blind: Retest the earlier mux reset-suppression patch on the newer master build containing the recent HTTP/3 connection-shutdown changes."| N5_x
+    linkStyle 4 stroke:#ef4444,stroke-width:2px
+    N5_x ==>|"💥 blind: Replace the earlier patch with the refined experimental stream-shutdown patch that conditionally sends RESET_STREAM instead of an empty STREAM frame with FIN."| N6_x
+    linkStyle 5 stroke:#ef4444,stroke-width:2px
+    N6_x ==>|"💥 blind: Move to a current unpatched 2.8-dev build and provide a locally runnable proxy configuration so maintainers can exercise the intermittent failure without the obsolete experimental patches."| N7
+    linkStyle 6 stroke:#ef4444,stroke-width:2px
+    N7 ==>|"⚡ Use a HAProxy build containing the two later fixes that remove or reduce spurious RESET_STREAM emissions, then verify the previously failing Chromium image workload before declaring the issue resolved."| N_terminal
+    linkStyle 7 stroke:#f97316,stroke-width:2px
     class N0 start
     class N1 normal
     class N2_x normal
     class N3 normal
     class N4_x normal
-    class N5 normal
+    class N5_x normal
+    class N6_x normal
+    class N7 normal
     class N_terminal terminal
     classDef start fill:#fee2e2,stroke:#b91c1c,color:#000
     classDef terminal fill:#dcfce7,stroke:#15803d,color:#000
@@ -42,38 +50,43 @@ flowchart LR
 
 ## Opening (body)
 
-> On our development environment with QUIC enabled, images regularly fail in Chromium-based browsers with `net::ERR_QUIC_PROTOCOL_ERROR 200`. After this happens, the browser may refuse to use QUIC with our origin for a while. The best reproducer is to start Chromium while forcing QUIC for the origin, open a page containing many images, switch to the grid view so larger thumbnails load, and paginate until it occurs, usually within one or two pages. Plain HTML and smaller payloads do not trigger it as regularly. I included QUIC traces, the relevant HAProxy configuration, and `haproxy -vv` output. The affected build is HAProxy 2.8-dev1-86aac23 with an HTTP/3 QUIC bind using `allow-0rtt` and `shards by-thread`.
+> In our QUIC-enabled development environment, Chromium-based browsers regularly fail to serve images with `net::ERR_QUIC_PROTOCOL_ERROR 200`. After enough failures, the browser refuses to use QUIC with the origin for a while. The best reproducer is to force QUIC for the origin, open a page containing many images, switch to the grid view so larger thumbnails load, and paginate once or twice. Plain HTML and smaller payloads do not trigger it as regularly. We are running a customized HAProxy 2.8-dev build on Linux with an HTTP/3 QUIC listener, `allow-0rtt`, per-thread shards, a 32768-byte buffer, and QUIC developer tracing to a ring.
 
 ## Satisfaction conditions
 
-1. Must identify the final accepted cause as HAProxy emitting spurious or unjustified RESET_STREAM frames in the QUIC/mux path, grounded in the combined traces and the behavior of the candidate builds.
-2. Must recommend using a build containing both finalized stream-reset fixes, not treating the earlier control-stream STOP_SENDING change or either experimental mux patch as a complete resolution.
-3. Must account for the falsified attempts: the first candidate left the original protocol errors unchanged, the next candidate only reduced their frequency while introducing stalls and HTTP/2 fallback, and the updated variants produced stalls or reported handshake failures.
-4. Must ask the reporter to repeat the Chromium image-grid reproducer on a build containing both final fixes before declaring the reproduced case resolved.
-5. Resolution must remain appropriately qualified: the reporter confirmed that the previous development reproducer stopped failing, but did not have comprehensive production monitoring to prove that every intermittent end-user case was eliminated.
+1. Must identify the final accepted root cause as HAProxy emitting spurious or unjustified RESET_STREAM frames in the QUIC/HTTP/3 stream handling path, grounded in the collected QUIC, qmux, and h3 traces and the patch-test outcomes.
+2. Must recommend a build containing both later fixes that remove or reduce those spurious RESET_STREAM emissions, rather than relying on the earlier experimental stream-shutdown patches.
+3. Must not present suppressing STOP_SENDING on HTTP/3 unidirectional streams as the fix; the reporter reproduced the same errors after installing that patch.
+4. Must not present either earlier mux reset patch as resolved: one only reduced error frequency while introducing stalls and HTTP/2 fallback, and the later tested combinations ended in handshake failures.
+5. Must ask the reporter to verify the image-grid workload on a build containing the final fixes before declaring resolution.
+6. Resolution may rely on the reporter's confirmation that the development reproducer stopped failing, but must not claim comprehensive production verification because the reporter lacked detailed browser-error monitoring.
 
 ## Edges
 
 | edge | type | gates / info | payload |
 |---|---|---|---|
-| `e1_N0__N1` | clarification_only | asks: unfiltered_haring_trace_with_transport_parameter_lines | I originally ran `haring -f haproxy-quic \| grep 'T11:17'`, but it turns out some lines are not time-prefixed.  |
-| `e2_N1__N2_x` | clarification_only | asks: control_stream_stop_sending_candidate_still_errors | Unfortunately it still happens. I uploaded another trace from the failed run. |
-| `e3_N2_x__N3` | clarification_only | asks: combined_quic_qmux_h3_developer_traces_shared | I enabled the requested qmux and h3 developer traces with the QUIC trace and uploaded the resulting capture. |
-| `e4_N3__N4_x` | clarification_only | asks: first_mux_candidate_reduces_errors_but_causes_stalls, stalls_followed_by_h2_fallback, dev_lb_has_no_cpu_memory_or_udp_pressure | With the patch, the errors are much less frequent: about once every 150 images instead of once every 30. Howev / Yes. The network panel clearly shows batches of requests stalling for about 10 seconds, then QUIC protocol err / This is a nearly idle development VM. Its CPU and UDP statistics show no CPU or memory pressure and no UDP err |
-| `e5_N4_x__N5` | clarification_only | asks: updated_candidate_one_produces_early_handshake_failures, updated_candidate_two_stalls_then_handshake_failures, local_proxy_reproducer_shared_with_intermittent_results | Option 1 failed almost immediately. Chromium reported QUIC handshake failures within the first 11 requests, in / Option 2 started well with about 220 good fetches. Then one or two requests stalled for around five seconds, a / I shared a hacky HAProxy configuration that proxies our development site through local HAProxy. It requires `/ |
-| `e6_N5__N_terminal` | solution_only | req_info: chromium_images_fail_with_err_quic_protocol_error_200, browser_temporarily_stops_using_quic_after_errors, large_image_grid_pagination_reproduces_quickly, dev_lb_has_no_cpu_memory_or_udp_pressure, unfiltered_haring_trace_with_transport_parameter_lines, combined_quic_qmux_h3_developer_traces_shared, control_stream_stop_sending_candidate_still_errors, first_mux_candidate_reduces_errors_but_causes_stalls, stalls_followed_by_h2_fallback, updated_candidate_one_produces_early_handshake_failures, updated_candidate_two_stalls_then_handshake_failures, local_proxy_reproducer_shared_with_intermittent_results<br>elements: identifies_unjustified_reset_stream_emission_as_the_accepted_cause, applies_both_finalized_quic_mux_corrections_rather_than_the_earlier_experimental_candidates, asks_user_to_verify_on_a_build_containing_both_fixes, acknowledges_that_long_term_production_confirmation_is_limited | Apply the final pair of HAProxy QUIC/mux fixes that remove or reduce unjustified RESET_STREAM emission, then have the reporter repeat the previously failing Chromium image-grid reproducer on a build containing both fixes. |
+| `e1_N0__N1` | clarification_only | asks: unfiltered_haring_trace_contains_two_error_events | I captured the ring without filtering it. There should be two events, one around 09:26–09:27 and another aroun |
+| `e2_N1__N2_x` | solution_only **BLIND** | req_info: chromium_images_fail_with_quic_protocol_error_200, unfiltered_haring_trace_contains_two_error_events<br>elements: suppresses_stop_sending_on_http3_unidirectional_streams | Prevent HAProxy from sending STOP_SENDING frames on HTTP/3 control and other unidirectional streams. |
+| `e3_N2_x__N3` | clarification_only | asks: combined_quic_qmux_h3_trace_captured | I enabled the requested qmux and h3 developer traces on the same ring sink and captured another occurrence. He |
+| `e4_N3__N4_x` | mixed **BLIND** | req_info: image_grid_pagination_reproduces_quickly, combined_quic_qmux_h3_trace_captured<br>elements: changes_mux_stream_shutdown_reset_behavior | Avoid sending an unnecessary RESET_STREAM when the QUIC mux shuts down its write side. |
+| `e5_N4_x__N5_x` | solution_only **BLIND** | req_info: chrome_still_disables_h3_after_first_reset_patch, full_trace_with_h3_minimal_verbosity_captured<br>elements: combines_newer_master_with_earlier_mux_patch | Retest the earlier mux reset-suppression patch on the newer master build containing the recent HTTP/3 connection-shutdown changes. |
+| `e6_N5_x__N6_x` | solution_only **BLIND** | req_info: current_master_with_old_patch_immediate_handshake_failures<br>elements: uses_refined_conditional_stream_shutdown_patch | Replace the earlier patch with the refined experimental stream-shutdown patch that conditionally sends RESET_STREAM instead of an empty STREAM frame with FIN. |
+| `e7_N6_x__N7` | solution_only **BLIND** | req_info: image_grid_pagination_reproduces_quickly, current_master_with_refined_patch_stalls_then_handshake_failures<br>elements: uses_current_development_build, provides_local_forced_quic_reproducer | Move to a current unpatched 2.8-dev build and provide a locally runnable proxy configuration so maintainers can exercise the intermittent failure without the obsolete experimental patches. |
+| `e8_N7__N_terminal` | solution_only | req_info: chromium_images_fail_with_quic_protocol_error_200, browser_temporarily_falls_back_from_quic, image_grid_pagination_reproduces_quickly, haproxy_logs_failed_requests_at_error_level, unfiltered_haring_trace_contains_two_error_events, combined_quic_qmux_h3_trace_captured, chrome_still_disables_h3_after_first_reset_patch, full_trace_with_h3_minimal_verbosity_captured<br>elements: identifies_spurious_reset_stream_emission_as_the_final_root_cause, uses_both_later_stream_reset_fixes, asks_user_to_verify_on_a_build_containing_the_fixes, does_not_claim_broad_production_confirmation_beyond_available_monitoring | Use a HAProxy build containing the two later fixes that remove or reduce spurious RESET_STREAM emissions, then verify the previously failing Chromium image workload before declaring the issue resolved. |
 
 ## Nodes
 
 | node | terminal | volunteered | images | symptoms |
 |---|---|---|---|---|
-| `N0` |  | 1 | 0 | Images regularly fail in Chromium with `net::ERR_QUIC_PROTOCOL_ERROR 200`, usually after one or two pages of large grid thumbnails. After en |
-| `N1` |  | 0 | 0 | The image failures still occur while the browser remains open, and the trace contains two apparent events around 09:26–09:29. |
-| `N2_x` |  | 1 | 0 | The same QUIC protocol errors still occur with the first candidate build. HAProxy logs the affected requests at error level even though thei |
-| `N3` |  | 0 | 0 | The Chromium image requests continue to fail while QUIC, qmux, and HTTP/3 developer tracing are enabled. |
-| `N4_x` |  | 1 | 0 | With the attached mux candidate, errors fall from about one per 30 images to about one per 150 images, but some requests stall for 4–10 seco |
-| `N5` |  | 1 | 0 | One updated candidate starts showing reported QUIC handshake failures within the first 11 image requests. The other handles roughly 220 fetc |
-| `N_terminal` | ✓ | 2 | 0 | After testing a build containing the two final fixes, my previous development-environment reproducer no longer triggers the QUIC image failu |
+| `N0` |  | 1 | 0 | In Chromium-based browsers, images regularly fail with `net::ERR_QUIC_PROTOCOL_ERROR 200` when loaded over HTTP/3 through HAProxy. After rep |
+| `N1` |  | 0 | 0 | The Chromium QUIC protocol errors remain reproducible while the browser stays open. |
+| `N2_x` |  | 2 | 1 | With the patch that stops sending STOP_SENDING on HTTP/3 unidirectional streams, Chromium still reports QUIC protocol errors. The correspond |
+| `N3` |  | 0 | 0 | The same image requests continue to fail while QUIC, qmux, and HTTP/3 tracing are enabled. |
+| `N4_x` |  | 1 | 0 | With the first mux patch, failures become less frequent, changing from roughly one per 30 images to roughly one per 150 images, but some req |
+| `N5_x` |  | 1 | 1 | On the newer master build with the older patch applied, Chromium reports a QUIC handshake failure within the first 11 small-image requests. |
+| `N6_x` |  | 1 | 1 | With the refined patch on the newer master build, about 220 requests initially succeed, then some requests stall for about five seconds, and |
+| `N7` |  | 3 | 1 | A later 2.8-dev build still produces QUIC protocol errors. With the local proxy reproducer, roughly half of Chromium sessions encounter QUIC |
+| `N_terminal` | ✓ | 2 | 0 | After installing a build containing the two later RESET_STREAM fixes, my previous development-environment reproducer no longer triggers the  |
 
 ## Machine review (audit pass, adversarially verified)
 

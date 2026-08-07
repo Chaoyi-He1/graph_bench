@@ -4,33 +4,29 @@
 
 - source: https://github.com/dotnet/runtime/issues/118823
 - kind: LLM draft (needs review)
-- reviewed: `False`
+- reviewed: `True`
 - graph: `data/github_v0/graphs/gh_dotnet_runtime_118823.json` · raw thread: `data/github_v0/raw/gh_dotnet_runtime_118823.json`
 
 ```mermaid
 flowchart LR
-    N0["<b>N0 unfamiliar crash handler reported</b><br/><small>info: 2</small>"]
-    N1["<b>N1 Swift handler and startup toggle reproduced</b><br/><small>info: 6</small>"]
-    N2_x["<b>N2_x managed-code workaround aftermath</b><br/><small>info: 7</small>"]
-    N2["<b>N2 issue shown not to be macOS 26 only</b><br/><small>info: 10</small>"]
-    N3["<b>N3 official and local build behavior compared</b><br/><small>info: 14</small>"]
-    N4["<b>N4 startup environment and TTY conditions isolated</b><br/><small>info: 18</small>"]
-    N_terminal["<b>N_terminal mitigation shipped without reporter retest</b><br/><small>info: 22</small>"]
-    N0 -.->|"❓ output_identifies_swift_backtrace_handler, minimal_throw_reproduces_on_dotnet10_p7_macos26, swift_backtrace_enable_no_suppresses_handler"| N1
+    N0["<b>N0 unfamiliar crash handler reported</b><br/><small>info: 3</small>"]
+    N1["<b>N1 minimal reproduction and temporary suppression</b><br/><small>info: 5</small>"]
+    N2["<b>N2 scope and build comparison established</b><br/><small>info: 9</small>"]
+    N3["<b>N3 signing and architecture probes completed</b><br/><small>info: 12</small>"]
+    N4["<b>N4 terminal-dependent behavior established</b><br/><small>info: 13</small>"]
+    N_terminal["<b>terminal mitigation shipped without reporter retest</b><br/><small>info: 18</small>"]
+    N0 -.->|"❓ one_line_managed_throw_invokes_swift_debugger_on_preview7, swift_backtrace_disable_environment_probe_suppresses_output"| N1
     linkStyle 0 stroke:#3b82f6,stroke-width:2px
-    N1 ==>|"💥 blind: Disable the Swift backtrace handler from managed application code after the process has started."| N2_x
-    linkStyle 1 stroke:#ef4444,stroke-width:2px
-    N2_x -.->|"❓ c_and_ruby_abort_do_not_show_swift_handler, dotnet10_reproduces_on_macos15_6, dotnet8_and_dotnet9_official_builds_do_not_reproduce_on_macos26"| N2
+    N1 -.->|"❓ swift_handler_reproduces_on_macos15_6_with_net10, official_net8_and_net9_do_not_show_handler, official_preview6_and_preview7_differ_but_local_old_builds_reproduce"| N2
+    linkStyle 1 stroke:#3b82f6,stroke-width:2px
+    N2 -.->|"❓ official_preview6_preview7_entitlements_match, csops_flags_differ_between_official_and_local_hosts, x64_cross_built_runtime_still_shows_handler"| N3
     linkStyle 2 stroke:#3b82f6,stroke-width:2px
-    N2 -.->|"❓ official_preview6_no_handler_preview7_has_handler, locally_built_preview6_and_v9_show_handler, official_preview6_and_preview7_entitlements_match, local_v9_build_reproduction_screenshot"| N3
+    N3 -.->|"❓ tty_launch_probe_changes_swift_handler_visibility"| N4
     linkStyle 3 stroke:#3b82f6,stroke-width:2px
-    N3 -.->|"❓ dotnet_run_reproduces_direct_dll_invocation_does_not, piped_dotnet_run_does_not_show_handler, code_signing_flags_differ_between_official_and_local_hosts, x64_cross_built_runtime_still_shows_handler"| N4
-    linkStyle 4 stroke:#3b82f6,stroke-width:2px
-    N4 ==>|"⚡ Mitigate the intentionally activated Swift crash backtrace in the native .NET host by setting SWIFT_BACKTRACE=enable=no before the Swift runtime's static initialization, while preserving an explicit user setting."| N_terminal
-    linkStyle 5 stroke:#f97316,stroke-width:2px
+    N4 ==>|"⚡ Treat the output as the Swift runtime's intentionally activated backtrace handler, not as a new .NET managed crash UI or a macOS 26-only failure. Mitigate it from the native host at process startup by disabling Swift backtracing before Swift static initialization, while requiring custom hosts to apply equivalent early configuration."| N_terminal
+    linkStyle 4 stroke:#f97316,stroke-width:2px
     class N0 start
     class N1 normal
-    class N2_x normal
     class N2 normal
     class N3 normal
     class N4 normal
@@ -42,39 +38,37 @@ flowchart LR
 
 ## Opening (body)
 
-> I wrote a test app with an intentional crash scenario and saw an unfamiliar crash-handler experience. This is not a problem report so much as two questions: is this new, and are the runtime maintainers aware of it? I attached a screenshot of what appeared.
+> I wrote a test app with an intentional crash scenario and saw an unfamiliar crash-handler experience. This seems new to me. It is not itself a problem report; I am asking whether it is new and sharing it as an FYI. I attached a screenshot of what I saw.
 
 ## Satisfaction conditions
 
-1. Must identify the accepted diagnosis at the level established by the thread: the extra crash interface is the Swift runtime backtrace handler, whose activation was confirmed by Apple as intentional and whose behavior depends on process-startup context; it is not exclusively a macOS 26 crash reporter or a proven .NET source-code regression.
-2. Diagnosis must be grounded in the collected evidence: SWIFT_BACKTRACE=enable=no suppresses the interface when present at startup, stable macOS also reproduces it, official and local builds differ, and terminal attachment changes the behavior.
-3. The mitigation must run in the native host before Swift runtime static initialization, setting SWIFT_BACKTRACE=enable=no when the user has not already supplied an explicit value.
-4. Must not recommend setting SWIFT_BACKTRACE from managed Main as the fix, because that in-case attempt occurred after the Swift initializer and did not suppress the handler.
-5. Must not claim that an x64 cross-build fixes the problem or that macOS 26 alone caused it; both directions were contradicted by the collected tests.
-6. Must ask an affected user to retest a build containing the host-startup mitigation and must not declare the reporter's system resolved without that verification.
+1. Must identify the accepted cause at the certainty established by the thread: the unfamiliar output is the Swift runtime's backtrace handler being activated intentionally, not a new .NET managed crash handler and not a behavior unique to macOS 26.
+2. Diagnosis must be grounded in the collected evidence: the Swift-labelled minimal reproduction, suppression by the runtime backtrace environment override, reproduction on macOS 15.6, inconsistent official-versus-local build results, and terminal-dependent visibility.
+3. Must recommend the host-side startup mitigation that disables Swift backtracing before Swift static initialization; setting it later from managed Main is too late, and custom hosts may need to arrange the setting themselves.
+4. Must not present an x64 cross-build, a macOS upgrade, or the reporter's suggested servicing changes as the fix: those directions were contradicted by the in-thread tests.
+5. Must explain that lack of an interactive terminal accounts for the behavior not appearing in CI, rather than treating CI silence as evidence that the issue is absent.
+6. Must ask the reporter to verify a current build containing the mitigation before declaring resolution; the thread contains only a maintainer report that behavior was restored to the .NET 9 baseline, not an affected-reporter retest.
 
 ## Edges
 
 | edge | type | gates / info | payload |
 |---|---|---|---|
-| `e1_N0__N1` | clarification_only | asks: output_identifies_swift_backtrace_handler, minimal_throw_reproduces_on_dotnet10_p7_macos26, swift_backtrace_enable_no_suppresses_handler | The extra crash output identifies itself as the Swift backtrace or Swift debugger interface. / I can reproduce it with .NET 10 Preview 7 and macOS 26 Preview 7 using a one-line program: throw new Exception / Running SWIFT_BACKTRACE="enable=no" dotnet run disables the Swift backtrace interface for the same crashing pr |
-| `e2_N1__N2_x` | solution_only **BLIND** | req_info: intentional_crash_shows_unfamiliar_handler, output_identifies_swift_backtrace_handler, swift_backtrace_enable_no_suppresses_handler<br>elements: sets_swift_backtrace_from_managed_application_code | Disable the Swift backtrace handler from managed application code after the process has started. |
-| `e3_N2_x__N2` | clarification_only | asks: c_and_ruby_abort_do_not_show_swift_handler, dotnet10_reproduces_on_macos15_6, dotnet8_and_dotnet9_official_builds_do_not_reproduce_on_macos26 | A plain C program calling abort() and Ruby calling Process.kill('ABRT', Process.pid) terminate with SIGABRT bu / Yes. I reproduced the same Swift crash interface with .NET 10 on non-beta macOS 15.6. / I cannot reproduce the extra Swift interface with official .NET 8 or .NET 9 builds on macOS 26 beta. |
-| `e4_N2__N3` | clarification_only | asks: official_preview6_no_handler_preview7_has_handler, locally_built_preview6_and_v9_show_handler, official_preview6_and_preview7_entitlements_match, local_v9_build_reproduction_screenshot | The downloaded .NET 10 Preview 6 SDK does not end in the Swift debugger, while the downloaded Preview 7 SDK do / A local Debug build from the Preview 6 tag shows the Swift debugger even though the downloaded Preview 6 SDK d / I compared the entitlements of the official Preview 6 and Preview 7 builds, and they were identical. / Yes. My attached output prints the local runtime's framework description and then shows the Swift backtrace af |
-| `e5_N3__N4` | clarification_only | asks: dotnet_run_reproduces_direct_dll_invocation_does_not, piped_dotnet_run_does_not_show_handler, code_signing_flags_differ_between_official_and_local_hosts, x64_cross_built_runtime_still_shows_handler | I can reproduce it with dotnet run, but not when I invoke the built app directly as dotnet bin/Debug/net10.0/a / The extra Swift interface does not appear when I run the command through a pipe, for example dotnet run \| echo / For the official Preview 7 host that stopped showing the handler, CSOps included CS_HARD, CS_KILL, and CS_RUNT / I used a cross-built runtime and host, and it still showed the same crash interface. |
-| `e6_N4__N_terminal` | solution_only | req_info: intentional_crash_shows_unfamiliar_handler, output_identifies_swift_backtrace_handler, swift_backtrace_enable_no_suppresses_handler, dotnet10_reproduces_on_macos15_6, locally_built_preview6_and_v9_show_handler, dotnet_run_reproduces_direct_dll_invocation_does_not, piped_dotnet_run_does_not_show_handler, code_signing_flags_differ_between_official_and_local_hosts<br>elements: identifies_the_extra_interface_as_the_swift_runtime_backtrace_handler, sets_SWIFT_BACKTRACE_to_enable_no_in_the_native_host_before_swift_initialization, does_not_rely_on_setting_the_variable_from_managed_Main, preserves_an_explicit_user_choice_to_enable_the_handler, asks_user_to_verify_on_a_build_containing_the_host_mitigation | Mitigate the intentionally activated Swift crash backtrace in the native .NET host by setting SWIFT_BACKTRACE=enable=no before the Swift runtime's static initialization, while preserving an explicit user setting. |
+| `e1_N0__N1` | clarification_only | asks: one_line_managed_throw_invokes_swift_debugger_on_preview7, swift_backtrace_disable_environment_probe_suppresses_output | Yes. With .NET 10 Preview 7 and macOS 26 Preview 7, a one-line program containing throw new Exception("hello!" / Yes. Running SWIFT_BACKTRACE="enable=no" dotnet run disables the Swift backtrace handler for the same test. |
+| `e2_N1__N2` | clarification_only | asks: swift_handler_reproduces_on_macos15_6_with_net10, official_net8_and_net9_do_not_show_handler, official_preview6_and_preview7_differ_but_local_old_builds_reproduce | It also occurs with .NET 10 on non-beta macOS 15.6. I attached a screenshot of that run. / I cannot reproduce the Swift debugger with the official .NET 8 or .NET 9 builds, including on macOS 26 beta. / The downloaded .NET 10 Preview 6 SDK does not end in the Swift debugger, while the downloaded Preview 7 SDK do |
+| `e3_N2__N3` | clarification_only | asks: official_preview6_preview7_entitlements_match, csops_flags_differ_between_official_and_local_hosts, x64_cross_built_runtime_still_shows_handler | I compared the entitlements of the official Preview 6 and Preview 7 builds, and they are identical. / For an official .NET 10 Preview 7 process where I did not get the backtrace, CSOps reports CS_VALID, CS_GET_TA / I used a cross-built runtime and host, and it still crashed with the same handler. |
+| `e4_N3__N4` | clarification_only | asks: tty_launch_probe_changes_swift_handler_visibility | I can reproduce it with dotnet run, but not when I run the built app directly as dotnet bin/Debug/net10.0/app. |
+| `e5_N4__N_terminal` | solution_only | req_info: intentional_crash_shows_unfamiliar_handler, one_line_managed_throw_invokes_swift_debugger_on_preview7, swift_backtrace_disable_environment_probe_suppresses_output, swift_handler_reproduces_on_macos15_6_with_net10, official_net8_and_net9_do_not_show_handler, official_preview6_and_preview7_differ_but_local_old_builds_reproduce, official_preview6_preview7_entitlements_match, x64_cross_built_runtime_still_shows_handler, tty_launch_probe_changes_swift_handler_visibility<br>elements: identifies_the_swift_runtime_backtrace_handler_as_the_source, explains_that_the_setting_must_be_applied_by_the_host_at_process_startup, uses_the_early_backtrace_disable_mitigation, notes_that_custom_hosts_may_need_to_apply_the_startup_configuration, asks_user_to_verify_on_a_build_containing_the_mitigation, does_not_claim_reporter_verified_resolution | Treat the output as the Swift runtime's intentionally activated backtrace handler, not as a new .NET managed crash UI or a macOS 26-only failure. Mitigate it from the native host at process startup by disabling Swift backtracing before Swift static initialization, while requiring custom hosts to apply equivalent early configuration. |
 
 ## Nodes
 
 | node | terminal | volunteered | images | symptoms |
 |---|---|---|---|---|
-| `N0` |  | 1 | 0 | When my test app intentionally crashes, an unfamiliar crash-handler interface appears. |
-| `N1` |  | 1 | 0 | A one-line unhandled managed exception invokes the Swift crash backtrace interface. Starting the same command with SWIFT_BACKTRACE set to en |
-| `N2_x` |  | 1 | 0 | The Swift crash interface still appears when I try to disable it programmatically from my managed application. |
-| `N2` |  | 0 | 0 | The same Swift crash interface appears with .NET 10 on macOS 15.6, while my C and Ruby crash tests do not show it. Official .NET 8 and .NET  |
-| `N3` |  | 0 | 0 | The downloaded Preview 6 SDK does not show the Swift interface, but a locally built runtime from the same Preview 6 tag does. A locally buil |
-| `N4` |  | 0 | 0 | The interface appears with dotnet run, but not when I invoke the built DLL directly with dotnet. Piping dotnet run so that it does not have  |
-| `N_terminal` | ✓ | 0 | 0 | I have not retested a build containing the host mitigation, so I cannot personally confirm that the extra Swift crash interface no longer ap |
+| `N0` |  | 1 | 0 | When my test app intentionally crashes, an unfamiliar crash-handler interface and backtrace appear instead of only the crash output I expect |
+| `N1` |  | 0 | 0 | A one-line program that throws an unhandled managed exception invokes the Swift debugger on .NET 10 Preview 7 and macOS 26 Preview 7. Launch |
+| `N2` |  | 1 | 0 | The same Swift crash output appears on non-beta macOS 15.6 with .NET 10. Downloaded .NET 8 and .NET 9 builds do not show it, and the downloa |
+| `N3` |  | 0 | 0 | The official Preview 6 and Preview 7 executables report identical entitlements. One official host without the backtrace has CS_HARD and CS_R |
+| `N4` |  | 0 | 0 | The handler appears with dotnet run, but not when I invoke the built DLL directly with dotnet or when I pipe dotnet run so that it has no in |
+| `N_terminal` | ✓ | 2 | 0 | A maintainer reports that the mitigation makes .NET 10 behave like .NET 9, but I have not retested a build containing that mitigation on my  |
 
 ## Machine review (audit pass, adversarially verified)
 

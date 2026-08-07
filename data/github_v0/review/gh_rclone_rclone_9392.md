@@ -1,6 +1,6 @@
 # Review: gh_rclone_rclone_9392
 
-**Large Drime uploads ignore configured folder ID and appear in the remote root**
+**Drime multipart uploads ignore configured folder ID and land in the root directory**
 
 - source: https://github.com/rclone/rclone/issues/9392
 - kind: LLM draft (needs review)
@@ -9,20 +9,20 @@
 
 ```mermaid
 flowchart LR
-    N0["<b>N0 large uploads misplaced</b><br/><small>info: 5</small>"]
-    N1_x["<b>N1_x v1.74.0 aftermath</b><br/><small>info: 7</small>"]
-    N2["<b>N2 configured-folder upload verified</b><br/><small>info: 8</small>"]
-    N3["<b>N3 nested folder verified</b><br/><small>info: 10</small>"]
-    N_terminal["<b>terminal large-upload placement resolved</b><br/><small>info: 11</small>"]
+    N0["<b>N0 large Drime uploads placed in root</b><br/><small>info: 4</small>"]
+    N1_x["<b>N1_x v1.74.0 update aftermath</b><br/><small>info: 7</small>"]
+    N2["<b>N2 folder placement fixed in first test build</b><br/><small>info: 9</small>"]
+    N3["<b>N3 cumulative branch verified by reporter</b><br/><small>info: 10</small>"]
+    N_terminal["<b>terminal folder placement resolved</b><br/><small>info: 12</small>"]
     N0 ==>|"💥 blind: Update to the newly released rclone v1.74.0 and retry the same large Drime upload."| N1_x
     linkStyle 0 stroke:#ef4444,stroke-width:2px
-    N1_x -.->|"❓ first_candidate_build_places_large_file_in_configured_folder"| N2
+    N1_x -.->|"❓ first_fix_branch_places_large_file_under_configured_folder_id"| N2
     linkStyle 1 stroke:#3b82f6,stroke-width:2px
-    N2 -.->|"❓ candidate_build_nested_folder_upload_succeeds_after_retry"| N3
+    N2 -.->|"❓ latest_cumulative_fix_branch_tested_flawlessly"| N3
     linkStyle 2 stroke:#3b82f6,stroke-width:2px
-    N3 ==>|"⚡ Fix Drime multipart uploads by deriving the configured folder's path from the remote root and supplying the multipart API with the complete destination path, then ship the verified change."| N_terminal
+    N3 ==>|"⚡ Fix Drime multipart destination construction by resolving the configured folder ID to its path from the Drime root and sending the multipart API a root-relative destination path, then ship the change after reporter verification."| N_terminal
     linkStyle 3 stroke:#f97316,stroke-width:2px
-    N0 ==>|"🚀 Fix Drime multipart uploads by resolving the configured folder ID to its path from the Drime root and sending the complete root-relative destination path to the multipart API. (skip 4)"| N_terminal
+    N0 ==>|"🚀 Fix Drime multipart destination construction by resolving the configured folder ID to its path from the Drime root and sending the multipart API a root-relative destination path, then request verification on a build containing the change. (skip 6)"| N_terminal
     linkStyle 4 stroke:#0ea5e9,stroke-width:2px
     class N0 start
     class N1_x normal
@@ -36,36 +36,36 @@ flowchart LR
 
 ## Opening (body)
 
-> I connected rclone to Drime with the folder ID of my Rclone folder. Small files around 5–10 MB upload there correctly, but a large file around 1 GB fails verification and appears in the Drime root instead of the configured folder. I downloaded rclone again and reconfigured after the earlier update, but the behavior is unchanged every time.
+> I connected Drime to rclone using a specific folder ID. Small files around 5–10 MB upload into that folder, but a large file around 1 GB fails verification and appears in the Drime root directory instead. It should be uploaded into the configured “Rclone” folder. I downloaded rclone again after the linked update and reconfigured the remote several times, but the same thing keeps happening.
 
 ## Satisfaction conditions
 
-1. Must identify the accepted root cause: Drime's multipart upload API interprets its destination path relative to the remote root, while rclone was supplying a path relative to the folder selected by the configured folder ID.
-2. Must fix the path construction by resolving the configured folder's path from the Drime root and passing the complete root-relative destination, including any nested subfolder path, to multipart upload.
-3. Diagnosis must be grounded in the size-dependent behavior, the root placement with an object-not-found verification error, and the successful candidate-build tests.
-4. Must not treat reinstalling, reconfiguring, or merely updating to v1.74.0 as the fix; those actions were already tried and the large upload was still misplaced.
-5. Must distinguish the retryable Cloudflare 520 response from the original wrong-folder defect rather than replacing the accepted root cause with that transient error.
-6. Must ask the affected user to verify a build containing the path fix with a large upload before declaring the folder-placement issue resolved.
+1. Must identify the root cause of the opening issue: Drime's multipart upload API interprets the destination as a path relative to the account root, while rclone was supplying a path relative to the configured folder ID.
+2. Must fix destination construction by resolving the configured folder ID to its path from the Drime root and using the resulting root-relative path for multipart uploads.
+3. Diagnosis must be grounded in the size-dependent behavior, the completed upload appearing in root with an object-not-found verification error, and the successful placement test on a provided build.
+4. Must not treat installing v1.74.0 or merely reconfiguring the same folder ID as sufficient; both were tried without resolving the issue.
+5. Must not misidentify the transient Cloudflare 520 response or another participant's folder-named-0 edge case as the cause of this reporter's original root-placement problem.
+6. Must ask the reporter to verify a build containing the path fix and only treat the original placement issue as resolved after that verification succeeds.
 
 ## Edges
 
 | edge | type | gates / info | payload |
 |---|---|---|---|
-| `e1_N0__N1_x` | solution_only **BLIND** | req_info: large_file_fails_verification_and_appears_in_root<br>elements: asks_to_update_to_current_release_and_retry | Update to the newly released rclone v1.74.0 and retry the same large Drime upload. |
-| `e2_N1_x__N2` | clarification_only | asks: first_candidate_build_places_large_file_in_configured_folder | It worked for the folder ID I configured. The large file was uploaded into that folder instead of the Drime ro |
-| `e3_N2__N3` | clarification_only | asks: candidate_build_nested_folder_upload_succeeds_after_retry | I created another folder inside the folder whose ID is configured and uploaded there. The first run stopped pa |
-| `e4_N3__N_terminal` | solution_only | req_info: drime_remote_configured_with_specific_folder_id, small_files_upload_to_configured_folder, large_file_fails_verification_and_appears_in_root, v174_large_upload_still_placed_in_root, v174_log_reports_object_not_found_after_multithread_copy, first_candidate_build_places_large_file_in_configured_folder, candidate_build_nested_folder_upload_succeeds_after_retry<br>elements: identifies_multipart_destination_path_as_the_source_of_misplacement, derives_the_path_from_drime_root_to_the_configured_folder_id, passes_the_complete_root_relative_destination_to_the_multipart_api, asks_user_to_verify_on_a_build_containing_the_fix | Fix Drime multipart uploads by deriving the configured folder's path from the remote root and supplying the multipart API with the complete destination path, then ship the verified change. |
-| `e5_N0__N_terminal` | solution_only | req_info: drime_remote_configured_with_specific_folder_id, small_files_upload_to_configured_folder, large_file_fails_verification_and_appears_in_root<br>elements: identifies_multipart_destination_path_as_the_source_of_misplacement, derives_the_path_from_drime_root_to_the_configured_folder_id, passes_the_complete_root_relative_destination_to_the_multipart_api, asks_user_to_verify_on_a_build_containing_the_fix | Fix Drime multipart uploads by resolving the configured folder ID to its path from the Drime root and sending the complete root-relative destination path to the multipart API. |
+| `e1_N0__N1_x` | solution_only **BLIND** | req_info: large_files_fail_verification_and_appear_in_root<br>elements: recommends_testing_rclone_v1_74_0 | Update to the newly released rclone v1.74.0 and retry the same large Drime upload. |
+| `e2_N1_x__N2` | clarification_only | asks: first_fix_branch_places_large_file_under_configured_folder_id | It worked for the folder ID I configured. I also created a folder inside it and tried that destination: the fi |
+| `e3_N2__N3` | clarification_only | asks: latest_cumulative_fix_branch_tested_flawlessly | Worked flawlessly! I tried it with these files and the uploads completed successfully. |
+| `e4_N3__N_terminal` | solution_only | req_info: drime_remote_configured_with_specific_folder_id, small_files_upload_to_configured_folder, large_files_fail_verification_and_appear_in_root, large_upload_log_failed_to_find_object_after_copy, first_fix_branch_places_large_file_under_configured_folder_id, latest_cumulative_fix_branch_tested_flawlessly<br>elements: identifies_multipart_path_semantics_as_the_root_cause, resolves_configured_folder_id_to_its_path_from_root, passes_a_root_relative_destination_to_the_multipart_api, asks_user_to_verify_on_a_build_containing_the_fix | Fix Drime multipart destination construction by resolving the configured folder ID to its path from the Drime root and sending the multipart API a root-relative destination path, then ship the change after reporter verification. |
+| `e5_N0__N_terminal` | solution_only | req_info: drime_remote_configured_with_specific_folder_id, small_files_upload_to_configured_folder, large_files_fail_verification_and_appear_in_root<br>elements: identifies_multipart_path_semantics_as_the_root_cause, resolves_configured_folder_id_to_its_path_from_root, passes_a_root_relative_destination_to_the_multipart_api, asks_user_to_verify_on_a_build_containing_the_fix | Fix Drime multipart destination construction by resolving the configured folder ID to its path from the Drime root and sending the multipart API a root-relative destination path, then request verification on a build containing the change. |
 
 ## Nodes
 
 | node | terminal | volunteered | images | symptoms |
 |---|---|---|---|---|
-| `N0` |  | 1 | 0 | Files around 5–10 MB upload into my configured Drime folder, but a file around 1 GB fails verification and appears in the Drime root instead |
-| `N1_x` |  | 2 | 0 | With rclone v1.74.0, ocean.mp4 reaches 100% and is visible in the Drime root, while rclone reports 'multi-thread copy: failed to find object |
-| `N2` |  | 0 | 0 | With the provided test build, the large file is uploaded into the folder represented by my configured folder ID. |
-| `N3` |  | 1 | 0 | The test build also uploads into a folder inside my configured folder; the first attempt stopped with a retryable Cloudflare 520 response, a |
-| `N_terminal` | ✓ | 0 | 0 | Large multipart uploads now appear in the configured Drime folder, including folders below it, rather than appearing in the remote root. |
+| `N0` |  | 1 | 0 | Files around 5–10 MB upload into my configured Drime folder, but a large file around 1 GB fails verification and appears in the Drime root d |
+| `N1_x` |  | 3 | 0 | With rclone v1.74.0, ocean.mp4 reaches 100%, appears in the Drime root directory, and ends with “multi-thread copy: failed to find object af |
+| `N2` |  | 1 | 0 | The provided test build uploaded the large file under the folder ID I configured instead of placing it in the Drime root. My first upload in |
+| `N3` |  | 0 | 0 | The latest provided branch worked flawlessly with my test files. |
+| `N_terminal` | ✓ | 0 | 0 | Large multipart uploads using the verified fix are placed under my configured Drime folder instead of appearing in the root directory. |
 
 ## Machine review (audit pass, adversarially verified)
 
