@@ -1,0 +1,146 @@
+{
+ "repo": "dbt-labs/dbt-core",
+ "number": 7432,
+ "url": "https://github.com/dbt-labs/dbt-core/issues/7432",
+ "title": "[CT-2460] [Feature] Infer schema from prod, to enforce contract & detect breaking changes in dev",
+ "state": "closed",
+ "labels": [
+  "type:feature",
+  "state",
+  "spike",
+  "Refinement",
+  "multi_project",
+  "model_contracts"
+ ],
+ "reporter": "jtcohen6",
+ "created_at": "2023-04-21T18:09:17Z",
+ "closed_at": "2026-03-09T18:25:05Z",
+ "body": "In v1.5, we added support for:\r\n\r\n- Declaring model [contracts](https://docs.getdbt.com/reference/resource-configs/contract) in yaml (which can require a lot of yaml!)\r\n- Enforcing that contract at build time, and raising a nice error message if there's a mismatch\r\n\r\nWhat if we could manage to do that, *without* requiring all that yaml to be defined upfront? We infer the contract on the basis of the **current version of this model in production**. In that way, we also marry together the contract’s enforcement and its breaking change detection.\r\n\r\nThis would require a mechanism similar to what's proposed in https://github.com/dbt-labs/dbt-core/issues/7256 / https://github.com/dbt-labs/dbt-core/pull/7258. If provided with a manifest for deferral / state comparison, we should store a `state_relation` associated with the prod counterpart of each node, in the current manifest.\r\n\r\nDuring the model’s materialization:\r\n\r\n1. Dynamically access the columns of the “stateful” (prod) relation\r\n2. Use those columns, instead of user-defined config (yaml), as the basis for comparison. Crucially, we should **allow** column additions, but raise a `ContractBreakingChangeError` if an existing column is renamed/removed/retyped.\r\n\r\n```yaml\r\nmodels:\r\n  - name: my_model_with_dynamic_contract\r\n    contract:\r\n      enforced: true\r\n      inferred: true\r\n```\r\n\r\nPseudo logic:\r\n\r\n```sql\r\n{% if state_relation and contract.inferred %}\r\n    {% set dev_columns = get_column_schema_from_query(sql) %}\r\n    {% set prod_columns = get_column_schema_from_query(get_empty_subquery_sql(\"select * from \" ~ state_relation)) %}\r\n    {% set dev_formatted = format_columns(dev_columns)['formatted'] %}\r\n    {% set prod_formatted = format_columns(prod_columns)['formatted'] %}\r\n\r\n    {% for prod_column in prod_formatted %}\r\n        {% if prod_column not in dev_formatted %}\r\n            {%- do exceptions.raise_contract_breaking_change_error(dev_columns, prod_columns) -%}\r\n        {% endif %}\r\n    {% endfor %}\r\n{% endif %}\r\n```\r\n\r\n### Considerations\r\n\r\nWe'd need some special handling when a model is being renamed, or created for the first time. If there is no `state_relation`, there is no contract to infer/enforce — it's whatever the model SQL says.\r\n\r\nWe would need to do more work to support *partial* contract definitions—a mix of explicit & inferred—whereby a user could define certain columns with constraints, dynamic data masking rules (!), etc—but wouldn’t have to define them all.\r\n\r\ndbt would still need to have access to the the full column spec, during `create table` DDL. How to get the names and data types of columns that are not defined in yaml?\r\n- ~A lot of that work might be around type aliasing, which gets tricky quickly. Many database cursors return column types with a genuinely different naming convention from how that database supports receiving them.~ We know what the `state_relation` is, we _should_ be able to just run a `describe` statement against it (`adapter.get_columns_in_relation`) to get back data types that we can us within the `create table` DDL.\r\n- ~If push comes to shove, we could switch out the current implementation of the \"preflight\" check (run a single \"empty\" query and get the schema from the cursor) for an even-more-naive one, where we create a temp table and run a `describe` statement / information schema query against it.~\r\n\r\n```yaml\r\nmodels:\r\n  - name: my_model_with_partial_contract\r\n    contract:\r\n      enforced: true\r\n      inferred: true # but i'll declare *some* columns below\r\n    columns:\r\n      - name: column_a\r\n        data_type: int\r\n        constraints:\r\n          - type: not_null\r\n      - name: column_b\r\n        data_type: # leave this to be inferred?\r\n      # other columns not declared -- to be inferred from prod\r\n```",
+ "comments": [
+  {
+   "author": "jtcohen6",
+   "created_at": "2023-06-09T16:27:31Z",
+   "body": "There's more to figure out here, but an immediate action we can take is revisiting this in light of the implementation of https://github.com/dbt-labs/dbt-core/pull/7796. My sense is that will only be called by certain commands, whereas we would need `state_relation` to be available any time we want to infer/enforce contracts."
+  },
+  {
+   "author": "ghost",
+   "created_at": "2023-06-12T18:38:25Z",
+   "body": "i love this idea, i think it lends itself well to a new implementation of dbt and could be used as a check that the logic now spelled out in dbt code will in fact output data in the same format as the existing data. \r\n\r\nwhat i'd really love to see though is a column level contract to enable models that are only partially covered by a contract. all or nothing makes adoption of contracts cumbersome and time consuming, especially the data types requirement imo. "
+  },
+  {
+   "author": "jtcohen6",
+   "created_at": "2023-06-30T11:30:16Z",
+   "body": "Relevant follow-up work from the `defer_relation` implementation for `dbt clone`:\r\n- https://github.com/dbt-labs/dbt-core/issues/7965"
+  },
+  {
+   "author": "rflitcroft",
+   "created_at": "2023-07-10T10:57:02Z",
+   "body": "This would be a great addition. I have a use case where I would like to ensure that a subset of columns are present with the correct data_type, whilst being lenient about any others undeclared in the contract.\r\n\r\nPerhaps a simple contract setting at the model level such as **enforce_undeclared_columns: false** \r\n...Unless of course this would be a natural behaviour of what is already proposed."
+  },
+  {
+   "author": "ghost",
+   "created_at": "2023-08-04T13:32:57Z",
+   "body": "I'm also very much interested in the partial contracts feature of this ticket - this would be really useful for ensuring a given amount of a model conforms to the intended shape while allowing divergence on any other customizations implemented in a data meshy environment."
+  },
+  {
+   "author": "jtcohen6",
+   "created_at": "2023-08-14T11:23:19Z",
+   "body": "We've started spiking this over in #8339, with some promising results!\r\n\r\n### This is an \"inferred\" contract, not a \"partial\" contract\r\n\r\nI want to distinguish between two ideas that I'm seeing in the comments above: an **\"inferred\" model contract** is different from a **\"partial\" model contract**. With an \"inferred\" contract, _every column is contracted_, but only some columns are explicitly specified in yaml. The names and data types of other columns are inferred from the columns in production. A \"partial\" contract would mean, only some of the columns in this model are actually reliable guarantees for downstream consumers. I think that's a much trickier undertaking, requiring careful thinking about column-level documentation and access policies. (How can a downstream consumer reliably know which columns are \"under contract,\" and which ones might go away at any moment?)\r\n\r\nThe scope of this issue is \"inferred\" contracts _only_. As soon as a model is pushed into production, every column is \"under contract,\" and dbt will raise warnings/errors if any is renamed/retyped/removed. The result is the same, but the input is what's different: users only need to specify columns if those columns also have constraints, tests, descriptions, etc. (In the current spike implementation, if you want to specify anything about a column, it needs to be _fully_ specified, including a `data_type`. We could look into supporting a mix of explicit and inferred attributes.)\r\n\r\n### What about when deferral is not available?\r\n\r\nOne more thing: Inferred contracts can only be enforced when a manifest is provided and `--defer` is enabled. Otherwise, the behavior is to fail the contract check:\r\n```\r\n$ dbt run --defer --state state/\r\n...\r\nCompleted successfully\r\n\r\n$ dbt run\r\n...\r\nCompilation Error in model my_model (models/my_model.sql)\r\n  This model has an enforced contract that failed.\r\n  Please ensure the name, data_type, and number of columns in your contract match the columns in your model's definition.\r\n\r\n  | column_name | definition_type | contract_type | mismatch_reason     |\r\n  | ----------- | --------------- | ------------- | ------------------- |\r\n  | test        | TEXT            |               | missing in contract |\r\n  | test2       | INT             |               | missing in contract |\r\n```\r\n\r\nDoes that feel right? Should we instead raise a warning, saying that the contract could not be fully enforced, but allowing the user to continue for now? I foresee some users switching the contract to `enforced: false` in development, and then forgetting to switch it back on before it runs in CI. Disabling the contract enforcement _should_ be caught as an error there as well."
+  },
+  {
+   "author": "ghost",
+   "created_at": "2023-08-14T11:44:21Z",
+   "body": "@jtcohen6 re the split of partial vs inferred, it might be worth separating the two definitions into additional issues on here https://docs.getdbt.com/docs/collaborate/govern/model-contracts#can-i-define-a-partial-contract\r\n\r\nI would be interested in the \"partial\" definition as you've outlined in here, rather than the inferred one but at the moment I think there is a single issue for both :)"
+  },
+  {
+   "author": "charles-astrafy",
+   "created_at": "2023-09-26T12:55:45Z",
+   "body": "+1 for this feature but I still feel that one of the major issue with current implementation of data contracts within dbt is that the data contract can be modified unilaterally by one party. It goes against the idea of a \"contract\" that both parties agree upon and that can only be changed if both parties agree to change it."
+  },
+  {
+   "author": "Ashish-Agrawal-tfs",
+   "created_at": "2024-01-08T15:22:02Z",
+   "body": "+1"
+  },
+  {
+   "author": "arasdk",
+   "created_at": "2024-01-22T10:25:20Z",
+   "body": "+1"
+  },
+  {
+   "author": "kmarq",
+   "created_at": "2024-01-29T16:56:15Z",
+   "body": "Wanted to drop some thoughts on the enforced component of contracts. Currently in order to use constraints you have to have a fully defined table to also enforce a contract. We typically like to define important columns and metadata comments but do not define their types within the yaml. Typing is done in the sql models with some additional macro support for custom logic.\r\n\r\nConstraints can provide a lot of capability outside of just enforcing a contract (such as defining PK/FK relationships within the dwh for BI tools). I'd really like to see the ability to apply constraints without having to fully implement the other requirements of a contact (defining each column and its datatype for example). \r\n\r\nI'd really appreciate being able to have constraints applied, without having to manage all of the other components that are currently required for a contract. "
+  },
+  {
+   "author": "rumbin",
+   "created_at": "2024-01-30T06:25:34Z",
+   "body": "The proposed mechanism seems to extend the existing one of the `--state`-based backward-compatibility check.  \r\nThe latter often came into my way within models that I actually did not want to have compatibility-checked, as they are located in less exposed modeling layers where we allow ourselves more freedom of change.  \r\nThe only reason for having the contracts defined for these models is to automatically have FK/PK constraints set, so the query engine (here Snowflake) can perform join elimination.\r\n\r\nBTW, at least for Snowflake, dbt doesn't respect the run order of the models based on the FK relationships. This can lead to failing FK declaration queries, as the PK of the referred model may not be declared yet. Reason: the referred model is not an upstream model, of the one that declares the FK relationship. And explicitly declaring it as such via `depends_on` alters the DAG in a way that make stateful runs execute too many models.  \r\n\r\nSo in conclusion, I second @kmarq's remarks on constraints and I'd like to suggest that their execution order needs to have a dependency graph of its own, which cannot be reflected by existing dbt model dependencies in an efficient way."
+  },
+  {
+   "author": "emirkmo",
+   "created_at": "2024-04-04T19:57:43Z",
+   "body": "**Warning! Negative but hopefully constructive feedback:**\n\nWith contracts, explicit is better than implicit and having inferred contracts is going to add a lot of headaches.\n\nI would like to suggest instead tooling to *generate the yaml*, so that contracts are always explicit, as more sustainable long term approach. This has the added benefit of being helpful outside of contracts as well, solving one pain point of extensive dbt usage.\n\nI believe creating/merging this “implicit contract” will be a footgun. \n\n## Hope examples/details below are helpful:\n\nCurrently, we use a variety of ways to generate more explicit non-dbt contracts  from dbt manifest and yaml files, and it would be great if contracts were a true first class citizen of dbt itself for our chosen adapters. But making it optional or tying it “to the state in prod” is very dangerous and has not been thought through.\n\nFor example, what should happen to an implicit contract upon database failure or data issues/type corruption etc.? How should contracts behave when migrating models to a new database or tool? How much can users rely on an implicit contract that’s not in version control but is state-dependent in a (likely distributed) DBMS? What about datalake or columnar analytics databases/DWs? How useful are contracts when they are essentially a Describe query on a database instead of yaml that can be consumed by various tooling/services in data platforms?\n\nBenefits of explicit YAML: Onr can have code review over yaml. One can have meetings with non-technical stakeholders over yaml, easily translating it to a myriad of consumable formats. Downstream users can read and trust it, without having to understand database internals. This is not the case for an implicit contract in the way being designed here. The whole name seems to be a misnomer as implicit is not enforceable in a contract.\n\n**Perhaps you can call it “contract generation”, and look at it from that angle?** Of course we want to minimize manual work but that can be achieved without sacrificing the core feature of a data contract.\n\nThe reason I leave this feedback here instead of in a feature request is because I believe having non-explicit pseudo contracts will be actively harmful and create difficulties for us and our users down the line, and for dbt practitioners worldwide. *It would be better to not have it than have it be implicit.*\n\nBeside what I enumerated here, there are a lot of problems tying the desired state, contract, to the actual state (database). Dbt is already the tool to enforce this. Contracts should not assume the database to be valid; it may not be. **They should be a contract and define the expected/desired state, and dbt should help validate this expectation**. It shouldn’t make the mistake of giving false confidence in the data by having implicit contracts that don’t happen to fail during changes/disruptions/etc. \n\nI think the request here around using constraints would also be handled better without an implicit contract, but instead with generated yaml. \n\nFinally, these data contracts are producer owned data contracts, so they are one party. That is fine, as long as it is explicit 😊. But they are not merely the current API definition (DBMS’s have this feature). Users should be able to rely on the contract to only change when intended by the producer, not when someone sneezes at the database. This way, they get value and there is a concept of breaking changes that can be handled at the contract definition/code level, giving a platform for users concerns as well. Making contracts implicit would erode their value for users/consumers as well."
+  },
+  {
+   "author": "d1manson",
+   "created_at": "2024-05-01T18:07:16Z",
+   "body": "in terms of partial contracts for constraints, i wonder if it's worth bringing [this concept](https://github.com/dbt-labs/dbt-core/issues/9864) into the mix here as it would solve for both the zero-cost aspect of constraints and the only-build-if-valid aspect, but via a more generic route that doesn't fragment yaml between tests and constraints.  That option also works for views."
+  },
+  {
+   "author": "cunhanator",
+   "created_at": "2024-07-11T16:56:45Z",
+   "body": "I really like emirko's yml code generator idea. Is this something that could be scoped into a v.2 of dbt assist?"
+  },
+  {
+   "author": "Pirognoe",
+   "created_at": "2024-10-18T11:11:16Z",
+   "body": "upvote"
+  },
+  {
+   "author": "b-akhil",
+   "created_at": "2024-10-25T09:33:01Z",
+   "body": "+1"
+  },
+  {
+   "author": "GeorgeNtaskas",
+   "created_at": "2025-01-16T10:56:21Z",
+   "body": "+1"
+  },
+  {
+   "author": "javierbecerra0425",
+   "created_at": "2025-05-27T18:37:41Z",
+   "body": "+1"
+  },
+  {
+   "author": "emirkmo",
+   "created_at": "2025-06-24T15:34:06Z",
+   "body": "> I really like emirko's yml code generator idea. Is this something that could be scoped into a v.2 of dbt assist?\n\nAs there seems to be some interest, [I've drafted a Feature Request](https://github.com/dbt-labs/dbt-core/issues/11764) (#11764). Hopefully it can help with scoping decisions and avoid hijacking. \n\nPlease provide your input and feel free to edit: @cunhanator  @javierbecerra0425 @GeorgeNtaskas  @b-akhil  (or any interested reader). \n\nMy team has developed similar tooling internally. I can look into open sourcing it and creating a PR if that would be welcomed. The work is not worth it however if it doesn't align with the vision of dbt-labs/dbt-core.\n\n@jtcohen6 apologies for the ping, but would be grateful to know if yaml generator for contracts would be something that you would be open to? And especially if the current feature request is still even valid?"
+  },
+  {
+   "author": "joyce-data",
+   "created_at": "2025-09-19T22:28:05Z",
+   "body": "+1"
+  },
+  {
+   "author": "i-am-lax",
+   "created_at": "2026-02-25T10:13:17Z",
+   "body": "+1"
+  },
+  {
+   "author": "jtcohen6",
+   "created_at": "2026-03-09T18:25:05Z",
+   "body": "@emirkmo Thanks for opening the issue, and sorry for the long delay on my side. Suffice to say, I've really come around to your point of view here!\n\n> With contracts, explicit is better than implicit and having inferred contracts is going to add a lot of headaches. I would like to suggest instead tooling to generate the yaml, so that contracts are always explicit, as more sustainable long term approach.\n\nI'm 100% with you. I'm going to close this issue as \"not planned\" - let's discuss the potential approaches to \"contract (yaml) generation\" over in #11764."
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "dbt-labs/dbt-core",
+  "default_branch": "main",
+  "commit_sha": "75703c10eecaa01549477e241e9212a66f4df40e",
+  "as_of": "2023-04-21T18:09:17Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_dbt-labs_dbt-core_7432"
+}

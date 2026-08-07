@@ -1,0 +1,134 @@
+{
+ "repo": "trinodb/trino",
+ "number": 24282,
+ "url": "https://github.com/trinodb/trino/issues/24282",
+ "title": "Native Trino S3 client struggles under load, AWS Client is fine in Trino 464",
+ "state": "closed",
+ "labels": [],
+ "reporter": "reporter",
+ "created_at": "2024-11-27T17:46:25Z",
+ "closed_at": "2026-01-08T10:25:18Z",
+ "body": "Hi Team,\n\nWe are operating relatively large Trino clusters consistently under heavy load, typically running 50-60 concurrent queries that may execute for hours. After upgrading from Trino 419 to Trino 464, we've observed significant query stalls.\n\nInitially, we encountered issues with indefinite TCP connection timeouts. Setting appropriate timeouts resolved this issue, and the cluster performed well under light load.\n\nHowever, under heavy utilization, another problem emerged. After about 15-20 minutes of running the adjusted cluster, we noticed some SQL queries hanging indefinitely without any observable activity. After experimenting with various settings, switching to the Legacy S3 connector restored normal behavior.\n\nAfter digging into the state of JVM it appears that there are a lot of hanging http processes, which suggest that something is not right with the network connection pooling.\n\nLet me know what debug information you would need for this.\n\nThanks",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2024-11-27T18:43:10Z",
+   "body": "Can you try with the `internal-communication.http2.enabled=false` ?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-11-27T19:16:31Z",
+   "body": "@participant1 Will try as soon as possible. It may need to wait until mid next week."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-11-27T19:32:26Z",
+   "body": "@reporter sure"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-12-05T14:16:35Z",
+   "body": "@participant1 Same problem. Under light load no problems, under heavy utilization things start to struggle."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-12-05T14:19:46Z",
+   "body": "@reporter I suspect cluster misconfiguration. We don't have any other reports of issues like that."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-12-06T14:48:02Z",
+   "body": "@participant1 if I may chip in, we noticed a regression in cluster performance (with fault tolerance on task level enabled, S3) when several queries are launched that read a lot of input data (1TB+). This has two implications:\n- S3 throttling kicks in for this queries - we use 6 buckets rn, but when I changed it to 45 buckets, queries become \"stuck\" after just 10 minutes of cluster uptime\n- Node network saturates (that's a theory - might be wrong) - at least we see that transmitting data for joins slows down by a mile\n\nThis was on Trino 466. I've rolled back from 45 exchange buckets to 6 and from 466 to 465, and things got back to normal - minus when S3 throttle activates, queries get slowed down for a short period.\n\nCluster runs m6in.4xlarge for coordinator and 6x m7g.12xlarge nodes for workers with 128 GB XmX / 160GB worker node container"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-12-06T17:32:24Z",
+   "body": "@participant2 Between 465 and 466 the only related change seems to be updating AWS SDK from 2.29.16 to 2.29.21.\n\nMight be worth checking changes between those. The original issue is however comparing between Legacy FS (Hadoop S3 implementation using AWS SDK v1) and Native FS (direct usage of AWS SDK v2)."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-12-06T18:24:36Z",
+   "body": "> @participant2 Between 465 and 466 the only related change seems to be updating AWS SDK from 2.29.16 to 2.29.21.\n> \n> Might be worth checking changes between those. The original issue is however comparing between Native FS (Hadoop S3 implementation using AWS SDK v1) and Native FS (direct usage of AWS SDK v2).\n\n@participant3 I agree. The reason I chose this issue is because what the author describes re native S3 explains what we observed very well. However, I suspected that using 45 exchange buckets might have something to do with this - again, I might be very wrong here.  \nAlso, we do not see any issues with native s3 when reading/writing to MinIO. Only exchange, where we use AWS S3, causes trouble"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-02-27T15:14:28Z",
+   "body": "@participant1 I am currently Running Trino 470 with Trino native S3 connector and the issue appears to be gone. On the flip side, Hadoop S3 connector is giving a lot of headache instead (which is being discontinued), so I switched to the native one hoping the issue is addressed and it is. The issue was heavily amplified by unmaintained Iceberg tables with millions of tiny files. Would be nice to have some warnings about such tables in the logs.\n"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-06-26T11:38:55Z",
+   "body": "Posting this, initially posted in #6405, which is now closed, here:\n\nI have experienced the same issue, even with Express One Buckets, which have very big rate limits, which suggests the issue is on Trino's side. In addition, I also see that downloads of data files from S3 are quite slow. This would suggest that there is some issue with the download and write speed to S3 inside the Trino and the reason why adding more buckets solves it for the Exchange operator is that there are more copies of an internal resource that deals with each individual bucket.\n\n> @participant1 if I may chip in, we noticed a regression in cluster performance (with fault tolerance on task level enabled, S3) when several queries are launched that read a lot of input data (1TB+). This has two implications:\n> \n> S3 throttling kicks in for this queries - we use 6 buckets rn, but when I changed it to 45 buckets, queries become \"stuck\" after just 10 minutes of cluster uptime\nNode network saturates (that's a theory - might be wrong) - at least we see that transmitting data for joins slows down by a mile\nThis was on Trino 466. I've rolled back from 45 exchange buckets to 6 and from 466 to 465, and things got back to normal - minus when S3 throttle activates, queries get slowed down for a short period.\n\n> Cluster runs m6in.4xlarge for coordinator and 6x m7g.12xlarge nodes for workers with 128 GB XmX / 160GB worker node container\n\nWe get this issue without apparent S3 slowdowns. Furthermore, we stop getting the issue with 6 standard S3 buckets. But 1 express one bucket already has more rate limits than 6 standard buckets and still fails (and works fine with 6 express one buckets). This makes us think that the issue is not related to S3 rate-limits. Furthermore, a simple test using multiple threads to download data from S3 allows us to download at much bigger speeds than what Trino is achieving. Hence, it is also not probably a node network issue (plus, we use nodes with much guaranteed network bandwidth than what we achieve.) I would be inclined to think the issue is on Trino's side."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-06-26T19:48:35Z",
+   "body": "@participant4 can you share thread dumps when cluster has high load?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-06-26T21:32:46Z",
+   "body": "Also which connectors are you using?"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-07-14T09:46:12Z",
+   "body": "Hi, @participant1. Sorry for the late reply, I was on vacation :).\n\nI am using the Iceberg connector only. I am not sure what thread dumps you want. Worker logs?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-07-14T10:01:27Z",
+   "body": "@participant4 thread dump to see which threads are busy and which ones are blocked"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-07-14T10:51:03Z",
+   "body": "FYI: The issue appears to be resolved in Trino 470 on my end.\r\n\r\nOn Mon, Jul 14, 2025 at 5:01 AM participant1 ***@***.***> wrote:\r\n\r\n> *participant1* left a comment (trinodb/trino#24282)\r\n> <https://github.com/trinodb/trino/issues/24282#issuecomment-3068747001>\r\n>\r\n> @participant4 <https://github.com/participant4> thread dump to see which threads\r\n> are busy and which ones are blocked\r\n>\r\n> —\r\n> Reply to this email directly, view it on GitHub\r\n> <https://github.com/trinodb/trino/issues/24282#issuecomment-3068747001>,\r\n> or unsubscribe\r\n> <https://github.com/notifications/unsubscribe-auth/ABBGHK5T5OVRFTWDLRDWJEL3IN5Y3AVCNFSM6AAAAABSTMZNL2VHI2DSMVQWIX3LMV43OSLTON2WKQ3PNVWWK3TUHMZTANRYG42DOMBQGE>\r\n> .\r\n> You are receiving this because you were mentioned.Message ID:\r\n> ***@***.***>\r\n>\r\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-07-14T10:54:09Z",
+   "body": "@reporter I don't recall any changes in that version beside the usual AWS SDK bumps"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-07-15T09:54:38Z",
+   "body": "Sorry, @participant1, I cannot provide thread dumps because they contain sensitive information."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-07-15T09:56:30Z",
+   "body": "@participant4 they don't, heap dumps do"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2026-01-08T07:47:45Z",
+   "body": "Hey all, we are facing the same issue in Trino 478 and the Iceberg Connector. Minio responds with rate limiting codes and the S3 client adapts and slows down entirely.\n\nWhile the mechanism as such if fine and the problem lied in the not maintained iceberg tables with a lot of files what seems to be a bug IMO is the Trino S3 client capability to return to the default rate. After problematic query that triggers the rate limitter Trino cluster needs a restart to come back to the default state."
+  },
+  {
+   "author": "participant6",
+   "created_at": "2026-01-08T10:25:18Z",
+   "body": "FTE workloads specifically, there was a recent fix which should help https://github.com/trinodb/trino/pull/25911\nI don't think there is sufficient information here for anyone to debug and it seems everyone is talking about different scenarios with common theme of S3 throttling.\nSince the original reporter's issue is no longer reproducible https://github.com/trinodb/trino/issues/24282#issuecomment-3068957209, I'm closing this. New reports can be tackled as separate GH issues."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2026-06-22T08:00:08Z",
+   "body": "I finally managed to find a reason for this problem.\nIt turns out that S3 client pool that is used for iceberg connectors is different from the pool used for exchange and therefore also has different configuration properties.\nThe error is related to how Trino handles the 429 Too Many Requests response.\n\nAny error is handled by s3.retry-mode strategy :\n\nhttps://<redacted-host>/blogs/developer/announcing-updated-retry-behavior-for-aws-sdks-and-tools/\nhttps://<redacted-host>/sdkref/latest/guide/feature-retry-behavior.html\n\nFor iceberg connectors the default is LEGACY -> STANDARD and therefore this can recover from slowdown but somehow for exchange the client is set to ADAPTIVE strategy that increases the backoff every time up to infinity.\nWhen Trino is under pressure and exchange S3 client receives 429 response Trino eventually would exchaust the connection pool as many connections would stale for hours waiting for retry:\n\n```\n2026-06-18T13:00:12.054Z        DEBUG   SplitRunner-20260618_130011_00005_xwrrq.7.0.0-95-2725   software.amazon.awssdk.request  Retryable error detected. Will retry in 60000ms. Request attempt number 1\n2026-06-18T13:00:12.054Z        DEBUG   SplitRunner-20260618_130011_00005_xwrrq.7.0.0-87-2717   software.amazon.awssdk.request  Retryable error detected. Will retry in 60000ms. Request attempt number 1\n2026-06-18T13:00:12.054Z        DEBUG   SplitRunner-20260618_130011_00005_xwrrq.7.0.0-83-2713   software.amazon.awssdk.request  Retryable error detected. Will retry in 60000ms. Request attempt number 1\n2026-06-18T13:00:12.054Z        DEBUG   SplitRunner-20260618_130011_00005_xwrrq.7.0.0-89-2719   software.amazon.awssdk.request  Retryable error detected. Will retry in 60000ms. Request attempt number 1\n```\n\nThe solution was not to use ADAPTATIVE strategy for the exchange bucket handling.\n\n```\nexchange.s3.retry-mode=STANDARD\n```\n\nI am really not sure why Trino used different defaults for S3 clients for Iceberg connector and different for exchange bucket. Perhaps it should be changed or better documented as this can cause hours of slowdown."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-06-22T12:46:32Z",
+   "body": "This explains a behavior I am currently seeing on Trino 479 in a relatively\r\nhigh packet loss situations. Going to give this option a try\r\n\r\nOn Mon, Jun 22, 2026 at 1:00 AM Aleksander Lech ***@***.***>\r\nwrote:\r\n\r\n> *participant5* left a comment (trinodb/trino#24282)\r\n> <https://github.com/trinodb/trino/issues/24282#issuecomment-4766142156>\r\n>\r\n> I finally managed to find a reason for this problem.\r\n> It turns out that S3 client pool that is used for iceberg connectors is\r\n> different from the pool used for exchange and therefore also has different\r\n> configuration properties.\r\n> The error is related to how Trino handles the 429 Too Many Requests\r\n> response.\r\n>\r\n> Any error is handled by s3.retry-mode strategy :\r\n>\r\n>\r\n> https://<redacted-host>/blogs/developer/announcing-updated-retry-behavior-for-aws-sdks-and-tools/\r\n> https://<redacted-host>/sdkref/latest/guide/feature-retry-behavior.html\r\n>\r\n> For iceberg connectors the default is LEGACY -> STANDARD and therefore\r\n> this can recover from slowdown but somehow for exchange the client is set\r\n> to ADAPTIVE strategy that increases the backoff every time up to infinity.\r\n> When Trino is under pressure and exchange S3 client receives 429 response\r\n> Trino eventually would exchaust the connection pool as many connections\r\n> would stale for hours waiting for retry:\r\n>\r\n> 2026-06-18T13:00:12.054Z        DEBUG   SplitRunner-20260618_130011_00005_xwrrq.7.0.0-95-2725   software.amazon.awssdk.request  Retryable error detected. Will retry in 60000ms. Request attempt number 1\r\n> 2026-06-18T13:00:12.054Z        DEBUG   SplitRunner-20260618_130011_00005_xwrrq.7.0.0-87-2717   software.amazon.awssdk.request  Retryable error detected. Will retry in 60000ms. Request attempt number 1\r\n> 2026-06-18T13:00:12.054Z        DEBUG   SplitRunner-20260618_130011_00005_xwrrq.7.0.0-83-2713   software.amazon.awssdk.request  Retryable error detected. Will retry in 60000ms. Request attempt number 1\r\n> 2026-06-18T13:00:12.054Z        DEBUG   SplitRunner-20260618_130011_00005_xwrrq.7.0.0-89-2719   software.amazon.awssdk.request  Retryable error detected. Will retry in 60000ms. Request attempt number 1\r\n>\r\n> The solution was not to use ADAPTATIVE strategy for the exchange bucket\r\n> handling.\r\n>\r\n> exchange.s3.retry-mode=STANDARD\r\n>\r\n> I am really not sure why Trino used different defaults for S3 clients for\r\n> Iceberg connector and different for exchange bucket. Perhaps it should be\r\n> changed or better documented as this can cause hours of slowdown.\r\n>\r\n> —\r\n> Reply to this email directly, view it on GitHub\r\n> <https://github.com/trinodb/trino/issues/24282?email_source=notifications&email_token=ABBGHKYLCN7LDGWGUAJA7ZD5BDRR7A5CNFSNUABFM5UWIORPF5TWS5BNNB2WEL2JONZXKZKDN5WW2ZLOOQXTINZWGYYTIMRRGU3KM4TFMFZW63VHNVSW45DJN5XKKZLWMVXHJLDGN5XXIZLSL5RWY2LDNM#issuecomment-4766142156>,\r\n> or unsubscribe\r\n> <https://github.com/notifications/unsubscribe-auth/ABBGHK6KLRYP6GLHCRZILOD5BDRR7AVCNFSNUABFKJSXA33TNF2G64TZHMYTMNRVGE2TAMRSHNEXG43VMU5TENRZHEZTKNBVHE4KC5QC>\r\n> .\r\n> Triage notifications, keep track of coding agent tasks and review pull\r\n> requests on the go with GitHub Mobile for iOS\r\n> <https://github.com/notifications/mobile/ios/ABBGHK5RFC5F6WPNBRB6KTD5BDRR7A5CNFSNUABFM5UWIORPF5TWS5BNNB2WEL2JONZXKZKDN5WW2ZLOOQXTINZWGYYTIMRRGU3KM4TFMFZW63VHNVSW45DJN5XKKZLWMVXHJKTGN5XXIZLSL5UW64Y>\r\n> and Android\r\n> <https://github.com/notifications/mobile/android/ABBGHK7UHSFZMW2JIAKIPK35BDRR7A5CNFSNUABFM5UWIORPF5TWS5BNNB2WEL2JONZXKZKDN5WW2ZLOOQXTINZWGYYTIMRRGU3KM4TFMFZW63VHNVSW45DJN5XKKZLWMVXHJLTGN5XXIZLSL5QW4ZDSN5UWI>.\r\n> Download it today!\r\n> You are receiving this because you were mentioned.Message ID:\r\n> ***@***.***>\r\n>\r\n"
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "trinodb/trino",
+  "default_branch": "master",
+  "commit_sha": "9a2ee7fb857bbadc623e008692c1a82b3fe88990",
+  "as_of": "2024-11-27T17:46:25Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_trinodb_trino_24282"
+}

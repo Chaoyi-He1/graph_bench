@@ -1,0 +1,167 @@
+{
+ "repo": "caddyserver/caddy",
+ "number": 7525,
+ "url": "https://github.com/caddyserver/caddy/issues/7525",
+ "title": "Caddy 2.11.1: socket activation problems with ACME",
+ "state": "closed",
+ "labels": [
+  "bug :<nick>:",
+  "help wanted :<nick>:"
+ ],
+ "reporter": "reporter",
+ "created_at": "2026-02-25T16:24:27Z",
+ "closed_at": "2026-05-07T21:39:20Z",
+ "body": "### Issue Details\n\nSince updating to 2.11, the ACME path seems to have problems with socket activation. The (slightly sanitized) error log is:\n\n```\nFeb 25 06:36:14 caddy caddy[1037]: {\"level\":\"info\",\"ts\":1772001374.5532987,\"logger\":\"tls.obtain\",\"msg\":\"obtaining certificate\",\"identifier\":\"<redacted-host>\"}\nFeb 25 06:36:14 caddy caddy[1037]: {\"level\":\"info\",\"ts\":1772001374.5535624,\"logger\":\"tls.issuance.acme\",\"msg\":\"waiting on internal rate limiter\",\"identifiers\":[\"<redacted-host>\"],\"ca\":\"https://<redacted-host>/directory\",\"account\":\"email@participant12\"}\nFeb 25 06:36:14 caddy caddy[1037]: {\"level\":\"info\",\"ts\":1772001374.5535676,\"logger\":\"tls.issuance.acme\",\"msg\":\"done waiting on internal rate limiter\",\"identifiers\":[\"<redacted-host>\"],\"ca\":\"https://<redacted-host>/directory\",\"account\":\"email@participant12\"}\nFeb 25 06:36:15 caddy caddy[1037]: {\"level\":\"info\",\"ts\":1772001375.363842,\"msg\":\"trying to solve challenge\",\"identifier\":\"<redacted-host>\",\"challenge_type\":\"http-01\",\"ca\":\"https://<redacted-host>/directory\"}\nFeb 25 06:36:15 caddy caddy[1037]: {\"level\":\"error\",\"ts\":1772001375.644645,\"logger\":\"tls.obtain\",\"msg\":\"could not get certificate from issuer\",\"identifier\":\"<redacted-host>\",\"issuer\":\"<redacted-host>-directory\",\"error\":\"[<redacted-host>] solving challenges: presenting for challenge: presenting with embedded solver: could not start listener for challenge server at fd/4:80: listen tcp: lookup fd/4: no such host (order=https://<redacted-host>/acme/order/SENSITIVE) (ca=https://<redacted-host>/directory)\"}\n```\n\nwhich suggests the Caddyfile `bind` argument of `fd/4` is making its way to ACME library and being fed to an important DNS query.\n\nA reasonably minimal Caddyfile I can use to reproduce the issue is:\n\n```\n{\n        auto_https disable_redirects\n\tdefault_bind fd/4 {\n                protocols h1 h2\n        }\n        acme_ca https://<redacted-host>/directory\n}\n\nhttp://\n        bind fd/3 {\n                protocols h1\n        }\n        redir https://{host}{uri} 308\n}\n\n<redacted-host> {\n\trespond \"Hello\"\n}\n```\n\nIn this scheme I'm using systemd+Podman to feed port 80 in as fd/3 and port 443 as fd/4.\n\n### Assistance Disclosure\n\n_No response_\n\n### If AI was used, describe the extent to which it was used.\n\n_No response_",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2026-02-25T17:26:11Z",
+   "body": "We reverted the socket activation changes merged since 2.10.2 if that's what you're relying on. We had arguments about the correct approach to take, and we did not have time to resolve it in time for the release."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-02-25T17:52:39Z",
+   "body": "I upgraded my images directly from 2.10.2 (which Works for Me(TM)) to 2.11.1 so I don't think I'd have been affected by any churn that went on during development there."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2026-02-25T22:01:43Z",
+   "body": "I'm not seeing any changes between 2.10.2 and 2.11.1 relating to socket activation or `fd`."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-02-28T08:02:56Z",
+   "body": "I didn't see anything suspicious in the ACME handling either, so perhaps an updated library dependency is doing something new with input it already had?\n\nI've rebuilt 2.10.2 and 2.11.2 locally and both exhibit the behaviour described, so it at least looks like it's something pinned rather than a floating dep."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2026-02-28T08:59:12Z",
+   "body": "I have a feeling its this:\n\nhttps://github.com/caddyserver/caddy/pull/7278\n\nI would not blindly revert it though as it solved a real other bug. I have no experience with socket activation, maybe this needs another fix to handle such a socket correctly.\n\nPreviously it worked by accident most likely since default_bind just bound to the wildcard interface and not some file descriptor.\n\nEDIT: The ACME client most likely needs to become socket activation aware like the HTTP app (I didnt check this assumption). That it fails now should prove this was a prior undiscovered edge case.\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2026-02-28T09:41:22Z",
+   "body": "Ah, that makes sense. In that case @reporter please try removing default_bind and use bind in each site for now, does that work?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-02-28T09:52:22Z",
+   "body": "Yep, that seems to do the trick. Thanks for the help."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2026-03-01T09:02:51Z",
+   "body": "@participant1 Do you want input validation or is the edge case okay for now? Nothing seems to fail hard, the ACME client just treats it like a hostname."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2026-03-01T09:25:54Z",
+   "body": "We should port the fd stuff to certmagic I think. But fd stuff is currently up in the air because of arguments about it."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2026-03-06T00:52:27Z",
+   "body": "I'm affected by this as well, all my sites are breaking on upgrade to caddy 2.11.1. To be clear, are you saying that caddy has removed fd support?"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2026-03-06T08:51:59Z",
+   "body": "> I'm affected by this as well, all my sites are breaking on upgrade to caddy 2.11.1. To be clear, are you saying that caddy has removed fd support?\n\nNo, from what I understood the issue is that certmagic (the one that handles certificate renewal) doesn't recognize fd and tries to bind port :80 without success.\n\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-03-06T09:31:08Z",
+   "body": "> To be clear, are you saying that caddy has removed fd support?\n\nIt's still there, but for now you need to replace the single `default_bind` directive you have with a separate `bind` for each `https://... { }` handler. I put mine in a snippet and `import`ed it each time to save a bit of duplication."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2026-03-06T10:00:28Z",
+   "body": "Can you share your snippet? I created the following but keep getting bind error, this time on :443\n\n```\n# Define once, import everywhere\n(tls_binds) {\n    bind fd/4 {\n        protocols h1 h2\n    }\n    bind fdgram/5 {\n        protocols h3\n    }\n}\n\n<redacted-host> {\n    import tls_binds\n    import web_defaults\n    import custom_log <redacted-host>\n    reverse_proxy http://192.168.1.1:8080\n}\n```\n\nthis is the error:\n\n```\n{\"level\":\"error\",\"ts\":1772790657.55009,\"logger\":\"tls.renew\",\"msg\":\"will retry\",\"error\":\"[<redacted-host>] Renew: [<redacted-host>] solving challenges: presenting for challenge: presenting with embedded solver: could not start listener for challenge server at :443: listen tcp :443: bind: permission denied (order=https://<redacted-host>/acme/order/195643044/33867204413) (ca=https://<redacted-host>/directory)\",\"attempt\":2,\"retrying_in\":120,\"elapsed\":63.369863479,\"max_duration\":2592000}\n```"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-03-06T10:06:36Z",
+   "body": "That's pretty much exactly what I've got. Are you maybe trying to deploy it piecewise?\n\nIf some subdomains aren't yet using the new `tls_binds` then they'll still try to grab the real port 443 and won't be allowed, which would produce an error very much like you're seeing."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2026-03-06T10:29:34Z",
+   "body": "I added the snippet `tls_binds` to all SNIs of my Caddyfile, if this is your question."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2026-04-01T00:06:59Z",
+   "body": "> Ah, that makes sense. In that case [@reporter](https://github.com/reporter) please try removing default_bind and use bind in each site for now, does that work?\n\nI'm experiencing the same issue and I have replaced the default_bind options with individual bind options for each domain. But I still get the same error that the listener for the challenge server could not be started and \"no such host\".\n\nI'm also sure that it has worked before, since I've been using my socket activated caddy container for more than 4 months now which means at some point in between, my Let's Encrypt certificates were renewed. I'm using the \"latest\" caddy image from Docker Hub and update it regularly. "
+  },
+  {
+   "author": "participant6",
+   "created_at": "2026-04-05T17:53:01Z",
+   "body": "Same issue in `docker.io/caddy:2.11.2-alpine`: \"lookup fd/4: no such host\" with `default_bind` and individual `bind` sections"
+  },
+  {
+   "author": "participant7",
+   "created_at": "2026-04-14T18:37:10Z",
+   "body": "The pattern seems fairly consistent:\n- Caddy itself understands `fd/*` socket-activation addresses\n- the ACME challenge listener path does not\n- `fd/4` is ending up in a place where it is treated like a normal host string which is why we get errors like `lookup fd/4: no such host`\n\nThere are also now enough confirmations that the earlier workaround does not seem reliably sufficient in all setups.\n\nSo I think the remaining question is really which fix direction is wanted:\n1. reject/ignore `fd/*` when adapting bind information into the ACME challenge listener path, with a clearer error\n2. port fd/socket-activation support through to CertMagic’s embedded challenge listener path so this works end-to-end\n\nGiven Francis’s earlier comment, my read is that (2) is probably the correct long-term fix but the issue does still look open and real either way.\n\n@participant1, thoughts?"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2026-04-14T19:48:46Z",
+   "body": "It's funny how seemingly small features create a snowball effects over time when correctness is improved, unintentionally affecting all parts of a complex system.\n\nEdit: Removed personal bias."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2026-04-14T19:59:24Z",
+   "body": "@participant7 Yeah probably, but I don't have a need for socket activation myself and I don't understand it well enough so I don't feel equipped to contribute further to this one."
+  },
+  {
+   "author": "participant7",
+   "created_at": "2026-04-14T23:47:59Z",
+   "body": "> [@participant7](https://github.com/participant7) Yeah probably, but I don't have a need for socket activation myself and I don't understand it well enough so I don't feel equipped to contribute further to this one.\n\nThank you, Francis.\n\n---\n\n@participant8, would you prefer this to be fixed by porting socket-activation awareness through the CertMagic challenge listener path or by drawing a harder boundary and rejecting these bind forms before they reach ACME handling?"
+  },
+  {
+   "author": "participant8",
+   "created_at": "2026-04-17T20:35:16Z",
+   "body": "Unfortunately I do not fully understand the implications of either approach. I have never used socket activation either, so I have no field experience even if I did allot the time to read up on it more. I think someone well-versed in this, who has the need, should be able to write up their recommendation."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2026-05-02T12:25:39Z",
+   "body": "A very good use case for socket activation is detailed in this repo, if someone wants to learn more about it\n\n[https://github.com/eriksjolund/podman-caddy-socket-activation](https://github.com/eriksjolund/podman-caddy-socket-activation)"
+  },
+  {
+   "author": "participant9",
+   "created_at": "2026-05-13T21:20:48Z",
+   "body": "I'm still getting:\n```\nMay 13 13:53:31 VPS caddy[3620]: {\"level\":\"error\",\"ts\":1778705611.796823,\"logger\":\"tls.obtain\",\"msg\":\"will retry\",\"error\":\"[example.com] Obtain: [example.com] solving challenges: presenting for challenge: presenting with embedded solver: could not start listener for challenge server at fd/4:>\n```\nusing:\n```\n$ podman exec caddy caddy --version\nv2.11.3 h1:/vFbdjcs2DtzcWTIxHybf5R5TspYFFThlZffChyBFHg=\n```\n\nMy Caddyfile is very closely based off this example: https://github.com/eriksjolund/podman-caddy-socket-activation/blob/main/examples/example4/Caddyfile\n\nWas https://github.com/caddyserver/certmagic/pull/380 merged into Caddy 2.11.3?"
+  },
+  {
+   "author": "participant10",
+   "created_at": "2026-05-13T21:46:14Z",
+   "body": "@participant9 \n\n> Was [caddyserver/certmagic#380](https://github.com/caddyserver/certmagic/pull/380) merged into Caddy 2.11.3?\n\nDoesn't look like it. Caddy is currently using CertMagic v0.25.3:\n\nhttps://github.com/caddyserver/caddy/blob/77e9ce7404c4a76853e101a9f5687a929ee56654/go.mod#L12\n\nand caddyserver/certmagic#380 isn't included in that:\n\nhttps://github.com/caddyserver/certmagic/compare/v0.25.3...master"
+  },
+  {
+   "author": "participant8",
+   "created_at": "2026-05-13T21:59:01Z",
+   "body": "Barely missed the tag, but it'll go out with the next release probably!"
+  },
+  {
+   "author": "participant6",
+   "created_at": "2026-06-20T17:07:31Z",
+   "body": "Still \"github.com/caddyserver/certmagic v0.25.3\" in caddy **v2.11.4**:\nhttps://github.com/caddyserver/caddy/blob/v2.11.4/go.mod#L12C2-L12C42\n\nparticipant10's fix has not been released yet:\nhttps://github.com/caddyserver/certmagic/releases\nhttps://github.com/caddyserver/certmagic/commit/9b6be22a3ea4d6abfe96375b0ce494594cb754b2\nhttps://github.com/caddyserver/certmagic/compare/v0.25.3...master"
+  },
+  {
+   "author": "participant11",
+   "created_at": "2026-07-18T12:11:03Z",
+   "body": "I just encountered this issue after seeing that my certificates weren't renewed. Issue still exists and certmagic is not bumped to the latest version which is v0.25.4.\n\nFWIW, if you have a custom Caddy image built with xcaddy, you can simply override the certmagic module version to use the latest one, like so:\n\n```Dockerfile\nFROM caddy:2.11-builder AS builder\n\nRUN xcaddy build \\\n    --with github.com/caddyserver/certmagic@v0.25.4\n\nFROM caddy:2.11-alpine\nCOPY --from=builder /usr/bin/caddy /usr/bin/caddy\n```"
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "caddyserver/caddy",
+  "default_branch": "master",
+  "commit_sha": "9798f6964d58eb5703d1498804962faca2dae4ea",
+  "as_of": "2026-02-25T16:24:27Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_caddyserver_caddy_7525"
+}

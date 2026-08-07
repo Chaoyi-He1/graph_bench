@@ -1,0 +1,233 @@
+{
+ "repo": "openvinotoolkit/openvino",
+ "number": 15994,
+ "url": "https://github.com/openvinotoolkit/openvino/issues/15994",
+ "title": "CPU performance issue: same application has different CPU utilization on XEON, i7 and i3",
+ "state": "closed",
+ "labels": [
+  "help wanted",
+  "question"
+ ],
+ "reporter": "reporter",
+ "created_at": "2023-02-28T07:57:11Z",
+ "closed_at": "2023-04-23T10:22:33Z",
+ "body": "hi,\r\n\r\nI am trying to otimize CPU on my yolov6 nano model on openvino, I have found out couple of interesting things\r\n\r\nWhen I am using i3 and i7, I am able to run 5 instances of same application on i3, 8 on i7, with 95% CPU usage, while on Xeon silver (6 instances) and Xeon gold only 4, and CPu goes upto 50% max on both Xeon, which I think they have more capacity but somehow they are not taking CPU.\r\n\r\nCan you help me with this, because as per Openvino benchmarking Xeon should work better, but in my observation its opposite,\r\n\r\nThanks",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2023-03-01T03:54:52Z",
+   "body": "@reporter By default, OpenVINO will use hyper threading on i3 and i7, but not on Xeon. In your case, hyper threading is enabled on Xeon but not be used.\r\n\r\nIf you also want to hyper threading on Xeon, please additionally set `ov::inference_num_threads` to the total number of processors on Xeon during `compile_model()`. \r\n\r\nFor example `exeNet = core.compile_model(model, \"CPU\", ov::inference_num_threads(48));`"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-03-01T06:17:43Z",
+   "body": "@participant1 \r\n\r\nFor yolov6 we are not using `core.compile_model`\r\n\r\nwe are doing inference in python using the below code:\r\n```\r\n\r\nself.OVNet = IECore().read_network(\r\n            model = model,\r\n            weights = os.path.splitext(model)[0] + \".bin\"\r\n        )\r\nself.OVExec = IECore().load_network(self.OVNet, \"CPU\")\r\nresults = self.OVExec.infer(inputs={self.inputLayer: model_input})\r\n```\r\nlet us know how we can set total number of processors here"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-03-01T07:19:24Z",
+   "body": "@participant2 Please try `self.OVExec = IECore().load_network(self.OVNet, \"CPU\", {{\"CPU_THREADS_NUM\", total_number}})`\r\n\r\nWe recommend developer to use OpenVINO™ API 2.0. Please refer https://<redacted-host>/latest/openvino_2_0_transition_guide.html for detail."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-03-01T12:00:57Z",
+   "body": "@participant1 \r\nrunning yolov8 neno on Xeon Gold using [this script](https://github.com/openvinotoolkit/openvino_notebooks/blob/main/notebooks/230-yolov8-optimization/230-yolov8-optimization.ipynb) in OpenVINO™ API 2.0 with below code\r\n\r\n```\r\nself.compiled_model = core.compile_model(ov_model, device)\r\ncore.set_property(device_name=\"CPU\", properties={\"NUM_STREAMS\":\"16\"})\r\n```\r\nHere are some strange results:\r\nIf I run single instance of yolov8 neno (IR INT8) on video, I'm getting 25 around FPS and it consumes 43% Cpu as we run more instances of yolov8 the FPS get decreased of all the instance, few of them have 2-3 FPS only but CPU usage stuck at  50% only. Why its not using the more cpu to provide the more FPS even after specifying `NUM_STREAMS` ? \r\n\r\nyou can see the cpu usage when I'm running 8 instances of yolov8 neno\r\n![image](https://user-images.githubusercontent.com/91198866/222132780-cf931b2a-b0f6-4c0e-910e-ec41fc8c3811.png)\r\n\r\nalso lscpu: \r\n\r\n![image (1)](https://user-images.githubusercontent.com/91198866/222132858-f80c098e-66a6-44d8-9db5-6bca028317eb.png)\r\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-03-01T13:05:30Z",
+   "body": "@participant2 Could you please share the log of `lscpu -e` too? And I updated previous comments, could you please try again?\r\n\r\nIn your case, `run more instances of yolov8` will load same model multiple times and create multiple model instance for multiple inputs. This is not the correct way to infer multiple inputs with the same network model.\r\n\r\nOpenVINO recommend to load network model once and infer multiple inputs with optimal number of infer requests. \r\n\r\nPlease use throughput hint to do parallel inference as:\r\n```\r\nauto compiled_model = core.compile_model(model, \"CPU\", \r\n    ov::hint::performance_mode(ov::hint::PerformanceMode::THROUGHPUT));\r\nauto num_requests = compiled_model.get_property(ov::optimal_number_of_infer_requests);\r\n```\r\n\r\nOr use all CPU processors for parallel inference as:\r\n```\r\nauto compiled_model = core.compile_model(model, \"CPU\",  \r\n    ov::hint::performance_mode(ov::hint::PerformanceMode::THROUGHPUT), \r\n    ov::inference_num_threads(16));\r\nauto num_requests = compiled_model.get_property(ov::optimal_number_of_infer_requests);\r\n```\r\n\r\nPlease learn more detail about performance hint at https://<redacted-host>/latest/openvino_docs_OV_UG_Performance_Hints.html# .\r\n"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-03-02T07:16:50Z",
+   "body": "Thank you @participant1 for you quick reply \r\n\r\nEventually I want to run multiple different yolov8n models with different inputs and outputs. But for the testing purpose I'm running same yolov8n model with different inputs and outputs by running the same docker for multiple times.\r\n\r\nI have tried to run yolov8n in Asynchronous Mode in python by given code:\r\n\r\n```\r\n      ov_model = core.read_model(model) \r\n      ov_model.reshape([1,3, 416, 416])\r\n      self.input_layer_ir = ov_model.input(0)\r\n      device = \"CPU\"  # GPU\r\n      if device != \"CPU\":\r\n          ov_model.reshape({0: [1, 3, 640, 640]})\r\n      config = {\"PERFORMANCE_HINT\": \"THROUGHPUT\",\"INFERENCE_NUM_THREADS\": \"16\"}\r\n      self.compiled_model = core.compile_model(ov_model,device,config)\r\n      self.infer_request = self.compiled_model.create_infer_request()\r\n      .....\r\n      .....\r\n      .....\r\n        input_tensor = image_to_tensor(preprocessed_image)\r\n        self.infer_request.set_tensor(self.input_layer_ir, ov.Tensor(input_tensor))\r\n        self.infer_request.start_async()\r\n        self.infer_request.wait()\r\n\r\n        result = self.infer_request.get_output_tensor(0).data\r\n```\r\n\r\nStill I didn't notice any improvements in FPS and CPU usage\r\n\r\nThe inference script is [here](https://drive.google.com/drive/folders/1ta32_564Buz9sKnRv59QJblp6Ivaf7Bb?usp=sharing) with the model as well for your reference\r\n\r\n`lscpu -e`\r\n\r\n![image](https://user-images.githubusercontent.com/91198866/222357029-e4352239-6377-4447-aa96-95c129181fda.png)\r\n\r\nWe can also arrange a call as per you availability. \r\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-03-02T07:41:11Z",
+   "body": "@participant2 Could you try benchmark_app with throughput hint as below and check CPU behavior? And share the full benchmark app log to me.\r\n\r\n- `benchmark_app -m $int8_model_seg_path -d CPU -api async -shape \"[1,3,640,640]\" -t 15 -hint throughput` "
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-03-02T11:04:48Z",
+   "body": "@participant1 \r\n\r\nwith the benchmark cpu has increased to 90%\r\nLogs:\r\n\r\n```\r\n[Step 1/11] Parsing and validating input arguments\r\n[ INFO ] Parsing input parameters\r\n[Step 2/11] Loading OpenVINO Runtime\r\n[ INFO ] OpenVINO:\r\n[ INFO ] Build ................................. 2022.3.0-9052-9752fafe8eb-releases/2022/3\r\n[ INFO ]\r\n[ INFO ] Device info:\r\n[ INFO ] CPU\r\n[ INFO ] Build ................................. 2022.3.0-9052-9752fafe8eb-releases/2022/3\r\n[ INFO ]\r\n[ INFO ]\r\n[Step 3/11] Setting device configuration\r\n[Step 4/11] Reading model files\r\n[ INFO ] Loading model files\r\n[ INFO ] Read model took 53.94 ms\r\n[ INFO ] Original model I/O parameters:\r\n[ INFO ] Model inputs:\r\n[ INFO ]     images (node: images) : f32 / [...] / [1,3,?,?]\r\n[ INFO ] Model outputs:\r\n[ INFO ]     output0 (node: output0) : f32 / [...] / [1,7,3..]\r\n[Step 5/11] Resizing model to match image sizes and given batch\r\n[ INFO ] Model batch size: 1\r\n[ INFO ] Reshaping model: 'images': [1,3,640,640]\r\n[ INFO ] Reshape model took 15.50 ms\r\n[Step 6/11] Configuring input of the model\r\n[ INFO ] Model inputs:\r\n[ INFO ]     images (node: images) : u8 / [N,C,H,W] / [1,3,640,640]\r\n[ INFO ] Model outputs:\r\n[ INFO ]     output0 (node: output0) : f32 / [...] / [1,7,8400]\r\n[Step 7/11] Loading the model to the device\r\n[ INFO ] Compile model took 1574.51 ms\r\n[Step 8/11] Querying optimal runtime parameters\r\n[ INFO ] Model:\r\n[ INFO ]   NETWORK_NAME: torch_jit\r\n[ INFO ]   OPTIMAL_NUMBER_OF_INFER_REQUESTS: 16\r\n[ INFO ]   NUM_STREAMS: 16\r\n[ INFO ]   AFFINITY: Affinity.CORE\r\n[ INFO ]   INFERENCE_NUM_THREADS: 16\r\n[ INFO ]   PERF_COUNT: False\r\n[ INFO ]   INFERENCE_PRECISION_HINT: <Type: 'float32'>\r\n[ INFO ]   PERFORMANCE_HINT: PerformanceMode.THROUGHPUT\r\n[ INFO ]   PERFORMANCE_HINT_NUM_REQUESTS: 0\r\n[Step 9/11] Creating infer requests and preparing input tensors\r\n[ WARNING ] No input files were given for input 'images'!. This input will be filled with random values!\r\n[ INFO ] Fill input 'images' with random values\r\n[Step 10/11] Measuring performance (Start inference asynchronously, 16 inference requests, limits: 15000 ms duration)\r\n[ INFO ] Benchmarking in inference only mode (inputs filling are not included in measurement loop).\r\n[ INFO ] First inference took 52.41 ms\r\n[Step 11/11] Dumping statistics report\r\n[ INFO ] Count:            2272 iterations\r\n[ INFO ] Duration:         15104.41 ms\r\n[ INFO ] Latency:\r\n[ INFO ]    Median:        51.05 ms\r\n[ INFO ]    Average:       105.75 ms\r\n[ INFO ]    Min:           49.34 ms\r\n[ INFO ]    Max:           727.25 ms\r\n[ INFO ] Throughput:   150.42 FPS\r\n```"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-03-02T16:57:26Z",
+   "body": "@participant2 Looks like the result of benchmark app is good. Could you refer https://github.com/openvinotoolkit/openvino/blob/master/tools/benchmark_tool/openvino/tools/benchmark/main.py to refine your app or share your whole app?"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-03-03T06:35:00Z",
+   "body": "@participant1 \r\nI have uploaded the app with the model [here](https://drive.google.com/drive/folders/1ta32_564Buz9sKnRv59QJblp6Ivaf7Bb?usp=sharing)\r\nyou can run `DvlEYE.py` that will run `yolov8AividEYE.py` to run the yolov8n model OR you can run `Dockerfile`"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-03-03T08:42:02Z",
+   "body": "@participant2 The following code from your app shows running sync inference with one infer request on a platform configured for multiple infer requests.\r\n```\r\nconfig = {\"PERFORMANCE_HINT\": \"THROUGHPUT\",\"INFERENCE_NUM_THREADS\": \"16\"}\r\nself.compiled_model = core.compile_model(ov_model,device,config)\r\nself.infer_request = self.compiled_model.create_infer_request()\r\n...\r\n...\r\nself.infer_request.start_async()\r\nself.infer_request.wait()\r\n```\r\nPlease refer async_inference_full_mode() in https://github.com/openvinotoolkit/openvino/blob/master/tools/benchmark_tool/openvino/tools/benchmark/benchmark.py to use infer_queue and data_queue for concurrency inference.\r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-03-07T10:36:53Z",
+   "body": "@participant1 we have tried https://github.com/openvinotoolkit/openvino_notebooks/tree/main/notebooks/115-async-api this as well but still on xeon cpu usage remains 50% only.\r\nPlease check if we are missing something in this, please correct, and help us to utilize proper CPU on xeon"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-03-07T15:19:13Z",
+   "body": "@reporter  When hyper threading is enabled on two sockets Xeon platform, OpenVINO only use half processors for inference on throughput mode by default. \r\n\r\nIf you want to use all processors in your case, please type below comment\r\n`compiled_model = ie.compile_model(model=model, device_name=\"CPU\", config={\"INFERENCE_NUM_THREADS\":\"16\"})`"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-03-15T06:57:38Z",
+   "body": "Hi @reporter \r\n\r\nCould you let me know if your issue has been resolved? "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-03-17T08:10:07Z",
+   "body": "@participant3 No its not, still we are not able to utilize full resources, and we cant deploy more instances. "
+  },
+  {
+   "author": "participant4",
+   "created_at": "2023-03-17T09:24:06Z",
+   "body": "https://github.com/openvinotoolkit/openvino_notebooks/issues/916\r\ni want to add this issu,because  I'm also not able to utilize CPU "
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-03-17T16:40:09Z",
+   "body": "@reporter https://github.com/openvinotoolkit/openvino_notebooks/tree/main/notebooks/115-async-api using 50% CPU on two sockets XEON platform is expected behavior by default. \r\n\r\nIf you want to try 16 cores instead of 8 cores on your platform, please modify https://github.com/openvinotoolkit/openvino_notebooks/tree/main/notebooks/115-async-api as below\r\n\r\n```\r\n# compile the model for the CPU (you can choose manually CPU, GPU, MYRIAD etc.)\r\n# or let the engine choose the best available device (AUTO)\r\ncompiled_model = ie.compile_model(model=model, device_name=\"CPU\", config={\"INFERENCE_NUM_THREADS\":\"16\"})\r\n```"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-03-20T06:08:29Z",
+   "body": "@participant1 we have tried this, you can see my script [here](https://drive.google.com/drive/folders/1ta32_564Buz9sKnRv59QJblp6Ivaf7Bb) but still its not able to utilize CPU. "
+  },
+  {
+   "author": "participant5",
+   "created_at": "2023-03-20T06:25:45Z",
+   "body": "Judging by the code you are also benchmarking reading from file, image preprocessing and post-processing.\r\nSo, strictly speaking there is more than inference that is happening there, with reading being somewhat unpredictable from benchmarking standpoint."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-03-21T06:06:32Z",
+   "body": "@participant5 @participant1 \r\n\r\nI have removed all the image processing and just running the model only on Xeon by given code. Still its not able to use full CPU\r\n```\r\nfrom openvino.runtime import Core, Model\r\nimport openvino.runtime as ov\r\nimport time\r\nimport numpy as np\r\n\r\ncore = Core()\r\nmodel_path = \"/home/<user>/Dhavalsinh/asynctesting/yolov8neno_msi2/msi2.xml\"\r\nov_model = core.read_model(model_path)\r\nov_model.reshape([1,3, 416, 416])\r\ninput_layer_ir = ov_model.input(0)\r\nconfig = {\"PERFORMANCE_HINT\": \"THROUGHPUT\",\"INFERENCE_NUM_THREADS\": \"16\"}\r\ndevice = \"CPU\"\r\ncompiled_model = core.compile_model(ov_model,device, config)\r\ninfer_request = compiled_model.create_infer_request()\r\nframe_count = 0\r\nstart_time = time.time()\r\nwhile True:\r\n    image = np.random.rand(1,3,416,416).astype('float32')\r\n    infer_request.set_tensor(input_layer_ir, ov.Tensor(image))\r\n    infer_request.start_async()\r\n    infer_request.wait()\r\n    result = infer_request.get_output_tensor(0).data\r\n    # print(result.shape)\r\n    frame_count +=1 \r\n    try:\r\n          \r\n        print(\"FPS: \",(frame_count/(int(time.time())-int(start_time))))\r\n    except:\r\n        pass\r\n```\r\n\r\nCPU performance:\r\n\r\n\r\n![Screenshot from 2023-03-21 11-32-38](https://user-images.githubusercontent.com/91198866/226529851-d236053e-2204-4e4a-8b13-2a8b6efa90c2.png)\r\n![Screenshot from 2023-03-21 11-33-47](https://user-images.githubusercontent.com/91198866/226529866-d6aabd59-c4b4-4af8-9ed4-62dd4440bec8.png)\r\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-03-21T08:50:09Z",
+   "body": "@participant2 Throughput performance hint expect user user run inference with multiple inputs in parallel. However there is only one input during inference in your sample code. Please refer to AsyncInferQueue part in https://github.com/openvinotoolkit/openvino_notebooks/tree/main/notebooks/115-async-api to perform parallel inference with optimal number of inference requests.\r\n\r\nXeon 6336Y is 24 cores 48 threads CPU. However your system show 2 sockets, 16 cores 16 threads CPU. May I know if you are running in VM or Docker? If yes, could you share what's the real CPU processors on bare metal machine? \r\n\r\nIf you are running docker on 8 cores 16 threads CPU (hyperthreading enabled) but docker reports 16 cores 16 threads CPU, OpenVINO runtime will schedule inference for 16 cores 16 threads CPU and will not get full CPU utilization. \r\n\r\n\r\n"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-03-21T16:57:34Z",
+   "body": "@participant1 \r\n\r\nI have tried with AsyncInferQueue by given code and played with different values of `QUEUE = 4` but I didn't find any improvement. I run [115-async-api](https://github.com/openvinotoolkit/openvino_notebooks/tree/main/notebooks/115-async-api) but this also not utilising the CPU more than 50%.\r\n\r\n\r\n```\r\n\r\nfrom openvino.runtime import Core, Model\r\nimport openvino.runtime as ov\r\nimport time\r\nimport numpy as np\r\nfrom openvino.runtime import Core, AsyncInferQueue\r\n\r\ncore = Core()\r\nmodel_path = \"yolov8neno.xml\"\r\n\r\nov_model = core.read_model(model_path)\r\nov_model.reshape([1,3, 640, 640])\r\ninput_layer_ir = ov_model.input(0)\r\nconfig = {\"PERFORMANCE_HINT\": \"THROUGHPUT\",\"NUM_STREAMS\":\"16\"}\r\ndevice = \"CPU\"\r\ncompiled_model = core.compile_model(ov_model,device, config)\r\n\r\nQUEUE = 4\r\nframe_count = 0\r\nstart_time = time.time()\r\ninfer_queue = AsyncInferQueue(compiled_model, QUEUE)\r\n\r\nwhile True:\r\n    image = np.random.rand(QUEUE,3,640,640).astype('float32')\r\n    for i, input_tensor in enumerate(image):\r\n        input_tensor = np.expand_dims(input_tensor, axis=0)\r\n        infer_queue.start_async({input_layer_ir.any_name: input_tensor}) \r\n    infer_queue.wait_all()\r\n\r\n    frame_count +=1 \r\n    try:\r\n          \r\n        print(\"FPS: \",QUEUE*(frame_count/(int(time.time())-int(start_time))))\r\n    except:\r\n        pass\r\n```\r\n\r\nI'm running python script on VM given by one of cloud provider. They said the  Hyperthreading is enabled and because the servers are in shared infra, Bare metal machine details are confidential."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-03-22T17:10:10Z",
+   "body": "@participant2 Could you share more detail about \"I run [115-async-api](https://github.com/openvinotoolkit/openvino_notebooks/tree/main/notebooks/115-async-api) but this also not utilising the CPU more than 50%.\"?\r\n\r\nThere are 3 different CPU utilization situation about \"not utilising the CPU more than 50%.\"\r\n\r\n1. Utilization of half processors are more than 90%. Avg is not more than 50%. \r\n2. Utilization of only one processor are more than 90%. Avg is not more than 50%. \r\n3. Utilization of all processor are not more than 50%\r\n\r\nThere are three tests in  [115-async-api](https://github.com/openvinotoolkit/openvino_notebooks/tree/main/notebooks/115-async-api).\r\n\r\n- Test performance in Sync Mode\r\n- Test the perfromance in Async Mode\r\n- Test the perfromance with AsyncInferQueue\r\n\r\nMay I know what's the CPU utilization situation on each test? \r\n\r\nIf all tests meet situation 3, it is VM environment issue, e.g., I/O bottleneck or memory bottleneck.\r\n"
+  },
+  {
+   "author": "participant6",
+   "created_at": "2023-03-25T13:37:39Z",
+   "body": "@participant2, Xeon might be overkill for nano models. Could you try to reshape the model to process 100 and 1000 images (sample code below)? Also, do not enumerate the input for one image only. Try it using 100 and 1000 images. Then check the latency. The 100 images should be within 1 second as the benchmark_app reporting 150 FPS.\r\n\r\nov_model.reshape([100,3, 416, 416])\r\nov_model.reshape([1000,3, 416, 416])\r\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-03-29T15:52:51Z",
+   "body": "@participant4 May I know if there is any update?"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2023-03-29T17:45:28Z",
+   "body": "@participant1 i tried asynchronusqueue & still im not able to achive the performace, im hardly getting 5,6 fps for yolov7x_int.xml model . i tried this repo \r\nhttps://github.com/OpenVINO-dev-contest/YOLOv7_OpenVINO_cpp-python \r\n\r\n"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2023-03-29T18:01:42Z",
+   "body": "below is my script,here im loading the object detection model yolov7xint format model  & using this detector & passing it for tracking\r\n```\r\nfrom openvino.runtime import Core\r\nfrom typing import List, Tuple, Dict\r\nfrom utils.general import scale_coords, non_max_suppression\r\nfrom openvino.runtime import Model\r\nimport numpy as np\r\nimport torch\r\nfrom PIL import Image\r\nfrom utils.datasets import letterbox\r\nfrom pathlib import Path\r\n\r\ncore = Core()\r\n# read converted model\r\n#pat of object detector\r\nmodel = core.read_model(\"object_detector/v7x_int8new.xml\")\r\n\r\n\r\n# load model on CPU device\r\n\r\nmodel = core.compile_model(model, 'CPU')\r\n# tried this also\r\nsetting = {\"PERFORMANCE_HINT\":\"THROUGHPUT\", \"AFFINITY\":\"NUMA\"}\r\nmodel = core.compile_model(model=model, device_name=\"GPU/CPU\", config=setting)\r\n\r\n# this also\r\nmodel = core.read_model(\"object_detector/yolov7_int8new.xml\")\r\nmodel = core.compile_model(model,config={\"CPU\":\"INFERENCE_NUM_THREADS 32\"})\r\n\r\ndef preprocess_image(img0: np.ndarray):\r\n    \"\"\"\r\n    Preprocess image according to YOLOv7 input requirements. \r\n    Takes image in np.array format, resizes it to specific size using letterbox resize, converts color space from BGR (default in OpenCV) to RGB and changes data layout from HWC to CHW.\r\n    \r\n    Parameters:\r\n      img0 (np.ndarray): image for preprocessing\r\n    Returns:\r\n      img (np.ndarray): image after preprocessing\r\n      img0 (np.ndarray): original image\r\n    \"\"\"\r\n    # resize\r\n    img = letterbox(img0, auto=False)[0]\r\n    \r\n    # Convert\r\n    img = img.transpose(2, 0, 1)\r\n    img = np.ascontiguousarray(img)\r\n    return img, img0\r\n\r\n\r\ndef prepare_input_tensor(image: np.ndarray):\r\n    \"\"\"\r\n    Converts preprocessed image to tensor format according to YOLOv7 input requirements. \r\n    Takes image in np.array format with unit8 data in [0, 255] range and converts it to torch.Tensor object with float data in [0, 1] range\r\n    \r\n    Parameters:\r\n      image (np.ndarray): image for conversion to tensor\r\n    Returns:\r\n      input_tensor (torch.Tensor): float tensor ready to use for YOLOv7 inference\r\n    \"\"\"\r\n    input_tensor = image.astype(np.float32)  # uint8 to fp16/32\r\n    input_tensor /= 255.0  # 0 - 255 to 0.0 - 1.0\r\n    \r\n    if input_tensor.ndim == 3:\r\n        input_tensor = np.expand_dims(input_tensor, 0)\r\n    return input_tensor\r\nNAMES=[COCO80]\r\n\r\n# colors for visualization\r\nCOLORS = {name: [np.random.randint(0, 255) for _ in range(3)]\r\n          for i, name in enumerate(NAMES)}\r\n\r\n\r\ndef detect( image_path: Path, conf_thres: float = 0.50, iou_thres: float = 0.50, classes: List[int] = None, agnostic_nms: bool = False):\r\n    \"\"\"\r\n    OpenVINO YOLOv7 model inference function. Reads image, preprocess it, runs model inference and postprocess results using NMS.\r\n    Parameters:\r\n        model (Model): OpenVINO compiled model.\r\n        image_path (Path): input image path.\r\n        conf_thres (float, *optional*, 0.25): minimal accpeted confidence for object filtering\r\n        iou_thres (float, *optional*, 0.45): minimal overlap score for remloving objects duplicates in NMS\r\n        classes (List[int], *optional*, None): labels for prediction filtering, if not provided all predicted labels will be used\r\n        agnostic_nms (bool, *optiona*, False): apply class agnostinc NMS approach or not\r\n    Returns:\r\n       pred (List): list of detections with (n,6) shape, where n - number of detected boxes in format [x1, y1, x2, y2, score, label] \r\n       orig_img (np.ndarray): image before preprocessing, can be used for results visualization\r\n       inpjut_shape (Tuple[int]): shape of model input tensor, can be used for output rescaling\r\n    \"\"\"\r\n    output_blob = model.output(0)\r\n    #img = np.array(Image.open(image_path))\r\n    preprocessed_img, orig_img = preprocess_image(image_path)\r\n    input_tensor = prepare_input_tensor(preprocessed_img)\r\n    predictions = torch.from_numpy(model(input_tensor)[output_blob])\r\n    pred = non_max_suppression(predictions, conf_thres, iou_thres, classes=classes, agnostic=agnostic_nms)\r\n    boxes = []\r\n    labels = []\r\n    scores = []\r\n    pred=pred[0]\r\n    if len(pred):\r\n        # Rescale boxes from input size to original image size\r\n        pred[:, :4] = scale_coords(input_tensor.shape[2:], pred[:, :4], orig_img.shape).round()\r\n        for *xyxy, conf, cls in pred:\r\n            boxes.append(xyxy)\r\n            labels.append(cls)\r\n            scores.append(conf)\r\n            print('class-OBJECTdetection',cls)\r\n            #print('score_detection',conf)\r\n            print('bbbox',xyxy)\r\n    if len(boxes) == 0:\r\n        boxes = np.array([]).reshape(0, 4)\r\n        scores = np.array([])\r\n        labels = np.array([])\r\n\r\n    return np.array(boxes), np.array(scores), np.array(labels)\r\n\r\n```"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-03-30T02:03:51Z",
+   "body": "@participant4 please try below configuration mentioned in https://github.com/openvinotoolkit/openvino_notebooks/issues/916 \r\n```\r\nsetting = {\"INFERENCE_NUM_THREADS\":\"32\", \"AFFINITY\":\"NUMA\"}\r\ncompiled_model = core.compile_model(model=model, device_name=\"CPU\", config=setting)\r\n```\r\n\r\n@participant2 May I know if there is any update?\r\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-04-04T02:25:33Z",
+   "body": "Close this issue. Please feel free to reopen or create new issue if additional assistance is needed."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-04-04T07:13:08Z",
+   "body": "@participant1 \r\nSorry for the late response, As i have tried all approaches given in [115-async-api](https://github.com/openvinotoolkit/openvino_notebooks/tree/main/notebooks/115-async-api)  the FPS are almost same in all the approach, its around 62 FPS. CPU utilisation is also same for all which is 50%. all threads of CPU are getting utilised but not a single thread is utilised  more than 50%."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2023-04-04T07:54:17Z",
+   "body": "@participant2 have you tried direct openvino code? how much fps your getting\r\n\r\n```\r\nfrom ultraltyics import YOLO\r\n\r\nmodel = YOLO('yolov8n_openvino_model/')\r\nresults = model(img)\r\n```"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-04-04T09:06:29Z",
+   "body": "@participant2 could you please add below commands at the end of [115-async-api](https://github.com/openvinotoolkit/openvino_notebooks/tree/main/notebooks/115-async-api) and share the whole log of benchmark_app?\r\n\r\n```\r\n!benchmmark_app -m $model_path -d CPU -hint none -pin NUMA -nthreads 16\r\n!benchmmark_app -m $model_path -d CPU -hint none -pin NUMA -nthreads 8\r\n```"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-04-17T07:25:21Z",
+   "body": "@participant2 May I know if there is any update?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-04-23T10:22:33Z",
+   "body": "Close this issue. Please feel free to reopen or create new issue if additional assistance is needed."
+  },
+  {
+   "author": "participant7",
+   "created_at": "2023-09-03T19:26:42Z",
+   "body": "> hi,\r\n> \r\n> I am trying to otimize CPU on my yolov6 nano model on openvino, I have found out couple of interesting things\r\n> \r\n> When I am using i3 and i7, I am able to run 5 instances of same application on i3, 8 on i7, with 95% CPU usage, while on Xeon silver (6 instances) and Xeon gold only 4, and CPu goes upto 50% max on both Xeon, which I think they have more capacity but somehow they are not taking CPU.\r\n> \r\n> Can you help me with this, because as per Openvino benchmarking Xeon should work better, but in my observation its opposite,\r\n> \r\n> Thanks\r\n\r\nHi @participant2 , did you benchmark the yolov6 int8 openvino model in intel CPU or is it fp32 IR model?"
+  },
+  {
+   "author": "participant8",
+   "created_at": "2025-03-21T16:58:12Z",
+   "body": "I ran into this same issue on Xeon processor. This is going to sound really dumb, but I just kept jacking up the thread count until the CPU hit >95%.\n`            \"CPU_THREADS_NUM\": str(3*os.cpu_count()),\n            \"CPU_THROUGHPUT_STREAMS\": \"1\",\n            \"PERFORMANCE_HINT\": \"THROUGHPUT\"\n`\nDon't know why this worked, but it did."
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "openvinotoolkit/openvino",
+  "default_branch": "master",
+  "commit_sha": "1070a3b6c156a24332f3196489f7dadbf20dee77",
+  "as_of": "2023-02-28T07:57:11Z",
+  "method": "github_commits_until"
+ },
+ "images": [
+  {
+   "where": "c3",
+   "source_url": "https://user-images.githubusercontent.com/91198866/222132780-cf931b2a-b0f6-4c0e-910e-ec41fc8c3811.png",
+   "file": "gh_openvinotoolkit_openvino_15994_img0.png"
+  },
+  {
+   "where": "c3",
+   "source_url": "https://user-images.githubusercontent.com/91198866/222132858-f80c098e-66a6-44d8-9db5-6bca028317eb.png",
+   "file": "gh_openvinotoolkit_openvino_15994_img1.png"
+  },
+  {
+   "where": "c5",
+   "source_url": "https://user-images.githubusercontent.com/91198866/222357029-e4352239-6377-4447-aa96-95c129181fda.png",
+   "file": "gh_openvinotoolkit_openvino_15994_img2.png"
+  },
+  {
+   "where": "c19",
+   "source_url": "https://user-images.githubusercontent.com/91198866/226529851-d236053e-2204-4e4a-8b13-2a8b6efa90c2.png",
+   "file": "gh_openvinotoolkit_openvino_15994_img3.png"
+  },
+  {
+   "where": "c19",
+   "source_url": "https://user-images.githubusercontent.com/91198866/226529866-d6aabd59-c4b4-4af8-9ed4-62dd4440bec8.png",
+   "file": "gh_openvinotoolkit_openvino_15994_img4.png"
+  }
+ ],
+ "slug": "gh_openvinotoolkit_openvino_15994"
+}

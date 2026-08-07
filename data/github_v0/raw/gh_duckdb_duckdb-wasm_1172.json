@@ -1,0 +1,105 @@
+{
+ "repo": "duckdb/duckdb-wasm",
+ "number": 1172,
+ "url": "https://github.com/duckdb/duckdb-wasm/issues/1172",
+ "title": "file.csv.gz does not work in duckdb-wasm",
+ "state": "closed",
+ "labels": [],
+ "reporter": "peterboncz",
+ "created_at": "2023-03-02T17:50:57Z",
+ "closed_at": "2025-05-08T09:12:49Z",
+ "body": "These queries:\r\n\r\n```\r\nselect * from FROM 'https://cdn.gea.esac.esa.int/Gaia/gdr3/gaia_source/GaiaSource_000000-003111.csv.gz' limit 100\r\nselect * from FROM 'https://www.cwi.nl/~boncz/gaia99.csv.gz' limit 100\r\n```\r\nwork in normal duckdb (with httpfs loaded -- if not, they work with http:// URLs), but not in duckdb-wasm:\r\n\r\n```\r\nselect * from FROM 'https://cdn.gea.esac.esa.int/Gaia/gdr3/gaia_source/GaiaSource_000000-003111.csv.gz' limit 100\r\n````\r\n\r\nproduces:\r\n\r\n`Invalid Input Error: Error in file \"https://cdn.gea.esac.esa.int/Gaia/gdr3/gaia_source/GaiaSource_000000-003111.csv.gz\": CSV options could not be auto-detected. Consider setting parser options manually.\r\n`\r\n\r\nwhile \r\n\r\n```\r\nselect * from FROM 'https://www.cwi.nl/~boncz/gaia99.csv.gz' limit 100\r\n```\r\n\r\nproduces:\r\n\r\n`Invalid Error: NetworkError: Failed to execute 'send' on 'XMLHttpRequest': Failed to load 'https://www.cwi.nl/~boncz/gaia99.csv.gz'.\r\n` \r\n\r\nwhich is remarkable, but may have to do with the different behaviour of the latter website.\r\n\r\nThis bug was first raised as a MotherDuck issue, but the above failures simply happen (in Chrome on an M1 MacBook) on shell.duckdb.org -- note that the same problems happen when wrapping the URL in read_csv_auto()\r\n\r\nThe main theory is that there is something awry with the duckdb-wasm-specific implementation of the httpfs extension. It seems to fail to read data when triggered in SniffCSV (duckdb/src/execution/operator/persistent/buffered_csv_reader.cpp )\r\n\r\nSpecifically regarding the .gz unzipping. Because the following query works fine in duckdb-wasm:\r\n\r\n```\r\nSELECT * FROM 'https://raw.githubusercontent.com/duckdb/duckdb/master/data/csv/customer.csv' LIMIT 100;\r\n```\r\n\r\nNote that there might be a relation with: https://github.com/duckdb/duckdb-wasm/issues/1166\r\n",
+ "comments": [
+  {
+   "author": "kimmolinna",
+   "created_at": "2023-03-02T20:52:05Z",
+   "body": "Have you tried to add the third parameter for registerFileURL?\r\n```js\r\nawait db.registerFileURL('remote.parquet', 'https://origin/remote.parquet', DuckDBDataProtocol.HTTP, false);\r\n```\r\nBecause for example in ObservableHQ this is the issue. Clip from stdlib/duckdb.js\r\n```js\r\n await database.registerFileURL(file.name, url);\r\n ```\r\n The third parameter is missing.\r\n @domoritz's example (#1166) is working when you add the third parameter for `registerFileURL`."
+  },
+  {
+   "author": "peterboncz",
+   "created_at": "2023-03-02T20:58:17Z",
+   "body": "Hi @kimmolinna: this bug report its not about registerFileURL. Apologies for causing confusion by mentioning #1166 "
+  },
+  {
+   "author": "kimmolinna",
+   "created_at": "2023-03-02T21:04:24Z",
+   "body": "@peterboncz The error message looks similar. So It should be checked that the duckdb-wasm internally remembers to use also the third parameter. ;)"
+  },
+  {
+   "author": "peterboncz",
+   "created_at": "2023-03-02T21:13:56Z",
+   "body": "ah, exactly, that was indeed why I mentioned #1166. I did not venture to look at the httpfs implementation of duckdb-wasm yet."
+  },
+  {
+   "author": "ankoh",
+   "created_at": "2023-03-02T21:17:42Z",
+   "body": "<img width=\"2164\" alt=\"Screenshot 2023-03-02 at 22 06 35\" src=\"https://user-images.githubusercontent.com/3986510/222555650-7ff5946c-d0ef-45be-8304-3b5513e05a5f.png\">\r\n\r\nThere are a few things happening here.\r\nThe request to cwi.nl is blocked due to CORS.\r\nThe sniffing is failing as .gz is apparently not working with duckdb-wasm.\r\nYour gaia99 file works for me unzipped."
+  },
+  {
+   "author": "ankoh",
+   "created_at": "2023-03-02T21:20:25Z",
+   "body": "You can bypass the CORS troubles for testing using:\r\n```python3\r\n#!/usr/bin/env python3\r\nfrom http.server import HTTPServer, SimpleHTTPRequestHandler, test\r\nimport sys\r\n\r\nclass CORSRequestHandler (SimpleHTTPRequestHandler):\r\n    def end_headers (self):\r\n        self.send_header('Access-Control-Allow-Origin', '*')\r\n        SimpleHTTPRequestHandler.end_headers(self)\r\n\r\nif __name__ == '__main__':\r\n    test(CORSRequestHandler, HTTPServer, port=int(sys.argv[1]) if len(sys.argv) > 1 else 8000)\r\n\r\n```"
+  },
+  {
+   "author": "kimmolinna",
+   "created_at": "2023-03-02T21:24:25Z",
+   "body": "@ankoh I don't know does this affect anything but DataProtocols in `web_file.rs`are \r\n```rs\r\npub enum DataProtocol {\r\n    Buffer = 0,\r\n    Native = 1,\r\n    Http = 2,\r\n}\r\n```\r\nin DuckDB are:\r\n```c\r\nenum DataProtocol : uint8_t {\r\n        BUFFER = 0,\r\n        NODE_FS = 1,\r\n        BROWSER_FILEREADER = 2,\r\n        BROWSER_FSACCESS = 3,\r\n        HTTP = 4,\r\n        S3 = 5\r\n```"
+  },
+  {
+   "author": "peterboncz",
+   "created_at": "2023-03-02T21:24:31Z",
+   "body": "@ankoh thanks for clarifying the CORS issue, but that is a bit of a distraction really. The main point being .gz not working in duckdb-wasm. Do I understand correctly that this is just not supported? \r\n\r\nIn that case a better error message would be a fix, if it is not possible to support .gz decompression in the httpfs implementation. I suppose that the original filer of the bug report would be most satisfied if that would be supported."
+  },
+  {
+   "author": "ankoh",
+   "created_at": "2023-03-02T22:03:17Z",
+   "body": "> @ankoh thanks for clarifying the CORS issue, but that is a bit of a distraction really. The main point being .gz not working in duckdb-wasm. Do I understand correctly that this is just not supported?\r\nYes, explicitly gzipped files are currently not supported (unless it goes through http content-encoding, i assume).\r\n\r\n@peterboncz Right now, we're running a dedicated file_system here\r\nhttps://github.com/duckdb/duckdb-wasm/blob/master/lib/src/webdb.cc#L805\r\n... and will therefore never use the gzip filesystem through the VirtualFilesystem of native DuckDB.\r\nhttps://github.com/duckdb/duckdb/blob/master/src/common/virtual_file_system.cpp#L19\r\nBut this should be easily fixable by either wrapping the buffered filesystem into DuckDB's virtual filesystem or teaching one of the wasm filesystems about the existing Gzip filesystem.\r\n\r\n> In that case a better error message would be a fix, if it is not possible to support .gz decompression in the httpfs implementation. I suppose that the original filer of the bug report would be most satisfied if that would be supported.\r\n\r\nTotally agree, duckdb-wasm should get better at error reporting.\r\n"
+  },
+  {
+   "author": "ankoh",
+   "created_at": "2023-03-02T22:05:44Z",
+   "body": "> @ankoh I don't know does this affect anything but DataProtocols in `web_file.rs`are\r\n\r\nGood catch. that enum needs to be updated, but it only affects the info text printed in the `.files` command in the shell\r\n"
+  },
+  {
+   "author": "ericemc3",
+   "created_at": "2023-12-23T11:34:36Z",
+   "body": "is opening csv.gz files on the roadmap?"
+  },
+  {
+   "author": "Silvan-Fischer",
+   "created_at": "2024-02-12T23:19:03Z",
+   "body": "Any news, workaround on support for .gz in wasm? I trying to load data from the eurostat api and even if i turn compression off it is still not working in wasm\r\n`SELECT *\r\nFROM read_json('https://ec.europa.eu/eurostat/api/dissemination/sdmx/3.0/data/dataflow/ESTAT/ISOC_CI_ID_H/1.0?format=csvdata&compress=false', \r\n       auto_detect=true, format='auto');`"
+  },
+  {
+   "author": "ericemc3",
+   "created_at": "2024-02-13T07:02:07Z",
+   "body": "> Any news, workaround on support for .gz in wasm? I trying to load data from the eurostat api and even if i turn compression off it is still not working in wasm `SELECT * FROM read_json('https://ec.europa.eu/eurostat/api/dissemination/sdmx/3.0/data/dataflow/ESTAT/ISOC_CI_ID_H/1.0?format=csvdata&compress=false', auto_detect=true, format='auto');`\r\n\r\nThis URL returns csv, you might try:\r\n`FROM read_csv_auto('https://ec.europa.eu/eurostat/api/dissemination/sdmx/3.0/data/dataflow/ESTAT/ISOC_CI_ID_H/1.0?format=csvdata&compress=false')`"
+  },
+  {
+   "author": "wldevries",
+   "created_at": "2024-07-22T07:49:06Z",
+   "body": "This problem applies to the json loader as well. Output below is from the online demo app.\r\n```\r\nduckdb> select * from read_json(mileusage.jsonl.gz, compression=gzip, format=newline_delimited);\r\nInvalid Input Error: Malformed JSON in file \"mileusage.jsonl.gz\", at byte 1 in line 2: unexpected character. \r\n```"
+  },
+  {
+   "author": "carlopi",
+   "created_at": "2025-05-08T09:12:49Z",
+   "body": "Fixed via https://github.com/duckdb/duckdb-wasm/pull/2002, now\n```\nsummarize from 'https://cdn.gea.esac.esa.int/Gaia/gdr3/gaia_source/GaiaSource_000000-003111.csv.gz' limit 100;\n```\nworks as expected, thanks."
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "duckdb/duckdb-wasm",
+  "default_branch": "main",
+  "commit_sha": "47337ee580265fa52f5db7475b750ac5b2e51456",
+  "as_of": "2023-03-02T17:50:57Z",
+  "method": "github_commits_until"
+ },
+ "images": [
+  {
+   "where": "c4",
+   "source_url": "https://user-images.githubusercontent.com/3986510/222555650-7ff5946c-d0ef-45be-8304-3b5513e05a5f.png",
+   "file": "gh_duckdb_duckdb-wasm_1172_img0.png"
+  }
+ ],
+ "slug": "gh_duckdb_duckdb-wasm_1172"
+}

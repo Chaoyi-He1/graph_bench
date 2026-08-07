@@ -1,0 +1,152 @@
+{
+ "repo": "dbt-labs/dbt-core",
+ "number": 7012,
+ "url": "https://github.com/dbt-labs/dbt-core/issues/7012",
+ "title": "[CT-2144] [Feature] Allow source freshness to be evaluated from table metadata when adapter supports it",
+ "state": "closed",
+ "labels": [
+  "type:feature"
+ ],
+ "reporter": "adamcunnington-mlg",
+ "created_at": "2023-02-20T14:52:54Z",
+ "closed_at": "2024-02-23T00:24:45Z",
+ "body": "### Is this your first time submitting a feature request?\r\n\r\n- [X] I have read the [expectations for open source contributors](https://docs.getdbt.com/docs/contributing/oss-expectations)\r\n- [X] I have searched the existing issues, and I could not find an existing issue for this feature\r\n- [X] I am requesting a straightforward extension of existing dbt functionality, rather than a Big Idea better suited to a discussion\r\n\r\n### Describe the feature\r\n\r\nCurrently, source freshness can only be determined by [querying a column in a table](https://docs.getdbt.com/reference/resource-properties/freshness#loaded_at_field). When there are a lot of tables, even with a high number of threads, the amount of time it takes to compute source freshness might be unacceptably long - it's effectively just metadata collation after all.\r\n\r\nHowever, lots of databases track table modification times (although don't always isolate DDL changes from DML changes) and expose this via a metadata route. For example, BigQuery has the well-known INFORMATION_SCHEMA tables which expose various metadata attributes.\r\n\r\nThis isn't consistently available but there's already a precedent for adapter-specific functionality/availability in DBT.\r\n\r\nI propose a config parameter, perhaps `location` is exposed to allow user to control where the info comes from (query/metadata). Metadata would only be supported for specific adapters and when it is, the backend implementation is probably something like:\r\n* evaluate all source YAML configs to determine which want to use metadata\r\n* produce the minimum number of queries possible, e.g. maybe just 1 metadata query at some database-level information schema table (you can do this in BQ by using region-foo.INFORMATION_SCHEMA rather than dataset-specific INFORMATION_SCHEMA)\r\n* iterate through response to get source-table-level information\r\n\r\nIt would massively speed up compiling of source freshness and reduce query load/cost (although the latter is negligible and not the main motivation for the FR).\r\n\r\nLastly, a significant benefit is that it doesn't rely on a specific column being consistently available - it provides a more generic implementation for the masses.\r\n\r\n### Describe alternatives you've considered\r\n\r\nAn alternative is to somehow allow per-statement increase in threads and we could just spam the database with loads of queries to evaluate source freshness faster.\r\n\r\n### Who will this benefit?\r\n\r\nEveryone! But the benefit is especially pronounced for those who:\r\n* Configure their dbt prod job to be dynamic/diff-based, e.g. using source_status:fresher+ ([docs](source_status:fresher+))\r\n* Have a lot of source tables - e.g. some BI context that isn't internal and experiences growth - this would probably resonate with anyone who uses phrases like \"onboarding feeds\"\r\n\r\n### Are you interested in contributing this feature?\r\n\r\nYes - can get one of my devs to help although new to contributing so may be slower route if core team can afford it priority\r\n\r\n### Acceptance Criteria\r\n\r\n1. Add a new static boolean property to the base adapter called METADATA_FRESHNESS_SUPPORT. It will default to False.\r\n2. When an adapter implementation overrides this property and sets it to True, and the user has requested that freshness for a source be determined via metadata, dbt-core will look for a macro called collect_freshness_via_metadata(sources). The new macro will accept a List[BaseRelation] and return a query which will generate a table with two columns: source and last_modified. This will allow core to batch freshness requests.\r\n3. In the YML description of a source, freshness can be requested by metadata, with exact details flexible.\r\n4. [Optional? Discuss in Refinement/Estimation] For sources marked for freshness via metadata, dbt should issue a single query instead of one per source.\r\n\r\n\r\n### dbt Labs Supported Adapter Implementation Links\r\n\r\n- https://github.com/dbt-labs/dbt-snowflake/issues/785\r\n- https://github.com/dbt-labs/dbt-redshift/issues/615\r\n- https://github.com/dbt-labs/dbt-bigquery/issues/938\r\n- https://github.com/dbt-labs/dbt-spark/issues/890",
+ "comments": [
+  {
+   "author": "jtcohen6",
+   "created_at": "2023-02-20T16:28:29Z",
+   "body": "[Slack thread](https://getdbt.slack.com/archives/C50NEBJGG/p1676886382448239) with additional context / motivation"
+  },
+  {
+   "author": "Fleid",
+   "created_at": "2023-02-28T03:34:31Z",
+   "body": "Thanks for opening the issue @adamcunnington-mlg \r\n\r\nAs a conversation starter, what do you think of something like this:\r\n- freshness\r\n  - loaded_at_location\r\n    - `expression` : default, current behavior\r\n    - `query` : expecting a full SQL statement instead\r\n    - `metadata` : pre-configured by adapter to leverage known metadata fields\r\n  - loaded_at_field\r\n    - if `expression`, current behavior\r\n    - if `query`, a select statement returning a single value\r\n    - if `metadata`, this is ignored\r\n\r\nWe need to go through the different platforms and see if we really need a `query` one, or if we can just go `metadata` everywhere instead.\r\n\r\n@jtcohen6 do you know of other areas in dbt where a similar choice is offered? I'm wondering about the ergonomics of the `location`/`field` setup.\r\n\r\n\r\n"
+  },
+  {
+   "author": "adamcunnington-mlg",
+   "created_at": "2023-02-28T09:04:32Z",
+   "body": "@Fleid thanks for this - suggestion looks great to me.\r\n\r\nThe only thing I was thinking about this morning - when doing the per-adapter implementation, should be careful to digest the docs and ensure that there's no caveats from the DB providers about the metadata being stale / laggy. That would significantly undermine the checks!"
+  },
+  {
+   "author": "Fleid",
+   "created_at": "2023-03-01T23:59:38Z",
+   "body": "That's a good point. I'd rather we don't support `metadata` if the implementation is subpar. Do you have a specific vendor in mind for that comment, or is that more of a general concern?"
+  },
+  {
+   "author": "adamcunnington-mlg",
+   "created_at": "2023-03-02T07:58:33Z",
+   "body": "@Fleid no specific concern. I've come across this for BQ before but for attributes like storage.\r\n\r\nHaving said that, a bigger concern I have right now is last modified doesn't seem to be available in the INFORMATION_SCHEMA.tables table. I'm hoping they've moved it somewhere else (it definitely used to be in the previous version, __TABLES__ but I can't find it... hopefully your adapter team can. I can raise a support ticket with Google if it helps"
+  },
+  {
+   "author": "jtcohen6",
+   "created_at": "2023-03-02T13:12:33Z",
+   "body": "My sense is that, when you `select max(column_value) from some_table`, Snowflake should already be able to answer that as a metadata-only query. (I know the same isn't true of BigQuery, at least in the sense of the bytes billed.)\r\n\r\nI think the more compelling aspect of this approach is the ability to grab the freshness of **multiple** sources from a single query. If there's an information_schema view containing a last_modified field for all tables in a database/schema, dbt could determine the freshness of all `sources` in that database/schema in one go. That would require some more significant refactoring of how the `FreshnessTask` works currently, as it expects to spin up a thread for each selected source, and run a query for each (in parallel). It's not so dissimilar from how our \"catalog\" queries work today, for `docs generate`."
+  },
+  {
+   "author": "Fleid",
+   "created_at": "2023-03-03T21:40:52Z",
+   "body": "I like that Jeremy. A lot. But that will be a slow one.\r\n\r\nIn the meantime, should we let users be clever for us at the table level?\r\nBy that I mean limiting the feature set to:\r\n\r\n```YAML\r\n\r\nversion: 2\r\n\r\nsources:\r\n  - name: <source_name>\r\n    freshness\r\n    loaded_at_field: <column_name_or_expression_or_statement>\r\n    loaded_at_location: expression | query\r\n\r\n    tables:\r\n      - name: <table_name>\r\n        freshness\r\n        loaded_at_field: <column_name_or_expression_or_statement>\r\n        loaded_at_location: expression | query\r\n        ...\r\n```\r\n\r\nKnowing that `loaded_at_field` should always return a single value, and via `loaded_at_location` can be expected to be an `expression` (column name or expression, default, current behavior) or a `query` (sql statement).\r\n\r\nTo be honest, I'm not too happy about the `loaded_at_field` / `loaded_at_location` terms. If `loaded_at_location` is the location where we find the thing that is `loaded_at`, then the associated column should either be its value `loaded_at_value` (because that's we want and we provide an expression for it) or an expression/statement `loaded_at_expression`.\r\nI may be happier with `loaded_at_field_type` instead of location. But then metadata will feel clunky.\r\n\r\n\r\n\r\n\r\n\r\n"
+  },
+  {
+   "author": "adamcunnington-mlg",
+   "created_at": "2023-03-07T20:08:15Z",
+   "body": "This feels like a good short-term compromise to me. It could always be labelled as a beta feature and subject to change. Anyone that is using this wholesale could replace an updated version of this supported on a later dbt core release.\r\n\r\nWhat would next step be?\r\n\r\nP.s. for BigQuery, i've raised a ticket with google cloud to ask where on earth the metadata about table last updated is because for the life of me, I cannot find it in any information schema table which seems nuts. I assume I'm missing something."
+  },
+  {
+   "author": "Fleid",
+   "created_at": "2023-03-09T00:17:02Z",
+   "body": "In terms of next step, we're projecting multiple [changes for sources for 1.6](https://github.com/dbt-labs/dbt-core/blob/main/docs/roadmap/2023-02-back-to-basics.md). I think that would be a great time to include this.\r\nBut that means July.\r\n\r\nThe adapters team is still catching up on all the PRs across the repos, plus regression and bugs. So I don't see us being able to touch this before then even if we wanted to.\r\n"
+  },
+  {
+   "author": "adamcunnington-mlg",
+   "created_at": "2023-03-09T07:36:46Z",
+   "body": "I'm cool with that. Thank you.\r\n\r\nI'll post an update when Google cloud support confirm where the table updated at metadata is"
+  },
+  {
+   "author": "adamcunnington-mlg",
+   "created_at": "2023-03-14T14:14:46Z",
+   "body": "The docs are currently outdated as TABLE_STORAGE is a preview feature. It's pretty irritating that BigQuery have removed a common feature \"table last updated\" from the previous information schema view and added it to a new preview table instead! Grr, hopefully this will be GA soon.\r\nhttps://cloud.google.com/bigquery/docs/information-schema-table-storage\r\nAlso, I note on the documentation that \"The data in this table is not kept in real time, and might be delayed by a few seconds to a few minutes.\". For most dbt schedules, this isn't going to be an issue - I think you should give the user a choice. I'd be fine with this limitation. But I have asked the BigQuery team to better qualify this.\r\n\r\n![image](https://user-images.githubusercontent.com/93528462/225028867-88c63ace-309e-4c41-a315-e3cca134c167.png)\r\n"
+  },
+  {
+   "author": "adamcunnington-mlg",
+   "created_at": "2023-04-18T09:17:32Z",
+   "body": "@Fleid hi there - please can I check this is still pen'd for July? it hurts us more and more every-day. we're running 550 queries an hour rather than 1!"
+  },
+  {
+   "author": "adamcunnington-mlg",
+   "created_at": "2023-05-09T09:37:33Z",
+   "body": "@Fleid grateful if you could comment on above now that 1.5 is shipped? Just looking to manage internal expectations and plan around this. Our source freshness job sometimes now takes 10+ minutes - should take 10 seconds. Thanks"
+  },
+  {
+   "author": "Fleid",
+   "created_at": "2023-05-09T21:11:17Z",
+   "body": "Hi @adamcunnington-mlg, we've been slipping on MVs, and I'm not 100% sure we're going to be able to fit the managed sources work into 1.6. I'm exploring alternative options to get this issue done independently.\r\n"
+  },
+  {
+   "author": "adamcunnington-mlg",
+   "created_at": "2023-06-06T19:12:53Z",
+   "body": "@Fleid hi - just wondering if you reached any conclusions? Since first raising this issue, we're now average 10 minutes for our source freshness step - and continuing to increase - and scare us! This feels like such a small (relatively) feature with such a big impact."
+  },
+  {
+   "author": "graciegoheen",
+   "created_at": "2023-06-08T22:36:30Z",
+   "body": "Hey @adamcunnington-mlg - have you tried adding a [freshness filter config](https://docs.getdbt.com/reference/resource-properties/freshness#filter) to limit the amount of data being processed by the `source freshness` check? Doesn't negate the needs discussed in this thread, but might be a short term solution to improving the runtime of your source freshness check (especially if your sources are partitioned tables)"
+  },
+  {
+   "author": "adamcunnington-mlg",
+   "created_at": "2023-06-09T06:23:23Z",
+   "body": "@graciegoheen thanks for the thought - unfortunately, that won't help in our case - we wouldn't know what to filter for - the whole point of the source freshness stage is to understand what has changed. Our data integration pipeline is triggered almost arbitrarily - a huge volume of arbitrary schedules as well as ad-hoc action which could effect historic date ranges. It is the very outcome of this step that allows our build stage to actually be an effective Delta."
+  },
+  {
+   "author": "Fleid",
+   "created_at": "2023-06-21T22:11:41Z",
+   "body": "Hey @adamcunnington-mlg - sadly we didn't have the chance to take a stab at this, and I don't see us being able to in the near future.\r\n\r\n@dataders if you do end-up re-opening the box of managed sources, this should be on your radar ;)"
+  },
+  {
+   "author": "adamcunnington-mlg",
+   "created_at": "2023-06-22T06:50:55Z",
+   "body": "@Fleid thanks for the update - although super disappointing! What would it take to get commitment against an upcoming minor version?\r\n\r\nWe'd offer to PR this but my feel is it is going to take a lot to get accepted because this is a fairly fundamental part that affects a core concept in the docs and I suspect there could be varying opinions on how this works - and perhaps you'd want multi-adapter support from the get-go - is there a precedent for extending some generic functionality but filling in the implementation for just 1 backend? Perhaps we will fork so we can add for BQ."
+  },
+  {
+   "author": "jtcohen6",
+   "created_at": "2023-06-22T07:24:05Z",
+   "body": "Removing this from the v1.6 milestone for now. However: I do think there are some compelling use cases that we could enable with faster/cheaper `source freshness` checks—on the data platforms that support it (Snowflake and BigQuery at minimum), and understanding that each platform implementation will have some latency/limitations.\r\n\r\nThe trickiest thing about the approach here will be our need to run a single query, and then map that query's result back to multiple nodes, rather than running individual queries (in parallel) for each source node. As we chatted about further up in the thread, there's some precedent for this — that's the pattern dbt follows right now for `docs generate`. We know that can lead to significant time/memory consumption at scale, so we'd want this implementation to still respect node selection (`--select`): If I'm only checking the freshness for a handful of sources, filter down the information schema / run only a subset of `show` statements accordingly."
+  },
+  {
+   "author": "Fleid",
+   "created_at": "2023-06-28T23:47:26Z",
+   "body": "It's not unreasonable to scope that down to BQ only at the moment. We need to be pragmatic.\r\n\r\n@adamcunnington-mlg I understand you not wanting to waste cycles. I do think if you can get a lightweight implementation out, for BQ, following on @jtcohen6's advice above, there is a path to getting it merged."
+  },
+  {
+   "author": "adamcunnington-mlg",
+   "created_at": "2023-07-05T10:54:34Z",
+   "body": "@Fleid thanks, we'll take a look at it - although even-then, it does seem like a fairly significant change.\r\n\r\nAm I right in understanding that the work will be split in following ways:\r\n- dbt-core: will need to be changed to only run 1 query and then map back results, and to expect different config fields\r\n- dbt-bigquery: will contain the logic that will query INFORMATION_SCHEMA and return the results to dbt-core"
+  },
+  {
+   "author": "Fleid",
+   "created_at": "2024-02-23T00:24:45Z",
+   "body": "@adamcunnington-mlg I'm closing this as [solved in 1.7.3](https://github.com/dbt-labs/dbt-bigquery/issues/938).\r\nLet's open a follow-up issue if you think we can improve on the current implementation."
+  },
+  {
+   "author": "graciegoheen",
+   "created_at": "2024-02-23T17:09:58Z",
+   "body": "@Fleid I believe the final follow up here, is allowing source metadata to be calculated in batch - we have a follow up ticket for that [here](https://github.com/dbt-labs/dbt-core/issues/8705), slotted for 1.8 release currently. "
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "dbt-labs/dbt-core",
+  "default_branch": "main",
+  "commit_sha": "6b5e38ee2855e8739414c7f5172b80a2090c3a0c",
+  "as_of": "2023-02-20T14:52:54Z",
+  "method": "github_commits_until"
+ },
+ "images": [
+  {
+   "where": "c10",
+   "source_url": "https://user-images.githubusercontent.com/93528462/225028867-88c63ace-309e-4c41-a315-e3cca134c167.png",
+   "file": "gh_dbt-labs_dbt-core_7012_img0.png"
+  }
+ ],
+ "slug": "gh_dbt-labs_dbt-core_7012"
+}

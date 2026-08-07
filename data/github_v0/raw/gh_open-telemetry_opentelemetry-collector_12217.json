@@ -1,0 +1,229 @@
+{
+ "repo": "open-telemetry/opentelemetry-collector",
+ "number": 12217,
+ "url": "https://github.com/open-telemetry/opentelemetry-collector/issues/12217",
+ "title": "System for managing own telemetry attributes within pipeline components",
+ "state": "closed",
+ "labels": [],
+ "reporter": "reporter",
+ "created_at": "2025-01-30T22:28:44Z",
+ "closed_at": "2025-03-28T12:35:15Z",
+ "body": "Some types of components are fully or partially shared across multiple instances. (e.g. otlp receiver / memory limiter)\n\nI have previously pursued some optimistic models in which the collector would define certain ways in which sharing is \"supported\", but the reality is that sharing is an unbounded problem. e.g. Someone could write a processor that shares a data structure between logs and traces pipelines only if it's instantiated on a Wednesday and the component name is \"foo\". I am convinced that there are too many novel cases to model ahead of time, so here is a proposal to normalize attributes as much as possible, while still allowing component authors to _both add or subtract_ attributes from their telemetry when appropriate.\n\nI will use Loggers as the example here, but I believe the same general ideas can be applied to TracerProviders and MeterProviders.\n\n---\n\nGeneral Idea:\n\nCreate a \"Logger\" struct specifically for use within components. This logger satisfies the same interface and behaves essentially the same as what we have today. However, it has the following important differences:\n1. The attributes are preset for the component as if it uses no sharing of parts with other instances of the component. (As defined in [this RFC](https://github.com/open-telemetry/opentelemetry-collector/blob/main/docs/rfcs/component-universal-telemetry.md#attributes))\n2. A `Without(key ...string)` method is provided, which allows component authors to _remove_ attributes as appropriate for portions of the code that are shared. This is opposite the typical pattern used by loggers, but necessary if we want our default set of attributes to be correct.\n\nFor example:\n- OTLP receiver: Since the entire component struct is shared, the factory will use `Without(\"otelcol.signal\")` during construction to create a logger appropriate for the shared instance.\n- Memory limiter processor: For any code outside of the shared part, it can use the logger which it was given. For the shared part, is can create a new logger by calling `Without(\"otelcol.signal\", \"otelcol.component.id\", \"otelcol.pipeline.id\")`.\n- Custom component mentioned above: Typically uses the given logger, but if creating a logs or traces instance on a Wednesday and the component name is \"foo\", then it calls `Without(\"otelcol.signal\", \"otelcol.component.id\")` to adjust the scope.\n\n--- \n\nThis implementation looks something like this:\n\n```go\nimport (\n\t\"<redacted-host>/otel/attribute\"\n\t\"<redacted-host>/zap\"\n)\n\ntype ComponentLogger struct {\n\t*zap.Logger\n\troot *zap.Logger\n\tdiff []attribute.KeyValue\n}\n\nfunc NewComponentLogger(root *zap.Logger, defaultAttrs map[string]string) *ComponentLogger {\n\tdefaultLogger := root\n\tfor k, v := range defaultAttrs {\n\t\tdefaultLogger = defaultLogger.With(zap.String(k, v))\n\t}\n\n\treturn &ComponentLogger{\n\t\tLogger: defaultLogger,\n\t\troot:   root,\n\t\tdiff:   defaultAttrs,\n\t}\n}\n\nfunc (cl *ComponentLogger) Without(keys ...string) *zap.Logger {\n\texcludeKeys := make(map[string]struct{})\n\tfor _, key := range keys {\n\t\texcludeKeys[key] = struct{}{}\n\t}\n\n\tlogger := cl.root\n\tfor _, attr := range cl.diff {\n\t\tif _, excluded := excludeKeys[string(attr.Key)]; !excluded {\n\t\t\tlogger = logger.With(zap.String(k, v))\n\t\t}\n\t}\n\treturn logger\n}\n\nfunc (cl *ComponentLogger) With(fields ...zap.Field) *ComponentLogger {\n\t// Create new diff by appending the new fields as attributes\n\tnewDiff := make([]attribute.KeyValue, len(cl.diff))\n\tcopy(newDiff, cl.diff)\n\tfor _, f := range fields {\n\t\tnewDiff = append(newDiff, attribute.Any(f.Key, f.Interface))\n\t}\n\n\treturn &ComponentLogger{\n\t\tLogger: cl.Logger.With(fields...),\n\t\troot:   cl.root,\n\t\tdiff:   newDiff,\n\t}\n}\n```\n\n---\n\nTracerProvider and MeterProvider can expose a similar `With`/`Without` interface, but the implementation will be different.\n",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2025-01-31T00:01:57Z",
+   "body": "I like the general idea. A couple of questions:\n- Is there a need to have `With` method at this point?\n- Requiring string arguments for `Without` might be error-prone. Yes, we can provide public constants. But maybe we can have more specific methods, e.g., `WithSharedSignal()`, instead?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-01-31T14:34:58Z",
+   "body": "> Is there a need to have With method at this point?\n\nWe can leave it out. There may be some uses out there already, but they would be able to access it on the embedded zap logger.\n\n> Requiring string arguments for Without might be error-prone. Yes, we can provide public constants. But maybe we can have more specific methods, e.g., WithSharedSignal(), instead?\n\nWe have 5 different attributes defined in the RFC, which differ based on component kind. Additionally, I would hope that in practice we see the need for removing attributes only a few specific cases. So my opinion is that such methods would be either inapplicable (e.g. receiver doesn't have a `otelcol.pipeline.id` to remove) or unadvisable in _most_ cases. That said, I think limiting the values to those we enumerate makes things less error prone, so that would be my preference. "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-02-03T20:04:41Z",
+   "body": "I think we need a new module which eventually contains:\n- Attribute keys agreed upon in the RFC\n- The logger described above\n- Similar meter & tracer providers\n\nConstraints:\n- Component implementations will use the package, so cannot be in `service`.\n- Should be able to construct appropriate attribute sets from e.g. `pipeline.Signal` and `component.ID`, so cannot be in `component`. Seems out of place in `pipeline` too though.\n\nThe best I can come up with is `component/componentattribute`. Does this seem reasonable @open-telemetry/collector-maintainers, or do you have other suggestions?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-02-03T21:09:04Z",
+   "body": "Draft solution: https://github.com/open-telemetry/opentelemetry-collector/pull/12259"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-02-04T11:11:42Z",
+   "body": "> The best I can come up with is component/componentattribute. Does this seem reasonable @open-telemetry/collector-maintainers, or do you have other suggestions?\n\nSounds reasonable to me"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-02-07T05:58:00Z",
+   "body": "> We have 5 different attributes defined in the RFC, which differ based on component kind. Additionally, I would hope that in practice we see the need for removing attributes only a few specific cases. So my opinion is that such methods would be either inapplicable (e.g. receiver doesn't have a otelcol.pipeline.id to remove) or unadvisable in most cases. That said, I think limiting the values to those we enumerate makes things less error prone, so that would be my preference.\n\nWe have the solution for the logger now. However, we will likely need to apply a similar approach to the meter and tracer in the future. If we keep adding `Without` to them, it'll be hard for API users to catch up and keep it consistent. Especially when we need to replace `data_type` metrics attribute with `otelcol.signal` (probably via a feature gate). Having something like `WithSharedSIgnal` would help to consolidate it across the signals and centralize such migrations if needed. I don't believe we need dropping any other attributes at this point. Once we have such a need, a new method could be added, even if it's not useful in some scenarios.\n\nAlso, I think it could be one mutation call to `TelemetrySettings` instead of changing logger, meter and tracer separately. Something like `TelemetrySettings.SharedSignal` would return another instance of `TelemetrySettings` with logger, meter, and tracer not having that attribute."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-02-07T12:55:06Z",
+   "body": "> Also, I think it could be one mutation call to TelemetrySettings instead of changing logger, meter and tracer separately. Something like TelemetrySettings.SharedSignal would return another instance of TelemetrySettings with logger, meter, and tracer not having that attribute.\n\n`TelemetrySettings` does not have a meter and a tracer, it has a meter provider and a tracer provider. These do not have any attributes set"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-02-07T13:19:37Z",
+   "body": "The meter/tracer provider don't contain attributes themselves, so to propagate the component attributes we would probably want to add separate`trace.SpanStartEventOption` and `metric.MeasurementOption` fields to `TelemetrySettings` (or just a `[]attribute.KeyValue` to be wrapped in options later). In that context, I think having a mutable method on `TelemetrySettings` to subtract attribute keys for all three signals at once would be convenient.\n\nI do however think the `Without` approach is more flexible then `WithSharedSignal` or something similarly specific; @reporter's PR already included a use case for `Without(\"otelcol.component.id\")` in the form of the `memorylimiterprocessor`."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-02-07T14:22:59Z",
+   "body": "Since `MeterProvider` and `TracerProvider` are interfaces, my plan was to wrap them into new implementations of their respective interfaces, where the new implementations have default attributes that can be removed by component authors using `Without`.\n\nAm I understanding correctly, that you'd like us to have a single `Without` method which updates the `TelemetrySettings` as a whole, so that the `Logger`, `MeterProvider` and `TracerProvider` all have the same attributes modified? This seems reasonable to me.\n\n> Having something like `WithSharedSIgnal` would help to consolidate it across the signals and centralize such migrations if needed.\n\nI don't think it's necessary vs just listing constants, e.g., in memory limiter:\n\n1. `telSet = telSet.Without(semconv.OTelColComponentID, semconv.OTelColPipelineID, semconv.OTelColSignal)`\n2. `telSet = telSet.WithSharedComponentID().WithSharedPipelineID().WithSharedSignal()`\n3. `telSet = telSet.WithShared(WithSharedComponentID(), WithSharedPipelineID(), WithSharedSignal())`\n\nMinor notes:\n- (2) and maybe (3) require recreation of the TelemetrySettings multiple times.\n- If (3), is there a better name for the method?\n\nPersonally I like (1) best as I believe component authors should be thinking about the attributes on their telemetry, rather than thinking about an abstraction which they may not recognize as impacting their telemetry."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-02-07T15:39:05Z",
+   "body": "> Since MeterProvider and TracerProvider are interfaces, my plan was to wrap them into new implementations of their respective interfaces, where the new implementations have default attributes that can be removed by component authors using Without.\n\nIf the intent is to use metric-level attributes for this, I suspect it will be a bit complex to do this for `MeterProvider`, given the number of instruments that you would have to wrap and because of the [unfortunate quirks of the spec](https://<redacted-host>/<redacted-host>/otel/metric#hdr-API_Implementations). I am not saying that we _shouldn't_ do it because of that, just that it is probably harder than it looks.\n\nSince the discussion includes the possibility of modifying the recently added method `LoggerWithout` I marked this as `release:blocker` (we can always just remove this method before the release if we do not reach consensus).\n\n"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-02-07T16:31:24Z",
+   "body": "I tried doing the MeterProvider wrapper: you need at least 21 wrapper structs (MeterProvider + Meter + each instrument + the observables for async instruments) to make it work. We could do it if we want to, it just makes me feel like this is not the right solution, given how complicated this is."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-02-07T16:34:33Z",
+   "body": "Concretely: I wonder if metric attributes are not the right level for this, and these should be instrumentation attributes or resource attributes. The RFC is not very clear about what type of attributes these should be."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-02-07T19:38:45Z",
+   "body": "Assuming we can find a clean way to move towards this approach and avoid overcomplication, I would prefer the option (3)\n```\ntelSet = telSet.WithShared(WithSharedComponentID(), WithSharedPipelineID(), WithSharedSignal())\n```\n\nIt'll help us control the migration of some attribute keys (e.g., `data_type` -> `otelcol.signal`) and make the interface less error-prone.\n\n> Concretely: I wonder if metric attributes are not the right level for this, and these should be instrumentation attributes or resource attributes. The RFC is not very clear about what type of attributes these should be.\n\nWe need to think about what the resource is in our case (which entity). We've been considering **the collector** as the resource. If we want to move some attributes to the resource level, we need to reconsider this. I think we can move all the attributes to the resource level if we consider the resource to be **component instance**. However, this can complicate re-aggregation. Currently, the collector doesn't provide any processor to do aggregation by resource attributes as far as I know, only by [the datapoint attributes ](https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/main/processor/metricstransformprocessor). So I'm not sure it that's the right move, but we still can consider it if that's required to proceed with the RFC."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-02-10T16:43:44Z",
+   "body": "> I tried doing the MeterProvider wrapper: you need at least 21 wrapper structs (MeterProvider + Meter + each instrument + the observables for async instruments) to make it work. We could do it if we want to, it just makes me feel like this is not the right solution, given how complicated this is.\n\nSince the library we are wrapping is stable, this seems reasonable to me. However, I think it's worth clarifying first whether we want to model component instances as resources or entities. IMO instrumentation is not technically correct because we intend to have external code (e.g. in the service graph) produce signals _describing_ the component instances, but not originating from within them."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-02-10T17:19:47Z",
+   "body": "My impression is that resource attributes describe where the telemetry is coming \"from\" as well, so I don't think it would be correct either. I'm not sure there is a convention for instrumentation libraries (here, the pipeline) to indicate which user (a component) of the instrumented library (the Consumer API?) caused the observed event. My opinion is that perhaps the least bad solution would be to set the instrumentation library *name* to `<redacted-host>/collector/service` or something similar, but use instrumentation attributes to describe the instrumented component?"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-02-10T17:28:37Z",
+   "body": "@reporter could we add the clarification of what kind of attributes these are to the RFC? I don't have a strong opinion, but I think we can close the discussion that way.\n\nAlso, @reporter @participant1 I filed #12334 so that we can keep on experimenting on this while being able to mark component as 1.0"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-02-10T20:01:53Z",
+   "body": "> could we add the clarification of what kind of attributes these are to the RFC? I don't have a strong opinion, but I think we can close the discussion that way.\n\nI agree we should update the RFC but I'd like to have some idea of what to propose. I'm unclear myself on what type of attributes are reasonable.\n\n> My impression is that resource attributes describe where the telemetry is coming \"from\" as well, so I don't think it would be correct either.\n\nResource attributes don't necessarily have to be applied from within the same code that the signals describe. For example, most pull-based receivers attribute signals to a resource, despite the receiver not being part of that resource.\n\n---\n\nIf we _were_ to say that the RFC describes resource attributes, how is this applied for loggers?"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-02-11T10:59:08Z",
+   "body": "> how is this applied for loggers?\n\nI would guess OTLP logs export would [use the resource](https://<redacted-host>/<redacted-host>/otel/sdk/log#WithResource) while zap Logger export would flatten things and set those as attributes?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-02-11T16:03:24Z",
+   "body": "> I would guess OTLP logs export would [use the resource](https://<redacted-host>/<redacted-host>/otel/sdk/log#WithResource) while zap Logger export would flatten things and set those as attributes?\n\nThe problem is that the notion of a resource is not native to zap (or most logging libraries). The `WithResource` option applies to `LoggingProvider` which is part of the Logs Bridge API, [intended only for use by logging library authors](https://opentelemetry.io/docs/concepts/signals/logs/#logger-provider). So it's not clear to me that we actually have a mechanism to designate attributes as resource attributes."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-02-11T16:11:12Z",
+   "body": "Right, what I am suggesting is that for zap there is no hierarchy of attributes, so we just add them as attributes (since OTLP -> zap is a lossy mapping). If you are using OTLP to export logs instead, it will be in the resource. "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-02-11T18:12:07Z",
+   "body": "> If you are using OTLP to export logs instead, it will be in the resource.\n\nI am just trying to make sure there is a mechanism that can be used to make this happen. It sounds like you are confident there is. I can't quite see it yet but am guessing it is some form of wrapping `otelzap.Core` such that it's `With` method checks for these specific attributes and uses `WithResource` despite the collector not being a logging library? (Part of my confusion is trying to reconcile how uses of OTel instrumentation are supposed to manage this while following the stated guidance.)"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-02-12T11:14:31Z",
+   "body": "Removing `release:blocker` since I merged #12334. Regarding the resource attributes in logger question: I think it can be done, but I am happy to do a prototype for this if needed (I don't think I have the time to do it in the next few days though)"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-02-12T11:56:10Z",
+   "body": "One possibility to allow setting resource attributes with `TelemetrySettings.Logger` despite the detour through zap might be to modify [otelzap](https://github.com/open-telemetry/opentelemetry-go-contrib/tree/main/bridges/otelzap) to turn `resource.xxx` attributes into an `xxx` resource attribute or something to that effect (although this will create a risk of collisions)"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-02-13T14:05:46Z",
+   "body": "Setting the component attributes as resource attributes may be a difficult, since the resource can only be set at the creation of the TracerProvider/MeterProvider/LoggerProvider. I'm not sure we want to try to create a new provider (and new associated tracer/meter/instrument/logger) for every component and every time one calls `Without`.\n\nI will try to make a prototype for setting component attributes as span/meter/log attributes."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-02-13T15:15:40Z",
+   "body": "> I will try to make a prototype for setting component attributes as span/meter/log attributes.\n\nIf we're ruling out resource attributes (which seems like the correct choice to me based on how the logs bridge API is intended to be used), then we already have log attributes set appropriately. (#12259)\n\nAre we in agreement that if these are to be log attributes, then they should also be data point and span attributes?\n\nIf so, we should be able to follow the plan I [described above](https://github.com/open-telemetry/opentelemetry-collector/issues/12217#issuecomment-2643072402), which @participant2 already prototyped for metrics. Do we need more prototypes at this point of can we just implement?"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-02-13T15:51:03Z",
+   "body": "I guess there's not much difference between a sufficiently advanced prototype and the real implementation. But yes, I'm aiming to follow the plan you and Pablo outlined above, ie. wrap `MeterProvider` and `TracerProvider` to let us set data point / span attributes at the top level.\n"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-02-13T16:49:57Z",
+   "body": "Not to back out when I just said I would do it, but I would like to note that wrapping MeterProvider would be MUCH easier (and the result much more maintainable) if we used instrumentation attributes instead of metric attributes. The main issue would become Logger, which is already specialized to an instrumentation scope, unlike the other two, but I suspect that would be solvable."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-02-13T17:40:39Z",
+   "body": "Parts of the exact API are still up for debate, but before I stop for the day I opened draft PR #12384 with my implementation."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-02-27T11:47:54Z",
+   "body": "I'm reconsidering if wrapping Providers (and Meters, and every instrument...) to add span/metric attributes is the most maintainable way to go about this.\n\nI think there's a few more options we haven't yet fully explored:\n\n1. Adding component attributes as instrumentation scope attributes.\n\n    For metrics and spans, we would keep the wrappers only for the Providers, and add the attributes when creating the Meter/Tracer. This would eliminate most of the complexity of the wrappers, which is mostly due to needing to wrap individual metric instruments.\n\n    (**Alternative A:** Get rid of wrappers entirely and modify mdatagen to add the attributes manually in `NewTelemetryBuilder`. The caveat is that this would not work for instrumentation libraries outside of the Collector like otelgrpc.)\n\n    As for logs, for consistency, we could modify the otelzap bridge to allow converting some Zap fields into scope attributes. Although, this may have some overhead if we have to recreate Loggers constantly.\n\n    (**Alternative B:** Accept that our logs will never be OTel-native and keep using record-level attributes for logs only.)\n\n    I believe the main point of contention is semantics: Should a scope only describe the code base producing the telemetry, or can it also describe a specific instantiation of said code base?\n    (I think a \"sub-resource\" would make more sense here, but unless we add some API to the SDK to specialize Providers without recreating the entire exporting pipeline, I don't think it's doable.)\n\n1. Use SDK-level processors to add the attributes to the telemetry.\n\n      As noted in their documentation, SDK processors are called in the order they are registered, and can modify the telemetry along the way without passing them to an exporter. This is for example used in [the baggagecopy processor](https://github.com/open-telemetry/opentelemetry-go-contrib/blob/main/processors/baggagecopy/processor.go). This means that we could add a custom processor before the ones defined in the config, which adds the relevant attributes to the telemetry without wrapping the Providers or the Logger.\n\n    There are a number of issues that complicate this approach, but I believe they are solvable:\n\n    1. The go-contrib config package takes care of instantiating all the providers/processors/exporters, so we may need a new API to make it cooperate in adding our custom processor.\n\n    1. Processors are set at the Provider level, and are passed the calling Context and a mutable span / log record. In the current state of things, this is not enough to determine the component attributes.\n\n        My proposal would be start threading our component attributes through the Context instead of the TelemetrySettings, by adding them as a Context key.\n\n        This key would be set by the service at all entry points into the Component, such as `Factory.CreateTraces` or `Component.Start/Shutdown`, and it would be updated as Contexts progress through the pipeline, by resetting the key inside a service-provided wrapper around the Consumer API (which we will need later to implement pipeline telemetry anyway). The `WithoutAttributes` function could then simply return a modified `Context`.\n\n    1. Metric processors simply do not exist at the moment. This is especially disappointing as metrics are the most problematic signal to wrap in the current implementation.\n\n        There is however [an ongoing proposal to add them to the spec](https://github.com/open-telemetry/opentelemetry-specification/issues/4298). ([This somewhat related feature request in the SDK](https://github.com/open-telemetry/opentelemetry-go-contrib/pull/6281) may also be of interest.)\n\n        We could try to help move those proposals forward, but if we think they will take too long to come to fruition, we could still go with the Context-based approach, but implement it for metrics using wrappers (similar to the current implementation). And hopefully, we would eventually replace that with a metric processor-based approach.\n\n\nWhat are your thoughts on these two proposals?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-02-27T19:33:36Z",
+   "body": "Setting aside the details of this design discussion for a moment, I think it's important to acknowledge that the while the Collector is part of the OpenTelemetry ecosystem the task of instrumenting it _should be similar to what we would ask of any OpenTelemetry instrumentation user_. \n\nWith that in mind, [here is the vision statement for OpenTelemetry](https://opentelemetry.io/community/mission/#vision) which should be quite relevant to instrumentation users. Particularly relevant to our discussion:\n- [Telemetry should be easy](https://opentelemetry.io/community/mission/#telemetry-should-be-easy). It shouldn't require months of debate between telemetry experts to arrive at a data model.\n- [Telemetry should be universal](https://opentelemetry.io/community/mission/#telemetry-should-be-universal). Relevant in the sense that it should be correlated across signals. Our logs need to correlate to our other signals.\n- [Telemetry should be loosely coupled](https://opentelemetry.io/community/mission/#telemetry-should-be-loosely-coupled). Our use of OpenTelemetry instrumentation should not depend on our ability to insert special handling into the instrumentation codebase.\n\n---\n\nThe main question in my mind is why our experience using OpenTelemetry instrumentation isn't living up to the vision. Why is it so difficult (especially for us)? Why are we considering solutions that produce non-correlated telemetry? Why are we considering solutions which would require us to use our positions as community members to insert special cases into the instrumentation codebase?\n\nIMO the root cause is the asymmetry between the traditional logger, which doesn't understand our data model, and the `Tracer/MeterProvider`. If we had a `LoggerProvider` which mirrors the design of the others and works naturally with the data model, then I think we'd have far less trouble deciding where these attributes should be placed. However, OpenTelemetry's Logs API is intended for use by log appender authors, so it's unclear that we should use it at all.\n\nHave others arrived at the same problem when attempting to implement telemetry which can be correlated across signals? Does the project have an answer to this yet? Maybe something @participant4, @participant5, or someone else on the TC could answer?"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-02-28T11:53:51Z",
+   "body": "If we're searching for root causes for the complexity of this issue:\n\n- I agree that using Zap instead of our own LoggerProvider is part of it. Partly because it doesn't understand our data model (scopes / resources etc.), and partly because unlike the other fields in `TelemetrySettings`, it is already specialized to a specific scope instead of being the equivalent of a Provider.\n\n- But I think the main root cause is the fact that despite the already complex data model, there is no *obvious* place for these attributes. None of the existing \"attribute-holding entities\" match our use case, and thus their API cannot be used as is.\n\n    Our attributes:\n    - describe the source of the telemetry at a granular, sub-process level, unlike resources which are set when you set up the telemetry pipeline for the entire process;\n    - describe a concrete instance of a component, unlike scopes which typically only describe the module and version of the telemetry-emitting code;\n    - are set ahead of, and outside of the telemetry-emitting code, unlike metric/span/log attributes.\n    \n    As I mentioned above, I feel like ideally, a new concept like \"sub-resources\" could be introduced to properly take this use case into account, with an API that fits our needs better and does not require workarounds.\n    \n    (Even more ideally, I think we shouldn't have formalized specific attribute-holding entities in the first place. Instead of having to have exactly one of each and structuring the API around that, the spec could have been more generic and allowed to specialize your Logger/Tracer/Meter any number of times by adding attributes at any point in the pipeline. But that's only wishful thinking at this point.)\n\n- The lack of this concept could perhaps be mitigated with processors, but unfortunately, here too:\n    - There is an asymmetry between signals: the lack of processors for metrics\n    - The intended use case (and thus the API) does not quite fit: they are meant to do processing based on the Context and the emitted data, not based on the object which emitted it\n\nUnfortunately, solving point 1 would require breaking changes to a fundamental part of our API, and would not solve point 2. And solving point 2 would require large changes to the OTel API and Data model. In other words, I think it's too late, and we have to resign ourselves to workarounds."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-03-03T16:58:50Z",
+   "body": "Summary of discussion about this on the Collector stability meeting:\n1. Using instrumentation scope attributes would be problematic because of the lack of support from backend vendors\n2. The solution currently used in my PR is fine and, while ugly, is unlikely to break things often or silently.\n3. However, we should discuss this issue (and possibly #12316) with the Go SIG to see if SDK-level features could let us rewrite this more cleanly later. I'll file an issue on the Go repo about it.\n"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-03-04T13:44:22Z",
+   "body": "I opened [this issue](https://github.com/open-telemetry/opentelemetry-go/issues/6404) on the Go repo to ask if the Go SIG has ideas for a better implementation."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-03-04T15:19:08Z",
+   "body": "> However, OpenTelemetry's Logs API is intended for use by log appender authors, so it's unclear that we should use it at all.\n\nThis is being changed, see https://github.com/open-telemetry/opentelemetry-specification/pull/4352 and https://github.com/open-telemetry/opentelemetry-specification/pull/4438\n\n>Maybe something @participant4, @participant5, or someone else on the TC could answer?\n\n@reporter I haven't read the entire thread, anything else you wanted me to help answer other than the question about log appenders?\n\n@participant7 may be able to help with Go Logs SDK. I think `LoggerProvider` was supposed to mirror the design of `TracerProvider`, but my knowledge may be outdated."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2025-03-04T19:00:28Z",
+   "body": "https://github.com/open-telemetry/opentelemetry-go/issues/6404#issuecomment-2698596788\n\nI replied to the new issue posted by @participant3, since it narrows the discussion. I see at least three ideas being discussed there, and all of them are backed by a stalled OpenTelemetry discussion. To summarize:\n\n1. We can't use InstrumentationScope.Attributes, but why not?\n2. We have talked about bound metric instruments, but why not bound tracer/logger instruments?\n3. We have talked about a MetricsProcessor for extracting context-scoped attributes, but wouldn't it be nice if there was a first-class instrumentation API for this?\n\nI'd like to see more energy in the OpenTelemetry Specification SIG discussing these topics. It's great that we're finally seeing these problems _within our own codebase_."
+  },
+  {
+   "author": "participant6",
+   "created_at": "2025-03-07T07:34:29Z",
+   "body": "(Apologies if my questions are answered already - there's a lot of context to take in here.)\n\n> I agree that using Zap instead of our own LoggerProvider is part of it. Partly because it doesn't understand our data model (scopes / resources etc.), and partly because unlike the other fields in TelemetrySettings, it is already specialized to a specific scope instead of being the equivalent of a Provider.\n\nIs this something that could be changed? For example, could we replace the `TelemetrySettings.Logger` field with a method that instantiates a new logger, given an instrumentation scope and options, similar to if you were to call `LoggerProvider.Logger`? i.e.\n\n```\ndiff --git a/component/telemetry.go b/component/telemetry.go\nindex 994064d9d..b2936ad5a 100644\n--- a/component/telemetry.go\n+++ b/component/telemetry.go\n@@ -4,6 +4,10 @@\n package component // import \"<redacted-host>/collector/component\"\n \n import (\n+       \"slices\"\n+\n+       \"<redacted-host>/contrib/bridges/otelzap\"\n+       \"<redacted-host>/otel/log\"\n        \"<redacted-host>/otel/metric\"\n        \"<redacted-host>/otel/trace\"\n        \"<redacted-host>/zap\"\n@@ -13,9 +17,8 @@ import (\n \n // TelemetrySettings provides components with APIs to report telemetry.\n type TelemetrySettings struct {\n-       // Logger that the factory can use during creation and can pass to the created\n-       // component to be used later as well.\n-       Logger *zap.Logger\n+       // LoggerProvider that the factory can pass to other instrumented third-party libraries.\n+       LoggerProvider log.LoggerProvider\n \n        // TracerProvider that the factory can pass to other instrumented third-party libraries.\n        TracerProvider trace.TracerProvider\n@@ -26,3 +29,20 @@ type TelemetrySettings struct {\n        // Resource contains the resource attributes for the collector's telemetry.\n        Resource pcommon.Resource\n }\n+\n+func (s *TelemetrySettings) Logger(name string, options ...log.LoggerOption) *zap.Logger {\n+       p := boundOptionsLoggerProvider{p, s.LoggerProvider, options: options}\n+       core := otelzap.NewCore(name, otelzap.WithLoggerProvider(&lp))\n+       // (plus all of the stuff that telemetry.newLogger does here...)\n+       return zap.New(core)\n+}\n+\n+type boundOptionsLoggerProvider struct {\n+       p       log.LoggerProvider\n+       options log.LoggerOption\n+}\n+\n+func (b *boundOptionsLoggerProvider) Logger(name string, options ...log.LoggerOption) log.Logger {\n+       options = slices.Insert(options, 0, b.options)\n+       return b.p.Logger(name, options...)\n+}\n```\n\nThat will still mean a lot of changes to all the components, but it seems achievable.\n\n(I realise there's a bunch of issues to solve here, just looking for an easy win!)"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-03-07T10:56:07Z",
+   "body": "@participant5 To react to your point 1:\nBesides the blurry semantics, I believe the main reason we don't want to use scope attributes here is not spec-related, it's just that they're not well supported anywhere (usually ignored by backend vendors, but even otelzap doesn't support them). This is of course fixable. The question is whether we want to do that work for something it seems only we would be using, and how much we are willing to strongarm backend vendors into supporting them. We could provide some kind of migration path like \"convert into span/metric/log attributes with a transform processor\", though I'm afraid that might stick and become the defacto solution.\n\n@participant6 This would be a huge breaking change, and unfortunately, the `component` module which defines `TelemetrySettings` was marked as stable 2 weeks ago (#9376). A big change like that would probably have to wait until v2.0 (assuming we're allowing ourselves to do that eventually?)\n\nI've been trying to prototype how to recreate a `zap.Logger` with new scope attributes *without* breaking the API or adding special cases in `otelzap`, and my current idea is pretty similar to yours, except (similar to the current code) we use a custom Zap core which references a shared struct containing the `log.LoggerProvider` (plus a customizable \"wrapper\" function containing \"all of the stuff that telemetry.newLogger does\"). If people think we should proceed with scope attributes despite its issues, I can finish up that prototype and make a draft PR to compare.\n"
+  },
+  {
+   "author": "participant6",
+   "created_at": "2025-03-08T01:12:35Z",
+   "body": "> @participant6 This would be a huge breaking change, and unfortunately, the component module which defines TelemetrySettings was marked as stable 2 weeks ago (#9376). A big change like that would probably have to wait until v2.0 (assuming we're allowing ourselves to do that eventually?)\n\nI see, that's unfortunate - this seems like a pretty fundamental thing to get right.\n\nAs an alternative, the `Logger` field could remain as-is, and a new `LoggerProvider` field and new method (e.g. `NewLogger` or `ScopeLogger` or something) could be added.\n\n> Besides the blurry semantics, I believe the main reason we don't want to use scope attributes here is not spec-related, it's just that they're not well supported anywhere (usually ignored by backend vendors, but even otelzap doesn't support them).\n> ...\n> If people think we should proceed with scope attributes despite its issues, I can finish up that prototype and make a draft PR to compare.\n\nFWIW, I don't think semantics should be compromised due to what vendors do right now.\n\nIt's unclear to me that instrumentation scope is a good fit for _all_ of the universal telemetry attributes though. I've always understood [instrumentation scope](https://opentelemetry.io/docs/concepts/instrumentation-scope/) as being related to static source code, and not some instantiation of that code. Am I wrong on that? If I'm not wrong, then I think at least the following attributes don't really belong at the instrumentation scope level:\n\n- `otelcol.component.id` -- this is obviously per-instance, and not statically defined at the code level\n- `otelcol.signal` and `otelcol.signal.output` -- all components can theoretically deal with all signal types, which one depends on the instantiation\n\n`otelcol.component.id` is somewhat similar to `service.instance.id`, and I tend to agree with @participant3's idea of \"sub-resources\". This one is a property of the thing producing the telemetry; it is not a property of the telemetry, like `otelcol.signal`."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-03-11T16:53:07Z",
+   "body": "After bringing up the topic in a Spec SIG meeting, it sounds like the current intent for instrumentation scope attributes would very much encompass our use case, so scope attributes should be fine semantics-wise.\n\nWith that issue out of the way, I think the only big remaining concern with switching to scope attributes is their poor support by backend vendors. I think it would be reasonable to push for backends to support them, considering they have been in the spec for a while, their handling should be quite similar to resource attributes, and support would benefit other use cases.\n\nWe may want to provide a compatibility solution for users who want to access them before support is ready (the transform processor should be fine if they have a Collector on the path, but maybe there are more general solutions?), but I think this could be handled separately.\n\n---\n\nTo recap the benefits of the scope attribute approach vs. the current metric/log/span approach:\n- Although the Logger wrapper becomes a bit more complicated, the code is overall simpler as we no longer need to wrap Logger/Tracer/Meter and every single metric instrument, with the API coupling this adds\n- Reduced data volume, as the attributes are only sent once per scope instead of on every metric point / log record / span\n\nAnd I don't think there are other approaches we could make use of right now in the current state of things. For that reason, I'm planning to bring the topic up again in next week's Collector stability and Collector SIG meetings, and unless there are strong objections, I will keep working on a new PR using scope attributes and file it so people can compare with the old PR code-wise."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-03-12T21:09:32Z",
+   "body": "Still work in progress, but I filed a PR with the scope attribute implementation: #12617 "
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-03-18T15:00:16Z",
+   "body": "I filed an issue on collector-contrib to track support for instrumentation scope attributes across the exporters there: https://github.com/open-telemetry/opentelemetry-collector-contrib/issues/38744"
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "open-telemetry/opentelemetry-collector",
+  "default_branch": "main",
+  "commit_sha": "0276d781be893d6cf9d9b1a388b7159a833c727b",
+  "as_of": "2025-01-30T22:28:44Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_open-telemetry_opentelemetry-collector_12217"
+}

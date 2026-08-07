@@ -9,32 +9,34 @@
 
 ```mermaid
 flowchart LR
-    N0["<b>N0 make build cannot use CLBlast</b><br/><small>info: 5</small>"]
-    N1["<b>N1 CMake build produced binary elsewhere</b><br/><small>info: 7</small>"]
-    N2["<b>N2 CLBlast package configuration missing</b><br/><small>info: 11</small>"]
-    N3["<b>N3 CLBlast builds but clvk runtime fails</b><br/><small>info: 14</small>"]
-    N4["<b>N4 clvk capabilities measured</b><br/><small>info: 15</small>"]
-    N5["<b>N5 native Qualcomm OpenCL discovered</b><br/><small>info: 16</small>"]
-    N5_x["<b>N5_x no-half incompatibility conclusion rejected</b><br/><small>info: 17</small>"]
-    N_terminal["<b>terminal CLBlast GPU acceleration works</b><br/><small>info: 18</small>"]
-    N0 ==>|"⚡ Stop substituting an unrelated OpenCL ICD header for the CLBlast API and use the project's CMake build so dependencies can be discovered and configured correctly."| N1
-    linkStyle 0 stroke:#f97316,stroke-width:2px
-    N1 ==>|"🔀 ❓cmake_clblast_option_reports_not_found + ⚡Run the CMake-built executable from build/bin and explicitly enable the CLBlast backend during configuration."| N2
-    linkStyle 1 stroke:#a855f7,stroke-width:2px
-    N2 ==>|"⚡ Install the Termux OpenCL development dependencies, build CLBlast itself, install it under the Termux prefix using CMAKE_INSTALL_PREFIX, and then rebuild llama.cpp with CLBlast enabled."| N3
-    linkStyle 2 stroke:#f97316,stroke-width:2px
-    N3 -.->|"❓ clpeak_reports_clvk_adreno_and_no_half_precision"| N4
-    linkStyle 3 stroke:#3b82f6,stroke-width:2px
-    N4 -.->|"❓ native_clinfo_reports_qualcomm_opencl_2_adreno_640_fp16"| N5
+    N0["<b>N0 CLBlast header build failure</b><br/><small>info: 5</small>"]
+    N1_x["<b>N1_x generic CMake build without CLBlast</b><br/><small>info: 6</small>"]
+    N2["<b>N2 CMake cannot locate CLBlast package</b><br/><small>info: 9</small>"]
+    N3_x["<b>N3_x CLBlast installed with wrong CMake prefix setting</b><br/><small>info: 11</small>"]
+    N4["<b>N4 CLBlast build succeeds but clvk runtime fails</b><br/><small>info: 14</small>"]
+    N5["<b>N5 native Qualcomm OpenCL measured</b><br/><small>info: 16</small>"]
+    N5_x["<b>N5_x native OpenCL not found through default runtime path</b><br/><small>info: 18</small>"]
+    N_terminal["<b>terminal CLBlast GPU execution working</b><br/><small>info: 20</small>"]
+    N0 ==>|"💥 blind: Switch from make to a generic CMake build and run main from the build/bin directory."| N1_x
+    linkStyle 0 stroke:#ef4444,stroke-width:2px
+    N1_x ==>|"⚡ Enable the CLBlast backend explicitly during CMake configuration."| N2
+    linkStyle 1 stroke:#f97316,stroke-width:2px
+    N2 ==>|"💥 blind: Treat CMAKE_PREFIX_PATH as CLBlast's installation destination while building CLBlast."| N3_x
+    linkStyle 2 stroke:#ef4444,stroke-width:2px
+    N3_x ==>|"⚡ Install a real CLBlast build into the writable Termux prefix, then configure a fresh llama.cpp build with CLBlast enabled."| N4
+    linkStyle 3 stroke:#f97316,stroke-width:2px
+    N4 -.->|"❓ native_clinfo_reports_qualcomm_opencl_2_adreno_640, native_clinfo_reports_cl_khr_fp16"| N5
     linkStyle 4 stroke:#3b82f6,stroke-width:2px
-    N5 ==>|"💥 blind: Conclude that the Samsung device cannot run llama.cpp with CLBlast because clpeak under clvk says half precision is unsupported."| N5_x
+    N5 ==>|"💥 blind: Remove clvk and expect the default Termux ICD setup to discover the phone's native OpenCL driver without additional runtime-path configuration."| N5_x
     linkStyle 5 stroke:#ef4444,stroke-width:2px
-    N5_x ==>|"⚡ Use the native Qualcomm OpenCL driver from Termux: start from a clean package setup, install and build CLBlast into the Termux prefix, build llama.cpp with CLBlast enabled, and expose both the vendor and Termux library directories at runtime."| N_terminal
+    N5_x ==>|"⚡ Use a clean Termux environment, install the OpenCL loader and headers, build and install CLBlast under the Termux prefix, build llama.cpp with CLBlast enabled, and expose both the Android vendor and Termux library directories when launching main."| N_terminal
     linkStyle 6 stroke:#f97316,stroke-width:2px
+    N0 ==>|"🚀 Resolve the Termux build end to end by restoring the real CLBlast header, installing CLBlast into the Termux prefix, enabling it in a clean CMake build, and launching with the Android vendor library path available. (skip 8)"| N_terminal
+    linkStyle 7 stroke:#0ea5e9,stroke-width:2px
     class N0 start
-    class N1 normal
+    class N1_x normal
     class N2 normal
-    class N3 normal
+    class N3_x normal
     class N4 normal
     class N5 normal
     class N5_x normal
@@ -46,40 +48,42 @@ flowchart LR
 
 ## Opening (body)
 
-> I'm trying to compile llama.cpp with OpenCL on a Samsung S10+ using Termux. Running make with LAMA_CLBLAST=1 fails because ggml-opencl.cpp cannot find clblast.h. My Termux include path is /data/data/com.termux/files/usr/include, so I tried replacing <clblast.h> with ocl_icd.h, but the build then fails with an undeclared identifier 'clblast'.
+> Hi, I'm trying to compile llama.cpp using my OpenCL drivers on a Samsung S10+ with Termux. Running make with LLAMA_CLBLAST=1 fails because ggml-opencl.cpp cannot find clblast.h. I tried replacing <clblast.h> with ocl_icd.h because my OpenCL files are under /data/data/com.termux/files/usr/include, but the next build fails in ggml-opencl.cpp with an undeclared identifier 'clblast'.
 
 ## Satisfaction conditions
 
-1. Must identify both layers of the original failure: CLBlast was not installed or discoverable by CMake, and replacing clblast.h with ocl_icd.h cannot provide the CLBlast API.
-2. Must ground the runtime diagnosis in the collected evidence: the failing platform was experimental clvk-on-Vulkan, while manually built clinfo found the native Qualcomm OpenCL 2.0 Adreno 640 driver with cl_khr_fp16 support.
-3. Must not conclude that the phone is inherently incompatible merely because clpeak under clvk reports no half-precision support; that conclusion was falsified by the native driver evidence.
-4. The working setup must install CLBlast under the Termux prefix with CMAKE_INSTALL_PREFIX, build llama.cpp with LLAMA_CLBLAST=ON, and launch with both /vendor/lib64 and $PREFIX/lib available through LD_LIBRARY_PATH.
-5. Must ask the user to verify that the rebuilt executable starts and reports the OpenCL platform/device before treating GPU acceleration as resolved.
+1. Must identify the initial build problem correctly: OpenCL headers or ocl_icd.h are not substitutes for the missing CLBlast API; an actual CLBlast installation and its CMake package files are required.
+2. Must use CMAKE_INSTALL_PREFIX, not CMAKE_PREFIX_PATH, to install CLBlast into the writable Termux prefix, then configure a clean llama.cpp build with LLAMA_CLBLAST enabled.
+3. Must account for the final runtime issue: the phone's native Qualcomm OpenCL platform exists, but the Termux-linked executable needs the Android vendor library directory exposed at launch alongside the Termux library directory.
+4. Must not conclude that the device is incompatible merely because clvk reports storage or half-related kernel errors; native clinfo reports Qualcomm OpenCL 2.0 with cl_khr_fp16 support.
+5. Must not recommend replacing clblast.h with ocl_icd.h, pointing CLBlast_DIR at an include directory, or using CMAKE_PREFIX_PATH as CLBlast's installation destination.
+6. Must ask the user to verify that main starts, identifies an OpenCL platform/device, and actually runs with GPU acceleration before declaring the issue resolved.
 
 ## Edges
 
 | edge | type | gates / info | payload |
 |---|---|---|---|
-| `e1_N0__N1` | solution_only | req_info: make_clblast_header_not_found, clblast_header_replaced_with_ocl_icd, replacement_causes_undeclared_clblast, termux_include_path_usr_include<br>elements: restores_the_real_clblast_header, uses_cmake_instead_of_editing_source_includes | Stop substituting an unrelated OpenCL ICD header for the CLBlast API and use the project's CMake build so dependencies can be discovered and configured correctly. |
-| `e2_N1__N2` | mixed | req_info: main_not_found_in_source_directory, cmake_build_completes_without_clblast<br>elements: points_to_build_bin_main, enables_LLAMA_CLBLAST_in_cmake | Run the CMake-built executable from build/bin and explicitly enable the CLBlast backend during configuration. |
-| `e3_N2__N3` | solution_only | req_info: samsung_s10_plus_termux_aarch64, clblast_dir_was_mistakenly_set_to_header_directory, cmake_clblast_option_reports_not_found<br>elements: installs_or_builds_the_actual_clblast_dependency, uses_CMAKE_INSTALL_PREFIX_not_CMAKE_PREFIX_PATH_for_install_destination, installs_clblast_under_the_termux_prefix, reconfigures_llama_cpp_with_LLAMA_CLBLAST_ON | Install the Termux OpenCL development dependencies, build CLBlast itself, install it under the Termux prefix using CMAKE_INSTALL_PREFIX, and then rebuild llama.cpp with CLBlast enabled. |
-| `e4_N3__N4` | clarification_only | asks: clpeak_reports_clvk_adreno_and_no_half_precision | clpeak reports driver '3.0 CLVK on Vulkan' on my Adreno GPU. It prints float benchmarks, then says 'No half pr |
-| `e5_N4__N5` | clarification_only | asks: native_clinfo_reports_qualcomm_opencl_2_adreno_640_fp16 | I manually built clinfo. It sees one platform named 'QUALCOMM Snapdragon(TM)', OpenCL 2.0, and one 'QUALCOMM A |
-| `e6_N5__N5_x` | solution_only **BLIND** | req_info: clpeak_reports_clvk_adreno_and_no_half_precision<br>elements: declares_device_incompatible_from_clvk_no_half_result | Conclude that the Samsung device cannot run llama.cpp with CLBlast because clpeak under clvk says half precision is unsupported. |
-| `e7_N5_x__N_terminal` | solution_only | req_info: samsung_s10_plus_termux_aarch64, make_clblast_header_not_found, clblast_dir_was_mistakenly_set_to_header_directory, clvk_runtime_kernel_compilation_errors, cmake_clblast_option_reports_not_found, clpeak_reports_clvk_adreno_and_no_half_precision, native_clinfo_reports_qualcomm_opencl_2_adreno_640_fp16<br>elements: uses_the_native_vendor_opencl_driver_instead_of_relying_on_clvk, builds_and_installs_clblast_with_CMAKE_INSTALL_PREFIX_under_termux, builds_llama_cpp_with_LLAMA_CLBLAST_ON, launches_with_vendor_lib64_and_PREFIX_lib_in_LD_LIBRARY_PATH, asks_user_to_verify_startup_reports_the_opencl_platform_and_device | Use the native Qualcomm OpenCL driver from Termux: start from a clean package setup, install and build CLBlast into the Termux prefix, build llama.cpp with CLBlast enabled, and expose both the vendor and Termux library directories at runtime. |
+| `e1_N0__N1_x` | solution_only **BLIND** | req_info: samsung_s10_plus_termux_aarch64, make_with_clblast_missing_clblast_header<br>elements: uses_cmake_build, locates_main_under_build_bin | Switch from make to a generic CMake build and run main from the build/bin directory. |
+| `e2_N1_x__N2` | solution_only | req_info: generic_cmake_build_created_main_without_clblast<br>elements: enables_llama_clblast_during_cmake_configuration | Enable the CLBlast backend explicitly during CMake configuration. |
+| `e3_N2__N3_x` | solution_only **BLIND** | req_info: opencl_files_under_termux_include_prefix, cmake_cannot_find_clblast_package_config<br>elements: uses_cmake_prefix_path_as_install_destination | Treat CMAKE_PREFIX_PATH as CLBlast's installation destination while building CLBlast. |
+| `e4_N3_x__N4` | solution_only | req_info: make_with_clblast_missing_clblast_header, clblast_dir_was_set_to_header_directory, clblast_install_attempt_targets_usr_local<br>elements: installs_actual_clblast_package_not_only_opencl_headers, uses_cmake_install_prefix_for_termux, rebuilds_llama_with_clblast_enabled, does_not_replace_clblast_h_with_ocl_icd_h | Install a real CLBlast build into the writable Termux prefix, then configure a fresh llama.cpp build with CLBlast enabled. |
+| `e5_N4__N5` | clarification_only | asks: native_clinfo_reports_qualcomm_opencl_2_adreno_640, native_clinfo_reports_cl_khr_fp16 | I manually built clinfo. It reports one platform, 'QUALCOMM Snapdragon(TM)', with OpenCL 2.0 and one GPU devic / The native Qualcomm output lists a preferred and native half vector size of 1 and shows cl_khr_fp16 half-preci |
+| `e6_N5__N5_x` | solution_only **BLIND** | req_info: clvk_runtime_kernel_errors, native_clinfo_reports_qualcomm_opencl_2_adreno_640<br>elements: switches_from_clvk_to_native_opencl_without_runtime_path_setup | Remove clvk and expect the default Termux ICD setup to discover the phone's native OpenCL driver without additional runtime-path configuration. |
+| `e7_N5_x__N_terminal` | solution_only | req_info: samsung_s10_plus_termux_aarch64, make_with_clblast_missing_clblast_header, vendor_opencl_library_exists_under_vendor_lib64, native_clinfo_reports_qualcomm_opencl_2_adreno_640, default_termux_icd_run_reports_no_platform<br>elements: restores_unmodified_source_or_uses_fresh_clone, installs_actual_clblast_into_termux_prefix, builds_llama_with_clblast_enabled, adds_vendor_and_termux_library_directories_at_runtime, asks_user_to_verify_platform_device_selection_and_gpu_execution | Use a clean Termux environment, install the OpenCL loader and headers, build and install CLBlast under the Termux prefix, build llama.cpp with CLBlast enabled, and expose both the Android vendor and Termux library directories when launching main. |
+| `e8_N0__N_terminal` | solution_only | req_info: samsung_s10_plus_termux_aarch64, make_with_clblast_missing_clblast_header, replaced_clblast_header_with_ocl_icd<br>elements: rejects_header_substitution, installs_real_clblast_development_files, uses_termux_install_prefix, enables_clblast_in_cmake, exposes_android_vendor_library_path_at_runtime, asks_user_to_verify_opencl_platform_and_device | Resolve the Termux build end to end by restoring the real CLBlast header, installing CLBlast into the Termux prefix, enabling it in a clean CMake build, and launching with the Android vendor library path available. |
 
 ## Nodes
 
 | node | terminal | volunteered | images | symptoms |
 |---|---|---|---|---|
-| `N0` |  | 2 | 0 | Running make with LAMA_CLBLAST=1 on my Samsung S10+ in Termux stops at 'fatal error: clblast.h file not found'. After I replaced clblast.h w |
-| `N1` |  | 2 | 0 | The CMake build appears to complete, but running ./main from the source directory says the command is not found. |
-| `N2` |  | 1 | 0 | I can run ./main from the build bin subdirectory, but startup does not show a CLBlast platform or device. Configuring with -DLLAMA_CLBLAST=O |
-| `N3` |  | 3 | 0 | After installing CLBlast into the Termux prefix, llama.cpp finds it and builds with CLBlast enabled. When I run ./main, the OpenCL program e |
-| `N4` |  | 0 | 0 | With the Termux clvk platform, clpeak identifies an Adreno 640 through 'CLVK on Vulkan' and prints 'No half precision support! Skipped'. The |
-| `N5` |  | 0 | 0 | A manually built clinfo sees one native 'QUALCOMM Snapdragon(TM)' OpenCL 2.0 platform and an Adreno 640 device. The native device informatio |
-| `N5_x` |  | 1 | 0 | My device does natively support OpenCL, and the clinfo output I posted lists 'Half-precision Floating-point support (cl_khr_fp16)'. I'm tryi |
-| `N_terminal` | ✓ | 1 | 0 | After a fresh Termux setup, rebuilding CLBlast and llama.cpp, and launching main with /vendor/lib64 and the Termux library directory in LD_L |
+| `N0` |  | 0 | 0 | Building with LLAMA_CLBLAST=1 first fails with 'clblast.h file not found'. After I replace that header with ocl_icd.h, ggml-opencl.cpp fails |
+| `N1_x` |  | 1 | 0 | The CMake build completes and I can run main from the build/bin directory, but startup does not show BLAS = 1 or an OpenCL platform and devi |
+| `N2` |  | 3 | 0 | Configuring with -DLLAMA_CLBLAST=ON reports 'CLBlast not found' and says it cannot find CLBlastConfig.cmake or clblast-config.cmake. |
+| `N3_x` |  | 2 | 0 | CLBlast builds, but make install tries to create /usr/local/lib and stops with 'Maybe need administrative privileges'. Llama.cpp still repor |
+| `N4` |  | 3 | 0 | After installing CLBlast under the Termux prefix, llama.cpp finds CLBlast and builds successfully. Running main through clvk then prints Ope |
+| `N5` |  | 0 | 0 | Main still prints the OpenCL kernel errors when it uses clvk, while my manually built clinfo can see the phone's native Qualcomm OpenCL 2.0  |
+| `N5_x` |  | 2 | 0 | After removing clvk, clinfo reports zero platforms and main stops with clGetPlatformIDs error -1001. The phone's libOpenCL.so is under the A |
+| `N_terminal` | ✓ | 1 | 0 | Llama.cpp builds with CLBlast enabled and main starts with GPU acceleration when I launch it with the vendor and Termux library directories  |
 
 ## Machine review (audit pass, adversarially verified)
 

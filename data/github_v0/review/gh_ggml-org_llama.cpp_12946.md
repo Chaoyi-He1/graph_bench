@@ -1,6 +1,6 @@
 # Review: gh_ggml-org_llama.cpp_12946
 
-**Eval bug: GLM-Z1-9B-0414**
+**GLM-Z1-9B-0414 generation loops after roughly 100 tokens**
 
 - source: https://github.com/ggml-org/llama.cpp/issues/12946
 - kind: LLM draft (needs review)
@@ -9,33 +9,23 @@
 
 ```mermaid
 flowchart LR
-    N0["<b>N0 GLM-0414 repetition reported</b><br/><small>info: 5</small>"]
-    N1_x["<b>N1_x template-only aftermath</b><br/><small>info: 6</small>"]
-    N1["<b>N1 conversion fix tested</b><br/><small>info: 8</small>"]
-    N2["<b>N2 main GLM metadata fix applied</b><br/><small>info: 9</small>"]
-    N3["<b>N3 backend-specific corruption isolated</b><br/><small>info: 12</small>"]
-    N4["<b>N4 numerical failure boundary measured</b><br/><small>info: 15</small>"]
-    N_terminal["<b>terminal resolved</b><br/><small>info: 17</small>"]
-    N0 ==>|"💥 blind: Treat the looping as only a prompt-template problem and run the model with the chatglm4 template."| N1_x
-    linkStyle 0 stroke:#ef4444,stroke-width:2px
-    N0 -.->|"❓ chatglm4_template_alone_still_repeats, perplexity_results_close_across_f16_q8_q5, half_rope_multieos_pr_test_produces_coherent_output"| N1
+    N0["<b>N0 GLM-Z1 generation loop reported</b><br/><small>info: 5</small>"]
+    N1["<b>N1 quantization degradation checked</b><br/><small>info: 6</small>"]
+    N2["<b>N2 metadata override probe succeeds</b><br/><small>info: 7</small>"]
+    N3["<b>N3 candidate converter changes verified</b><br/><small>info: 8</small>"]
+    N_terminal["<b>terminal resolved</b><br/><small>info: 10</small>"]
+    N0 -.->|"❓ perplexity_f16_q8_q5_values_are_close"| N1
+    linkStyle 0 stroke:#3b82f6,stroke-width:2px
+    N1 -.->|"❓ rope_dimension_64_and_eos_151336_overrides_improve_output"| N2
     linkStyle 1 stroke:#3b82f6,stroke-width:2px
-    N1_x -.->|"❓ perplexity_results_close_across_f16_q8_q5, half_rope_multieos_pr_test_produces_coherent_output"| N1
+    N2 -.->|"❓ candidate_converter_branch_requantized_model_works"| N3
     linkStyle 2 stroke:#3b82f6,stroke-width:2px
-    N1 ==>|"⚡ Fix GLM-4-0414 conversion and defaults so GGUF records half rotary dimensions, the correct multiple-EOS handling, and the GLM4 chat template instead of relying on the malformed original metadata."| N2
+    N3 ==>|"⚡ Fix GLM-4-0414 conversion so the GGUF records the model's half-RoPE dimension and correct EOS token metadata, use the GLM4 template as the default, then reconvert and requantize the model rather than treating the problem as quantization damage or a template-only issue."| N_terminal
     linkStyle 3 stroke:#f97316,stroke-width:2px
-    N2 -.->|"❓ post_metadata_fix_corruption_on_volta_and_amd, pascal_or_cpu_paths_can_remain_coherent, long_or_multiturn_prompts_trigger_corruption"| N3
-    linkStyle 4 stroke:#3b82f6,stroke-width:2px
-    N3 -.->|"❓ ubatch_63_works_but_64_breaks, forcing_mmq_or_fp32_cublas_output_works, vulkan_requires_very_small_ubatch_on_some_amd_setups"| N4
-    linkStyle 5 stroke:#3b82f6,stroke-width:2px
-    N4 ==>|"⚡ Use the completed GLM-0414 conversion fixes together with backend precision fixes that avoid FP16 GEMM accumulator overflow, then ask the user to retest a current build without the reduced-microbatch workaround."| N_terminal
-    linkStyle 6 stroke:#f97316,stroke-width:2px
     class N0 start
-    class N1_x normal
     class N1 normal
     class N2 normal
     class N3 normal
-    class N4 normal
     class N_terminal terminal
     classDef start fill:#fee2e2,stroke:#b91c1c,color:#000
     classDef terminal fill:#dcfce7,stroke:#15803d,color:#000
@@ -44,69 +34,41 @@ flowchart LR
 
 ## Opening (body)
 
-> I'm running llama.cpp build 5121 (c94085df) on Linux with CUDA and an RTX 3080. With THUDM_GLM-Z1-9B-0414 GGUF, generation starts normally but loops after roughly 100 tokens. This happens even with Q8_0 and with or without --jinja. My server command uses a 32K context and Q5_K_M. The same model produces a cogent response through Transformers with 4-bit loading. I've attached an example of the looping output.
+> I am running llama.cpp build 5121 (c94085df) on Linux with CUDA and an RTX 3080. When I start llama-server with THUDM_GLM-Z1-9B-0414-Q5_K_M.gguf, generation begins normally but loops after roughly 100 tokens. The same problem appears with Q8_0 and also when I use --jinja. Transformers with 4-bit loading produces a completely cogent response on the same model.
 
 ## Satisfaction conditions
 
-1. Must identify the original GLM-4-0414 conversion defects: partial_rotary_factor was not represented as half-RoPE/dimension_count 64, and the series required correct multiple-EOS handling; changing the chat template alone was not sufficient.
-2. Must ground the initial diagnosis in the close F16/Q8/Q5 perplexity results, coherent Transformers behavior, and successful test of a reconverted GGUF rather than blaming quantization quality.
-3. Must identify the remaining architecture-specific corruption as FP16 GEMM accumulator/output overflow, grounded in the ubatch 63-versus-64 boundary and the successful MMQ and FP32-output probes.
-4. Must not present --chat-template chatglm4 alone as the fix; that direction was tried and endless repetition remained.
-5. A reduced -ub value or forced MMQ may be offered only as a temporary workaround; the final recommendation must be a current build containing the landed conversion and backend precision fixes.
-6. Must ask the user to retest a build containing the fixes with normal micro-batch settings, and must only treat the issue as resolved after that verification.
+1. Must identify the original GLM-Z1-9B-0414 failure as bad conversion metadata: the converter failed to apply the model's partial rotary factor, yielding the wrong RoPE dimension, and did not correctly handle the model's multiple EOS tokens.
+2. Must ground the diagnosis in the collected evidence: similar F16/Q8/Q5 perplexity, cogent Transformers output, improvement with RoPE dimension 64 and EOS token 151336 overrides, and successful generation after rebuilding and producing fresh quants with the candidate changes.
+3. Must recommend fixing the GLM-0414 conversion path and producing new GGUF quants; command-line metadata overrides may be presented as a temporary test or workaround.
+4. Must not claim that --jinja or selecting the GLM4 chat template alone resolves the reported generation loop, since template changes alone were tried while endless repetition remained.
+5. Must keep the later Volta, ROCm, Metal, and Vulkan numerical-precision reports separate from the reporter's original RTX 3080 conversion issue.
+6. Must have an affected user verify a newly produced model containing the converter changes before declaring the original issue resolved.
 
 ## Edges
 
 | edge | type | gates / info | payload |
 |---|---|---|---|
-| `e1_N0__N1_x` | solution_only **BLIND** | req_info: issue_present_with_q5_q8_and_jinja<br>elements: recommends_chatglm4_template_as_complete_fix | Treat the looping as only a prompt-template problem and run the model with the chatglm4 template. |
-| `e2_N0__N1` | clarification_only | asks: chatglm4_template_alone_still_repeats, perplexity_results_close_across_f16_q8_q5, half_rope_multieos_pr_test_produces_coherent_output | I tried the chatglm4 template, but the output still goes into endless repetition. / I calculated perplexity on 50 chunks of my calibration data. I got F16 29.9842 +/- 1.09088, Q8_0 30.0564 +/- 1 / After rebuilding and reconverting with that PR, the issues are fixed for my model; I'm uploading replacement q |
-| `e3_N1_x__N1` | clarification_only | asks: perplexity_results_close_across_f16_q8_q5, half_rope_multieos_pr_test_produces_coherent_output | On 50 calibration chunks I get F16 29.9842, Q8_0 30.0564, and Q5_K_M 30.2513, with roughly 1.09 uncertainty fo / Yes. After rebuilding and reconverting with that PR, the issues are fixed for my model and I'm uploading repla |
-| `e4_N1__N2` | solution_only | req_info: transformers_4bit_output_is_cogent, perplexity_results_close_across_f16_q8_q5, issue_present_with_q5_q8_and_jinja, chatglm4_template_alone_still_repeats<br>elements: handles_partial_rotary_factor_as_half_rope, handles_glm0414_multiple_eos_metadata, requires_reconversion_or_equivalent_metadata_overrides, does_not_claim_template_selection_alone_is_sufficient | Fix GLM-4-0414 conversion and defaults so GGUF records half rotary dimensions, the correct multiple-EOS handling, and the GLM4 chat template instead of relying on the malformed original metadata. |
-| `e5_N2__N3` | clarification_only | asks: post_metadata_fix_corruption_on_volta_and_amd, pascal_or_cpu_paths_can_remain_coherent, long_or_multiturn_prompts_trigger_corruption | With the corrected 32B GGUF, CUDA_VISIBLE_DEVICES=0 on my Tesla V100S produces GGGGG forever, while CUDA_VISIB / Yes. The CPU-only build gives good output, and the same corrected model works on my P40 cards even though it b / On my AMD setup the first short prompt can work, then the follow-up breaks down. A long enough first prompt al |
-| `e6_N3__N4` | clarification_only | asks: ubatch_63_works_but_64_breaks, forcing_mmq_or_fp32_cublas_output_works, vulkan_requires_very_small_ubatch_on_some_amd_setups | I tested it properly: -b 63 -ub 63 works, but it breaks exactly at 64. It also still works when n_batch is 204 / Building with GGML_CUDA_FORCE_MMQ=1 makes the same prompt work. Forcing the cuBLAS GEMM output to FP32 also ma / On one AMD Vulkan setup, -ub 32 and -ub 16 still fail. On my MoltenVK AMD setup, -ub 8 finally works and the r |
-| `e7_N4__terminal` | solution_only | req_info: transformers_4bit_output_is_cogent, perplexity_results_close_across_f16_q8_q5, pascal_or_cpu_paths_can_remain_coherent, chatglm4_template_alone_still_repeats, half_rope_multieos_pr_test_produces_coherent_output, post_metadata_fix_corruption_on_volta_and_amd, long_or_multiturn_prompts_trigger_corruption, ubatch_63_works_but_64_breaks, forcing_mmq_or_fp32_cublas_output_works, vulkan_requires_very_small_ubatch_on_some_amd_setups<br>elements: identifies_initial_half_rope_and_multiple_eos_conversion_defects, identifies_fp16_gemm_accumulator_overflow_as_backend_corruption_cause, recommends_a_build_containing_the_landed_backend_precision_fixes, treats_small_ubatch_or_forced_mmq_as_temporary_workarounds_not_the_final_fix, asks_user_to_verify_on_a_build_containing_the_fix | Use the completed GLM-0414 conversion fixes together with backend precision fixes that avoid FP16 GEMM accumulator overflow, then ask the user to retest a current build without the reduced-microbatch workaround. |
+| `e1_N0__N1` | clarification_only | asks: perplexity_f16_q8_q5_values_are_close | I calculated perplexity on 50 chunks of my calibration data. F16 is 29.9842 +/- 1.09088, Q8_0 is 30.0564 +/- 1 |
+| `e2_N1__N2` | clarification_only | asks: rope_dimension_64_and_eos_151336_overrides_improve_output | With --override-kv glm4.rope.dimension_count=int:64 and --override-kv tokenizer.ggml.eos_token_id=int:151336,  |
+| `e3_N2__N3` | clarification_only | asks: candidate_converter_branch_requantized_model_works | I can confirm the candidate changes fix the issues. I rebuilt and made fixed quants, and the model now works,  |
+| `e4_N3__N_terminal` | solution_only | req_info: glm_z1_9b_generation_loops_after_about_100_tokens, q8_quant_also_loops, jinja_does_not_prevent_loop, transformers_4bit_produces_cogent_response, perplexity_f16_q8_q5_values_are_close, rope_dimension_64_and_eos_151336_overrides_improve_output, candidate_converter_branch_requantized_model_works<br>elements: identifies_incorrect_glm0414_conversion_metadata_as_the_main_cause, corrects_half_rope_dimension_handling, corrects_multiple_eos_token_handling, requires_reconversion_or_fixed_quants, asks_affected_user_to_verify_a_newly_converted_model_containing_the_changes, does_not_claim_chat_template_selection_alone_fixes_the_generation_loop | Fix GLM-4-0414 conversion so the GGUF records the model's half-RoPE dimension and correct EOS token metadata, use the GLM4 template as the default, then reconvert and requantize the model rather than treating the problem as quantization damage or a template-only issue. |
 
 ## Nodes
 
 | node | terminal | volunteered | images | symptoms |
 |---|---|---|---|---|
-| `N0` |  | 1 | 0 | GLM-Z1-9B-0414 begins generating a response in llama.cpp but falls into repetitive looping after about 100 tokens, including with Q8_0 and w |
-| `N1_x` |  | 1 | 0 | With the chatglm4 template selected, the output still falls into endless repetition. |
-| `N1` |  | 0 | 0 | My original GGUF still loops even with the chatglm4 template, while a GGUF reconverted with the proposed GLM-0414 changes produces coherent  |
-| `N2` |  | 0 | 0 | After rebuilding and reconverting the 9B model with the GLM-0414 fixes, its responses are coherent instead of entering the original repetiti |
-| `N3` |  | 0 | 0 | With the converted metadata fixed, the model can still emit endless G characters or garbled text on a Tesla V100S and on AMD ROCm, while the |
-| `N4` |  | 0 | 0 | On the affected Volta setup, the model responds correctly with n_ubatch 63 but produces repeated or corrupted output at n_ubatch 64. The sam |
-| `N_terminal` | ✓ | 1 | 0 | On the current fixed build, GLM-4-0414 produces coherent responses without supplying a reduced -ub workaround. |
+| `N0` |  | 3 | 0 | GLM-Z1-9B-0414 starts generating but falls into repetitive output after roughly 100 tokens in llama-server. The behavior occurs with Q5_K_M  |
+| `N1` |  | 0 | 0 | The generated response still becomes repetitive in llama.cpp even though the F16, Q8_0, and Q5_K_M perplexity results are close to one anoth |
+| `N2` |  | 0 | 0 | With glm4.rope.dimension_count set to 64 and tokenizer.ggml.eos_token_id set to 151336, the model produces coherent output instead of the or |
+| `N3` |  | 0 | 0 | After rebuilding with the candidate changes and quantizing the model again, GLM-Z1-9B produces coherent output without the original generati |
+| `N_terminal` | ✓ | 0 | 0 | A newly converted and quantized GLM-Z1-9B-0414 model now generates coherent responses without falling into the roughly 100-token repetition  |
 
 ## Machine review (audit pass, adversarially verified)
 
-Auditor verdict: **needs_rework** · 4 of 4 findings survived independent refutation.
+Auditor verdict: **n/a** · 0 of 0 findings survived independent refutation.
 
-_Wave-1 sampling audit: GLM-4 conversion defects. One high: clarification question text named the fix (half-RoPE/multi-EOS/GLM4 template), measurably releasing the fix confirmation to a generic ask (offline matcher 0.56>=0.5). Repaired: fix-blind questions, confirmation removed from the fix edge's required evidence, mechanism names confined to solution-side fields (verified by scan); unhooked screenshots hooked after visual check._
-
-### Confirmed findings
-
-- [ ] 🔴 **answer_key_in_question** (high) — `e2/e3 question_patterns + e4.required_info`
-  - claim: Questions named half-RoPE/multiple-EOS/GLM4 template; e4 reduced to restating a user-confirmed action.
-  - thread evidence: None
-  - suggested fix: None
-  - verifier: 
-- [ ] 🟡 **annotation** (low) — `e1 comment`
-  - claim: Citation c15 contradicted the falsification it was cited for; corrected to c4-c5.
-  - thread evidence: None
-  - suggested fix: None
-  - verifier: 
-- [ ] 🟡 **image_mis-hooks** (low) — `e5/e6 clarifications`
-  - claim: img1 (multi-turn breakdown) and img2 (low-ubatch success) were unhooked; hooked to their evidencing clarifications.
-  - thread evidence: None
-  - suggested fix: None
-  - verifier: 
-- [ ] 🟡 **unfaithful_voice** (low) — `e2 answer`
-  - claim: "participant10's PR" dangling thread-internal reference; de-referenced.
-  - thread evidence: None
-  - suggested fix: None
-  - verifier: 
+__
 
 
 ## Review checklist

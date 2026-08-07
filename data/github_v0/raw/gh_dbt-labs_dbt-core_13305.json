@@ -1,0 +1,135 @@
+{
+ "repo": "dbt-labs/dbt-core",
+ "number": 13305,
+ "url": "https://github.com/dbt-labs/dbt-core/issues/13305",
+ "title": "[BUG] [BigQuery] require storage read API to be enabled",
+ "state": "closed",
+ "labels": [
+  "type:bug",
+  "adapter:bigquery",
+  "area:adapters",
+  "engine:v2"
+ ],
+ "reporter": "dataders",
+ "created_at": "2025-06-16T17:30:13Z",
+ "closed_at": "2025-08-19T12:17:28Z",
+ "body": "### Is this a new bug in fusion?\n\n- [x] I believe this is a new bug in fusion and\n- [x] I have searched the existing issues, and I could not find an existing issue for this bug\n\n### Current Behavior\n\nrelated: https://github.com/apache/arrow-adbc/issues/2173\n\nUser reports that any invocation of dbt and BigQuery gives this result\n\n```rs\nerror: dbt1501: Macro error: invalid operation: AdapterError: ADBC\nerror: [BigQuery] bigquery: require storage read API to be enabled\n(in dbt_internal_packages/dbt-bigquery/macros/materializations/table.sql:5)\n  --> dbt_internal_packages/dbt-bigquery/macros/materializations/table.sql:5:1\n```\n\nthis is the last query shown in `logs/queries.log`. \n\n```\nSELECT\n    table_catalog,\n    table_schema,\n    table_name,\n    table_type\nFROM `LOCATIONXXX`.`SCHEMAXXX`.INFORMATION_SCHEMA.TABLES\nWHERE table_name = 'stg_zuora__amendment_tmp'\n```\n\n### Expected Behavior\n\nThey shouldn't get this error!\n\n\n### Environment\n\n```markdown\n- OS: mac os\n- dbt: 0.0.182\n```\n\n### Which database adapter are you using with fusion?\n\nbigquery\n\n### Additional Context\n\n_No response_",
+ "comments": [
+  {
+   "author": "dbeatty10",
+   "created_at": "2025-06-16T18:39:50Z",
+   "body": "The BigQuery adapter isn't supported yet (not scheduled until [2025-06-25](https://github.com/dbt-labs/dbt-fusion?tab=readme-ov-file#timeline)).\n\nBut I'd guess that we'd definitely want this fixed before then!"
+  },
+  {
+   "author": "VersusFacit",
+   "created_at": "2025-06-17T09:44:41Z",
+   "body": "Some context on this one after a bit of casual research.\n\nhttps://cloud.google.com/bigquery/docs/reference/storage\n\nThere's this thing we haven't traditionally thought of much in dbt land called the BigQuery Storage Read API.\n\nThe ADBC driver uses Apache Arrow-based interfaces which for BigQuery means the Storage Read API is preferred. However, this is something you must enable for your project. Most dbt users will not have done this. Why?\n\nThe Python connector for bigquery has this option, but by default it uses REST APIs.\n\nBut,\n```\n However, the Storage Read API is enabled in all projects in which the BigQuery API is enabled; no additional activation steps are required.\n```\n\nThis flags me as where the root cause will live. My hunch is some weird auth issues, which means we have to dig into the driver and figure out why things aren't just automatically working\n\nThere are hints this is related to the READ API requiring an IAM role. If that's so then we need to fallback onto the standard API as we don't know which users have done this setup and which haven't."
+  },
+  {
+   "author": "dbeatty10",
+   "created_at": "2025-06-17T14:41:21Z",
+   "body": "> If that's so then we need to fallback onto the standard API as we don't know which users have done this setup and which haven't.\n\nThere's a famous Kent Beck software development principle, one version of which is:\n> the strategy is definitely: **first** make it work, then make it right, and, finally, make it fast.\n\nIf we need the ability to fallback to the standard API, would it be an option to \"make it work\" by _only_ using the standard API for the initial launch?"
+  },
+  {
+   "author": "VersusFacit",
+   "created_at": "2025-06-17T17:51:37Z",
+   "body": "<img width=\"913\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/283b4712-5918-48a1-aaea-0ea26194f29a\" />\n\nSome follows to look into from the magic of chat 🤷‍♀  I'm going to attempt to use the python adapter to flip between both in a simple script"
+  },
+  {
+   "author": "VersusFacit",
+   "created_at": "2025-06-18T08:08:05Z",
+   "body": "I did some extensive testing here today.\n\nI think I have some good news.\n\nMy claim: this is controlled and resolved through roles/permissions and does not require an in-house code resolution.\n\n## Context (skip to next header for recommendations)\n\nComponents:\n* Bigquery Api / Bigquery Rest Api -- the \"classic\", what `google-cloud-bigquery` serves by default\n* Bigquery Read Storage API -- auto-enabled for projects with the classic API active, what Arrow and ADBC serve by default\n\nI did two layers of testing against an in-house bigquery project:\n1. a python script powered by `google-cloud-bigquery` showing a simple `select 1` works both for APIs above with 0 intervention from me\n    * corroborates the \"BigQuery API active projects automatically have Read Storage API turned on\" claim\n2. end to end `jaffle-shop-classic` runs using token and simple `gcloud` auth authentication for model builds (results verified on live infra)\n     * for how customers we'll use this, ruling out auth quirks\n\nTo reiterate my research above, it seems the Read Storage API is auto-enabled, but one must have specific roles on their user to run things. I had set out to determine that subset.\n\nBut I cannot reproduce this error, even on full builds of `fs` models! Why not?\n\n```\ngcloud projects get-iam-policy dbt-test-env \\ \n  --flatten=\"bindings[].members\" \\\n  --filter=\"bindings.members:user:mila@dbtlabs.com\" \\\n  --format=\"table(bindings.role)\"\n```\nOutput:\n```\nROLE\nroles/owner\n```\nI am a Role Owner, which means I have _all_ perms. I _presume_ that this error triggers only for users who lack these perms, as my `dbt run`s could not reproduce is (and I _did_ check the ending tables were right to sanity check).\n\nI could not unblock since this is SSO managed and I can't create or configure users like I could on Snow or Redshift.\n\n## Takeaway\n\n\n```\n    \"BigQuery: require Storage Read API to be enabled\"\n```\nappears to be an imprecise proxy for:\n```\n    The caller does not have bigquery.readsessions.create on the project or table.\n```\n\nUsers who can access tables via the usual Bigquery API come preloaded with perms. The additional perms for this other API are\n* `bigquery.readsessions.create`\n*  `bigquery.readsessions.create.getData`\n* `bigquery.readsessions.update` <-- possible\n\n## Recommendation\n\nThere is likely no code change required here\n\nBecause our cluster is controlled by SSO, I cannot rig up a test user without perms to do the full before-after test. Someone who does _not_ have owner perms ideally should identify _exactly_ what guidance to give to users. (@dataders  or @dbeatty10 , either of you maybe? Should be a 15-30 minute check if my working theory proves true. Happy to dig back in if there's more to discover!)\n\n\n**Proposed action item**: We determine the precise steps to reproduce this issue, and assuming it is indeed a permissions issue, find the subset to resolve it, and then document these steps for onboarding materials.\n"
+  },
+  {
+   "author": "dataders",
+   "created_at": "2025-06-18T21:12:07Z",
+   "body": "@jasonlin45 and I just met with the user who reported this.\n\nthe issue was that their custom schema was not being respected. Instead the table was materialized into the `dataset` (i.e. `schema`) defined in the `profiles.yml` to which the user did not have access.\n\ntwo ways that would have made this easier to figure out:\n\n1. if Fusion's stdout printed the model's FQN instead of just the model path. This is what Core does\n2. if the error also provides the database and schema that the driver is attempting to access.\n\nwe're not out of the woods yet however bc I cannot reproduce!\n\nI did make [a repro project](https://github.com/dbt-labs/scratch/tree/main/repros/bigquery_custom_schema_ignored) but cannot get it to reproduce like [the user showed in the recording of our call](https://us-13442.app.gong.io/call?id=2465453562544424323). [here's a zoom clip](https://dbtlabs.zoom.us/clips/share/QqHDebzAQAmcntjgcL5eMw) of me trying to make it happen and failing"
+  },
+  {
+   "author": "VersusFacit",
+   "created_at": "2025-06-18T21:24:59Z",
+   "body": "@dataders and I caught up. Placing this in blocked for now. Because we cannot nail down a repro yet, I'll swap to Bigquery seeds and keep an eye on this next couple of days. Ultimately this does seem to be a perms issue message but not a permissions issue _pre se_. Rather Fusion is creating or reading custom schemata in a manner that presents this permissions or general configuration mismatch. "
+  },
+  {
+   "author": "dataders",
+   "created_at": "2025-06-19T02:10:06Z",
+   "body": "update -- the issue was because the user didn't have a `+schema` in `dbt_project.yml`.\n\nthere as a warning issued about this, but it was lost in the noise of the hundereds of other warnings to we didn't catch it.\n\nnow her project correctly puts models into the correct schemas, so she doesn't get a \"you don't have permission for this random schema\" error anymore. closing!"
+  },
+  {
+   "author": "dataders",
+   "created_at": "2025-07-30T14:08:01Z",
+   "body": "I'm reopening this as we have two reports in the wild (shoutout  @fornwall and @will-decesare!)\n\nFor more info see:\n- [community slack thread](https://getdbt.slack.com/archives/C088YCAB6GH/p1753117587658359)\n- [internal slack thread](https://dbt-labs.slack.com/archives/C08QJREKZHD/p1750177801755039)\n\nI've also commented again on https://github.com/apache/arrow-adbc/issues/2173 with more context in https://github.com/apache/arrow-adbc/issues/2173#issuecomment-3136584210\n\n## next steps\nhere's what I think might be instructive:\n\n1. create a service account with exactly the permissions below (\"Job User\" and \"Data Editor\") on a BQ project (e.g. `repro_project`)\n2. Use the BQ GO SDK to invoke a query against `repro_project.public.INFORMATION_SCHEMA.COLUMNS`\n\nonce we have this setup, we should be in a good place to get to root cause.\n\n## scenario\n\na service account with only two roles on a BigQuery project (read: `database`):\n- Job User\n- Data Editor\n\nnormally these are sufficient permissions for dbt Core which uses the BQ Python SDK. However, for \"reasons\" dbt Fusion's BigQuery ADBC driver (which uses BQ's Go driver) cannot execute the same queries with the same service account.\n\nWe're lucky enough that there's a single query that betrays the permissioning differences.\n\n```sql\n-- `dot-routed` is the name of the BQ dataset\nSELECT\n  column_name, data_type, is_nullable\nFROM `dot-routed`.`public`.INFORMATION_SCHEMA.COLUMNS\n```\n\nWe can validate that the service account should indeed be able to query the dataset by using the BigQuery CLI. The below command returns results as intended.\n\n```\nbq query --use_legacy_sql=false 'SELECT column_name, data_type, is_nullable FROM `dot-routed`.`public`.INFORMATION_SCHEMA.COLUMNS'\n```\n\nAdditionally, we can invoke the same query in dbt Core with `show`. It also works as expected.\n\n```\ndbt show --inline \"SELECT column_name, data_type, is_nullable FROM dot-routed.public.INFORMATION_SCHEMA.COLUMNS\"\n```\nHowever, Fusion errors for the exact same `show` invocation with the below error\n```\ndbtf show --inline \"SELECT column_name, data_type, is_nullable FROM dot-routed.public.INFORMATION_SCHEMA.COLUMNS\" --static-analysis off\n```\n```\nerror: dbt1000: Unknown: [BigQuery] bigquery: require storage read API to be enabled (sqlstate: [0, 0, 0, 0, 0], vendor_code: -2147483648)\n```"
+  },
+  {
+   "author": "serramatutu",
+   "created_at": "2025-07-31T09:26:58Z",
+   "body": "This is my current theory\n\n## What dbt Core does\n\nThe `dbt-bigquery` adapter [creates a query job](https://github.com/dbt-labs/dbt-bigquery/blob/0995665e490cdee9c408d26aac8e1c19fefaebe0/dbt/adapters/bigquery/connections.py#L587) and then calls `query_job.result()`. From looking at the BigQuery Python code, it looks like [`result()` calls `_begin()`](https://github.com/googleapis/python-bigquery/blob/d219989f977d9d449e4f06a65ba151f0ab2bd9a1/google/cloud/bigquery/job/base.py#L998), which [uses the REST API](https://github.com/googleapis/python-bigquery/blob/d219989f977d9d449e4f06a65ba151f0ab2bd9a1/google/cloud/bigquery/job/base.py#L778).\n\nSo the adapter tries to create a job through the `jobs` REST API by calling `BigQuery.job.begin`.\n\n\n## What Fusion does\n\nFusion uses the Go SDK, which [uses the Read API under the hood](https://github.com/apache/arrow-adbc/blob/314f0096b50538df8b4d4b34f95273481c22a7ad/csharp/src/Drivers/BigQuery/BigQueryStatement.cs#L198). BigQuery [docs say](https://cloud.google.com/bigquery/docs/reference/storage#create_a_session) the Read API starts with a request to `CreateReadSession` RPC, and it's exactly what the ADBC driver is doing. This is a different API from what dbt Core uses!!\n\nIt looks like there is a [specific IAM permission](https://cloud.google.com/iam/docs/roles-permissions/bigquery#bigquery.readsessions.create) set called `bigquery.readsessions.*`. I assume from the name that `bigquery.readsessions.create` is what controls whether the user can invoke `CreateReadSession` or not.\n\n## Why it works in Core and not fusion\n\nMy assumption is the user's credentials have [`roles/bigquery.dataEditor`](https://cloud.google.com/bigquery/docs/access-control#bigquery.dataEditor), since, according to BigQuery:\n\n> When granted on a table or view, this role provides permissions to read and update data and metadata for the table or view.\n\nThat works fine in dbt Core through the REST API.\n\nHowever `bigquery.dataEditor` and `bigquery.jobUser` **do not** include `bigquery.readsessions.create`. They can query via the REST API, but not through the Read API.\n\nI believe the users who flagged this issue have the reasonable interpretation that `roles/bigquery.dataEditor` has access to the Read API when it in fact doesn't.\n\n\n## The fix?\n\nI'm still trying to get a repro going, so I haven't actually tested this to be 100% sure.\n\nIf my theory is correct, the fix would be to add [`roles/bigquery.readSessionUser`](https://cloud.google.com/iam/docs/roles-permissions/bigquery#bigquery.readSessionUser) to their service account.\n\n\n## PS\n\nBigQuery throws a confusing error by saying \"the Read API is not enabled\" when it is enabled, it's just that the user doesn't have permissions to access it. Per the [docs](https://cloud.google.com/bigquery/docs/reference/storage#enabling_the_api) (as @VersusFacit) mentioned earlier: \n\n> the Storage Read API is enabled in all projects in which the BigQuery API is enabled; no additional activation steps are required. \n\nSo I assume this is not the actual issue."
+  },
+  {
+   "author": "fornwall",
+   "created_at": "2025-07-31T11:54:12Z",
+   "body": "> I believe the users who flagged this issue have the reasonable interpretation that `roles/bigquery.dataEditor` has access to the Read API when it in fact doesn't.\n\nI don't think it's about people believing that `roles/bigquery.dataEditor`(or `bigquery.dataViewer`) gives Read API access, but rather being unaware of fusion requiring additional permissions (for the Read API) to be used compared to core. At least that's the case for me :).\n\n> the fix would be to add [roles/bigquery.readSessionUser](https://cloud.google.com/iam/docs/roles-permissions/bigquery#bigquery.readSessionUser) to their service account.\n\nAnother alternative could be to make fusion do what @VersusFacit mentions [above](https://github.com/dbt-labs/dbt-core/issues/13305#issuecomment-4596952071) - using the traditional REST API (either as fallback when Read API doesn't work, or making it possible to configure).\n\nI do realise that it _might_ not be worth the complexity in fusion to support both the REST API and the Read API, and instead focus on only supporting ADBC (and possibly await a future where ADBC has built in fallback, see [this comment](https://github.com/apache/arrow-adbc/issues/2173#issuecomment-3139611050)). Keeping it simple has value both for internal development, but also from a user perspective to understand what is happening under the hood.\n\nAs one datapoint: it's a bit of work to roll out additional permissions for us, as we're using a data mesh where multiple teams currently grants `roles/bigquery.dataViewer` to consumers in a decentralised way. Having everyone switch to either giving an additional role, or switch to a centrally defined [custom role](https://cloud.google.com/iam/docs/creating-custom-roles) including the relevant permissions, means work. Not a hard blocker, but certainly friction when it comes to trying this out for evaluation."
+  },
+  {
+   "author": "serramatutu",
+   "created_at": "2025-07-31T13:07:46Z",
+   "body": "@fornwall I will followup with the team about your request to fall back to the REST API in case the supplied credentials don't have the necessary role or making it configurable. I think that's totally reasonable. That said, I think even if we do that it could take some time until it actually lands in Fusion... The fastest way to use it as-is is granting the role if that is possible at all!"
+  },
+  {
+   "author": "serramatutu",
+   "created_at": "2025-08-08T14:02:03Z",
+   "body": "Update: After finally managing to get the credentials I need in our BigQuery, turns out my hypothesis is wrong.\n\nI did manage to materialize a model with \n```sql\nSELECT * FROM `{{ schema }}`.INFORMATION_SCHEMA.COLUMNS LIMIT 1\n```\n\nHowever, if I try to run the following with the same credentials\n```sql\nSELECT * FROM `env_var('BQ_PROJECT')`.`{{ schema }}`.INFORMATION_SCHEMA.COLUMNS LIMIT 1\n```\n\nThen I get\n```\nFailed to render the Jinja str invalid operation: AdapterError: ADBC error: [BigQuery] bigquery: require storage read API to be enabled\n```\n\nI think this has to do with our handling of BigQuery 4-part identifiers ([see this as well](https://github.com/dbt-labs/fs/issues/4917)).\n\nThe temporary fix (while we fix Fusion) is probably using 3-part identifiers without the project ID prefix."
+  },
+  {
+   "author": "serramatutu",
+   "created_at": "2025-08-08T15:55:10Z",
+   "body": "I added `roles/bigquery.readDataUser` and it also worked and allowed me to fully qualify the name 🤔 "
+  },
+  {
+   "author": "serramatutu",
+   "created_at": "2025-08-11T14:10:10Z",
+   "body": "Ok, so after testing it more thoroughly, I think the definitive answer until (and if) we implement a fallback to the REST API is adding `roles/bigquery.readSessionUser` to your account\n\n<img width=\"3016\" height=\"1728\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/a0442f83-240b-4533-a11b-801ef0ec194a\" />"
+  },
+  {
+   "author": "VersusFacit",
+   "created_at": "2025-08-13T21:22:01Z",
+   "body": "If the REST API is duplicated, then we need to find a way to encourage users to NOT use it, since it's older, slower, less performant API (unless there are cost considerations we don't know, of course). \n\n@amychen1776 for completion of this ticket as originally understood, we need some way to tell users to grant this role permission to their relative users. Would it suffice to perhaps do a preflight check in the auth layer, maybe as part of dbt debug for bigquery and offer advice on how to alter their roles there? "
+  },
+  {
+   "author": "amychen1776",
+   "created_at": "2025-08-14T11:09:45Z",
+   "body": "@VersusFacit For clarification, this is how I'm reading this issue (summarizing this lengthy chat):\n\n1. Fusion now expects that we have access to `READ API` to query specific metadata tables (information_schema.columns) while in the past we only required `REST API` which the bigquery permissions listed on our docs are sufficient.\n2. It would take work to implement the REST API as a fallback (and it hasn't been done yet). \n3. Even if we do dbt-labs/dbt-core#13094 - we will need a way to discourage the user and ask that they update their permissions so we can move away from REST API.\n\nAn easy thing we can do is update the Fusion docs to call out a different set up permissions. Luckily Bigframes already requires `BigQuery Read Session User` so it's not a big leap. \n<img width=\"778\" height=\"352\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/012f8318-4c53-470a-acd5-1ab12dc6ab3b\" />\n\nAre there performance impacts for us to run a preflight check every time (also I assume it would be cached somehow so we don't need to run it at every command)? I'm weary of putting in a permissions warning in the product because it can cause a lot of noise and a lot of users will not be able to quickly get their permissions updated. \nWe should also weigh the efforts/user experience between having them fail and run a dbt debug vs it should fall back to REST API and we can flag it in the logs. \n"
+  },
+  {
+   "author": "amychen1776",
+   "created_at": "2025-08-19T12:17:28Z",
+   "body": "Hi folks! I'm going to close out this ticket because we are going to do these actions:\n\n- Update the Fusion docs to call out this change in Permission requirements. After speaking to Jason and understanding the lift it takes to have the Read API as a fallover - this will not be an viable project for us to pick up at this moment.\n- Make it easiers to users to debug by having a permissions check in dbt debug https://github.com/dbt-labs/dbt-core/issues/13600"
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "dbt-labs/dbt-core",
+  "default_branch": "main",
+  "commit_sha": "091ba5fe0b27a956e3d79bb2f41c5a2a32b3ecfc",
+  "as_of": "2025-06-16T17:30:13Z",
+  "method": "github_commits_until"
+ },
+ "images": [
+  {
+   "where": "c3",
+   "source_url": "https://github.com/user-attachments/assets/283b4712-5918-48a1-aaea-0ea26194f29a",
+   "file": "gh_dbt-labs_dbt-core_13305_img0.png"
+  },
+  {
+   "where": "c14",
+   "source_url": "https://github.com/user-attachments/assets/a0442f83-240b-4533-a11b-801ef0ec194a",
+   "file": "gh_dbt-labs_dbt-core_13305_img1.png"
+  },
+  {
+   "where": "c16",
+   "source_url": "https://github.com/user-attachments/assets/012f8318-4c53-470a-acd5-1ab12dc6ab3b",
+   "file": "gh_dbt-labs_dbt-core_13305_img2.png"
+  }
+ ],
+ "slug": "gh_dbt-labs_dbt-core_13305"
+}

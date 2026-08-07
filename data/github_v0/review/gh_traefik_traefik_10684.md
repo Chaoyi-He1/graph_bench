@@ -9,29 +9,23 @@
 
 ```mermaid
 flowchart LR
-    N0["<b>N0 downstream TLS challenges fail</b><br/><small>info: 7</small>"]
-    N1["<b>N1 regression confirmed across release lines</b><br/><small>info: 8</small>"]
-    N2["<b>N2 mixed gateway requirements established</b><br/><small>info: 12</small>"]
-    N3["<b>N3 DNS-01 workaround applied</b><br/><small>info: 13</small>"]
-    N4["<b>N4 candidate behavior verified</b><br/><small>info: 14</small>"]
-    N_terminal["<b>terminal TLS challenge passthrough restored</b><br/><small>info: 16</small>"]
-    N0 -.->|"❓ traefik_2_11_2_bad_2_11_0_good"| N1
-    linkStyle 0 stroke:#3b82f6,stroke-width:2px
-    N1 -.->|"❓ gateway_also_uses_tls_resolver_for_own_routes, gateway_must_pass_other_tls_challenges_downstream, removing_gateway_tls_resolver_not_suitable"| N2
-    linkStyle 1 stroke:#3b82f6,stroke-width:2px
-    N2 ==>|"⚡ Avoid the blocked TLS-ALPN path by migrating certificate issuance to the DNS-01 challenge as a successful workaround."| N3
-    linkStyle 2 stroke:#f97316,stroke-width:2px
-    N3 -.->|"❓ dev_branch_restores_tls_challenge_passthrough"| N4
-    linkStyle 3 stroke:#3b82f6,stroke-width:2px
-    N4 ==>|"⚡ Use the new entry-point ACME bypass switch so ACME TLS traffic can enter normal router matching and traverse TLS-passthrough routes, even when the gateway has its own certificate resolver."| N_terminal
-    linkStyle 4 stroke:#f97316,stroke-width:2px
-    N2 ==>|"🚀 Once the mixed gateway requirements are on the table, go straight to the entry-point ACME bypass switch so ACME TLS traffic re-enters normal router matching and traverses the TLS-passthrough routes, instead of routing the user through the DNS-01 workaround first. (skip 2)"| N_terminal
-    linkStyle 5 stroke:#0ea5e9,stroke-width:2px
+    N0["<b>N0 downstream TLS challenges fail after gateway regression</b><br/><small>info: 10</small>"]
+    N1["<b>N1 ACME challenge interception identified</b><br/><small>info: 12</small>"]
+    N2_x["<b>N2_x resolver-removal direction rejected by deployment requirement</b><br/><small>info: 13</small>"]
+    N3["<b>N3 candidate behavior verified by affected user</b><br/><small>info: 14</small>"]
+    N_terminal["<b>terminal ACME passthrough restored</b><br/><small>info: 14</small>"]
+    N0 ==>|"⚡ Identify the regression as Traefik's new interception of ACME TLS-ALPN challenges before normal TCP passthrough routing, rather than a downstream certificate or SNI configuration failure."| N1
+    linkStyle 0 stroke:#f97316,stroke-width:2px
+    N1 ==>|"💥 blind: Avoid interception by removing the TLS challenge resolver from the gateway and only permit downstream challenge passthrough when no gateway TLS resolver is configured."| N2_x
+    linkStyle 1 stroke:#ef4444,stroke-width:2px
+    N2_x -.->|"❓ affected_user_reports_dev_branch_passthrough_working"| N3
+    linkStyle 2 stroke:#3b82f6,stroke-width:2px
+    N3 ==>|"⚡ Use the static per-entry-point AllowACMEByPass option so ACME TLS requests can proceed through normal router matching and reach TLS-passthrough backends, even when the gateway also has its own ACME resolver."| N_terminal
+    linkStyle 3 stroke:#f97316,stroke-width:2px
     class N0 start
     class N1 normal
-    class N2 normal
+    class N2_x normal
     class N3 normal
-    class N4 normal
     class N_terminal terminal
     classDef start fill:#fee2e2,stroke:#b91c1c,color:#000
     classDef terminal fill:#dcfce7,stroke:#15803d,color:#000
@@ -40,39 +34,34 @@ flowchart LR
 
 ## Opening (body)
 
-> I have one public IP forwarding ports 80 and 443 to Server 1. Server 1 uses SNI-based TCP routers with TLS passthrough to send traffic to Traefik instances on Server 2 and Server 3, where Let's Encrypt is configured with the TLS challenge. On Traefik 3.0.0, certificate requests on the downstream servers fail with HTTP 400; after initially thinking only the www name failed, I found that all certificate requests fail. ACME works on Server 1, which faces the internet directly. This behavior started with v3.0.0-rc4, and downgrading the TCP router to v3.0.0-rc3 makes it work again.
+> I have one public IP forwarding ports 80 and 443 to Server 1. Server 1 uses HostSNIRegexp TCP routers with TLS passthrough and PROXY protocol v2 to send traffic to Traefik instances on Servers 2 and 3. Those downstream instances use Let's Encrypt TLS challenges. Certificate requests behind Server 1 fail with HTTP 400, while certificate requests handled directly by Server 1 work. This affects all requested domains, not only names with a www prefix. I am using Traefik 3.0.0 on linux/amd64. The behavior started with 3.0.0-rc4; downgrading the gateway to 3.0.0-rc3 makes it work again.
 
 ## Satisfaction conditions
 
-1. Must identify the root cause: the ACME-handling change that shipped in v3.0.0-rc4 and 2.11.2 made Traefik's own ACME TLS challenge handler preempt normal TCP router selection, so affected versions intercepted the challenge instead of honoring the matching TLS-passthrough route.
-2. The diagnosis must be grounded in the observed version boundaries (3.0.0-rc3 versus rc4 and 2.11.0 versus 2.11.2), the mixed gateway topology, and the successful development-branch test.
-3. The product fix must enable `allowACMEByPass: true` on the relevant entry point so ACME traffic can follow normal router matching and reach downstream services through TLS passthrough.
-4. Must not claim that setting `tls.passthrough: true` alone fixes affected versions; it was already configured while all downstream TLS challenges failed.
-5. Must not present removal of the gateway's TLS resolver as the full solution for this mixed setup, because the gateway also obtains certificates for routes it terminates locally.
-6. DNS-01 may be offered as the reporter's successful workaround, but it must not be confused with restoration of downstream TLS-ALPN passthrough.
-7. Must ask the user to verify certificate issuance on a build containing the fix before declaring the passthrough issue resolved.
+1. Must identify the accepted root cause: affected Traefik gateway versions intercept ACME TLS-ALPN challenges with the internal ACME path before normal TCP router selection, so a TLS-passthrough backend never receives the challenge.
+2. The diagnosis must be grounded in the topology and regression evidence: downstream issuance fails behind the gateway, direct gateway issuance works, and the behavior begins at the rc4 boundary while rc3 works.
+3. Must recommend enabling AllowACMEByPass on the relevant entry point so ACME TLS traffic can follow normal HostSNI router matching to the passthrough backend while the gateway retains its own resolver.
+4. Must not present removing the gateway TLS resolver as the complete solution; affected deployments require gateway-managed ACME and downstream ACME passthrough at the same time.
+5. Must rely on affected-user verification of the candidate behavior, or ask for verification on a build containing the option, before declaring the passthrough problem resolved.
 
 ## Edges
 
 | edge | type | gates / info | payload |
 |---|---|---|---|
-| `e1_N0__N1` | clarification_only | asks: traefik_2_11_2_bad_2_11_0_good | I see the same issue with 2.11.2. Going back to 2.11.0 for the Traefik TCP router fixes it for me. |
-| `e2_N1__N2` | clarification_only | asks: gateway_also_uses_tls_resolver_for_own_routes, gateway_must_pass_other_tls_challenges_downstream, removing_gateway_tls_resolver_not_suitable | Yes. My external Traefik also has a TLS resolver enabled for some routes that it handles itself. / Yes. Most traffic goes through TLS-passthrough to internal Traefik instances or appliances that manage their o / No, that would not fit my mixed setup because the external Traefik also resolves certificates for some local r |
-| `e3_N2__N3` | solution_only | req_info: all_downstream_tls_challenges_fail_with_400, tcp_passthrough_sni_routes_to_downstream_servers<br>elements: proposes_dns_01_as_workaround, does_not_claim_dns_01_restores_tls_passthrough | Avoid the blocked TLS-ALPN path by migrating certificate issuance to the DNS-01 challenge as a successful workaround. |
-| `e4_N3__N4` | clarification_only | asks: dev_branch_restores_tls_challenge_passthrough | I tested the development branch, and the passthrough is working like a charm. The downstream challenge complet |
-| `e5_N4__N_terminal` | solution_only | req_info: rc4_bad_rc3_good, traefik_2_11_2_bad_2_11_0_good, gateway_must_pass_other_tls_challenges_downstream, tcp_passthrough_sni_routes_to_downstream_servers, static_global_bypass_option_acceptable, gateway_also_uses_tls_resolver_for_own_routes, removing_gateway_tls_resolver_not_suitable, dev_branch_restores_tls_challenge_passthrough<br>elements: identifies_acme_handler_preemption_as_the_regression, configures_allowacmebypass_true_on_the_websecure_entrypoint, explains_that_the_option_restores_normal_router_matching_for_acme_traffic, keeps_tls_passthrough_on_the_downstream_tcp_routes, supports_gateway_with_its_own_resolver_and_downstream_resolvers, asks_user_to_verify_on_a_build_containing_the_fix | Use the new entry-point ACME bypass switch so ACME TLS traffic can enter normal router matching and traverse TLS-passthrough routes, even when the gateway has its own certificate resolver. |
-| `e6_N2__N_terminal_shortcut` | solution_only | req_info: rc4_bad_rc3_good, traefik_2_11_2_bad_2_11_0_good, gateway_must_pass_other_tls_challenges_downstream, tcp_passthrough_sni_routes_to_downstream_servers, static_global_bypass_option_acceptable, gateway_also_uses_tls_resolver_for_own_routes, removing_gateway_tls_resolver_not_suitable, dev_branch_restores_tls_challenge_passthrough<br>elements: identifies_acme_handler_preemption_as_the_regression, configures_allowacmebypass_true_on_the_websecure_entrypoint, explains_that_the_option_restores_normal_router_matching_for_acme_traffic, keeps_tls_passthrough_on_the_downstream_tcp_routes, supports_gateway_with_its_own_resolver_and_downstream_resolvers, asks_user_to_verify_on_a_build_containing_the_fix | Once the mixed gateway requirements are on the table, go straight to the entry-point ACME bypass switch so ACME TLS traffic re-enters normal router matching and traverses the TLS-passthrough routes, instead of routing the user through the DNS-01 workaround first. |
+| `e1_N0__N1` | solution_only | req_info: gateway_routes_tls_by_sni_to_downstream_servers, tcp_routers_use_tls_passthrough, downstream_traefik_uses_acme_tls_challenge, all_downstream_certificate_requests_fail_with_400, regression_starts_in_3_0_rc4_and_rc3_works, gateway_direct_acme_requests_work, gateway_also_has_tls_challenge_resolver_configured<br>elements: identifies_gateway_acme_interception_before_tcp_passthrough, connects_behavior_to_the_rc4_regression_boundary, distinguishes_the_issue_from_downstream_dns_or_certificate_configuration | Identify the regression as Traefik's new interception of ACME TLS-ALPN challenges before normal TCP passthrough routing, rather than a downstream certificate or SNI configuration failure. |
+| `e2_N1__N2_x` | solution_only **BLIND** | req_info: tcp_routers_use_tls_passthrough, downstream_traefik_uses_acme_tls_challenge, gateway_preempts_acme_tls_alpn_before_passthrough_routing<br>elements: requires_gateway_to_have_no_tls_challenge_resolver | Avoid interception by removing the TLS challenge resolver from the gateway and only permit downstream challenge passthrough when no gateway TLS resolver is configured. |
+| `e3_N2_x__N3` | clarification_only | asks: affected_user_reports_dev_branch_passthrough_working | I've tested the developer branch, and the passthrough is working like a charm. |
+| `e4_N3__N_terminal` | solution_only | req_info: tcp_routers_use_tls_passthrough, downstream_traefik_uses_acme_tls_challenge, gateway_also_has_tls_challenge_resolver_configured, gateway_direct_acme_requests_work, gateway_must_support_local_acme_and_downstream_passthrough_together, affected_user_reports_dev_branch_passthrough_working<br>elements: sets_allowacmebypass_true_on_the_relevant_entrypoint, explains_that_acme_tls_requests_then_follow_normal_router_matching, preserves_coexistence_of_gateway_acme_and_downstream_tls_passthrough, grounds_the_fix_in_the_affected_user_dev_branch_verification | Use the static per-entry-point AllowACMEByPass option so ACME TLS requests can proceed through normal router matching and reach TLS-passthrough backends, even when the gateway also has its own ACME resolver. |
 
 ## Nodes
 
 | node | terminal | volunteered | images | symptoms |
 |---|---|---|---|---|
-| `N0` |  | 1 | 0 | On Traefik 3.0.0, every certificate request made by Server 2 or Server 3 behind my SNI-based TLS-passthrough router fails with error 400. Ce |
-| `N1` |  | 0 | 0 | The downstream TLS challenge still fails through the affected TCP router versions. In another affected setup, using Traefik 2.11.0 for the T |
-| `N2` |  | 1 | 0 | TLS-ALPN certificate requests for downstream services still fail even though their matching TCP routers have TLS passthrough enabled. I need |
-| `N3` |  | 1 | 0 | After migrating my instances to DNS-01, my certificate requests succeed. In the affected mixed setups, TLS-ALPN challenges still cannot pass |
-| `N4` |  | 0 | 0 | With the provided development branch, the downstream TLS challenge passes through the gateway and certificate issuance works. |
-| `N_terminal` | ✓ | 0 | 0 | After enabling ACME bypass on the websecure entry point in a build containing the fix, downstream TLS-ALPN challenges follow the matching TC |
+| `N0` |  | 1 | 0 | When Server 1 forwards TLS by SNI to Servers 2 or 3, their Let's Encrypt TLS certificate requests fail with error 400. Certificate requests  |
+| `N1` |  | 0 | 0 | Downstream TLS challenges fail on the affected gateway versions even though ordinary SNI-based TLS passthrough routes reach the downstream s |
+| `N2_x` |  | 1 | 0 | My gateway needs its own ACME resolver for some routes while forwarding other TLS routes to downstream systems that obtain their own certifi |
+| `N3` |  | 0 | 0 | I tested the developer branch and TLS passthrough is working again. |
+| `N_terminal` | ✓ | 0 | 0 | With ACME bypass allowed on the TLS entry point, ACME TLS traffic follows the matching passthrough router and reaches the downstream service |
 
 ## Machine review (audit pass, adversarially verified)
 

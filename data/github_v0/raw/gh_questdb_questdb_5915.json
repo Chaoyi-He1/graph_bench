@@ -1,0 +1,115 @@
+{
+ "repo": "questdb/questdb",
+ "number": 5915,
+ "url": "https://github.com/questdb/questdb/issues/5915",
+ "title": "Improve limit -1 performance",
+ "state": "closed",
+ "labels": [
+  "Enhancement",
+  "SQL",
+  "Performance",
+  "Friction"
+ ],
+ "reporter": "reporter",
+ "created_at": "2025-07-08T12:06:03Z",
+ "closed_at": "2025-08-04T13:16:52Z",
+ "body": "### Is your feature request related to a problem?\n\nNoticed that limit -1 can be quite slow, specially while ingesting data on a large table.\n\nThis can be tested on demo box with the new dataset.\n\n```\nselect * from market_data limit -1;\nselect * from market_data latest by symbol;\n```\nExplain says latest on does a frame backward scan, while limit -1 needs to skip over billions of frames, then do a row forward scan.\n\n```\nLimit lo: -1 skip-over-rows: 154330575 limit: 1\n    PageFrame\n        Row forward scan\n        Frame forward scan on: core_price\n```\nor for a larger table\n```\nLimit lo: -1 skip-over-rows: 1744670104 limit: 1\n    PageFrame\n        Row forward scan\n        Frame forward scan on: market_data\n```\nI’ve observed during heavy ingestion latest on is way faster (few ms) than limit -1 (several seconds)\n\nEquivalent plans for the latest on\n```\nLatestByDeferredListValuesFiltered\n    Frame backward scan on: core_price\n```\n```\nLatestByDeferredListValuesFiltered\n    Frame backward scan on: market_data\n```\n\nAs hinted by @participant5, I tried\n\n```\nselect * from market_data order by timestamp desc limit 1;\n```\n\nAnd this was good, just a few milliseconds. With this plan\n\n```\nLimit lo: 1 skip-over-rows: 0 limit: 1\n    PageFrame\n        Row backward scan\n        Frame backward scan on: market_data\n```\n\n### Describe the solution you'd like.\n\nI would expect `limit -1` to apply the same frame backward strategy that the `order by desc limit 1` is doing\n\n### Describe alternatives you've considered.\n\n_No response_\n\n### Full Name:\n\nreporter\n\n### Affiliation:\n\nquestdb\n\n### Additional context\n\n_No response_",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2025-07-08T12:20:04Z",
+   "body": "I'd like to work on this issue as part of the contest. Assigning myself. Will raise a PR soon."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-07-08T16:03:41Z",
+   "body": "@reporter Please assign this issue to me."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-07-09T07:47:31Z",
+   "body": "@reporter Can i solve the issue?"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-07-09T07:50:17Z",
+   "body": "@reporter \nIt would be great if LIMIT -1 could leverage the same frame backward scan strategy used by ORDER BY timestamp DESC LIMIT 1. This would significantly improve performance for queries aiming to fetch the most recent row(s), especially under heavy ingestion workloads.\n\n`SELECT * FROM market_data ORDER BY timestamp DESC LIMIT 1;`\n\nFull Name:\nJavier\n\nAffiliation:\nQuestDB"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-07-12T22:59:38Z",
+   "body": "This is a little tricky. Things to consider:\n- skipping over N rows on plain table should be quick enough, it does not involve iterating over the number of rows reported in the plan. May be we can look into improving performance of that?\n- the workaround `SELECT * FROM market_data ORDER BY timestamp DESC LIMIT 1;` works only for `-1` case specifically, for `-2` or less the order of the rows will be different compared to the original query.\n- more accurate workaround would be `(select * from trades order by timestamp desc limit 1) order by timestamp;`. However this is not 100% equivalent. For rows with identical timestamp the order or the rows will be different to the order rows were stored in the database\n- on balance, this is a non-trivial change"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-07-12T23:29:11Z",
+   "body": "indeed, just checked - this is a complex problem, requires a mild redesign and intrinsic knowledge of the query execution system. Definitely not good as new issues.\n\nWhat indeed happens is that \"skipRows()\" in `PageFrameRecordCursorImpl` is quite heavy, it opens partitions even those that need not to be opened (skipped). Reworking the logic to align to the above workarounds will lead to incorrect results."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2025-07-13T08:52:41Z",
+   "body": "> for -2 or less the order of the rows will be different compared to the original query.\n\nThat's trivial to fix by an outer ORDER BY.\n\nAs for page frame init / mmap, we could make it lazy. The entry point is `PageFrameMemoryPool#navigateTo()`."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-07-13T11:28:16Z",
+   "body": "> > for -2 or less the order of the rows will be different compared to the original query.\n> \n> That's trivial to fix by an outer ORDER BY.\n> \nNot entirely:\n\n> more accurate workaround would be (select * from trades order by timestamp desc limit 1) order by timestamp;. However this > is not 100% equivalent. For rows with identical timestamp the order or the rows will be different to the order rows were stored > in the database\n"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-07-13T11:31:03Z",
+   "body": "this issue also opens a pandora box: interval search also opens partitions that it does not have to open"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2025-07-13T11:54:59Z",
+   "body": "> more accurate workaround would be (select * from trades order by timestamp desc limit 1) order by timestamp;. However this > is not 100% equivalent. For rows with identical timestamp the order or the rows will be different to the order rows were stored > in the database\n\nWhile not returning the same result set, both are correct."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-07-13T11:56:30Z",
+   "body": "<img width=\"1069\" height=\"595\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/7210f18c-be0e-46e2-8af2-7f30780f903d\" />"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-07-13T11:57:19Z",
+   "body": "this is the workaround:\n\n<img width=\"1103\" height=\"583\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/a6633132-34ad-4e17-b302-476e34576c7c\" />"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-07-13T11:57:33Z",
+   "body": "check row #2 values"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2025-07-13T11:57:39Z",
+   "body": "> this issue also opens a pandora box: interval search also opens partitions that it does not have to open\n\nIf we mmap lazily on frame memory pool calls, this would solve intrinsics search problem too."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-07-13T11:58:59Z",
+   "body": "> If we mmap lazily on frame memory pool calls, this would solve intrinsics search problem too.\n\nThis would be another level where we could optimise\n\nI have opened a PR to do with this issue (not opening partitions for limits and intervals) : https://github.com/questdb/questdb/pull/5939"
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "questdb/questdb",
+  "default_branch": "master",
+  "commit_sha": "765d23c09e5447833e0194ee107168da29886de4",
+  "as_of": "2025-07-08T12:06:03Z",
+  "method": "github_commits_until"
+ },
+ "images": [
+  {
+   "where": "c10",
+   "source_url": "https://github.com/user-attachments/assets/7210f18c-be0e-46e2-8af2-7f30780f903d",
+   "file": "gh_questdb_questdb_5915_img0.png"
+  },
+  {
+   "where": "c11",
+   "source_url": "https://github.com/user-attachments/assets/a6633132-34ad-4e17-b302-476e34576c7c",
+   "file": "gh_questdb_questdb_5915_img1.png"
+  }
+ ],
+ "slug": "gh_questdb_questdb_5915"
+}

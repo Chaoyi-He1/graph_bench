@@ -1,0 +1,134 @@
+{
+ "repo": "tauri-apps/tauri",
+ "number": 8196,
+ "url": "https://github.com/tauri-apps/tauri/issues/8196",
+ "title": "[bug] [alpha.17] [windows] Cannot instantiate more than one window on some machines",
+ "state": "closed",
+ "labels": [
+  "type: bug",
+  "priority: 1 high",
+  "platform: Windows",
+  "status: needs triage"
+ ],
+ "reporter": "reporter",
+ "created_at": "2023-11-08T19:09:38Z",
+ "closed_at": "2024-01-18T03:18:19Z",
+ "body": "### Describe the bug\n\nWhen I try to instantiate more than one window - either using `WindowBuilder` or by having more than one entry in the `windows` config array - on some Windows machine the app consistently dies and shows `failed to create webview: WebView2 error: WindowsError(Error { code: HRESULT(0x8007139F), message: \"The group or resource is not in the correct state to perform the requested operation.\" })` on the console.\r\n\r\nThis is only reproducible on some Windows machines (I managed to reproduce it on 1 out of 3 I tried), but on that one it is produced very consistently. I suspect it's linked to OneDrive (the machine where it fails is using OneDrive).\r\n\r\nThe workaround was to remove all the entries from the `windows` config array, and instantiate all the windows manually while setting different `data_directory` built from `app_data_dir` with different subdirectories attached to it. I suspect it might be a good idea to instantiate all windows with their own data_directory by default, at least on Windows.\n\n### Reproduction\n\n * Run npm create tauri-app@latest --alpha\r\n * Add a second entry to the `windows` array in the config\r\n * Run the app\n\n### Expected behavior\n\nTwo windows open\n\n### Platform and versions\n\n```text\n[✔] Environment\r\n    - OS: Windows 10.0.20348 X64\r\n    ✔ WebView2: 118.0.2088.76\r\n    ✔ MSVC: Visual Studio Community 2022\r\n    ✔ rustc: 1.72.0 (5680fa18f 2023-08-23)\r\n    ✔ cargo: 1.72.0 (103a7ff2e 2023-08-15)\r\n    ✔ rustup: 1.26.0 (5af9b9484 2023-04-05)\r\n    ✔ Rust toolchain: stable-x86_64-pc-windows-msvc (default)\r\n    - node: 18.13.0\r\n    - yarn: 1.22.19\r\n    - npm: 8.19.3\r\n\r\n[-] Packages\r\n    - tauri [RUST]: 2.0.0-alpha.17\r\n    - tauri-build [RUST]: 2.0.0-alpha.11\r\n    - wry [RUST]: 0.34.2\r\n    - tao [RUST]: 0.23.0\r\n    - @tauri-apps/api [NPM]: 2.0.0-alpha.11\r\n    - @tauri-apps/cli [NPM]: 2.0.0-alpha.17\r\n\r\n[-] App\r\n    - build-type: bundle\r\n    - CSP: unset\r\n    - distDir: ../dist\r\n    - devPath: http://localhost:1420/\r\n    - bundler: Vite\n```\n\n\n### Stack trace\n\n```text\nfailed to create webview: WebView2 error: WindowsError(Error { code: HRESULT(0x8007139F), message: \"The group or resource is not in the correct state to perform the requested operation.\" })\n```\n\n\n### Additional context\n\n_No response_",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2023-11-19T00:28:06Z",
+   "body": "I can also reproduce this issue with the lastest alpha releases, while having 2 windows defined in the Tauri config. No matter how many times I run it no window(s) will ever be visibile, but only some of the time is that error explicitly printed.\r\nThis seems like a common problem as it was reported in issues #8143, #7897, #7826 and #8196 as well."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-12-29T18:12:32Z",
+   "body": "I experience this bug too on the beta release of Tauri.\r\nIt happens to me when I drag the window before it fully loaded (on dev mode), so I guess it's some race condition with Window postition and the initial logic."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-01-10T11:58:12Z",
+   "body": "@participant4 Any thoughts on timing? We switched from 1.x to 2.x for some useful Mac improvements, but are now blocked on Windows 11 on 3 different machines. It's alpha so at our own risk; that's fine. Just trying to decide whether we can afford to wait or have to go back to 1.x."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-01-10T12:11:16Z",
+   "body": "No idea. There are 2 bugs here though. one in webview2 itself (fixed in their canary builds) which makes it crash basically always, and something in tauri that crashes it _sometimes_ (this is what this issue was about).\r\n\r\nI hope microsoft pushes that fix to stable asap. We're close to their regular release date though so hopefully it'll be part of that.\r\n\r\nFor the tauri specific issue i'm not sure how to best handle the race condition yet (using seperate data dirs as proposed in OP's message is not a good solution imo, since those folders are already larger than we'd like), we're looking into it though."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-01-10T17:51:17Z",
+   "body": "Alrighty, so i spent the whole day on this and did not get much further.\r\n\r\nAll i know is that the crash happens here https://github.com/tauri-apps/wry/blob/dev/src/webview2/mod.rs#L304-L316. I tried to get more info with debuggers but just couldn't get more than the error we already had...\r\n\r\nAlso i think the issue is that _something_ goes wrong with the first webview data dir registration which makes all subsequent ones fail because i tried to add some auto retry mechanism by either just retrying the linked call or including a new webview2 environment object as suggested in their docs. Both did not work, they just kept on failing with the same error.\r\n\r\nIf nobody in the team (or the community) has any more ideas i will open an issue in the webview2 repo over the weekend because i consider this a blocker for v2.\r\n\r\np.s. to reproduce this, just use the multiwebview example in wry, you may have to set the same user data dir for all 4 webviews but letting the webview use the default path also causes this error, just a bit less frequent i think. You can also reproduce this with the multiwindow example if you spam the button **really** fast, or easier by changing the code to spawn 2-4 windows in quick succession.\r\n\r\np.p.s. Until the next webview2 runtime release, don't forget to use the canary runtime to test this."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-01-10T21:40:06Z",
+   "body": "Thanks for digging in."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-01-18T02:35:54Z",
+   "body": "Good news!\r\nI think Microsoft finally fixed the critical bug they had and released it into stable version!\r\n\r\nTo update it:\r\n1. Open microsoft edge (stable, the regular) from search\r\n2. Open `edge://settings/help` and check that version is ` 120.0.2210.144` or greater or wait for it to update\r\n3. Rerun your app and ensure that it uses version ` 120.0.2210.144` or later using `tauri::webview_version()`\r\n\r\n"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2024-01-18T03:18:19Z",
+   "body": "Nice, just tried and couldn't reproduce any crashes as before, will close this for now but we will keep monitoring the situation. If it crashes for anyone again, let us know."
+  },
+  {
+   "author": "participant6",
+   "created_at": "2024-01-30T14:03:52Z",
+   "body": "I also had the same problemon all the latest dependencies, and I installed only one webview2 runtime \r\n\r\n![image](https://github.com/tauri-apps/tauri/assets/30563826/9acbcd5b-aa29-41c4-ae08-a7a02aae2689)\r\n\r\nDeleting the configuration list as you mentioned and manually creating all windows temporarily solved this problem. \r\n\r\n**Thank you very much**\r\n\r\nOS: Windows 10 LSTC 21H2 19044.3930 Windows Feature Experience Pack 1000.19053.1000.0\r\n\r\n```toml\r\n[build-dependencies]\r\ntauri-build = { version = \"2.0.0-alpha.14\", features = [] }\r\n\r\n[dependencies]\r\ntauri = { version = \"2.0.0-alpha.21\", features = [\"tray-icon\"] }\r\ntauri-plugin-process = \"2.0.0-alpha.6\"\r\ntauri-plugin-single-instance = \"2.0.0-alpha.6\"\r\n\r\n```\r\n\r\n\r\n```json\r\n\"dependencies\": {\r\n    \"@solidjs/router\": \"^0.10.10\",\r\n    \"@tauri-apps/api\": \"^2.0.0-alpha.13\",\r\n    \"@tauri-apps/plugin-shell\": \"^2.0.0-alpha.3\",\r\n    \"@tauri-apps/plugin-process\": \"^2.0.0-alpha.5\",\r\n    \"solid-js\": \"^1.8.12\"\r\n  },\r\n  \"devDependencies\": {\r\n    \"@tauri-apps/cli\": \"2.0.0-alpha.21\",\r\n    \"@types/node\": \"^20.11.10\",\r\n    \"@typescript-eslint/eslint-plugin\": \"^6.20.0\",\r\n    \"@typescript-eslint/parser\": \"^6.20.0\",\r\n    \"eslint\": \"^8.56.0\",\r\n    \"eslint-plugin-simple-import-sort\": \"^10.0.0\",\r\n    \"eslint-plugin-solid\": \"^0.13.1\",\r\n    \"typescript\": \"^5.3.3\",\r\n    \"vite\": \"^5.0.12\",\r\n    \"vite-plugin-solid\": \"^2.9.1\"\r\n  }\r\n```\r\n\r\n\r\n"
+  },
+  {
+   "author": "participant7",
+   "created_at": "2024-02-11T09:02:33Z",
+   "body": "I am still experiencing a crash when declaring multiple windows in tauri.conf.json. I have WebView2 121.0.2277.106. The error is \"The group or resource is not in the correct state to perform the requested operation.\"."
+  },
+  {
+   "author": "participant6",
+   "created_at": "2024-02-11T15:44:49Z",
+   "body": "> I am still experiencing a crash when declaring multiple windows in tauri.conf.json. I have WebView2 121.0.2277.106. The error is \"The group or resource is not in the correct state to perform the requested operation.\".\r\n\r\nI later chose to create it manually, and later, I directly adjusted it to a single-window application."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-02-19T19:24:37Z",
+   "body": "I experience this again.\r\nWebview2 `Version 121.0.2277.128 (Official build) (64-bit)`\r\nWindows 11\r\nLatest wry [#49d2](8c86fbaf51cd970737cc070583318d4b532349d2)\r\nMultiwebview wry example\r\n\r\nReproduce:\r\n```console\r\ngit clone https://github.com/tauri-apps/wry\r\ncd wry\r\ncargo run --example multiwebview\r\n```\r\nwry issue: https://github.com/tauri-apps/wry/issues/1173"
+  },
+  {
+   "author": "participant8",
+   "created_at": "2024-02-28T08:30:55Z",
+   "body": "The argument passed to ICoreWebView2EnvironmentOptions.SetAdditionalBrowserArguments seems to be inconsistent in [wry](https://github.com/tauri-apps/wry/blob/f8761fbaaa38ef434740e371041ea099fcaf6037/src/webview2/mod.rs#L201).\r\nDefault argument string is \"--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --autoplay-policy=no-user-gesture-required\" and its code points should be\r\n\r\n` [45, 45, 100, 105, 115, 97, 98, 108, 101, 45, 102, 101, 97, 116, 117, 114, 101, 115, 61, 109, 115, 87, 101, 98, 79, 79, 85, 73, 44, 109, 115, 80, 100, 102, 79, 79, 85, 73, 44, 109, 115, 83, 109, 97, 114, 116, 83, 99, 114, 101, 101, 110, 80, 114, 111, 116, 101, 99, 116, 105, 111, 110, 32, 45, 45, 97, 117, 116, 111, 112, 108, 97, 121, 45, 112, 111, 108, 105, 99, 121, 61, 110, 111, 45, 117, 115, 101, 114, 45, 103, 101, 115, 116, 117, 114, 101, 45, 114, 101, 113, 117, 105, 114, 101, 100]`\r\n\r\nBut code points sometimes become different like [16560, 21260, 607], [26016, 48040, 354].\r\n\r\nError occurs when first WebView is created with invalid argument and the second WebView is created with valid argument.\r\nWebviews are created successfully when both arguments are valid or invalid(ignorable).\r\n\r\nI don't even know if this inconsistency is expected and irrelevant to the error, but this was the only difference I observed."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2024-02-28T23:40:08Z",
+   "body": "thank you @participant8, that was indeed the problem. I am in the process of refactoring our code in WRY which touched this area of code and I didn't see this error in a while. Good to finally know what exactly caused the issue. \r\n\r\nThe refactor is being done on https://github.com/tauri-apps/wry/tree/refactor-backends if anyone wants to test it. Also subscribe to https://github.com/tauri-apps/wry/issues/1173 to get notified when refactor is done"
+  },
+  {
+   "author": "participant9",
+   "created_at": "2024-07-31T12:30:44Z",
+   "body": "I am still experiencing this 😭 \r\nlatest tauri latest rust latest webview2 latest everything"
+  },
+  {
+   "author": "participant10",
+   "created_at": "2024-09-26T05:56:42Z",
+   "body": "Rust version: `Ok(\"129.0.2792.52\")` Same happens with me \r\n`[2024-09-26][05:38:59][tauri_runtime_wry][ERROR] failed to create webview: WebView2 error: WindowsError(Error { code: HRESULT(0x8007139F), message: \"The group or resource is not in the correct state to perform the requested operation.\" })`\r\nMy program is appbar with buttons, when user press button for internal web resource, js create `new WebviewWindow` for this entity with this error, and window flashes on create/destroy.\r\n\r\nMoreover, I have been developing it for a couple of months (or rather, migrate from electron node ffi to tauri windows-rs), and this part of the code was made a long time ago, but now it suddenly stopped working. The program also creates some windows from rust backend - but there are no problems with them. Only with windows from the frontend.\r\n\r\nUPD: This happened after i add `additional_browser_args()` to main window builder. Even it is empty string `\"\"`, or `\"--enable-features=msWebView2EnableDraggableRegions --disable-features=ElasticOverscroll\"` - failed to create webview occures!"
+  },
+  {
+   "author": "participant11",
+   "created_at": "2024-10-02T11:09:47Z",
+   "body": "> Rust version: `Ok(\"129.0.2792.52\")` Same happens with me `[2024-09-26][05:38:59][tauri_runtime_wry][ERROR] failed to create webview: WebView2 error: WindowsError(Error { code: HRESULT(0x8007139F), message: \"The group or resource is not in the correct state to perform the requested operation.\" })` My program is appbar with buttons, when user press button for internal web resource, js create `new WebviewWindow` for this entity with this error, and window flashes on create/destroy.\r\n> \r\n> Moreover, I have been developing it for a couple of months (or rather, migrate from electron node ffi to tauri windows-rs), and this part of the code was made a long time ago, but now it suddenly stopped working. The program also creates some windows from rust backend - but there are no problems with them. Only with windows from the frontend.\r\n> \r\n> UPD: This happened after i add `additional_browser_args()` to main window builder. Even it is empty string `\"\"`, or `\"--enable-features=msWebView2EnableDraggableRegions --disable-features=ElasticOverscroll\"` - failed to create webview occures!\r\n\r\nx2 when I try to add additional_browser_args the app start crashing with the same error. if you open or find a issue/ticket for this tag me please."
+  },
+  {
+   "author": "participant10",
+   "created_at": "2024-10-02T13:07:52Z",
+   "body": "> if you open or find a issue/ticket for this tag me please.\r\n\r\nI already created [issue](https://github.com/tauri-apps/tauri/issues/11144), and it is normal, but not documented behaviour. Specifying `data_directory` for builder with `additional_browser_args` fix this. "
+  },
+  {
+   "author": "participant11",
+   "created_at": "2024-10-02T17:21:07Z",
+   "body": "> > if you open or find a issue/ticket for this tag me please.\n> \n> I already created [issue](https://github.com/tauri-apps/tauri/issues/11144), and it is normal, but not documented behaviour. Specifying `data_directory` for builder with `additional_browser_args` fix this. \n\nhmmm I see, this should be documented cuz it is not an intuitive thing. btw thanks for the information! :D "
+  },
+  {
+   "author": "participant12",
+   "created_at": "2025-05-27T12:20:49Z",
+   "body": "Hi, we have the same issue when we want to open another window:\n\n'Runtime(CreateWebview(WebView2Error(WindowsError(Error { code: 0x8007139F, message: The group or resource is not in the correct state to perform the requested operation. }))))'\n\nWebView version is 136.0.3240.92.\nHow could we fix it?"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-05-27T12:25:47Z",
+   "body": "sounds like the same issue like above. specifying the same additionalBrowserArgs for all windows, or setting a data_directory for windows that don't use the default args should fix that.\n\nif that doesn't help, please share the output of the `tauri info` command for a start (if you prefer, a new issue is fine too)"
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "tauri-apps/tauri",
+  "default_branch": "dev",
+  "commit_sha": "88dac86f3b301d1919df6473a9e20f46b560f29b",
+  "as_of": "2023-11-08T19:09:38Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_tauri-apps_tauri_8196"
+}

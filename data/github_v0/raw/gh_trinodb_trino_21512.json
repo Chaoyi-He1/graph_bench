@@ -1,0 +1,219 @@
+{
+ "repo": "trinodb/trino",
+ "number": 21512,
+ "url": "https://github.com/trinodb/trino/issues/21512",
+ "title": "ThreadPerDriverTaskExecutor causes workes to stuck",
+ "state": "closed",
+ "labels": [],
+ "reporter": "reporter",
+ "created_at": "2024-04-11T10:47:11Z",
+ "closed_at": "2025-12-01T15:30:49Z",
+ "body": "After Trino upgrade from version 409 to 444 we started wo experience issues with stuck workers. They refuse HTTP requests or the requests start to hang forever and desappear from discovery service.\r\n\r\nLogs are full of messages like:\r\n```\r\n2024-04-09T13:31:03.821Z\tWARN\tnode-state-poller-0\tio.trino.metadata.RemoteNodeState\tNode state update request to http://10.42.110.232:8181/v1/info/state has not returned in 35.08s\r\n...\r\n2024-04-09T13:33:38.872Z\tERROR\thttp-worker-529\tio.trino.server.InternalAuthenticationManager\tInternal authentication failed\r\nio.jsonwebtoken.ExpiredJwtException: JWT expired 12872 milliseconds ago at 2024-04-09T13:33:26.000Z. Current time: 2024-04-09T13:33:38.872Z. Allowed clock skew: 0 milliseconds.\r\n\tat io.jsonwebtoken.impl.DefaultJwtParser.parse(DefaultJwtParser.java:682)\r\n```\r\nWhere `10.42.110.232` is an IP of problematic worker.\r\n\r\nNumber of open file descriptors on the problematic worker dramatically increases:\r\n![image](https://github.com/trinodb/trino/assets/1793410/666a0ee8-d78f-4060-b779-78c6b1fba6ce)\r\n\r\n**Sometimes** we reach open sockets limit and got a lot of exceptions in logs like this:\r\n```\r\n2024-04-09T09:37:55.827Z\tWARN\thttp-worker-124-acceptor-0@participant21@participant22{HTTP/1.1, (http/1.1, h2c)}{0.0.0.0:8181}\torg.eclipse.jetty.server.AbstractConnector\tAccept Failure\r\njava.io.IOException: Too many open files\r\n\tat java.base/sun.nio.ch.Net.accept(Native Method)\r\n\tat java.base/sun.nio.ch.ServerSocketChannelImpl.implAccept(ServerSocketChannelImpl.java:433)\r\n\tat java.base/sun.nio.ch.ServerSocketChannelImpl.accept(ServerSocketChannelImpl.java:399)\r\n\tat org.eclipse.jetty.server.ServerConnector.accept(ServerConnector.java:397)\r\n\tat org.eclipse.jetty.server.AbstractConnector$Acceptor.run(AbstractConnector.java:698)\r\n\tat org.eclipse.jetty.util.thread.MonitoredQueuedThreadPool$1.run(MonitoredQueuedThreadPool.java:73)\r\n\tat org.eclipse.jetty.util.thread.QueuedThreadPool.runJob(QueuedThreadPool.java:971)\r\n\tat org.eclipse.jetty.util.thread.QueuedThreadPool$Runner.doRunJob(QueuedThreadPool.java:1201)\r\n\tat org.eclipse.jetty.util.thread.QueuedThreadPool$Runner.run(QueuedThreadPool.java:1156)\r\n\tat java.base/java.lang.Thread.run(Thread.java:1583)\r\n```\r\nBut it happens not always.\r\nOn Trino 409 we had limit for open file descriptors 128K on workes. When we met this issue we increased the limit to 256K, but it doesn't help. This limit is exceeded very quickly.\r\n\r\nNumber of threads also start to increase:\r\n![image](https://github.com/trinodb/trino/assets/1793410/20265861-a805-45e2-a9d4-937273fb5fa7)\r\n\r\nThread dump shows that single random thread blocks many other threads.\r\nExample 1:\r\n![image](https://github.com/trinodb/trino/assets/1793410/1be3592a-b150-471d-af8d-da43f2d8bc32)\r\n\r\nBlocking thread stack trace (Full thread dump [trino-worker-D0409-T0940-25683.tdump.txt](https://github.com/trinodb/trino/files/14943812/trino-worker-D0409-T0940-25683.tdump.txt)) :\r\n\r\n```\r\nTa<secret-scrubbed>.3.16.0-5123\r\nStack Trace is:\r\njava.lang.Thread.State: RUNNABLE\r\nat java.lang.Thread.start0(java.base@21.0.2/Native Method)\r\nat java.lang.Thread.start(java.base@21.0.2/Thread.java:1553)\r\n- locked <0x00007f6d32039e00> (a java.lang.Thread)\r\nat java.lang.System$2.start(java.base@21.0.2/System.java:2577)\r\nat jdk.internal.vm.SharedThreadContainer.start(java.base@21.0.2/SharedThreadContainer.java:152)\r\nat java.util.concurrent.ThreadPoolExecutor.addWorker(java.base@21.0.2/ThreadPoolExecutor.java:953)\r\nat java.util.concurrent.ThreadPoolExecutor.execute(java.base@21.0.2/ThreadPoolExecutor.java:1375)\r\nat com.google.common.util.concurrent.MoreExecutors$ListeningDecorator.execute(MoreExecutors.java:640)\r\nat java.util.concurrent.AbstractExecutorService.submit(java.base@21.0.2/AbstractExecutorService.java:134)\r\nat com.google.common.util.concurrent.AbstractListeningExecutorService.submit(AbstractListeningExecutorService.java:73)\r\nat io.trino.execution.executor.scheduler.FairScheduler.submit(FairScheduler.java:161)\r\n- locked <0x00007f57374acb88> (a io.trino.execution.executor.scheduler.FairScheduler)\r\nat io.trino.execution.executor.dedicated.TaskEntry.runSplit(TaskEntry.java:136)\r\n- locked <0x00007f6d32000000> (a io.trino.execution.executor.dedicated.TaskEntry)\r\nat io.trino.execution.executor.dedicated.ThreadPerDriverTaskExecutor.enqueueSplits(ThreadPerDriverTaskExecutor.java:157)\r\n- locked <0x00007f57373c35b0> (a io.trino.execution.executor.dedicated.ThreadPerDriverTaskExecutor)\r\nat io.trino.execution.SqlTaskExecution.enqueueDriverSplitRunner(SqlTaskExecution.java:400)\r\n- locked <0x00007f6285ff4580> (a io.trino.execution.SqlTaskExecution)\r\nat io.trino.execution.SqlTaskExecution.scheduleDriversForTaskLifeCycle(SqlTaskExecution.java:389)\r\nat io.trino.execution.SqlTaskExecution.start(SqlTaskExecution.java:205)\r\n- locked <0x00007f6285ff4580> (a io.trino.execution.SqlTaskExecution)\r\nat io.trino.execution.SqlTask.tryCreateSqlTaskExecution(SqlTask.java:561)\r\n- locked <0x00007f5eb809b388> (a java.lang.Object)\r\nat io.trino.execution.SqlTask.updateTask(SqlTask.java:503)\r\nat io.trino.execution.SqlTaskManager.doUpdateTask(SqlTaskManager.java:555)\r\nat io.trino.execution.SqlTaskManager.lambda$updateTask$9(SqlTaskManager.java:489)\r\nat io.trino.execution.SqlTaskManager$$Lambda/0x00007f566ab68000.call(Unknown Source)\r\nat io.trino.$gen.Trino_444____20240409_090553_2.call(Unknown Source)\r\nat io.trino.execution.SqlTaskManager.updateTask(SqlTaskManager.java:489)\r\nat io.trino.server.TaskResource.createOrUpdateTask(TaskResource.java:153)\r\n...\r\n```\r\n\r\nExample 2:\r\n![image](https://github.com/trinodb/trino/assets/1793410/61d8ac6e-9691-46c5-a9c1-2c8fd406e46b)\r\n\r\nBlocking thread stack trace (Full thread dump [trino-worker-D0409-T0949-25683.tdump.txt](https://github.com/trinodb/trino/files/14943841/trino-worker-D0409-T0949-25683.tdump.txt)):\r\n```\r\nSplitRunner-24734\r\nStack Trace is:\r\njava.lang.Thread.State: RUNNABLE\r\nat java.lang.Thread.start0(java.base@21.0.2/Native Method)\r\nat java.lang.Thread.start(java.base@21.0.2/Thread.java:1553)\r\n- locked <0x00007f6db5a217a8> (a java.lang.Thread)\r\nat java.lang.System$2.start(java.base@21.0.2/System.java:2577)\r\nat jdk.internal.vm.SharedThreadContainer.start(java.base@21.0.2/SharedThreadContainer.java:152)\r\nat java.util.concurrent.ThreadPoolExecutor.addWorker(java.base@21.0.2/ThreadPoolExecutor.java:953)\r\nat java.util.concurrent.ThreadPoolExecutor.execute(java.base@21.0.2/ThreadPoolExecutor.java:1375)\r\nat com.google.common.util.concurrent.MoreExecutors$ListeningDecorator.execute(MoreExecutors.java:640)\r\nat java.util.concurrent.AbstractExecutorService.submit(java.base@21.0.2/AbstractExecutorService.java:134)\r\nat com.google.common.util.concurrent.AbstractListeningExecutorService.submit(AbstractListeningExecutorService.java:73)\r\nat io.trino.execution.executor.scheduler.FairScheduler.submit(FairScheduler.java:161)\r\n- locked <0x00007f57374acb88> (a io.trino.execution.executor.scheduler.FairScheduler)\r\nat io.trino.execution.executor.dedicated.TaskEntry.runSplit(TaskEntry.java:136)\r\n- locked <0x00007f5cbd1881d8> (a io.trino.execution.executor.dedicated.TaskEntry)\r\nat io.trino.execution.executor.dedicated.TaskEntry.dequeueAndRunLeafSplit(TaskEntry.java:116)\r\n- locked <0x00007f5cbd1881d8> (a io.trino.execution.executor.dedicated.TaskEntry)\r\nat io.trino.execution.executor.dedicated.ThreadPerDriverTaskExecutor.scheduleLeafSplit(ThreadPerDriverTaskExecutor.java:170)\r\nat io.trino.execution.executor.dedicated.ThreadPerDriverTaskExecutor.scheduleMoreLeafSplits(ThreadPerDriverTaskExecutor.java:190)\r\n- locked <0x00007f57373c35b0> (a io.trino.execution.executor.dedicated.ThreadPerDriverTaskExecutor)\r\nat io.trino.execution.executor.dedicated.ThreadPerDriverTaskExecutor.leafSplitDone(ThreadPerDriverTaskExecutor.java:181)\r\n- locked <0x00007f57373c35b0> (a io.trino.execution.executor.dedicated.ThreadPerDriverTaskExecutor)\r\nat io.trino.execution.executor.dedicated.ThreadPerDriverTaskExecutor$$Lambda/0x00007f566abdfd50.run(Unknown Source)\r\nat io.trino.execution.executor.dedicated.TaskEntry.lambda$dequeueAndRunLeafSplit$0(TaskEntry.java:119)\r\nat io.trino.execution.executor.dedicated.TaskEntry$$Lambda/0x00007f566abe2ad0.run(Unknown Source)\r\nat com.google.common.util.concurrent.DirectExecutor.execute(DirectExecutor.java:31)\r\n...\r\n```\r\n\r\nWe have changed value of `experimental.thread-per-driver-scheduler-enabled` to `false` and now the issue is not reproduced, our cluster looks stable\r\nhttps://github.com/trinodb/trino/blob/b7a161a422850c35b992f3ba26ac1a2f8bc9eb54/core/trino-main/src/main/java/io/trino/execution/TaskManagerConfig.java#L110-L115\r\nI will update if anything changes.\r\n\r\nLet me know if I can provide more information.",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2024-04-11T13:14:36Z",
+   "body": "cc: @participant5 @participant2 "
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-04-11T16:11:58Z",
+   "body": "@reporter appreciate detailed analysis, that's very helpful!"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-05-03T10:37:57Z",
+   "body": "Thanks a lot for sharing your findings and a potential solution for the problem. We had a similar issue on our Trino cluster started after we upgraded Trino from version 426 to 442. Workers started to have exchange issues more frequently with the logs:\r\n```\r\n2024-04-25T10:24:55.409Z        WARN    node-state-poller-0     io.trino.metadata.RemoteNodeState       Node state update request to https://xxx.ip:8081/v1/info/state has not returned in 10.02s\r\n2024-04-25T10:24:55.410Z        WARN    node-state-poller-0     io.trino.metadata.RemoteNodeState       Node state update request to https://xxx.ip:8081/v1/info/state has not returned in 10.02s\r\n2024-04-25T10:24:58.184Z        INFO    Thread-47       io.airlift.bootstrap.LifeCycleManager   JVM is shutting down, cleaning up\r\n2024-04-25T10:24:58.185Z        INFO    Thread-42       io.airlift.bootstrap.LifeCycleManager   JVM is shutting down, cleaning up\r\n```\r\n\r\nI see the `experimental.thread-per-driver-scheduler-enabled` was enabled since version 438(https://github.com/trinodb/trino/pull/20451) so we decided to disable it and it helped with stabilizing the cluster. We still see some exchange issues but the number of impacted queries used to be 14x more before disabling the feature."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-05-15T19:12:00Z",
+   "body": "Chiming in for more feedback - we're seeing exactly the same symptoms here on an update from 436 to 444. Nodes are going down, queries failing left and right, and a very very unstable cluster altogether.\r\n\r\nIf it helps at all, we're also seeing a ~30% query speed slowdown on smaller benchmarks, before nodes go unresponsive. Running the benchmark for longer (not very long in the grand scheme of things, maybe 5 to 10 minutes at ~half our current prod concurrency) causes unresponsive nodes.\r\n\r\nI can also confirm setting `experimental.thread-per-driver-scheduler-enabled=false` fixes it completely: performance is restored to Trino 436 levels and nodes are stable."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2024-05-15T19:37:16Z",
+   "body": "Are you able to narrow it down to specific query shapes? It would help immensely to debug if we can get some examples that cause the cluster to fall over, or that perform more slowly."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-05-16T15:26:50Z",
+   "body": "@participant5 let me dig into our benchmark and see if I can narrow it down to specific shapes 👍 "
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-05-22T07:57:17Z",
+   "body": "@participant5 well it's been a bit of a wild goose chase. I have a list of 100 queries that do cause the issue, but I've been unable to pinpoint the issue to any single query in particular. Happy to share this list in private if it helps.\r\n\r\nAll these queries:\r\n- Are read-only\r\n- Use the Delta Lake connector\r\n- Use S3 caching\r\n\r\n@reporter are there any communalities with your workloads? 🤔 \r\n\r\nI can't imagine this issue affects every Trino workloads or there would have been much more noise about it after the 436 release."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2024-05-22T09:00:04Z",
+   "body": "Do the queries have joins, union, many stages? Does it happen if you load the cluster with any specific type of query, or only when you mix them up?"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-05-22T12:16:08Z",
+   "body": "> Do the queries have joins, union, many stages?\r\n\r\nYes on all three counts 😅 \r\n\r\n> Does it happen if you load the cluster with any specific type of query, or only when you mix them up?\r\n\r\nIt appears to be the mixing, or at least some level of concurrency, as I cannot reproduce this by executing queries one-by-one sequentially.\r\n\r\nOur clusters can sustain ~40 concurrent queries on average, and the problem appears with ~10 concurrent queries, so it's not like we're pushing the envelope in terms of hardware either."
+  },
+  {
+   "author": "participant6",
+   "created_at": "2024-07-23T09:42:30Z",
+   "body": "Thanks a lot. You saved my life :)\r\n\r\nI first encountered this issue when I updated from v433 to v451. To pinpoint the cause, I downgraded to v439, but the problem persisted. So, I was in the process of checking the changes between v433 and v439.\r\n\r\n@participant3, Thanks to you mentioning #20451 in this issue, I was able to navigate to this issue page from that PR."
+  },
+  {
+   "author": "participant7",
+   "created_at": "2024-07-23T10:20:41Z",
+   "body": "@participant4 is the issue fixed or is still present?"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-07-23T10:34:25Z",
+   "body": "@participant7 I haven't tested recently. Which version would you expect a fix to be present in?"
+  },
+  {
+   "author": "participant7",
+   "created_at": "2024-07-25T14:19:35Z",
+   "body": "@participant5 ^^?"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2024-07-25T14:25:10Z",
+   "body": "The issue is still present. We need to be able to reproduce it and figure out the root cause."
+  },
+  {
+   "author": "participant8",
+   "created_at": "2024-07-27T08:28:12Z",
+   "body": "@participant4 I observed the same behaviour when running a certain set of queries, but I could not reproduce it when running them 1 by 1. This must be some concurrency-related thing. One thing which I observed is that some of my queries in the query set (4 out of 80) fail with the error: operator not found bigint = bigint, before the cluster starts underperforming and the worker get unresponsive. Also, these queries ran successfully when triggered 1 by 1."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-07-27T20:02:22Z",
+   "body": "> fail with the error: operator not found bigint = bigint\r\n\r\nthere used to be a bug in JVM's JIT that was causing spurious errors like that (https://github.com/trinodb/trino/issues/5758), but it's believed to have been fixed.\r\n\r\ni don't see how an error like that could be related to ThreadPerDriverTaskExecutor, so likely it is a separate problem.\r\nDo you have full stacktrace? \r\n"
+  },
+  {
+   "author": "participant9",
+   "created_at": "2024-08-07T07:17:32Z",
+   "body": "I found SQL run fast when experimental.thread-per-driver-scheduler-enabled =ture but thread num is more (version 443)"
+  },
+  {
+   "author": "participant10",
+   "created_at": "2024-08-15T09:04:32Z",
+   "body": "I tried to disable `experimental.thread-per-driver-scheduler-enabled ` and still have the same symptoms.\r\nUsing Trino 442 several months, but just last week encountered this issue.\r\nAny ideas what else to check? (more details in the [slack channel](https://<redacted-host>/archives/CGB0QHWSW/p1723705104766299) )"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2024-09-09T16:10:56Z",
+   "body": "Added diagnostics to help track down the issue: https://github.com/trinodb/trino/pull/23045"
+  },
+  {
+   "author": "participant11",
+   "created_at": "2024-11-25T23:27:28Z",
+   "body": "We have been dealing with stuck workers on our clusters that run merge and maintenance queries against iceberg.  Typically a given worker will fail a health check multiple times over a 20 or 30 minute period.  To give a sense of the frequency, we run 2 of the same merge query across ~2000 tables every hour.  \n\nAs with others in the thread, `experimental.thread-per-driver-scheduler-enabled=false` has made the issue disappear entirely.  Happy to provide more info if it would help get to the bottom of this problem."
+  },
+  {
+   "author": "participant12",
+   "created_at": "2024-11-26T09:20:20Z",
+   "body": "@participant11 thanks for more info. How many queries do you run in parallel?"
+  },
+  {
+   "author": "participant13",
+   "created_at": "2024-11-26T11:33:21Z",
+   "body": "> We have been dealing with stuck workers on our clusters that run merge and maintenance queries against iceberg. Typically a given worker will fail a health check multiple times over a 20 or 30 minute period. To give a sense of the frequency, we run 2 of the same merge query across ~2000 tables every hour.\n> \n> As with others in the thread, `experimental.thread-per-driver-scheduler-enabled=false` has made the issue disappear entirely. Happy to provide more info if it would help get to the bottom of this problem.\n\nwhat version are you on, can you provide logs from the workers\n\nin 455 there is the change @participant5 mentioned that logs additional info about thread state\n"
+  },
+  {
+   "author": "participant11",
+   "created_at": "2024-12-02T23:42:46Z",
+   "body": "We're on trino 458, and we send 50 merge queries at a time, 100 for our iceberg optimize tasks. We run a baseline of 8 m7g.8xlarge workers and scale up to 16 of those for table maintenance.  I've enabled the debug logs and re-enabled thread per driver in our test environment, should be able to get those tomorrow.  If there's anything specific from those logs we want let me know, otherwise I'll try to get a sample from around the time a node starts hanging.  In the past there has not been anything interesting in the logs-- the rest of the cluster throws errors related to it going down but that's it. Hopefully the debug logs will shed some light."
+  },
+  {
+   "author": "participant12",
+   "created_at": "2024-12-03T14:19:27Z",
+   "body": "> If there's anything specific from those logs we want let me know, otherwise I'll try to get a sample from around the time a node starts hanging.\n\nIt should not be too much volume. If you enable DEBUG log level on workers for `io.trino.execution.executor.dedicated.ThreadPerDriverTaskExecutor` when cluster is unstable it should log a diagnostic snippet every 30s.\nYou can do that at runtime via JMX."
+  },
+  {
+   "author": "participant11",
+   "created_at": "2024-12-03T21:12:19Z",
+   "body": "Here are the debug logs from a stuck worker [stuck_worker_logs.txt](https://github.com/user-attachments/files/17999137/stuck_worker_logs.txt)\n"
+  },
+  {
+   "author": "participant14",
+   "created_at": "2025-01-16T23:05:06Z",
+   "body": "Internally after upgrading to Trino-440 we faced the same issue. One thing is, this happened only in clusters that had lot of writes happening. Read-only clusters didn't show up this issue. "
+  },
+  {
+   "author": "participant13",
+   "created_at": "2025-01-17T11:47:37Z",
+   "body": "Is there any clear update here. should this continue to be disabled?\n"
+  },
+  {
+   "author": "participant12",
+   "created_at": "2025-01-17T11:52:33Z",
+   "body": "@participant15 connect me if I am wrong but IIRC the current state of understanding is that we just get into trouble when we are getting into situation where worker has planty of Drivers runnable which translates to plenty of Threads. As with java 23 those threads are OS threads, after crossing some threshold we just make JVM unstable and everything falls apart. \nIf you have workflow which can put worker in such state then `ThreadPerDriverTaskExecutor` is not for you and you should turn it off. Situation may (should) improve with Java 24 when virtual threads are supposed to be usable.\n\ncc: @participant16 "
+  },
+  {
+   "author": "participant15",
+   "created_at": "2025-01-17T12:51:47Z",
+   "body": "There has also been some progress in resolving this issue.\nWe can see this reproduced by running multiple, like 8, concurrent tpcds q04 queries. This is because q04 has a lot of intermediate splits that end up all running on a dedicated thread.\n\nThere was an effort by @participant20 to fix the issue with virtual threads but since the JVM 23 still blocks carrier threads on `synchronized` it was not working well. One of the options is to wait for the improvements in virtual threads, another one is to replace `synchronized` with `java.util.concurrent.locks`."
+  },
+  {
+   "author": "participant16",
+   "created_at": "2025-01-17T12:55:31Z",
+   "body": "@participant15 this will pin either way in guava's loadingcache"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2025-01-17T16:04:12Z",
+   "body": "@participant12, there's something else going on. It's not just having too many drivers. There's some condition that causes the system to lock up. \n\nThe data point @participant14 provided is interesting. We should follow up on that."
+  },
+  {
+   "author": "participant13",
+   "created_at": "2025-01-17T16:12:40Z",
+   "body": "> The data point [@participant14](https://github.com/participant14) provided is interesting. We should follow up on that.\n\nWe have experienced this issue and don't do any writing with trino\n\n"
+  },
+  {
+   "author": "participant13",
+   "created_at": "2025-01-17T16:14:40Z",
+   "body": "Could someone explain what the advantage of ThreadPerDriver executor is that we miss out on by disabling it?"
+  },
+  {
+   "author": "participant17",
+   "created_at": "2025-02-11T17:30:23Z",
+   "body": "should this config be on by default? "
+  },
+  {
+   "author": "participant18",
+   "created_at": "2025-05-27T09:25:27Z",
+   "body": "I have encountered similar issues where the performance of ThreadPerDriverTaskExecutor is poor under high QPS scenarios (e.g., throughput stress testing). From my understanding, when there are many drivers on a worker, using ThreadPerDriverTaskExecutor might not be suitable. After switching to TimeSharingTaskExecutor, the throughput performance improved significantly."
+  },
+  {
+   "author": "participant19",
+   "created_at": "2025-06-30T14:01:40Z",
+   "body": "Is `ThreadPerDriverTaskExecutor` meant to use virtual threads or platform threads? [FairScheduler.java](https://github.com/trinodb/trino/blob/master/core/trino-main/src/main/java/io/trino/execution/executor/scheduler/FairScheduler.java#L80) is using platform threads for tasks executor and I think this could explain the poor performance for `ThreadPerDriverTaskExecutor` under high QPS clusters compared with `TimeSharingTaskExecutor`."
+  },
+  {
+   "author": "participant20",
+   "created_at": "2025-08-14T15:05:29Z",
+   "body": "yes it is using platform threads for now. But I did try with virtual threads too and it helps but there is still a gap. Also this issue is more about a bug than a performance issue.\n\nSee https://github.com/trinodb/trino/compare/master...participant20:trino:participant20/virtual-sched-threads for the changes I did when I tried with Loom preview."
+  },
+  {
+   "author": "participant18",
+   "created_at": "2025-08-14T15:41:25Z",
+   "body": "> yes it is using platform threads for now. But I did try with virtual threads too and it helps but there is still a gap. Also this issue is more about a bug than a performance issue.\n> \n> See [master...participant20:trino:participant20/virtual-sched-threads](https://github.com/trinodb/trino/compare/master...participant20:trino:participant20/virtual-sched-threads) for the changes I did when I tried with Loom preview.\n\n@participant20 What is your maxConcurrentTasks configuration?\nI think this value should be set as large as possible when using virtual threads. This effectively delegates scheduling to the JDK's virtual thread scheduler. I’m not sure how its efficiency compares to Trino’s MLFQ implementation."
+  },
+  {
+   "author": "participant16",
+   "created_at": "2025-11-06T21:07:07Z",
+   "body": "Does it still happen on 478 folks? :)"
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "trinodb/trino",
+  "default_branch": "master",
+  "commit_sha": "96c5deb9a898502dded047235d7cf82293433a35",
+  "as_of": "2024-04-11T10:47:11Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_trinodb_trino_21512"
+}

@@ -1,0 +1,104 @@
+{
+ "repo": "participant1/fzf",
+ "number": 4857,
+ "url": "https://github.com/participant1/fzf/issues/4857",
+ "title": "nushell: str downcase deprecation warning in completion.nu",
+ "state": "closed",
+ "labels": [],
+ "reporter": "reporter",
+ "created_at": "2026-07-08T09:59:20Z",
+ "closed_at": "2026-07-10T12:50:00Z",
+ "body": "### Checklist\n\n- [x] I have read through the manual page (`man fzf`)\n- [x] I have searched through the existing issues\n- [x] For bug reports, I have checked if the bug is reproducible in the latest version of fzf\n\n### Output of `fzf --version`\n\n0.73.1\n\n### OS\n\n- [x] Linux\n- [ ] macOS\n- [ ] Windows\n- [ ] Etc.\n\n### Shell\n\n- [ ] bash\n- [ ] zsh\n- [ ] fish\n\n### Problem / Steps to reproduce\n\n```nu\nWarning: nu::parser::deprecated\n\n  ⚠ Command deprecated.\n     ╭─[/nix/store/vxr7g2i5vcaasw1hr8baxjig55l83kgg-nushell-fzf-integration.nu:288:41]\n 287 │       $ssh_configs | append $ssh_configs_d | append $ssh_config_global\n 288 │                    | where {|it| ($it | str downcase | str starts-with 'host') or ($it | str downcase | str starts-with 'hostname') }\n     ·                                         ──────┬─────\n     ·                                               ╰── str downcase was deprecated in 0.114.0 and will be removed in a future release.\n 289 │                    | parse --regex '^\\s*host(?:<nick>)?\\s+(?<hosts>.+)' # Extract hosts after keyword\n     ╰────\n  help: Use `str lowercase` instead.\n```",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2026-07-08T10:36:50Z",
+   "body": "/ping @participant2 "
+  },
+  {
+   "author": "participant2",
+   "created_at": "2026-07-08T14:47:27Z",
+   "body": "I see that this happened in [0.114.0](https://www.nushell.sh/blog/2026-07-04-nushell_v0_114_0.html#deprecate-str-upcase-str-downcase-and-add-str-uppercase-str-lowercase). However, there is also some [annoying bug](https://github.com/nushell/nushell/issues/18528) right now with 0.114.0. I was able to test the fix to `lowercase` instead and it works. However, do we want to force the change to `lowercase` or do we want to use the appropriate command depending on the version? The latter approach would make the switch to 0.114.0 easier for anybody using the nushell FZF integration.\n\nThe only implementation I managed to make work is this one:\n\n```nu\nlet __fzf_str_lowercase_impl = if ((version | get major) == 0 and (version | get minor) < 114) {\n  \"str downcase\"\n} else {\n  \"str lowercase\"\n}\n\ndef __fzf_str_lowercase []: string -> string {\n  $in | nu --commands $\"\\\"($in)\\\" | ($__fzf_str_lowercase_impl)\"\n}\n```\n\nHowever, this calls a subshell each time we call this function, so it slows it down a bit. Note that this is only used in the ssh completion code.\n\nWriting a closure with variable definition doesn't work since the closure would need to compile in both versions, but it can't.\n\nI don't like either of the solutions. But I'm guessing that the simplest would be best. Just simply substitute `downcase` with `lowercase` and may be tell the user to update to Nushell 0.114.0 to make it work.\n\n@participant1: do you agree?"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2026-07-09T19:23:26Z",
+   "body": "Substituting for `lowercase` with user message could look something like this for a Nushell<0.114.0 user:\n```\nError: nu::parser::extra_positional\n\n  × Extra positional argument.\n     ╭─[/home/<user>/.config/nushell/autoload/_fzf_integration.nu:287:45]\n 286 │                      # NOTE: str lowercase is new from Nushell 0.114.0. Please upgrade to Nushell >=0.114.0 if you are seeing `extra positional argument` error regarding `str lowercase` in this block.\n 287 │                    | where {|it| ($it | str lowercase | str starts-with 'host') or ($it | str lowercase | str starts-with 'hostname') }\n     ·                                             ────┬────\n     ·                                                 ╰── extra positional argument\n 288 │                    | parse --regex '^\\s*host(?:<nick>)?\\s+(?<hosts>.+)' # Extract hosts after keyword\n     ╰────\n  help: Usage: str\n```\n\nNotice the `# NOTE` comment that is taken straight from the file by the compiler. I don't think there's another way to show an error message since the compiler makes a first pass before executing anything in the file and that is when it displays the error. Any attempt to use an instruction to display a message will not work. So, the comment is just a little hack I found to do it...\n\nI implemented it in 4f7b79c, but I can't open a PR since I'm not a ~contributor~collaborator."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2026-07-10T04:48:24Z",
+   "body": "> Note that this is only used in the ssh completion code.\n\nGiven this, I'd prefer the simpler approach, let me cherry-pick your commit. Thanks!"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2026-07-10T04:53:29Z",
+   "body": "Oh, the error message always appears during load if you have an old version of nushell, not only when you use `ssh` completion.\n\nThen, I think we should take the `__fzf_str_lowercase_impl` approach you showed above. The extra delay only applies to `ssh` completion. If you push the fix to your fork, I'll cherry-pick it."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2026-07-10T12:27:18Z",
+   "body": "OK. I implemented it in 4ea65a3.\n\nNOTE: On my machine, executing the function yields this run duration for 38 ssh addresses:\n\n```nushell\n>: timeit { __fzf_list_hosts }\n1sec 290ms 502µs 637ns\n```\n\ncompared to the original:\n\n```nushell\n>: timeit { __fzf_list_hosts }\n7ms 186µs 953ns\n```"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2026-07-10T12:47:00Z",
+   "body": "> 1sec 290ms\n\nThanks, but whoa, I didn't expect it to be that slow. I thought it would only add a few tens of milliseconds. A full second is a deal-breaker, so I'll stick with the previous one."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2026-07-10T12:50:11Z",
+   "body": "Merged to master, thanks!"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2026-07-11T17:03:19Z",
+   "body": "Thanks for this fix. When do you plan to release this?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2026-07-12T02:26:10Z",
+   "body": "No plans yet. I usually make a release roughly once a month, but there's no regular schedule."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2026-07-14T10:00:15Z",
+   "body": "Working around this with: `fzf --nushell | str replace --all 'str downcase' 'str lowercase' | ...`"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2026-07-14T10:06:03Z",
+   "body": "Maybe using [`try/catch`](https://www.nushell.sh/commands/docs/try.html) could work here?\n\n> I see that this happened in [0.114.0](https://www.nushell.sh/blog/2026-07-04-nushell_v0_114_0.html#deprecate-str-upcase-str-downcase-and-add-str-uppercase-str-lowercase). However, there is also some [annoying bug](https://github.com/nushell/nushell/issues/18528) right now with 0.114.0. I was able to test the fix to `lowercase` instead and it works. However, do we want to force the change to `lowercase` or do we want to use the appropriate command depending on the version? The latter approach would make the switch to 0.114.0 easier for anybody using the nushell FZF integration.\n> \n> The only implementation I managed to make work is this one:\n> \n> let __fzf_str_lowercase_impl = if ((version | get major) == 0 and (version | get minor) < 114) {\n>   \"str downcase\"\n> } else {\n>   \"str lowercase\"\n> }\n> \n> def __fzf_str_lowercase []: string -> string {\n>   $in | nu --commands $\"\\\"($in)\\\" | ($__fzf_str_lowercase_impl)\"\n> }\n> \n> However, this calls a subshell each time we call this function, so it slows it down a bit. Note that this is only used in the ssh completion code.\n> \n> Writing a closure with variable definition doesn't work since the closure would need to compile in both versions, but it can't.\n> \n> I don't like either of the solutions. But I'm guessing that the simplest would be best. Just simply substitute `downcase` with `lowercase` and may be tell the user to update to Nushell 0.114.0 to make it work.\n> \n> [@participant1](https://github.com/participant1): do you agree?\n\n"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2026-07-14T13:55:59Z",
+   "body": "@participant3: you can't. Nushell is making a first pass on the file to validate the instructions. When it reads `str downcase` in >=0.114.0, it issues the deprecation warning. When it sees `str lowercase` on <0.114.0, it issues a syntactic error. That is what I meant here:\n\n> Writing a closure with variable definition doesn't work since the closure would need to compile in both versions, but it can't.\n\nIn both cases, these errors occur in the first pass Nushell makes on the file and a try/catch instruction could only help in the second pass where instructions are actually executed. "
+  },
+  {
+   "author": "participant3",
+   "created_at": "2026-07-14T16:29:01Z",
+   "body": "We could conditionally source a file containing version-compatible functionality, but I'm not sure how/if that would work with `go:embed`."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2026-07-14T21:45:33Z",
+   "body": "But at this point, it starts being a bit too complex, just for a small retro-compatibility feature, doesn't it?"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2026-07-15T13:29:58Z",
+   "body": "Fair enough. For once, I'd support breaking backwards compatibility here and switching to `str lowercase`, seeing as nushell issues a disclaimer outright saying that it is subject to breaking changes at this point."
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "participant1/fzf",
+  "default_branch": "master",
+  "commit_sha": "6765f464a60e39afc20775f54f7ba40896bf1b81",
+  "as_of": "2026-07-08T09:59:20Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_participant1_fzf_4857"
+}

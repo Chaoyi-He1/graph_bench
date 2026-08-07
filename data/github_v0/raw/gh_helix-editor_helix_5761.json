@@ -1,0 +1,112 @@
+{
+ "repo": "helix-editor/helix",
+ "number": 5761,
+ "url": "https://github.com/helix-editor/helix/issues/5761",
+ "title": "Auto completing deletes character cursor is currently on.",
+ "state": "closed",
+ "labels": [
+  "C-bug",
+  "upstream"
+ ],
+ "reporter": "reporter",
+ "created_at": "2023-02-01T05:18:55Z",
+ "closed_at": "2023-03-04T09:48:43Z",
+ "body": "### Summary\n\nA video is better at explaining it:\r\n\r\nhttps://user-images.githubusercontent.com/64436119/215956561-d4abd9c2-0617-4946-9413-2d8d83b8ccfc.mp4\n\n### Reproduction Steps\n\nOpen a rust project.\r\n\r\nIn main create a local variable then do:\r\ntype:\r\n`dbg!(`\r\nThen try and autofill the local variable\r\n\r\nThe opening parenthesis should disappear. \r\n\n\n### Helix log\n\nNo log gets outputted when this issue occurs.\r\n\r\n\r\n\r\nMy config:\r\n```\r\ntheme=\"dracula\"\r\n\r\n[editor]\r\nmouse=false\r\ncompletion-trigger-len=1\r\nidle-timeout=0\r\nauto-save=true\r\nscrolloff=3\r\n\r\n[keys.select]\r\n k = [\"ensure_selections_forward\", \"flip_selections\", \"extend_line_up\"]```\n\n### Platform\n\nLinux\n\n### Terminal Emulator\n\nKonsole\n\n### Helix Version\n\n22.12",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2023-02-01T06:24:47Z",
+   "body": "Might be helpful to post a relevant snippet of your log with when running ``helix -vvvv``"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-02-01T07:49:13Z",
+   "body": "I think this could be resolved by #1819"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-02-01T12:57:32Z",
+   "body": "Try setting idle-timeout to a low but more reasonable value like 100 (still way below human reaction time). An idle timeout of 0 is known to cause issues. Although I also think that #1819 might be the real fix to this problem"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-02-01T23:46:40Z",
+   "body": "\r\nhttps://user-images.githubusercontent.com/64436119/216193482-b07f9d3f-7a4b-4c86-a6fb-433357183c06.mp4\r\n\r\n\r\n\r\n> Try setting idle-timeout to a low but more reasonable value like 100 (still way below human reaction time). An idle timeout of 0 is known to cause issues. Although I also think that #1819 might be the real fix to this problem\r\n\r\ndidn't help"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-02-01T23:50:11Z",
+   "body": "Thanks for testing. That's a bit odd I will try to reproduce this locally. These bugs are very hard to reproduce usually but given that you seem to be able to do it reliably (no matter the idle timeout) then maybe I can reproduce this"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-02-02T02:04:55Z",
+   "body": "> Might be helpful to post a relevant snippet of your log with when running `helix -vvvv`\r\n\r\nempty log file."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2023-02-05T16:26:18Z",
+   "body": "Did you try executing the auto-complete action with logs enabled? The log shouldn't be empty if the LSP is working."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-02-06T01:38:02Z",
+   "body": "[helix.log](https://github.com/helix-editor/helix/files/10636748/helix.log)\r\n"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-03-03T19:37:57Z",
+   "body": "This is unrelated to #1819 / #6173 (not fixed by either). I am able to reproduce."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-03-03T22:24:21Z",
+   "body": "I have managed to confirm this is an upstream issue with rust-analyzer. RA seems to always send a range that starts one character too early when completing a macro arg when no text has been typed yet.\r\n\r\nMinimal reproducible example:\r\n``` rust\r\nmacro_rules! foo {\r\n    ($val:expr $(,)?) => {\r\n        $val\r\n    };\r\n}\r\n\r\nfn main(){\r\n    foo!(); // buggy\r\n    foo!(b); // ok\r\n}\r\n```\r\n\r\nPlace the curosor between the brackets of the first `foo()` press `c-x` and select any completion (important **do not type any text**). This will insert the completion and remove the bracket. For the second macro invocation `foo!(b)` the same bug does not occur. The same issue can reproduced in vscode. Again no text must be typed and instead the completion must be manually invoked with `c-space`.\r\n\r\nInterestingly enough this bug is quite noticeable in helix because helix triggers completion on trigger chars (the `(` in this case, which is one of the trigger chars provided by RA `[\":\", \".\", \"'\", \"(\"]`) vscode does not trigger completions in this case despite the fact that it's documentation claims that it does"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-03-03T22:55:31Z",
+   "body": "Ah it seems that RA prevents showing many completions  when the trigger character is a `(` as in this case:\r\n\r\nhttps://github.com/rust-lang/rust-analyzer/blob/73e2505cfa8be6838f5151b272f1d24869b2a3d6/crates/ide-completion/src/lib.rs#L158\r\n\r\nWe currently don't send the trigger character. I think there is actually a lot of room to improve the way helix handles trigger characters. From the LSP spec it actually sounds like the client should treat any word character as a completion trigger too (which is what vscode does):\r\n\r\n\r\n \t  The additional characters, beyond the defaults provided by the client (typically\r\n \t  [a-zA-Z]), that should automatically trigger a completion request. For example\r\n \t  `.` in JavaScript represents the beginning of an object property or method and is\r\n \t  thus a good candidate for triggering a completion request.\r\n \t  \r\n \t  Most tools trigger a completion request automatically without explicitly\r\n \t  requesting it using a keyboard shortcut (e.g. Ctrl+Space). Typically they\r\n \t  do so when the user starts to type an identifier. For example if the user\r\n \t  types `c` in a JavaScript file code complete will automatically pop up\r\n \t  present `console` besides others as a completion item. Characters that\r\n \t  make up identifiers don't need to be listed here.\r\n\r\n\r\nI know @participant6 doesn't like completions popping up instantly so instead of changing the default here we could simply add a config option for that. I believe this is also the correct fix for #5054, https://github.com/helix-editor/helix/issues/2027 and https://github.com/helix-editor/helix/issues/2581. VSCode actually does no \"on idle\" completions at all, it just has these additional trigger chars. So for people that want fast completions that seems like a much better approach (especially because it requires one redraw less and doesn't break other idle timeout related things) .\r\n\r\n\r\nThis bug is orthogonal to that and should be fixed upstream but these might be nice improvements for helix regardless."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-03-04T01:42:00Z",
+   "body": "Upstream PR submitted: rust-lang/rust-analyzer#14247 "
+  },
+  {
+   "author": "participant5",
+   "created_at": "2023-03-04T07:25:15Z",
+   "body": "This happened to me yesterday (for the first time), using the Hx 22.12"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2023-03-04T07:25:33Z",
+   "body": "This happened to me yesterday (for the first time), using the Hx 22.12"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-03-04T09:48:43Z",
+   "body": "The upstream PR fixes this issue has been merged. To fix the issue you can build rust analyzer from source for now. The fix will be includes with the next RA release on Monday"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-03-24T04:39:38Z",
+   "body": "This is still happening to me on ra 1.68.1\r\n\r\n\r\nhttps://user-images.githubusercontent.com/64436119/227425880-4a35ffe4-196e-4548-85e6-0484523a49fd.mp4\r\n\r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-03-24T15:00:23Z",
+   "body": "Moved my RA version to nightly. It works now."
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "helix-editor/helix",
+  "default_branch": "master",
+  "commit_sha": "0f562dfeabc7b4abd643de0e1846a612a42145b0",
+  "as_of": "2023-02-01T05:18:55Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_helix-editor_helix_5761"
+}

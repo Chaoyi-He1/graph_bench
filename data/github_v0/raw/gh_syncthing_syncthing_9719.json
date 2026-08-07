@@ -1,0 +1,103 @@
+{
+ "repo": "syncthing/syncthing",
+ "number": 9719,
+ "url": "https://github.com/syncthing/syncthing/issues/9719",
+ "title": "Unable to establish/maintain multiple connections due to connection priority error",
+ "state": "closed",
+ "labels": [
+  "bug",
+  "frozen-due-to-age",
+  "needs-triage"
+ ],
+ "reporter": "reporter",
+ "created_at": "2024-09-20T09:32:03Z",
+ "closed_at": "2024-09-21T07:27:24Z",
+ "body": "### What happened?\n\nConnections are getting unexpectedly closed (\"replacing connection\" on one side, \"connection reset by peer\" on the other) for no discernible reason, making it so that more than one connection never stays open despite both sides being configured for eight connections. Problem seems to be incorrect connection priorities. Linux side drops the link local IPv6 connection:\r\n\r\n```\r\n[PSEUD] 2024/09/20 09:25:37.501964 service.go:1453: DEBUG: Closing connection [fd7a:115c:a1e0::5501:4880]:22000-[fd7a:115c:a1e0::7301:283d]:22000/tcp-server/TLS1.3-TLS_AES_128_GCM_SHA256/WAN-P30-5VMT6ACVKOPSMK1QVES23Q3HUO to HX2ELNU with priority 30 (cutoff 20)\r\n```\r\n\r\nPriority 30 in my setup is \"TCP WAN\", while this is clearly a LAN connection.\r\n\r\nMac side keeps dialing those connections, correctly classifying them as TCP-LAN (priority 10):\r\n\r\n```\r\n2024-09-20 11:23:32 dialing PSEUDOP-YLA5DBR-XO2HBNT-2FOG4AC-SWOW5EZ-H3QQY76-GISB7PG-E2SWOA2 tcp://[fd7a:115c:a1e0::5501:4880]:22000 success: [fd7a:115c:a1e0::7301:283d]:22000-[fd7a:115c:a1e0::5501:4880]:22000/tcp-client/TLS1.3-TLS_AES_128_GCM_SHA256/LAN-P10-\r\n```\n\n### Syncthing version\n\nv1.27.13-rc.1\n\n### Platform & operating system\n\nlinux/mac\n\n### Browser version\n\n_No response_\n\n### Relevant log output\n\n_No response_",
+ "comments": [
+  {
+   "author": "reporter",
+   "created_at": "2024-09-20T09:42:26Z",
+   "body": "So actually the problem here seems to be not Syncthing but my networking setup. The fd7a address is Tailscale, and how that is set up network-wise differs between Mac and Linux. On Mac there is a tunnel interface:\r\n\r\n```\r\nutun4: flags=8051<UP,POINTOPOINT,RUNNING,MULTICAST> mtu 1280\r\n\toptions=6460<TSO4,TSO6,CHANNEL_IO,PARTIAL_CSUM,ZEROINVERT_CSUM>\r\n\tinet6 fe80::f0ed:7e22:2e82:5b83%utun4 prefixlen 64 scopeid 0x16\r\n\tinet 100.85.40.61 --> 100.85.40.61 netmask 0xffffffff\r\n\tinet6 fd7a:115c:a1e0::7301:283d prefixlen 48\r\n\tnd6 options=201<PERFORMNUD,DAD>\r\n```\r\n\r\nNote prefixlen 48 on the fd7a address, so Syncthing will see fd7a:115c:a1e0::/48 as a local network.\r\n\r\nOn Linux, the interface is this:\r\n\r\n```\r\n135: tailscale0: <POINTOPOINT,MULTICAST,NOARP,UP,LOWER_UP> mtu 1280 qdisc fq_codel state UNKNOWN group default qlen 500\r\n    link/none\r\n    inet 100.116.72.128/32 scope global tailscale0\r\n       valid_lft forever preferred_lft forever\r\n    inet6 fd7a:115c:a1e0::5501:4880/128 scope global\r\n       valid_lft forever preferred_lft forever\r\n    inet6 fe80::d865:aa9f:518a:9904/64 scope link stable-privacy\r\n       valid_lft forever preferred_lft forever\r\n```\r\n\r\nThat is, a /128 address and nothing else, accompanied by a route for the /48 (not shown here), but that means Syncthing doesn't see it as a LAN.\r\n\r\nAnd really, the Linux side does it better here, because there is no reason in my setup for the connections to go via Tailscale when there is an alternative direct IPv4 network they can use..."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-09-20T09:49:05Z",
+   "body": "Is there a valid reason to not treat all ULAs as LAN? If we're able to dial them, it's some kind of LAN. We're not able to classify VPN'ed connections as WAN either way."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-09-20T09:49:32Z",
+   "body": "In my case, this can be worked around by either adding fc00::/7 to always local networks (if I wanted connections over Tailscale) or setting allowed networks for the device to something like `0.0.0.0/0, fe80:/10, 2000::/3` to allow IPv4 and IPv6 except ULA."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-09-20T09:50:04Z",
+   "body": "Well, they're not LAN, in this case it would go via a relay in another country (because reasons). The only problematic thing here is that the classification differs per device since the network setup is different on the two devices. On the Mac it _looks_ like a LAN interface, on Linux it doesn't. 🤷 "
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-09-20T10:09:43Z",
+   "body": "Most of my clients are also reachable via an IPv4 in the `10.0.0.0/8` subnet if my VPN connection is up. Syncthing would proudly tell me it has established a LAN connection.\n\nThe only difference is that the VPN interface knows about the assigned subnet which Syncthing uses to classify the IP as LAN.\n\nMy point is that our current logic fails for the simplest VPN setup while treating any kind of routed subnets in homelab or enterprise networks as WAN.\n\nI'd ditch the interface subnet checks and strictly check by IP prefix."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-09-20T10:13:00Z",
+   "body": "I'd frankly be inclined to go in the opposite direction and check the interface type, if it's point-to-point it's not LAN."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-09-20T10:14:11Z",
+   "body": "If we *really* want a meaningful LAN detection we would need to probe the latency of the connection."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-09-20T10:21:08Z",
+   "body": "We don't need that though, we just need it to be mostly consistent."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-09-20T11:14:37Z",
+   "body": "> I'd frankly be inclined to go in the opposite direction and check the interface type, if it's point-to-point it's not LAN.\n\nThat would drastically reduce false-positives if we want to improve VPN detection :+1:\n\n> We don't need that though, we just need it to be mostly consistent.\n\nI'd argue that classifying by IP prefix would be more consistent.\n\nIs the target IP part of a non-globally routable subnet like `10.0.0.0/8` or `fc00::/7` ? It's either a proper LAN scenario or a virtual one(VPN)."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-09-20T11:29:52Z",
+   "body": "Mmm yes but we do it for a specific reason, to try to select a connection that is more likely to be network-wise close and hence faster and more efficient. Given the increasing sprawl of mesh vpn things (awesome stuff!) there's less and less reason to assume that just because it's not publicly routable it's local."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-09-20T11:41:14Z",
+   "body": "> there's less and less reason to assume that just because it's not publicly routable it's local.\n\nGood point. Maybe I find some time this week and draft a PR to check the point-to-point flag."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-09-23T13:14:45Z",
+   "body": "@reporter I'm afraid we'll run into similar problems on Android, and especially in Docker environments that use mapped ports instead of host networking mode. Interface listing isn't supported on either.\r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-09-23T13:36:56Z",
+   "body": "How so?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-09-23T13:43:35Z",
+   "body": "Syncthing running inside a regular Docker container isn't able to list the network interfaces of the host and the IPs assigned to them. A connection from e.g. `192.168.178.2` would be treated as TCP-WAN because the virtual interface of the container only knows about its `172.18.0.0/16` subnet."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-09-23T14:33:01Z",
+   "body": "That should be fine though, that's just like being behind a router. The above was only a problem because there were multiple networks available between my devices, one was preferred by device A (ipv6 over tailscale, because it looked like \"lan\" and we do ipv6 before ipv4) and the opposite was preferred by device B (ipv4 on the lan which was proper lan)."
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "syncthing/syncthing",
+  "default_branch": "main",
+  "commit_sha": "cbe1220680fc3d05688aae77e9a50581e669d1be",
+  "as_of": "2024-09-20T09:32:03Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_syncthing_syncthing_9719"
+}

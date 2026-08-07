@@ -1,0 +1,94 @@
+{
+ "repo": "ggml-org/whisper.cpp",
+ "number": 3304,
+ "url": "https://github.com/ggml-org/whisper.cpp/issues/3304",
+ "title": "Weird performance",
+ "state": "closed",
+ "labels": [],
+ "reporter": "reporter",
+ "created_at": "2025-07-02T21:42:43Z",
+ "closed_at": "2025-07-04T22:08:11Z",
+ "body": "Hi,\nI tested Whisper.cpp on my laptop (Thinkpad T480s) with the small model. It executed the command in 7 seconds. I couldn't wait to get home to see how it would perform on my desktop.\n\nI've just done it and it executes the same command in 14 seconds... This result surprised me. I looked on UserBenchmark for the performance of my 2 CPUs. The T480s uses an i5-8250U (4 cores 8 threads) and the PC a Ryzen 5 2600 (6 cores 12 threads). According to the site, the Ryzen is 40% more powerful, so I don't understand why it's slower on the PC than on the laptop.\n\nIn both cases, I compiled with these commands:\ncmake -B build -D WHISPER_FFMPEG=yes\ncmake --build build -j --config Release\n\nand ran a test with this command:\ntime ./whisper-cli -m ./ggml-small.bin -f ./jfk.wav\n\n## Thinkpad\nOS: MX Linux (Ubuntu based)\nRAM: 8 GB\nCPU: i5-8250U\nGPU: Intel UHD 620\n\n## Desktop\nOS: Ubuntu 24.04.2\nRAM: 48 GB\nCPU: Ryzen 5 2600\nGPU: RX 5500 XT\n\nCan somebody tell me if something is wrong with my desktop?",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2025-07-03T08:50:28Z",
+   "body": "The time command is not very helpful here. Run them again and pay attention to the whisper_print_timings numbers at the end. Pay particular attention to the time breakdown before the final runtime number as that shows where it's slowest/fastest.\n\nCompare the system_info lines\n\ne.g. (8250U)\n\n> system_info: n_threads = 4 / 8 | WHISPER : COREML = 0 | OPENVINO = 1 | CPU : SSE3 = 1 | SSSE3 = 1 | AVX = 1 | AVX2 = 1 | F16C = 1 | FMA = 1 | BMI2 = 1 | OPENMP = 1 | AARCH64_REPACK = 1 |\n\nNot got a Ryzen 5 2600 so not sure what that'll look like\n\nTo speed things up try compiling with Vulkan (as CUDA isn't available to you) - that should be fastest\nFor CPU-only try OpenVINO which is a lesser boost - no graphics driver needed...\n\nUsing budget GPU laptop I get the following timings (guide only as laptop's in front of me - using a cheap 11320H with GTX 1650)\n\nCPU - 6.796 s\nOpenVino - 2.938 s\nVulkan - 1.501 s\n\ni.e. each improved one is roughly twice as fast (Vulkan depends highly on the GPU though)\n\nFor what it's worth cuda on the test lappy came in at 2.442 s under Windows. Oddly Windows is faster with Vulkan while Linux is faster with CUDA\n\nTrying to run with longer text samples helps find out what's lacking too...\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-07-03T14:12:08Z",
+   "body": "Hi,\nThank you, with Vulkan it take 5 to 10 sec with large v3 turbo :)"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-07-03T14:43:06Z",
+   "body": "Yeah, using a GPU makes a big difference. AMD also have HIP but only on newer cards.\n\nJust installed Ubuntu on the 1650 lappy to see what happens with older / smaller GPUs. On the older card Vulkan is also faster under linux than CUDA. This is reversed with newer cards tho (my 4070 is faster CUDA than Vulkan)\n\nAlso as the 1650 only has 4G VRAM it I just found out it crashes with large-v3 under Linux (I wondered what would happen). Need to go check what happens with Windows in a bit (may be different - as in slow but no crash - dunno yet)\n\nOoh - large-v3-turbo is OK though - 3.364 vulkan, 8.469 cuda (no tensor cores on 1650)"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-07-03T14:49:51Z",
+   "body": "I think I'm going to get a new GPU when I can afford it, because I want to run 2-3 AIs in parallel on my computer.\n\nIs there a way to see how much VRAM is used ?\n\nI saw i can quantize, so i made a q5 quantization, now it is 2-4 sec. And i am curious to compare the VRAM usage of both quantized and the regular one."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-07-03T14:52:25Z",
+   "body": "Sort of - whisper_model_load gives a number but typically you use 1.5-2 x that figure (something I wanna look into)"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-07-03T14:54:43Z",
+   "body": "that one \"whisper_model_load: model size\" ? Other number look similar between regular and q5"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-07-03T15:01:31Z",
+   "body": "Yeah, and line above shows what backend you're using\n\nAlso when using a GPU the CPU seems to be pretty irrelevant from my tests so you might be able to just update your 5500 XT to a used newer some-GPU to save cash. I ran some tests on a cloud L40 that had a abysmal haswell-class cpu and it did aladdin medium #3139 in 30s (not added the numbers to table there yet)\n\n```\nwhisper_print_timings:     load time =    182.72 ms\nwhisper_print_timings:     fallbacks =   0 p /   0 h\nwhisper_print_timings:      mel time =   1862.56 ms\nwhisper_print_timings:   sample time =  14084.02 ms / 38303 runs (     0.37 ms per run)\nwhisper_print_timings:   encode time =    462.99 ms /    80 runs (     5.79 ms per run)\nwhisper_print_timings:   decode time =    193.90 ms /   190 runs (     1.02 ms per run)\nwhisper_print_timings:   batchd time =  11892.59 ms / 37714 runs (     0.32 ms per run)\nwhisper_print_timings:   prompt time =    291.34 ms / 17736 runs (     0.02 ms per run)\nwhisper_print_timings:    total time =     30.536 s\n```"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-07-03T15:09:42Z",
+   "body": "Okay, thanks for the info.\n\nI like AMD, but I'm thinking of getting an NVIDIA because everywhere it's CUDA that's being promoted... A few weeks ago I saw a Chinese AI for generating video with only 4GB of VRAM, but it was only for NVIDIA...\n\nOr use both my 5500 XT and a newer NVIDI GPU, if it doesn't create conflict between the two."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-07-03T15:29:16Z",
+   "body": "Whisper.cpp only uses one device although I guess it's possible to use llama.cpp with a different one? Not sure - something else to investigate...\n\nWhisper itself is safe in 8Gb (may use 6?) but LLMs can be extremely hungry. Experimentation appears to reveal that #cores you have is the big decider - my 4070 lappy has 4608 cores and does aladdin in 90 secs (the GTX 1650 has 1024 non-tensor, an L40 has 18176)\n\nFor context against the 4070 and L40 numbers above the GTX 1650 did this (junk)\n\n```\n\nwhisper_print_timings:     load time =  1174.23 ms\nwhisper_print_timings:     fallbacks =   0 p /   0 h\nwhisper_print_timings:      mel time =  1623.37 ms\nwhisper_print_timings:   sample time = 34949.26 ms / 37090 runs (     0.94 ms per run)\nwhisper_print_timings:   encode time = 80209.39 ms /    80 runs (  1002.62 ms per run)\nwhisper_print_timings:   decode time =  1365.30 ms /    89 runs (    15.34 ms per run)\nwhisper_print_timings:   batchd time = 206180.34 ms / 36602 runs (     5.63 ms per run)\nwhisper_print_timings:   prompt time = 19358.03 ms / 17538 runs (     1.10 ms per run)\nwhisper_print_timings:    total time = 347.927 s\n\n```"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-07-03T15:41:29Z",
+   "body": "For LLMs, I can easily use 8B models without it being too much slow. But I can go up to 32B if I have lot of time 😂\nI tested it with Qwen3 30B A3B and Qwen3 32B.\n\nThat's why I wanted to know the VRAM consumption of Whisper.cpp, because there will also be an LLM (I think I'll stick with 4B), there will also be Piper TTS. But I don't think I'll be able to add more AI, so when I'll change GPUs, I'll add a Diffusion model."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-07-03T18:15:54Z",
+   "body": "There are also the RPC backends and the whisper-server example - which should, hopefully, allow using both machines at once - yeah, gonna try that too...\n\nAn interesting experiment on your Desktop would be to disable the GPU in the BIOS so Linux is forced to use the CPU's IGPU (just tried that on the test laptop) - your laptop will also allow this...\n\nRunning cli will now use the IGPU, and be much slower, but how much slower is the interesting question (I got 3.5s for Vulkan small vs 1.5s for GPU) - I actually bought this test laptop to try SYCL out on so Intel 11th gen or better CPU was a must...\n\nGot my eye on one of those AI Max+ 395 laptop CPUs AMD recently bought out as you can have 2560 cores with 128Gb RAM (of which up to 96Gb can be used as VRAM)  and it supports HIP\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-07-03T22:03:33Z",
+   "body": "Unless I'm wrong, my desktop don't have iGPU. I'm also interested in the AI Max+ 395 for my next Desktop."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-07-04T06:08:29Z",
+   "body": "Oops - of course. Not bought a desktop in > 15 years and in the 90s you used to have both (I'm old).\n\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-07-04T13:52:02Z",
+   "body": "I miss the Internet of the 90s, yeah i'm old too XD"
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "ggml-org/whisper.cpp",
+  "default_branch": "master",
+  "commit_sha": "d9999d54c868b8bfcd376aa26067e787d53e679e",
+  "as_of": "2025-07-02T21:42:43Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_ggml-org_whisper.cpp_3304"
+}

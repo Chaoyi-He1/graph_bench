@@ -1,0 +1,253 @@
+{
+ "repo": "milvus-io/milvus",
+ "number": 47419,
+ "url": "https://github.com/milvus-io/milvus/issues/47419",
+ "title": "[Bug]: milvus-standalone docker crashing",
+ "state": "closed",
+ "labels": [
+  "kind/bug",
+  "triage/needs-information",
+  "stale"
+ ],
+ "reporter": "reporter",
+ "created_at": "2026-01-29T10:53:23Z",
+ "closed_at": "2026-08-03T00:32:52Z",
+ "body": "### Is there an existing issue for this?\n\n- [x] I have searched the existing issues\n\n### Environment\n\n```markdown\nUsing https://github.com/milvus-io/milvus/blob/master/scripts/standalone_embed.sh to install and start standalone milvus in docker container.\n\nUsing Milvus v2.6.9:\n\n6d0207bf90a3   milvusdb/milvus:v2.6.9                            \"/tini -- milvus run…\"   5 days ago      Up Less than a second (health: starting)   0.0.0.0:2379->2379/tcp, [::]:2379->2379/tcp, 0.0.0.0:9091->9091/tcp, [::]:9091->9091/tcp, 0.0.0.0:19530->19530/tcp, [::]:19530->19530/tcp   milvus-standalone\n\nContainer falls into restart loop with crashing.\n```\n\n### Current Behavior\n\nhttps://gist.github.com/reporter/8b7085352277bd7ee296d456e5c55263\n\n### Expected Behavior\n\ndocker container to start properly\n\n### Steps To Reproduce\n\n```markdown\n\n```\n\n### Milvus Log\n\nhttps://gist.github.com/reporter/8b7085352277bd7ee296d456e5c55263\n\n### Anything else?\n\n_No response_",
+ "comments": [
+  {
+   "author": "reporter",
+   "created_at": "2026-01-29T11:02:47Z",
+   "body": "beck@participant9:/var/local/agentic/milvus/standalone$ ./standalone_embed.sh start\nWait for Milvus Starting...\n\n\nbeck@participant9:/var/local/agentic/milvus/standalone$ ./standalone_embed.sh upgrade\nPlease confirm if you'd like to proceed with the upgrade. The default will be to the latest version. Confirm with 'y' for yes or 'n' for no. > y\nStop successfully.\nDelete milvus container successfully.\n\n\nNothing is happening. Investigating further."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-01-29T11:06:24Z",
+   "body": "It seems that bash script ./standalone_embed.sh isn't properly handling failed docker container and is waiting for the docker container to appear in the docker ps list."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-01-29T11:44:53Z",
+   "body": "This is what Gemini is telling:\nYou are running Milvus Standalone (which runs an embedded Etcd for metadata). The error indicates that the persisted data (stored on your disk) from a previous run is in an inconsistent state or corrupt. When Milvus starts, it tries to recover the old Etcd state, but the internal \"leader\" election fluctuates, causing the initialization process to panic."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-01-29T11:45:28Z",
+   "body": "So it seems that standalone version is not properly handling OOM cases or OS crash."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-01-29T12:02:55Z",
+   "body": "The Crash will return: The reason we had to move it was that the database file inside it was corrupted or so bloated that it caused the request timed out panic.\nThe Metadata (The \"Brain\"): Stored in Etcd. This contains the names of your collections, their schemas, and exactly which files on disk belong to which collection.\n\nIt seems that there is unsafe state saving. DB file is corrupted."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-01-29T12:03:13Z",
+   "body": "Why there is no safe recovery mechanism for such cases?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2026-01-30T02:57:16Z",
+   "body": "Seems it panics from etcd.\nEtcd is sensitive to disk IO. For standalone, ensure the etcd data directory is on a low-latency disk (local NVMe SSD is recommended). \n"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2026-01-30T03:02:46Z",
+   "body": "/assign @reporter \nas comments above, please double check the disk performance\n/unassign"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-01-30T07:02:15Z",
+   "body": "After deleting volumes directory and recreating container it is working. So it's not a disk problem. It was bad state saving. I'll report this to etcd, I guess it's not your case then."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-01-30T07:02:32Z",
+   "body": "Just need to find out which exact etcd version used."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-01-30T07:03:28Z",
+   "body": "> /assign [@reporter](https://github.com/reporter) as comments above, please double check the disk performance /unassign\n\nBut will check, thank you. Possibly it hit bad cluster which should be isolated."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2026-02-01T13:21:45Z",
+   "body": "Leaderchanged is a weird exception. For standalone., there should be only a sinlge etcd node.\n\nplease let us know if you have a way to reproduce it"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-02-01T15:43:49Z",
+   "body": "Indeed"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2026-02-19T15:51:33Z",
+   "body": "I have the same or at least a similar problem. I can start mivus docker container with the `./standalone_embed.sh` script. I index data. If I restart the container or after rebooting my machine, the container crashes. The log shows, that etcd panics\n\n```\n{\"level\":\"warn\",\"ts\":\"2026-02-19T15:41:53.503044Z\",\"caller\":\"etcdserver/util.go:170\",\"msg\":\"apply request took too long\",\"took\":\"882.495175ms\",\"expected-duration\":\"100ms\",\"prefix\":\"read-only range \",\"request\":\"key:\\\"by-dev/meta/session/id\\\" \",\"response\":\"\",\"error\":\"etcdserver: leader changed\"}\n{\"level\":\"info\",\"ts\":\"2026-02-19T15:41:53.503071Z\",\"caller\":\"traceutil/trace.go:171\",\"msg\":\"trace[1735922737] range\",\"detail\":\"{range_begin:by-dev/meta/session/id; range_end:; }\",\"duration\":\"882.841056ms\",\"start\":\"2026-02-19T15:41:52.620223Z\",\"end\":\"2026-02-19T15:41:53.503064Z\",\"steps\":[\"trace[1735922737] 'agreement among raft nodes before linearized reading'  (duration: 882.494233ms)\"],\"step_count\":1}\npanic: etcdserver: leader changed\n```\n\nI had this problem several time. To only solution was to delete the storage and reindex the data...\n\nbtw. the etcd data is on a NVMe SSD"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-02-19T16:01:48Z",
+   "body": "Yeah, I'm also on NVMe SSD. It was only once for me."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2026-02-19T18:53:53Z",
+   "body": "The etcd apply seems to be very slow.\nmaybe you can check if there are some large key in your etcd (like > 1MB) and also make sure etcd memory is enough.\nWe did some optimization on etcd memory usage so recommended to upgrade to 2.6.11"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-02-20T17:24:27Z",
+   "body": "It happened again. I'll publish full failing cycle log here:\n[https://gist.github.com/reporter/9d4ac6ae975eae1c32bc4255969eb932](https://gist.github.com/reporter/9d4ac6ae975eae1c32bc4255969eb932)\n\nPlease tell me if you can't access it.\nI'll also create bug report in etcd."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-02-20T17:35:05Z",
+   "body": "https://github.com/etcd-io/etcd/issues/21335"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2026-02-21T00:52:10Z",
+   "body": "> I have the same or at least a similar problem. I can start mivus docker container with the `./standalone_embed.sh` script. I index data. If I restart the container or after rebooting my machine, the container crashes. The log shows, that etcd panics\n> \n> ```\n> {\"level\":\"warn\",\"ts\":\"2026-02-19T15:41:53.503044Z\",\"caller\":\"etcdserver/util.go:170\",\"msg\":\"apply request took too long\",\"took\":\"882.495175ms\",\"expected-duration\":\"100ms\",\"prefix\":\"read-only range \",\"request\":\"key:\\\"by-dev/meta/session/id\\\" \",\"response\":\"\",\"error\":\"etcdserver: leader changed\"}\n> {\"level\":\"info\",\"ts\":\"2026-02-19T15:41:53.503071Z\",\"caller\":\"traceutil/trace.go:171\",\"msg\":\"trace[1735922737] range\",\"detail\":\"{range_begin:by-dev/meta/session/id; range_end:; }\",\"duration\":\"882.841056ms\",\"start\":\"2026-02-19T15:41:52.620223Z\",\"end\":\"2026-02-19T15:41:53.503064Z\",\"steps\":[\"trace[1735922737] 'agreement among raft nodes before linearized reading'  (duration: 882.494233ms)\"],\"step_count\":1}\n> panic: etcdserver: leader changed\n> ```\n> \n> I had this problem several time. To only solution was to delete the storage and reindex the data...\n> btw. the etcd data is on a NVMe SSD\n\nI had the same problems on milvus 2.6.9, after rebooting my Mac mini (Darwin Kernel Version 25.3.0) and restart the container, I encounter this problem. I also use NVMe SSD.\nThis problem is very high possible to happen. I had spend thouthands US dollars to index on my local milvus by my standalone_embed.sh. Now it failed because of this bug. \nDo we need always to use Docker Compose (Linux) standalone milvus? Does the Docker Compose standalone is tested in Mac? \n```\n{\"level\":\"info\",\"ts\":\"2026-02-20T14:06:06.629754Z\",\"logger\":\"raft\",\"caller\":\"etcdserver/zap_raft.go:77\",\"msg\":\"raft.node: 8e9e05c52164694d elected leader 8e9e05c52164694d at term 26\"}\n{\"level\":\"warn\",\"ts\":\"2026-02-20T14:06:06.630162Z\",\"caller\":\"etcdserver/util.go:170\",\"msg\":\"apply request took too long\",\"took\":\"699.938792ms\",\"expected-duration\":\"100ms\",\"prefix\":\"read-only range \",\"request\":\"key:\"by-dev/meta/session/id\" \",\"response\":\"\",\"error\":\"etcdserver: leader changed\"}\n{\"level\":\"info\",\"ts\":\"2026-02-20T14:06:06.630216Z\",\"caller\":\"traceutil/trace.go:171\",\"msg\":\"trace[1194863247] range\",\"detail\":\"{range_begin:by-dev/meta/session/id; range_end:; }\",\"duration\":\"700.302251ms\",\"start\":\"2026-02-20T14:06:05.929900Z\",\"end\":\"2026-02-20T14:06:06.630202Z\",\"steps\":[\"trace[1194863247] 'agreement among raft nodes before linearized reading' (duration: 699.937417ms)\"],\"step_count\":1}\npanic: etcdserver: leader changed\n```\nhttps://gist.github.com/participant5/83de332301122115badfa32f537dbf07"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-02-21T06:37:02Z",
+   "body": "Yeah, that is painful, I haven't paid so much, but I'm already thinking to switch to another solution."
+  },
+  {
+   "author": "participant6",
+   "created_at": "2026-02-21T07:49:32Z",
+   "body": "Seems @#43682 and @#36648 hit the same failure chain. The pattern seems to be: unclean shutdown -> bbolt dirty pages not flushed -> etcd won't start -> deleting /var/lib/milvus/etcd to recover -> all collection metadata gone. Vector files in MinIO survive physically but are orphaned because Milvus no longer knows they exist. Without a recent snapshot, that's effectively permanent data loss.\n\nI looked at how others handle this: both Qdrant and Weaviate eliminated the external catalog dependency entirely. Qdrant runs native Raft consensus inside its own binary, so no etcd, no separate process, no split failure domain. Weaviate does the same for all collection/shard metadata through an embedded Raft implementation. In both cases, metadata writes are quorum-committed, so a SIGKILL on any single node cannot produce catalog loss because surviving nodes hold the replicated state.\n\n- Is there a roadmap plan to address the Standalone embedded etcd single-point-of-failure, either through a native Raft-based metadata store (like Qdrant/Weaviate) or a better-supported lightweight external-etcd path?\n\n- Woodpecker seems a great improvement for the ingestion WAL - is there similar plan for the metadata catalog layer?\n\n- It would be good to have for now preStop hook or graceful shutdown guarantee to ensure bbolt is flushed before the container exits.\n\nThe etcd durability risk makes it hard to confidently run Milvus (without making deliberate mitigations) in environments where OOM events, maintenance windows and pod scheduling are routine."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-02-21T08:37:06Z",
+   "body": "Yes , rejecting in-flight requests during a leader election is expected Raft behavior. The problem is that Milvus treats this transient error as fatal .\n\nThis is from above etcd created git issue.\nSo it's Milvus that doesn't properly handle raft leader election and for some reason handle it as a panic case..."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-02-21T08:41:56Z",
+   "body": "```\n[2026/02/21 00:42:01.253 +00:00] [INFO] [etcd/etcd_util.go:75] [\"create etcd client\"] [useEmbedEtcd=true] [useSSL=false] [endpoints=\"[localhost:2379]\"] [minVersion=1.3]\n[2026/02/21 00:42:01.253 +00:00] [INFO] [mixcoord/service.go:154] [\"etcd connect done ...\"]\n{\"level\":\"info\",\"ts\":\"2026-02-21T00:42:01.258494Z\",\"caller\":\"etcdserver/v3_server.go:912\",\"msg\":\"first commit in current term: resending ReadIndex request\"}\n{\"level\":\"info\",\"ts\":\"2026-02-21T00:42:01.258508Z\",\"logger\":\"raft\",\"caller\":\"etcdserver/zap_raft.go:77\",\"msg\":\"8e9e05c52164694d no leader at term 29; dropping index reading msg\"}\n{\"level\":\"info\",\"ts\":\"2026-02-21T00:42:01.341846Z\",\"logger\":\"raft\",\"caller\":\"etcdserver/zap_raft.go:77\",\"msg\":\"8e9e05c52164694d is starting a new election at term 29\"}\n{\"level\":\"info\",\"ts\":\"2026-02-21T00:42:01.341896Z\",\"logger\":\"raft\",\"caller\":\"etcdserver/zap_raft.go:77\",\"msg\":\"8e9e05c52164694d became pre-candidate at term 29\"}\n{\"level\":\"info\",\"ts\":\"2026-02-21T00:42:01.341908Z\",\"logger\":\"raft\",\"caller\":\"etcdserver/zap_raft.go:77\",\"msg\":\"8e9e05c52164694d received MsgPreVoteResp from 8e9e05c52164694d at term 29\"}\n{\"level\":\"info\",\"ts\":\"2026-02-21T00:42:01.341914Z\",\"logger\":\"raft\",\"caller\":\"etcdserver/zap_raft.go:77\",\"msg\":\"8e9e05c52164694d became candidate at term 30\"}\n{\"level\":\"info\",\"ts\":\"2026-02-21T00:42:01.341932Z\",\"logger\":\"raft\",\"caller\":\"etcdserver/zap_raft.go:77\",\"msg\":\"8e9e05c52164694d received MsgVoteResp from 8e9e05c52164694d at term 30\"}\n{\"level\":\"info\",\"ts\":\"2026-02-21T00:42:01.341938Z\",\"logger\":\"raft\",\"caller\":\"etcdserver/zap_raft.go:77\",\"msg\":\"8e9e05c52164694d became leader at term 30\"}\n{\"level\":\"info\",\"ts\":\"2026-02-21T00:42:01.341942Z\",\"logger\":\"raft\",\"caller\":\"etcdserver/zap_raft.go:77\",\"msg\":\"raft.node: 8e9e05c52164694d elected leader 8e9e05c52164694d at term 30\"}\npanic: etcdserver: leader changed\n\ngoroutine 292 gp=0x4000d69340 m=3 mp=0x40000af008 [running]:\npanic({0x6bfa6e0?, 0x400189f638?})\n\t/usr/local/go/src/runtime/panic.go:811 +0x154 fp=0x40024d9a20 sp=0x40024d9970 pc=0x28ff634\ngithub.com/milvus-io/milvus/internal/util/sessionutil.(*Session).Init(0x40000ee1a0, {0x7125fe5, 0x8}, {0x4003566c70, 0x10}, 0x0?, 0x1e?)\n\t/workspace/source/internal/util/sessionutil/session_util.go:308 +0x38c fp=0x40024d9ba0 sp=0x40024d9a20 pc=0x4e3f55c\ngithub.com/milvus-io/milvus/internal/coordinator.(*mixCoordImpl).initSession(0x400339d200)\n\t/workspace/source/internal/coordinator/mix_coord.go:358 +0x84 fp=0x40024d9be0 sp=0x40024d9ba0 pc=0x5b1c294\ngithub.com/milvus-io/milvus/internal/coordinator.(*mixCoordImpl).Init(0x400339d200)\n\t/workspace/source/internal/coordinator/mix_coord.go:130 +0x38 fp=0x40024d9c30 sp=0x40024d9be0 pc=0x5b19da8\ngithub.com/milvus-io/milvus/internal/distributed/mixcoord.(*Server).init(0x40010c2b80)\n\t/workspace/source/internal/distributed/mixcoord/service.go:167 +0x554 fp=0x40024d9e00 sp=0x40024d9c30 pc=0x5b64104\ngithub.com/milvus-io/milvus/internal/distributed/mixcoord.(*Server).Run(0x40010c2b80)\n\t/workspace/source/internal/distributed/mixcoord/service.go:114 +0x20 fp=0x40024d9e40 sp=0x40024d9e00 pc=0x5b63b00\ngithub.com/milvus-io/milvus/cmd/components.(*MixCoord).Run(0x400189e180)\n\t/workspace/source/cmd/components/mix_coord.go:58 +0x28 fp=0x40024d9f20 sp=0x40024d9e40 pc=0x6044ae8\ngithub.com/milvus-io/milvus/cmd/roles.runComponent[...].func1()\n\t/workspace/source/cmd/roles/roles.go:139 +0x94 fp=0x40024d9fb0 sp=0x40024d9f20 pc=0x604eec4\ngithub.com/milvus-io/milvus/pkg/v2/util/conc.Go[...].func1()\n\t/workspace/source/pkg/util/conc/future.go:96 +0x30 fp=0x40024d9fd0 sp=0x40024d9fb0 pc=0x604f3a0\nruntime.goexit({})\n\t/usr/local/go/src/runtime/asm_arm64.s:1223 +0x4 fp=0x40024d9fd0 sp=0x40024d9fd0 pc=0x2908fd4\ncreated by github.com/milvus-io/milvus/pkg/v2/util/conc.Go[...] in goroutine 1\n\t/workspace/source/pkg/util/conc/future.go:95 +0xe8\n```\n\nAs you can see here from the log. It is not etcd that crashing, it is Milvus, which is waiting for all components to be ready in `waitForAllComponentsReady` method.\n\nSo properly handling leader election case and wait for raft to finish assigning new leader could fix that."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-02-21T08:42:34Z",
+   "body": "`8e9e05c52164694d elected leader 8e9e05c52164694d` plus it is electing itself."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-02-21T09:11:45Z",
+   "body": "https://github.com/milvus-io/milvus/blob/master/internal/util/sessionutil/session_util.go#L308\n\nThis is the place where Milvus should retry until raft elections finished or fail after some large timeout at least, i.e. 120 seconds."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-02-21T10:10:39Z",
+   "body": "I guess that etcd daemon needs a system TERM signal to have graceful shutdown, which is not sent by Milvus in this panic case, i guess there should be some wrapper, which would handle that panic and gracefully shutdown etcd, to make a consistent file system write operation for etcd daemon.\n\nI.e. that's a second possible fix."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-02-21T12:41:58Z",
+   "body": "Here is raw proposal to fix that problem:\nhttps://github.com/milvus-io/milvus/compare/master...reporter:milvus:master\n\nIf anyone from the team or contributors could check that and reply back, that would be nice."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2026-02-21T12:43:38Z",
+   "body": "> Seems @[#43682](https://github.com/milvus-io/milvus/issues/43682) and @[#36648](https://github.com/milvus-io/milvus/issues/36648) hit the same failure chain. The pattern seems to be: unclean shutdown -> bbolt dirty pages not flushed -> etcd won't start -> deleting /var/lib/milvus/etcd to recover -> all collection metadata gone. Vector files in MinIO survive physically but are orphaned because Milvus no longer knows they exist. Without a recent snapshot, that's effectively permanent data loss.\n> \n> I looked at how others handle this: both Qdrant and Weaviate eliminated the external catalog dependency entirely. Qdrant runs native Raft consensus inside its own binary, so no etcd, no separate process, no split failure domain. Weaviate does the same for all collection/shard metadata through an embedded Raft implementation. In both cases, metadata writes are quorum-committed, so a SIGKILL on any single node cannot produce catalog loss because surviving nodes hold the replicated state.\n> \n> * Is there a roadmap plan to address the Standalone embedded etcd single-point-of-failure, either through a native Raft-based metadata store (like Qdrant/Weaviate) or a better-supported lightweight external-etcd path?\n> * Woodpecker seems a great improvement for the ingestion WAL - is there similar plan for the metadata catalog layer?\n> * It would be good to have for now preStop hook or graceful shutdown guarantee to ensure bbolt is flushed before the container exits.\n> \n> The etcd durability risk makes it hard to confidently run Milvus (without making deliberate mitigations) in environments where OOM events, maintenance windows and pod scheduling are routine.\n\nyes, awesome view! I have small experienced on milvus, but feel Milvus may be too complex and indeed more unstable for new users or small companies. For me, the stability is much more important than speed. I think your idea may be the best solution as a simpler and more stable solution to use vector database for startups."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-02-21T12:49:05Z",
+   "body": "I could be wrong, but the main issue is that docker standalone container is holding on the milvus process, which panics when receives error/stderr from etcd and exits right away, causing docker to kill whole container ungracefully, thus not letting etcd finish its graceful shutdown and safely store transient data to disk or while etcd is trying to write that metadata to disk and thus finish it half-way, leaving corrupted state."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2026-02-21T12:57:59Z",
+   "body": "I really hope to recover my data, and I had made a backup of the whole \"volumes\" dir when I insert about 1/4 data. LLM's wrongly fix to delete my the etcd in \"volumes\", and so I use the backed \"volumes\" which has the etcd. I let LLM to write a retry loop to check docker status and run \"bach standalone_embed.sh start\" if status is not healthy, after about one hundred auto retries, it suddenly is ok to start the milvus successfuly. Now, I get about 1/4 indexed data recover. \nWhy is there a very rare case to start successfuly? could someone share views? thanks in advance!!\n\nreply by codex 5.3\n```\nMost likely: you hit a startup race bug in Milvus v2.6.9 embedded etcd, and retries eventually landed on a “good timing window.”\nEvidence from your log:\nmilvus-start-error.log\nLines 86-94\n{\"msg\":\"... became leader at term 30\"}panic: etcdserver: leader changed\nand again:\nmilvus-start-error.log\nLines 1859-1867\n{\"msg\":\"... became leader at term 31\"}panic: etcdserver: leader changed\nThat pattern means:\netcd is still in leader transition during bootstrap,\nmixcoord session init does a read/watch,\nthe request returns leader changed,\nMilvus panics and exits (134), then your script retries.\nWhy it can succeed after many retries:\nThis is timing-sensitive (race-like), not deterministic corruption every time.\nEach restart slightly changes scheduling/timing (CPU, IO, raft ticks), so eventually startup order avoids the panic window.\nYour retry loop (docker rm + start) keeps giving new attempts until one passes.\n```"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2026-02-21T13:17:31Z",
+   "body": "> The etcd apply seems to be very slow. maybe you can check if there are some large key in your etcd (like > 1MB) and also make sure etcd memory is enough. We did some optimization on etcd memory usage so recommended to upgrade to 2.6.11\n\nAfter I auto retried about 100 times, I start milvus sudddenly with 1/4 indexed data as mentioned above.\nI checked the etcd data:\n1，Largest etcd values (top 20) are tiny; biggest is 588 bytes (far below 1MB)\n2，etcd memory is 1.6MB\n3，Container memory:\ncurrent usage about 2.5 GiB / 15.6 GiB\nno explicit Docker memory cap (MemoryLimitBytes=0), so not memory-starved"
+  },
+  {
+   "author": "participant7",
+   "created_at": "2026-04-17T05:51:11Z",
+   "body": "遇到了同样的问题，standalone版的milvus在I/O抖动下心跳无法及时响应，触发leader切换，最终panic: etcdserver: leader changed导致进程abort，panic时 WAL写入不一致状态，导致重启也失败。最终损失了所有了etcd数据，同时导致向量数据也编程了孤立文件也无效了。\n怎么才能防止这种情况的发生？"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2026-04-17T23:30:07Z",
+   "body": "What is the your milvus version? \n\nThe expect is as long as your disk is there milvus should be able to recover. we'd like to gather the logs and check why this happened.\n\n> 遇到了同样的问题，standalone版的milvus在I/O抖动下心跳无法及时响应，触发leader切换，最终panic: etcdserver: leader changed导致进程abort，panic时 WAL写入不一致状态，导致重启也失败。最终损失了所有了etcd数据，同时导致向量数据也编程了孤立文件也无效了。 怎么才能防止这种情况的发生？\n\n"
+  },
+  {
+   "author": "participant7",
+   "created_at": "2026-04-29T10:07:12Z",
+   "body": "> 你的milvus版本是什么？\n> \n> 只要你的硬盘还在，Milvus应该能恢复。我们想收集日志，查明为什么会发生这种情况。\n> \n> > 遇到了同样的问题，standalone版的milvus在I/O抖动下心跳无法及时响应，触发leader切换，最终panic： etcdserver： leader changed导致进程abort，panic时 WAL写入不一致状态，导致重启也失败。最终损失了所有了etcd数据，同时导致向量数据也编程了孤立文件也无效了。怎么才能防止这种情况的发生？\n\n今天又出现这个情况了，也是在I/O抖动下产生的。配置了election-timeout: 50000还是没用。\nmilvus:v2.6.14 standalone\n\n`{\"level\":\"info\",\"msg\":\"first commit in current term: resending ReadIndex request\"}\n{\"level\":\"info\",\"logger\":\"raft\",\"msg\":\"8e9e05c52164694d no leader at term 33; dropping index reading msg\"}\n[WARN] [\"async dial failed, wait for retry...\"] [error=\"context deadline exceeded\"]\n[WARN] [grpclog] \"error reading server preface: read tcp 172.17.0.2:51148->172.17.0.2:22125: use of closed network connection\"`\n\n"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2026-04-29T21:22:46Z",
+   "body": "> 你的milvus版本是什么？\n> \n> 只要你的硬盘还在，Milvus应该能恢复。我们想收集日志，查明为什么会发生这种情况。\n> \n> > 遇到了同样的问题，standalone版的milvus在I/O抖动下心跳无法及时响应，触发leader切换，最终panic： etcdserver： leader changed导致进程abort，panic时 WAL写入不一致状态，导致重启也失败。最终损失了所有了etcd数据，同时导致向量数据也编程了孤立文件也无效了。怎么才能防止这种情况的发生？\n\n你需要ssd磁盘，然后你etcd和数据放在一块盘上么？这块util有多少？可以考虑把etcd放在其他盘上"
+  },
+  {
+   "author": "participant7",
+   "created_at": "2026-04-30T01:23:28Z",
+   "body": "> > 你的milvus版本是什么？\n> > 只要你的硬盘还在，Milvus应该能恢复。我们想收集日志，查明为什么会发生这种情况。\n> > > 遇到了同样的问题，standalone版的milvus在I/O抖动下心跳无法及时响应，触发leader切换，最终panic： etcdserver： leader changed导致进程abort，panic时 WAL写入不一致状态，导致重启也失败。最终损失了所有了etcd数据，同时导致向量数据也编程了孤立文件也无效了。怎么才能防止这种情况的发生？\n> \n> 你需要ssd磁盘，然后你etcd和数据放在一块盘上么？这块util有多少？可以考虑把etcd放在其他盘上\n\n是在一块盘上，发生故障时util我没记录，当前空闲util 只有0.2%。\n以及，如果我把 Milvus拆成独立的etcd + minio + milvus三容器部署会好一些吗？"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2026-04-30T02:50:21Z",
+   "body": "> > > 你的milvus版本是什么？\n> > > 只要你的硬盘还在，Milvus应该能恢复。我们想收集日志，查明为什么会发生这种情况。\n> > > > 遇到了同样的问题，standalone版的milvus在I/O抖动下心跳无法及时响应，触发leader切换，最终panic： etcdserver： leader changed导致进程abort，panic时 WAL写入不一致状态，导致重启也失败。最终损失了所有了etcd数据，同时导致向量数据也编程了孤立文件也无效了。怎么才能防止这种情况的发生？\n> > \n> > \n> > 你需要ssd磁盘，然后你etcd和数据放在一块盘上么？这块util有多少？可以考虑把etcd放在其他盘上\n> \n> 是在一块盘上，发生故障时util我没记录，当前空闲util 只有0.2%。 以及，如果我把 Milvus拆成独立的etcd + minio + milvus三容器部署会好一些吗？\n\n主要看盘，你是内存索引还是磁盘索引，磁盘索引query会把io打得很高。"
+  },
+  {
+   "author": "participant7",
+   "created_at": "2026-04-30T06:03:13Z",
+   "body": "> > > > 你的milvus版本是什么？只要你的硬盘还在，Milvus应该能恢复。我们想收集日志，查明为什么会发生这种情况。\n> > > > > 遇到了同样的问题，standalone版的milvus在I/O抖动下心跳无法及时响应，触发leader切换，最终panic： etcdserver： leader changed导致进程abort，panic时 WAL写入不一致状态，导致重启也失败。最终损失了所有了etcd数据，同时导致向量数据也编程了孤立文件也无效了。怎么才能防止这种情况的发生？\n> > > \n> > > \n> > > 你需要ssd磁盘，然后你etcd和数据放在一块盘上么？这块util有多少？可以考虑把etcd放在其他盘上\n> > \n> > \n> > 是在一块盘上，发生故障时util我没记录，当前空闲util 只有0.2%。以及，如果我把 Milvus拆成独立的etcd + minio + milvus三容器部署会好一些吗？\n> \n> 主要看盘，你是内存索引还是磁盘索引，磁盘索引查询会把io打得很高。\n\n好的，感谢，后续我会去向公司申请ssd。\n使用的是HNSW内存索引。\n应该确实是机械硬盘的问题，以及目前部署是在虚拟机中，并不是物理机，这个有影响吗"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2026-04-30T15:33:15Z",
+   "body": "After switching to a standalone etcd setup, the issue did not occur again."
+  },
+  {
+   "author": "participant8",
+   "created_at": "2026-05-20T04:49:55Z",
+   "body": "我在 [milvus:v3.0-beta] 遇到了同样的问题\n"
+  },
+  {
+   "author": "participant7",
+   "created_at": "2026-06-24T09:32:16Z",
+   "body": "> > > > 你的milvus版本是什么？只要你的硬盘还在，Milvus应该能恢复。我们想收集日志，查明为什么会发生这种情况。\n> > > > > 遇到了同样的问题，standalone版的milvus在I/O抖动下心跳无法及时响应，触发leader切换，最终panic： etcdserver： leader changed导致进程abort，panic时 WAL写入不一致状态，导致重启也失败。最终损失了所有了etcd数据，同时导致向量数据也编程了孤立文件也无效了。怎么才能防止这种情况的发生？\n> > > \n> > > \n> > > 你需要ssd磁盘，然后你etcd和数据放在一块盘上么？这块util有多少？可以考虑把etcd放在其他盘上\n> > \n> > \n> > 是在一块盘上，发生故障时util我没记录，当前空闲util 只有0.2%。以及，如果我把 Milvus拆成独立的etcd + minio + milvus三容器部署会好一些吗？\n> \n> 主要看盘，你是内存索引还是磁盘索引，磁盘索引查询会把io打得很高。\n\n之前迁移到了固态上了，但是今天etcd又G了，这下坏了，项目上线已经在用了，观察发现是milvus容器每次重启时候，docker清楚缓存时，下载大量依赖时出现的问题。"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2026-06-24T18:09:09Z",
+   "body": "> > > > > 你的milvus版本是什么？只要你的硬盘还在，Milvus应该能恢复。我们想收集日志，查明为什么会发生这种情况。\n> > > > > > 遇到了同样的问题，standalone版的milvus在I/O抖动下心跳无法及时响应，触发leader切换，最终panic： etcdserver： leader changed导致进程abort，panic时 WAL写入不一致状态，导致重启也失败。最终损失了所有了etcd数据，同时导致向量数据也编程了孤立文件也无效了。怎么才能防止这种情况的发生？\n> > > > \n> > > > \n> > > > 你需要ssd磁盘，然后你etcd和数据放在一块盘上么？这块util有多少？可以考虑把etcd放在其他盘上\n> > > \n> > > \n> > > 是在一块盘上，发生故障时util我没记录，当前空闲util 只有0.2%。以及，如果我把 Milvus拆成独立的etcd + minio + milvus三容器部署会好一些吗？\n> > \n> > \n> > 主要看盘，你是内存索引还是磁盘索引，磁盘索引查询会把io打得很高。\n> \n> 之前迁移到了固态上了，但是今天etcd又G了，这下坏了，项目上线已经在用了，观察发现是milvus容器每次重启时候，docker清楚缓存时，下载大量依赖时出现的问题。\n\n我建议你看一下配置，是否把1. etcd配置到了tmp目录 2. etcd是否有三副本？ 如果etcd只有一副本，副本挂了必须在相同的物理机恢复，用相同目录"
+  },
+  {
+   "author": "participant7",
+   "created_at": "2026-06-25T07:07:51Z",
+   "body": "> > > > > > 你的milvus版本是什么？只要你的硬盘还在，Milvus应该能恢复。我们想收集日志，查明为什么会发生这种情况。\n> > > > > > > 遇到了同样的问题，standalone版的milvus在I/O抖动下心跳无法及时响应，触发leader切换，最终panic： etcdserver： leader changed导致进程abort，panic时 WAL写入不一致状态，导致重启也失败。最终损失了所有了etcd数据，同时导致向量数据也编程了孤立文件也无效了。怎么才能防止这种情况的发生？\n> > > > > \n> > > > > \n> > > > > 你需要ssd磁盘，然后你etcd和数据放在一块盘上么？这块util有多少？可以考虑把etcd放在其他盘上\n> > > > \n> > > > \n> > > > 是在一块盘上，发生故障时util我没记录，当前空闲util 只有0.2%。以及，如果我把 Milvus拆成独立的etcd + minio + milvus三容器部署会好一些吗？\n> > > \n> > > \n> > > 主要看盘，你是内存索引还是磁盘索引，磁盘索引查询会把io打得很高。\n> > \n> > \n> > 之前迁移到了固态上了，但是今天etcd又G了，这下坏了，项目上线已经在用了，观察发现是milvus容器每次重启时候，docker清楚缓存时，下载大量依赖时出现的问题。\n> \n> 我建议你看一下配置，是否把1. etcd配置到了tmp目录 2. etcd是否有三副本？ 如果etcd只有一副本，副本挂了必须在相同的物理机恢复，用相同目录\n\n1. 数据不在/tmp，在 /var/lib/milvus/etcd\n2. etcd只有 1 副本（embedded 单节点），使用的是官方standalone_embed.sh脚本的默认配置\n3. 环境是KVM虚拟机，virtio磁盘（vda），底层是共享存储"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2026-06-25T17:24:02Z",
+   "body": "> > > > > > > 你的milvus版本是什么？只要你的硬盘还在，Milvus应该能恢复。我们想收集日志，查明为什么会发生这种情况。\n> > > > > > > > 遇到了同样的问题，standalone版的milvus在I/O抖动下心跳无法及时响应，触发leader切换，最终panic： etcdserver： leader changed导致进程abort，panic时 WAL写入不一致状态，导致重启也失败。最终损失了所有了etcd数据，同时导致向量数据也编程了孤立文件也无效了。怎么才能防止这种情况的发生？\n> > > > > > \n> > > > > > \n> > > > > > 你需要ssd磁盘，然后你etcd和数据放在一块盘上么？这块util有多少？可以考虑把etcd放在其他盘上\n> > > > > \n> > > > > \n> > > > > 是在一块盘上，发生故障时util我没记录，当前空闲util 只有0.2%。以及，如果我把 Milvus拆成独立的etcd + minio + milvus三容器部署会好一些吗？\n> > > > \n> > > > \n> > > > 主要看盘，你是内存索引还是磁盘索引，磁盘索引查询会把io打得很高。\n> > > \n> > > \n> > > 之前迁移到了固态上了，但是今天etcd又G了，这下坏了，项目上线已经在用了，观察发现是milvus容器每次重启时候，docker清楚缓存时，下载大量依赖时出现的问题。\n> > \n> > \n> > 我建议你看一下配置，是否把1. etcd配置到了tmp目录 2. etcd是否有三副本？ 如果etcd只有一副本，副本挂了必须在相同的物理机恢复，用相同目录\n> \n> 1. 数据不在/tmp，在 /var/lib/milvus/etcd\n> 2. etcd只有 1 副本（embedded 单节点），使用的是官方standalone_embed.sh脚本的默认配置\n> 3. 环境是KVM虚拟机，virtio磁盘（vda），底层是共享存储\n\n故障的时候，盘上的数据都在，这个检查过了么？"
+  },
+  {
+   "author": "stale[bot]",
+   "created_at": "2026-07-25T23:59:37Z",
+   "body": "This issue has been automatically marked as stale because it has not had recent activity. It will be closed if no further activity occurs. Thank you for your contributions.\nRotten issues close after 30d of inactivity. Reopen the issue with `/reopen`.\n"
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "milvus-io/milvus",
+  "default_branch": "master",
+  "commit_sha": "1e7d4c508ff03f6a26f1a3ee28eb68917ee76bec",
+  "as_of": "2026-01-29T10:53:23Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_milvus-io_milvus_47419"
+}

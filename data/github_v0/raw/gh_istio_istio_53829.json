@@ -1,0 +1,260 @@
+{
+ "repo": "istio/istio",
+ "number": 53829,
+ "url": "https://github.com/istio/istio/issues/53829",
+ "title": "istio-cni: failed to remove pod from mesh",
+ "state": "closed",
+ "labels": [
+  "kind/need more info",
+  "area/networking/cni",
+  "lifecycle/stale",
+  "area/ambient"
+ ],
+ "reporter": "reporter",
+ "created_at": "2024-11-08T00:18:58Z",
+ "closed_at": "2025-02-27T20:29:51Z",
+ "body": "### Is this the right place to submit this?\n\n- [X] This is not a security vulnerability or a crashing bug\n- [X] This is not a question about how to use Istio\n\n### Bug Description\n\n**Namespaces previously added to ambient mesh are not deleted**\n\nAfter removing the label (**istio.io/dataplane-mode**) from the **tools** namespace:\n\n`kubectl label ns tools istio.io/dataplane-mode-`\n\nthe **tools** namespace continues to be in the ambient mesh:\n\n`./istioctl ztunnel-config workload`\n\n![2024-11-08 09 56 26](https://github.com/user-attachments/assets/02ccf617-bfd0-409e-aaf1-a7043a040ff7)\n\nistio-cni logs:\n![2024-11-08 10 09 58](https://github.com/user-attachments/assets/ae159d17-42d3-4b3a-9a4c-c0e8c7531303)\n\n\n\n### Version\n\n```Text\ncontrol plane version: 1.24.0\nk8s: v1.30.4\nCNI Plugin: cilium v1.16.3\n```\n\n\n### Additional Information\n\n_No response_",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2024-11-08T16:41:34Z",
+   "body": "Can you give some more info about your environment? Which cloud provider (or not cloud), OS version of the node, etc?\r\n\r\nIt seems there is maybe some incompatibility with your OS"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-11-08T18:08:10Z",
+   "body": "`failed to setup execution environment / failed to remount / permission denied` is likely the actual problem yea."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-11-09T05:05:08Z",
+   "body": "Bare metal\r\nOS Ubuntu server 24.04 server\r\nLinux worker-01 6.8.0-48-generic #48-Ubuntu SMP PREEMPT_DYNAMIC Fri Sep 27 14:04:52 UTC 2024 x86_64 x86_64 x86_64 GNU/Linux\r\n\r\nAnother example. Adding a new namespace to the ambient mesh:\r\n\r\n`kubectl label ns test istio.io/dataplane-mode=ambient`\r\n\r\nistio-cni logs:\r\n![2024-11-09 14 52 35](https://github.com/user-attachments/assets/4ebf9db0-5874-44cb-ae66-b8f882ee2b64)\r\n\r\n`./istioctl ztunnel-config workload`\r\n\r\nEven so, the namespace is added to the ambient mesh:\r\n\r\n![2024-11-09 15 01 42](https://github.com/user-attachments/assets/31546a3a-540c-4d3e-bc17-e582c03e962c)\r\n"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-11-09T14:20:27Z",
+   "body": "Are you running with seLinux configured by any chance?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-11-09T16:04:47Z",
+   "body": "Ubuntu server was installed as standard. Selinux is not installed"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-11-10T03:21:01Z",
+   "body": "The following information may be useful. When I add a namespace to ambient mesh, the following logs appear in journalctl:\r\n\r\n```\r\n...\r\nNov 10 12:41:29 worker-03 kernel: audit: type=1400 audit(1731206489.637:2139): apparmor=\"DENIED\" operation=\"ptrace\" class=\"ptrace\" profile=\"cri-containerd.apparmor.d\" pid=2167 comm=\"install-cni\" requested_mask=\"read\" denied_mask=\"read\" peer=\"unconfined\"\r\nNov 10 12:41:29 worker-03 kernel: audit: type=1400 audit(1731206489.637:2140): apparmor=\"DENIED\" operation=\"ptrace\" class=\"ptrace\" profile=\"cri-containerd.apparmor.d\" pid=2167 comm=\"install-cni\" requested_mask=\"read\" denied_mask=\"read\" peer=\"unconfined\"\r\nNov 10 12:41:29 worker-03 kernel: audit: type=1400 audit(1731206489.637:2141): apparmor=\"DENIED\" operation=\"ptrace\" class=\"ptrace\" profile=\"cri-containerd.apparmor.d\" pid=2167 comm=\"install-cni\" requested_mask=\"read\" denied_mask=\"read\" peer=\"unconfined\"\r\n...\r\n```\r\n\r\nI did not configure AppArmor separately. This configuration is the default in Ubuntu Server 24.04"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-11-10T13:11:12Z",
+   "body": "This is super helpful, thanks for sharing! Yeah it looks like AppArmor doesn't want istio-cni to have access to that directory despite it having CAP_SYS_PTRACE capabilities "
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-11-10T13:15:57Z",
+   "body": "Can you try setting the appArmor profile to Unconfined? https://kubernetes.io/docs/tutorials/security/apparmor/#securing-a-pod\n\n/cc @participant1 "
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-11-10T14:43:58Z",
+   "body": "What I'm not certain of is exactly what is failing and why. Some failures may trigger other failures. I know the mount operation is blocked by the appArmor I think, but not sure that is required "
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-11-10T15:05:19Z",
+   "body": "From my quick reading (so definitely not authoritative), reading from procfs is what's causing app Armor to log there in journalctl "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-11-11T05:05:43Z",
+   "body": "Edited Daemonset by adding the Unconfined profile for AppArmor:\r\n\r\n![2024-11-08 09 56 26](https://github.com/user-attachments/assets/8bdb2a82-a3be-4313-ad0f-00bc0a9dffd8)\r\n\r\nNext, I add the **test** namespace to the ambient mesh (there are no errors and journalctl is empty)\r\n\r\nistio-cni logs:\r\n\r\n![2024-11-11 14 31 57](https://github.com/user-attachments/assets/591bab08-f81a-43d4-bd2b-032721089780)\r\n\r\nNow if I delete the test namespace from the ambient mesh, I get errors and the namespace is not deleted from the mesh:\r\n\r\n![2024-11-11 14 36 43](https://github.com/user-attachments/assets/58769e01-2395-48a7-a531-763e1db60f46)\r\n\r\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-11-11T16:27:24Z",
+   "body": "> From my quick reading (so definitely not authoritative), reading from procfs is what's causing app Armor to log there in journalctl\r\n\r\nhttps://github.com/containerd/containerd/blob/2bf793ef6dc9a18e00cb12efb64355c2c9d5eb41/contrib/apparmor/template.go#L71\r\n\r\nShouldn't this only block write to procfs? Not read? It would not surprise me if there is something weird\r\n\r\n`deny mount` is suspicious though."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-11-11T16:35:04Z",
+   "body": "Yeah according to that config, it should only block write. The journalctl logs point to a blocked read which is strange to me"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-11-11T18:28:40Z",
+   "body": "> Edited Daemonset by adding the Unconfined profile for AppArmor:\r\n> \r\n> ![2024-11-08 09 56 26](https://private-user-images.githubusercontent.com/155072573/384786496-8bdb2a82-a3be-4313-ad0f-00bc0a9dffd8.png?jwt=<secret-scrubbed>)\r\n> \r\n\r\nQQ - does setting `privileged: true` and removing `appArmorProfile: unconfined` change any behavior here? The former may implicitly elide/bypass AppArmor.\r\n\r\nI find it odd, if this is a default Ubuntu, that no one would have hit this in 1.23."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-11-11T18:30:06Z",
+   "body": "On slack someone said privileged=true fixed it\r\n\r\nOn Mon, Nov 11, 2024, 10:29 AM Ben Leggett ***@***.***> wrote:\r\n\r\n> Edited Daemonset by adding the Unconfined profile for AppArmor:\r\n>\r\n> [image: 2024-11-08 09 56 26]\r\n> <https://private-user-images.githubusercontent.com/155072573/384786496-8bdb2a82-a3be-4313-ad0f-00bc0a9dffd8.png?jwt=<secret-scrubbed>>\r\n>\r\n> QQ - does setting privileged: true change any behavior here? It may\r\n> elide/bypass AppArmor.\r\n>\r\n> I find it odd, if this is a default Ubuntu, that no one would have hit\r\n> this in 1.23.\r\n>\r\n> —\r\n> Reply to this email directly, view it on GitHub\r\n> <https://github.com/istio/istio/issues/53829#issuecomment-2468792633>, or\r\n> unsubscribe\r\n> <https://github.com/notifications/unsubscribe-auth/AAEYGXP3V6BRWMOYYRSMDJL2ADZO7AVCNFSM6AAAAABRMLWEZCVHI2DSMVQWIX3LMV43OSLTON2WKQ3PNVWWK3TUHMZDINRYG44TENRTGM>\r\n> .\r\n> You are receiving this because you were mentioned.Message ID:\r\n> ***@***.***>\r\n>\r\n"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-11-11T18:31:57Z",
+   "body": "> On slack someone said privileged=true fixed it\r\n\r\nI was afraid of that. Okay. `appArmorProfile: Unconfined` should probably be in our templates either way, since AFAIK each env can have its own set of profiles and we have no way to really know what's in them.\r\n\r\n(We could ship our own and document how to use it but I'd rather not)"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-11-11T21:24:30Z",
+   "body": "Shipping our own profile would but rough too because Kubernetes enforces that the profile exists before applying the pod. So we'd have to work around the race there "
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-11-11T21:26:07Z",
+   "body": "Do we know why setting to unconstrained doesn't work? Since I thought someone tried and found that"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-11-11T21:29:34Z",
+   "body": "Yeah folks said unconstained doesn't work. I wonder if the issue is this ptrace role in the appArmor config: https://github.com/containerd/containerd/blob/2bf793ef6dc9a18e00cb12efb64355c2c9d5eb41/contrib/apparmor/template.go#L94. I have zero context here, but maybe allowing ptracing containers within the pod _disallows_ ptracing containers/processes outside the pod (similar to how Istio AuthZ policies work)"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-11-11T21:33:32Z",
+   "body": "> Yeah folks said unconstained doesn't work. I wonder if the issue is this ptrace role in the appArmor config: https://github.com/containerd/containerd/blob/2bf793ef6dc9a18e00cb12efb64355c2c9d5eb41/contrib/apparmor/template.go#L94. I have zero context here, but maybe allowing ptracing containers within the pod _disallows_ ptracing containers/processes outside the pod (similar to how Istio AuthZ policies work)\r\n\r\nYeah https://gitlab.com/apparmor/apparmor/-/wikis/TechnicalDoc_Proc_and_ptrace#apparmor-3-with-ptrace-rules implies that a bit.\r\n\r\n"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-11-11T22:10:32Z",
+   "body": "Would setting the `appArmorProfile` to unconfined update the ptrace role in the appArmor config to be `ptrace (trace, read) peer=unconfined`? Or does the `profile` remain `cri-containerd.apparmor.d`?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-11-11T22:55:46Z",
+   "body": "Maybe a dumb question, but do we actually know what is blocked? Or just\r\n\"read\" of something? I never saw anything indicating *what*\r\n\r\nOn Mon, Nov 11, 2024, 2:10 PM Jackie Maertens (Elliott) <\r\n***@***.***> wrote:\r\n\r\n> Would setting the appArmorProfile to unconfined update the ptrace role in\r\n> the appArmor config to be ptrace (trace, read) peer=unconfined? Or does\r\n> the profile remain cri-containerd.apparmor.d?\r\n>\r\n> —\r\n> Reply to this email directly, view it on GitHub\r\n> <https://github.com/istio/istio/issues/53829#issuecomment-2469170975>, or\r\n> unsubscribe\r\n> <https://github.com/notifications/unsubscribe-auth/AAEYGXL7LAWGXM4HR3P7K632AETO3AVCNFSM6AAAAABRMLWEZCVHI2DSMVQWIX3LMV43OSLTON2WKQ3PNVWWK3TUHMZDINRZGE3TAOJXGU>\r\n> .\r\n> You are receiving this because you were mentioned.Message ID:\r\n> ***@***.***>\r\n>\r\n"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-11-11T23:14:59Z",
+   "body": "I think multiple things are failing looking back at the original screenshot. The istio-cni error is \"failed to remount /: permission denied\" which points to that mount deny flag in the default (unconstrained) apparmor policy. "
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-11-12T01:41:53Z",
+   "body": "> Maybe a dumb question, but do we actually know what is blocked? Or just \"read\" of something? I never saw anything indicating *what*\r\n\r\nWorking on replicating this to do a more detailed analysis"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-11-12T05:38:25Z",
+   "body": "> > Edited Daemonset by adding the Unconfined profile for AppArmor:\r\n> > ![2024-11-08 09 56 26](https://private-user-images.githubusercontent.com/155072573/384786496-8bdb2a82-a3be-4313-ad0f-00bc0a9dffd8.png?jwt=<secret-scrubbed>)\r\n> \r\n> QQ - does setting `privileged: true` and removing `appArmorProfile: unconfined` change any behavior here? The former may implicitly elide/bypass AppArmor.\r\n> \r\n> I find it odd, if this is a default Ubuntu, that no one would have hit this in 1.23.\r\n\r\n\r\n![2024-11-11 14 36 43](https://github.com/user-attachments/assets/d58afa30-d3a2-4784-8a3e-1eefb55803be)\r\n\r\nThere are no errors when I add a namespace. Errors appear when I delete a namespace.\r\n\r\nprivileged: true and removing appArmorProfile: unconfined:\r\n\r\n![2024-11-12 15 32 46](https://github.com/user-attachments/assets/42ccd85d-3465-4d3a-8ad7-c06f2666caa3)\r\n\r\nThe namespace still continues to be in HBONE\r\n\r\n"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-11-12T15:39:04Z",
+   "body": "Ah, what if you remove the appArmor profile with privileged: true?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-11-12T15:44:15Z",
+   "body": "> Ah, what if you remove the appArmor profile with privileged: true?\r\n\r\nin slack someone already confirmed this fixes it\r\nIf we cannot disable appArmor only, we should default to privileged and allow non-apparmor users to opt out"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-11-12T17:00:31Z",
+   "body": "> allow non-apparmor users to opt out\r\n\r\nMy only concern with this is the same one I had before - making it a user-facing knob is easy to misunderstand/abuse if we aren't careful - I want to avoid people getting in to the trap of thinking \"I can make `istio-cni` unprivileged if I set `privileged=false`\" - which they _can never_ do. It is _always_ a privileged pod, in reality and as per the Kubernetes PSS.\r\n\r\nIf we let people opt-out, I'm very much not clear how we would message that in a way that wouldn't confuse the hell out of 99% of the people looking at that flag.\r\n\r\nMaybe exposing it as `values.appArmorBypass=true|false` would be enough. If you don't have appArmor you can set it to `false`."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-11-12T17:36:05Z",
+   "body": "I agree that making privileged a user facing nob would reintroduce the confusion we were trying to avoid. A `values.appArmorBypass` flag makes sense to me. However, how many users would install istio not knowing apparmor is enabled and spend extra cycles debugging?"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-11-12T17:43:32Z",
+   "body": "> I agree that making privileged a user facing nob would reintroduce the confusion we were trying to avoid. A `values.appArmorBypass` flag makes sense to me. However, how many users would install istio not knowing apparmor is enabled and spend extra cycles debugging?\r\n\r\nYeah - I think we would have to default `appArmorBypass` to `true` (to echo what @participant1 said above)\r\n\r\nIf you _know_ you aren't using appArmor, you can opt-in to setting it to false.\r\n\r\n\r\n...if we are 100% sure that `appArmor: unconfined` doesn't work, as that would be preferable."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-11-14T19:49:11Z",
+   "body": "> > Maybe a dumb question, but do we actually know what is blocked? Or just \"read\" of something? I never saw anything indicating _what_\r\n> \r\n> Working on replicating this to do a more detailed analysis\r\n\r\nI was finally able to replicate this yesterday and I think there are two things going on. Setting the appArmorProfile to unconfined on the istio-cni-node daemonset does resolve the ptrace failures. The pods still fail to be removed from the mesh because of failures related to deleting nonexistent raw iptable rules. \r\n\r\n- https://github.com/istio/istio/pull/53888 Should resolve the AppArmor failures.\r\n- https://github.com/istio/istio/pull/53153 Should resolve the iptable failures.\r\n\r\n"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2024-11-14T20:17:08Z",
+   "body": "> * [Idempotency and reconciliation for cni iptables #53153](https://github.com/istio/istio/pull/53153) Should resolve the iptable failures.\r\n\r\nMy commit is a prereq to fix it as it adds the reconciliation feature but it is not enough on its own. @participant2 is working on a follow-up to that commit to trigger reconciliation on all existing pods at start.\r\n\r\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-11-14T20:21:59Z",
+   "body": "If it's feasible to have a smaller fix for the patch only id love to do it.\r\nUnfortunately I don't have any ideas though\r\n\r\nOn Thu, Nov 14, 2024, 1:17 PM Leonardo Sarra ***@***.***>\r\nwrote:\r\n\r\n>\r\n>    - Idempotency and reconciliation for cni iptables #53153\r\n>    <https://github.com/istio/istio/pull/53153> Should resolve the iptable\r\n>    failures.\r\n>\r\n> My commit is a prereq to fix it as it adds the reconciliation feature but\r\n> it is not enough on its own. @participant2 <https://github.com/participant2> is\r\n> working on a follow-up to that commit to trigger reconciliation on all\r\n> existing pods.\r\n>\r\n> —\r\n> Reply to this email directly, view it on GitHub\r\n> <https://github.com/istio/istio/issues/53829#issuecomment-2477328765>, or\r\n> unsubscribe\r\n> <https://github.com/notifications/unsubscribe-auth/AAEYGXKO7BNXETE426W5O532AUANXAVCNFSM6AAAAABRMLWEZCVHI2DSMVQWIX3LMV43OSLTON2WKQ3PNVWWK3TUHMZDINZXGMZDQNZWGU>\r\n> .\r\n> You are receiving this because you were mentioned.Message ID:\r\n> ***@***.***>\r\n>\r\n"
+  },
+  {
+   "author": "participant6",
+   "created_at": "2024-11-15T14:04:20Z",
+   "body": "I expirience this issue on completly different setup (kind version 0.25.0 with default CNI k8s 1.31.2)\r\n \r\nChanging label namespace from `istio.io/dataplane-mode=ambient` to `istio.io/dataplane-mode=none` removes iptables rules but does not remove from HBONE\r\n\r\nto reproduce:\r\n```bash\r\n# create namespace and add it to mesh\r\nkubectl create ns nethost\r\nkubectl label namespace auth istio.io/dataplane-mode=ambient --overwrite\r\n# run iptables-save/ss -tpln in one terminal \r\nkubectl run --rm -it nethost --image=nicolaka/netshoot --restart=Never --privileged -n nethost -- watch -n1 'iptables-save; ss -tpln'\r\n# run istioctl ztunnel-config workload |grep nethost in another terminal\r\nwatch -n1 'istioctl ztunnel-config workload |grep nethost'\r\n```\r\n\r\nthen run alternately\r\n\r\n```\r\nkubectl label namespace auth istio.io/dataplane-mode=ambient --overwrite\r\n```\r\nand try to remove\r\n```\r\nkubectl label namespace auth istio.io/dataplane-mode=none --overwrite\r\n```\r\n\r\nadding usually works without issue, but when removing, then iptables are cleared but proxy stays and \"ztunnel-config workloads\" reports that nethost is still in a HBONE\r\noutput here:\r\n\r\n```\r\nEvery 1.0s: iptables-save; ss -tpln                                                                                                                                                                                                     \r\n\r\n# Generated by iptables-save v1.8.10 (nf_tables) on Fri Nov 15 13:58:29 2024\r\n*mangle\r\n:PREROUTING ACCEPT [0:0]\r\n:INPUT ACCEPT [0:0]\r\n:FORWARD ACCEPT [0:0]\r\n:OUTPUT ACCEPT [0:0]\r\n:POSTROUTING ACCEPT [0:0]\r\nCOMMIT\r\n# Completed on Fri Nov 15 13:58:29 2024\r\n# Generated by iptables-save v1.8.10 (nf_tables) on Fri Nov 15 13:58:29 2024\r\n*nat\r\n:PREROUTING ACCEPT [0:0]\r\n:INPUT ACCEPT [0:0]\r\n:OUTPUT ACCEPT [0:0]\r\n:POSTROUTING ACCEPT [0:0]\r\nCOMMIT\r\n# Completed on Fri Nov 15 13:58:29 2024\r\nState                             Recv-Q                            Send-Q                                                       Local Address:Port                                                         Peer Address:Port                            Process\r\nLISTEN                            0                                 128                                                              127.0.0.1:15053                                                             0.0.0.0:*\r\nLISTEN                            0                                 128                                                                  [::1]:15053                                                                [::]:*\r\nLISTEN                            0                                 128                                                                      *:15008                                                                   *:*\r\nLISTEN                            0                                 128                                                                      *:15006                                                                   *:*\r\nLISTEN                            0                                 128                                                                      *:15001                                                                   *:*\r\n```\r\nand\r\n```\r\nEvery 1.0s: istioctl ztunnel-config workload |grep nethost\r\nnethost                   nethost                                               10.244.0.80 kind-control-plane None     HBONE\r\n```\r\n\r\nit looks like some race condition, because it sometimes happens and sometimes not\r\n\r\nFYI:\r\n```\r\n# istioctl version\r\nclient version: 1.23.2\r\ncontrol plane version: 1.24.0\r\ndata plane version: 1.24.0 (1 proxies)\r\n```\r\n\r\nsituation is even worse for two or more containers :(\r\nfirst one being remove (iptables/proxy)\r\n```\r\nnethost                   nethost                                               10.244.0.80 kind-control-plane None     TCP\r\nnethost                   nethost1                                              10.244.0.84 kind-control-plane None     HBONE\r\nnethost                   nethost2                                              10.244.0.83 kind-control-plane None     HBONE\r\n```\r\nand two others have iptables cleared but proxy stays and reports HBONE\r\n\r\n:(\r\n\r\n\r\nshould I report this as another ticket ?\r\n\r\nztunnel/istiod logs when removing works:\r\n```\r\n# ztunnel\r\n2024-11-15T14:07:30.024667Z    info    inpod::statemanager    pod delete request, shutting down proxy    uid=\"00dd583f-7293-443b-ac85-19338db7103a\"\r\n2024-11-15T14:07:30.024899Z    info    drain:proxy{wl=nethost/nethost}    shutdown complete    component=\"inbound\"\r\n2024-11-15T14:07:30.024941Z    info    dns::server:dns_proxy{wl=nethost/nethost}    shutting down the DNS server\r\n2024-11-15T14:07:30.024966Z    info    dns::server:dns_proxy{wl=nethost/nethost}    dns server drained\r\n2024-11-15T14:07:30.024976Z    info    drain:proxy{wl=nethost/nethost}    shutdown complete    component=\"inbound passthrough\"\r\n2024-11-15T14:07:30.025159Z    info    drain:proxy{wl=nethost/nethost}    shutdown complete    component=\"outbound\"\r\n2024-11-15T14:07:30.142353Z    info    xds::client:xds{id=6}    received response    type_url=\"type.googleapis.com/istio.workload.Address\" size=1 removes=0\r\n# istiod\r\n2024-11-15T14:09:21.881121Z    info    ads    Push debounce stable[248] 1 for config Address//Kubernetes//Pod/nethost/nethost: 100.492021ms since last change, 100.491772ms since last push, full=false\r\n2024-11-15T14:09:21.881309Z    info    ads    XDS: Incremental Pushing ConnectedEndpoints:1 Version:2024-11-15T12:49:17Z/65\r\n```\r\nwhen it doesn't there are not entries at all \r\n\r\nbut OTOH i see errors in cni (for failing case)\r\n```\r\n-N ISTIO_OUTPUT\r\n-A OUTPUT -j ISTIO_OUTPUT\r\n-A PREROUTING -j ISTIO_PRERT\r\n-A ISTIO_PRERT -s fd16:9254:7127:1337:ffff:ffff:ffff:ffff -p tcp -m tcp -j ACCEPT\r\n-A ISTIO_OUTPUT -d fd16:9254:7127:1337:ffff:ffff:ffff:ffff -p tcp -m tcp -j ACCEPT\r\n-A ISTIO_PRERT ! -d ::1/128 -p tcp ! --dport 15008 -m mark ! --mark 0x539/0xfff -j REDIRECT --to-ports 15006\r\n-A ISTIO_OUTPUT -p tcp -m mark --mark 0x111/0xfff -j ACCEPT\r\n-A ISTIO_OUTPUT ! -d ::1/128 -o lo -j ACCEPT\r\n-A ISTIO_OUTPUT ! -d ::1/128 -p tcp -m mark ! --mark 0x539/0xfff -j REDIRECT --to-ports 15001\r\nCOMMIT    ns=nethost name=nethost\r\n2024-11-15T14:10:59.197440Z    info    Running command (without nss): ip6tables-nft-restore --noflush -v\r\n2024-11-15T14:10:59.208886Z    info    cni-agent    sending pod add to ztunnel    uid=00dd583f-7293-443b-ac85-19338db7103a name=nethost namespace=nethost serviceAccount=default\r\n2024-11-15T14:11:01.154429Z    info    cni-agent    Namespace nethost is disabled from ambient mesh\r\n2024-11-15T14:11:01.156344Z    info    Running command (without nss): iptables-nft -t mangle -D PREROUTING -j ISTIO_PRERT\r\n2024-11-15T14:11:01.164334Z    info    Running command (without nss): iptables-nft -t mangle -D OUTPUT -j ISTIO_OUTPUT\r\n2024-11-15T14:11:01.197018Z    info    Running command (without nss): iptables-nft -t nat -D PREROUTING -j ISTIO_PRERT\r\n2024-11-15T14:11:01.226944Z    info    Running command (without nss): iptables-nft -t nat -D OUTPUT -j ISTIO_OUTPUT\r\n2024-11-15T14:11:01.262129Z    info    Running command (without nss): iptables-nft -t raw -D PREROUTING -j ISTIO_PRERT\r\n2024-11-15T14:11:01.269047Z    error    Command error output: xtables parameter problem: Chain 'ISTIO_PRERT' does not exist\r\nTry `iptables -h' or 'iptables --help' for more information.\r\n2024-11-15T14:11:01.269165Z    info    Running command (without nss): iptables-nft -t raw -D OUTPUT -j ISTIO_OUTPUT\r\n2024-11-15T14:11:01.276231Z    error    Command error output: xtables parameter problem: Chain 'ISTIO_OUTPUT' does not exist\r\nTry `iptables -h' or 'iptables --help' for more information.\r\n2024-11-15T14:11:01.276371Z    info    Running command (without nss): iptables-nft -t mangle -F ISTIO_PRERT\r\n2024-11-15T14:11:01.285111Z    info    Running command (without nss): iptables-nft -t mangle -F ISTIO_OUTPUT\r\n2024-11-15T14:11:01.328085Z    info    Running command (without nss): iptables-nft -t nat -F ISTIO_PRERT\r\n2024-11-15T14:11:01.358067Z    info    Running command (without nss): iptables-nft -t nat -F ISTIO_OUTPUT\r\n2024-11-15T14:11:01.383287Z    info    Running command (without nss): iptables-nft -t raw -F ISTIO_PRERT\r\n2024-11-15T14:11:01.390365Z    error    Command error output: xtables other problem: No chain/target/match by that name.\r\n2024-11-15T14:11:01.390479Z    info    Running command (without nss): iptables-nft -t raw -F ISTIO_OUTPUT\r\n2024-11-15T14:11:01.397446Z    error    Command error output: xtables other problem: No chain/target/match by that name.\r\n2024-11-15T14:11:01.397558Z    info    Running command (without nss): iptables-nft -t mangle -X ISTIO_PRERT\r\n2024-11-15T14:11:01.441966Z    info    Running command (without nss): iptables-nft -t mangle -X ISTIO_OUTPUT\r\n2024-11-15T14:11:01.473347Z    info    Running command (without nss): iptables-nft -t nat -X ISTIO_PRERT\r\n2024-11-15T14:11:01.496932Z    info    Running command (without nss): iptables-nft -t nat -X ISTIO_OUTPUT\r\n2024-11-15T14:11:01.527318Z    info    Running command (without nss): iptables-nft -t raw -X ISTIO_PRERT\r\n2024-11-15T14:11:01.534415Z    error    Command error output: xtables other problem: No chain/target/match by that name.\r\n2024-11-15T14:11:01.534542Z    info    Running command (without nss): iptables-nft -t raw -X ISTIO_OUTPUT\r\n2024-11-15T14:11:01.541767Z    error    Command error output: xtables other problem: No chain/target/match by that name.\r\n2024-11-15T14:11:01.541904Z    info    Running command (without nss): ip6tables-nft -t mangle -D PREROUTING -j ISTIO_PRERT\r\n2024-11-15T14:11:01.574066Z    info    Running command (without nss): ip6tables-nft -t mangle -D OUTPUT -j ISTIO_OUTPUT\r\n2024-11-15T14:11:01.604161Z    info    Running command (without nss): ip6tables-nft -t nat -D PREROUTING -j ISTIO_PRERT\r\n2024-11-15T14:11:01.612218Z    info    Running command (without nss): ip6tables-nft -t nat -D OUTPUT -j ISTIO_OUTPUT\r\n2024-11-15T14:11:01.658109Z    info    Running command (without nss): ip6tables-nft -t raw -D PREROUTING -j ISTIO_PRERT\r\n2024-11-15T14:11:01.665156Z    error    Command error output: xtables parameter problem: Chain 'ISTIO_PRERT' does not exist\r\nTry `ip6tables -h' or 'ip6tables --help' for more information.\r\n2024-11-15T14:11:01.665259Z    info    Running command (without nss): ip6tables-nft -t raw -D OUTPUT -j ISTIO_OUTPUT\r\n2024-11-15T14:11:01.672657Z    error    Command error output: xtables parameter problem: Chain 'ISTIO_OUTPUT' does not exist\r\nTry `ip6tables -h' or 'ip6tables --help' for more information.\r\n2024-11-15T14:11:01.672760Z    info    Running command (without nss): ip6tables-nft -t mangle -F ISTIO_PRERT\r\n2024-11-15T14:11:01.707199Z    info    Running command (without nss): ip6tables-nft -t mangle -F ISTIO_OUTPUT\r\n2024-11-15T14:11:01.716541Z    info    Running command (without nss): ip6tables-nft -t nat -F ISTIO_PRERT\r\n2024-11-15T14:11:01.763377Z    info    Running command (without nss): ip6tables-nft -t nat -F ISTIO_OUTPUT\r\n2024-11-15T14:11:01.771206Z    info    Running command (without nss): ip6tables-nft -t raw -F ISTIO_PRERT\r\n2024-11-15T14:11:01.779635Z    error    Command error output: xtables other problem: No chain/target/match by that name.\r\n2024-11-15T14:11:01.779786Z    info    Running command (without nss): ip6tables-nft -t raw -F ISTIO_OUTPUT\r\n2024-11-15T14:11:01.788078Z    error    Command error output: xtables other problem: No chain/target/match by that name.\r\n2024-11-15T14:11:01.788209Z    info    Running command (without nss): ip6tables-nft -t mangle -X ISTIO_PRERT\r\n2024-11-15T14:11:01.797536Z    info    Running command (without nss): ip6tables-nft -t mangle -X ISTIO_OUTPUT\r\n2024-11-15T14:11:01.840198Z    info    Running command (without nss): ip6tables-nft -t nat -X ISTIO_PRERT\r\n2024-11-15T14:11:01.849508Z    info    Running command (without nss): ip6tables-nft -t nat -X ISTIO_OUTPUT\r\n2024-11-15T14:11:01.898385Z    info    Running command (without nss): ip6tables-nft -t raw -X ISTIO_PRERT\r\n2024-11-15T14:11:01.905887Z    error    Command error output: xtables other problem: No chain/target/match by that name.\r\n2024-11-15T14:11:01.906051Z    info    Running command (without nss): ip6tables-nft -t raw -X ISTIO_OUTPUT\r\n2024-11-15T14:11:01.913786Z    error    Command error output: xtables other problem: No chain/target/match by that name.\r\n2024-11-15T14:11:01.915313Z    error    cni-agent    failed to remove pod from mesh: failed to delete inpod rules: exit status 2\r\nexit status 2\r\nexit status 2\r\nexit status 2    ns=nethost name=nethost\r\n```\r\n\r\nwhen it works I only see:\r\n```\r\n2024-11-15T14:14:13.119424Z    info    cni-agent    Namespace nethost is disabled from ambient mesh\r\n2024-11-15T14:14:13.120683Z    warn    cni-agent    pod netns already gone, not deleting inpod rules    ns=nethost name=nethost\r\n```\r\nlooks like some race condition when manipulating iptables\r\n\r\nI hope that helps, because this bugs makes testing istio ambient mode very inconvinent - promised effortless adding/removing pods from mesh is not there and I had to restart pods anyway when I want to remove pods from mesh :(\r\n"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2024-11-15T14:51:51Z",
+   "body": "@participant6 I suspect that the error you have in the logs about inpod rules not being deleted correctly should be addressed by my commit, that error led to an early exit in the RemovePodFromMesh() when certain iptables cfgs are used.\r\n\r\nI noticed the same problem while working on the test cases for the idempotency/reconciliation PR so I tried to fix it.\r\nFrom the description of my PR:\r\n> - Resolved in-pod deletion errors caused by the deletion logic incorrectly assuming that certain commands would work, even when the relevant rules were not present. The creation of these rules depends on the values of tproxy and ingressMode. Therefore, certain failed deletion commands cannot reliably indicate successful deletion. See https://github.com/istio/istio/commit/1b03f56e1476cf850afe11f70abdb15ed810e686.\r\n\r\nOn the other end, I cannot say for sure why sometimes you experienced the issue and sometimes you did not as I'm not well versed in the cni-agent logic."
+  },
+  {
+   "author": "istio-policy-bot",
+   "created_at": "2025-02-14T05:03:36Z",
+   "body": "🧭 This issue or pull request has been automatically marked as stale because it has not had activity from an Istio team member since 2024-11-15. It will be closed on 2025-02-28 unless an Istio team member takes action. Please see [this wiki page](https://github.com/istio/istio/wiki/Issue-and-Pull-Request-Lifecycle-Manager) for more information. Thank you for your contributions.\n\n\n_Created by the issue and PR lifecycle manager_."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-02-27T20:29:50Z",
+   "body": "This issue has diverged a bit but as far as I can tell everything discussed here has been solved now. Thanks everyone!\n\nIf you see similar issues please open a new issue and make sure you are on the latest versions."
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "istio/istio",
+  "default_branch": "master",
+  "commit_sha": "1752b73705eaace5f7a4c641c036d2d8263f1b01",
+  "as_of": "2024-11-08T00:18:58Z",
+  "method": "github_commits_until"
+ },
+ "images": [
+  {
+   "where": "opening",
+   "source_url": "https://github.com/user-attachments/assets/02ccf617-bfd0-409e-aaf1-a7043a040ff7",
+   "file": "gh_istio_istio_53829_img0.png"
+  },
+  {
+   "where": "opening",
+   "source_url": "https://github.com/user-attachments/assets/ae159d17-42d3-4b3a-9a4c-c0e8c7531303",
+   "file": "gh_istio_istio_53829_img1.png"
+  },
+  {
+   "where": "c2",
+   "source_url": "https://github.com/user-attachments/assets/4ebf9db0-5874-44cb-ae66-b8f882ee2b64",
+   "file": "gh_istio_istio_53829_img2.png"
+  },
+  {
+   "where": "c2",
+   "source_url": "https://github.com/user-attachments/assets/31546a3a-540c-4d3e-bc17-e582c03e962c",
+   "file": "gh_istio_istio_53829_img3.png"
+  },
+  {
+   "where": "c10",
+   "source_url": "https://github.com/user-attachments/assets/8bdb2a82-a3be-4313-ad0f-00bc0a9dffd8",
+   "file": "gh_istio_istio_53829_img4.png"
+  },
+  {
+   "where": "c10",
+   "source_url": "https://github.com/user-attachments/assets/591bab08-f81a-43d4-bd2b-032721089780",
+   "file": "gh_istio_istio_53829_img5.png"
+  },
+  {
+   "where": "c10",
+   "source_url": "https://github.com/user-attachments/assets/58769e01-2395-48a7-a531-763e1db60f46",
+   "file": "gh_istio_istio_53829_img6.png"
+  },
+  {
+   "where": "c24",
+   "source_url": "https://github.com/user-attachments/assets/d58afa30-d3a2-4784-8a3e-1eefb55803be",
+   "file": "gh_istio_istio_53829_img7.png"
+  },
+  {
+   "where": "c24",
+   "source_url": "https://github.com/user-attachments/assets/42ccd85d-3465-4d3a-8ad7-c06f2666caa3",
+   "file": "gh_istio_istio_53829_img8.png"
+  }
+ ],
+ "slug": "gh_istio_istio_53829"
+}

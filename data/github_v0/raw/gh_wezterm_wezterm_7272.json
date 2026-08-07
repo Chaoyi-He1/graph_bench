@@ -1,0 +1,173 @@
+{
+ "repo": "wezterm/wezterm",
+ "number": 7272,
+ "url": "https://github.com/wezterm/wezterm/issues/7272",
+ "title": "Pasting Images",
+ "state": "closed",
+ "labels": [
+  "enhancement",
+  "needs:triage"
+ ],
+ "reporter": "reporter",
+ "created_at": "2025-09-30T14:31:24Z",
+ "closed_at": "2026-02-07T08:41:55Z",
+ "body": "**Is your feature request related to a problem? Please describe.**\nI want to paste images in opencode. I [can see others do it with some success on other systems ](https://github.com/sst/opencode/issues/906#issue-3224845889) but I'm having some issues [on my stack](https://github.com/sst/opencode/issues/2878#issuecomment-3352442222). I'm not actually sure if this is a wezterm issue, wsl2 issue, or an opencode issue so if someone could point me in the right direction that woudl grealy be appreciated.\n\n**Describe the solution you'd like**\nTo be able to paste images, specifically in opencode but in general as well?",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2025-09-30T17:45:49Z",
+   "body": "Hello, I think the main question I have would be: What is opencode expecting to get from the terminal when you paste an image 🤔\n- A path? To some tmp file made by the terminal? (when should it be cleaned up?)\n- The image content?\n- other?\n\nAnd how do you copy the image exactly? From your file explorer? (so it already has a path)\nOr from the web?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-09-30T19:05:00Z",
+   "body": "I'm personally copying from snipping tool. Which with my minimal understanding copies a bitmap? So I have to figure out how openterm can grab the clipboard contents in that form and pass it through the API\n\nwhich seems like a solely independent opencode problem but I guess poses an interesting question about what if any handling wezterm has when it gets pasted something that's an image "
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-12-24T13:33:06Z",
+   "body": "@reporter Hello ! Did you manage to solve your issue ? I am having the exact same problem where I can't paste images from my clipboard (and copied from the snipping tool) into OpenCode TUI."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-12-30T17:02:21Z",
+   "body": "Joining to the thread, cause it doesn't work for me as well. Have to use alacritty in this case"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2026-01-08T14:44:14Z",
+   "body": "To answer the original question here, this is what clipboard inspector shows: \n\n<img width=\"1363\" height=\"850\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/31a279b8-64bd-4fd3-bea3-e479b6cbaeed\" />\n\nIt appears to be an image in my clipboard, `image/png` to be specific. Though that is from the web API, but it's literal image data on the clipboard."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2026-01-08T19:47:45Z",
+   "body": "Getting the image data from the clipboard is easy, but this question remains:\n\n> What is opencode expecting to get from the terminal when you paste an image 🤔\n> \n>  * A path? To some tmp file made by the terminal? (when should it be cleaned up?)\n>  * The image content?\n>  * other?\n\nAnd if it's a path, what should happen when the program is not running on the local computer (e.g. You're through ssh) and thus doesn't have access to local paths?"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2026-01-09T09:50:06Z",
+   "body": "Here is the code that handles the clipboard interactions: https://github.com/anomalyco/opencode/blob/dev/packages/opencode/src/cli/cmd/tui/util/clipboard.ts#L17-L59\n\nDepending on OS it seems to use a native way to persist the image data on the clipboard to a tmp file and then read it into a buffer. If that fails it tries to treat the clipboard as text. \n\nDoes that help?\n\n---\n\nHaving spent some time processing this... Opencode doesn't expect Wezterm to provide the data, it just needs a signal to interact with the clipboard. It seems like that's not getting through. Perhaps Wezterm is exiting early because the content of the clipboard is not text?"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2026-01-11T08:01:04Z",
+   "body": "Would be great to also have this for Claude cli. The way vscode handles this is that it creates a tempfile and then gives Claude the link to the tempfile: \n\n![Image](https://github.com/user-attachments/assets/3f9356a2-a120-4f71-9e2d-59fbb82a4a4b)\n\nthat said there are workarounds that map ctrl-alt-v or cmd-alt-v to a script in wezterm that exactly does that. maybe that's good enough?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-01-11T19:06:12Z",
+   "body": "do u have a link to that wezterm setup"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2026-01-11T19:43:26Z",
+   "body": "@reporter - for osx  I have:\n\nwezterm.lua:\n\n```\nconfig.keys = {\n  {\n    key = \"v\",\n    mods = \"CMD\",\n    action = wezterm.action_callback(function(window, pane)\n      local success, stdout, stderr = wezterm.run_child_process({\n        \"/bin/zsh\", \"-l\", \"-c\", os.getenv(\"HOME\") .. \"/bin/clip2path.sh\"\n      })\n\n      if success and stdout and #stdout > 0 then\n        local text = stdout:gsub(\"%s+$\", \"\")\n        pane:send_text(text)\n      end\n    end),\n  },\n```\n\nscript clip2path.sh: \n```\n#!/usr/bin/env bash\nset -euo pipefail\n\nTMPROOT=\"${TMPDIR:-/tmp}\"\nTMPROOT=\"${TMPROOT%/}\"\nTMP_BASE=\"$TMPROOT/wezterm-clip\"\n\nmkdir -p \"$TMP_BASE\"\n\n# Cleanup files older than 24h\nfind \"$TMP_BASE\" -type f -mtime +1 -delete 2>/dev/null || true\n\nts=\"$(date +%s%N)\"\nout=\"$TMP_BASE/clip_$ts.png\"\n\n# If clipboard contains an image, save it\nif pngpaste \"$out\" >/dev/null 2>&1; then\n  if [ -t 1 ]; then\n    echo \"$out\"\n  else\n    printf \"%s\" \"$out\"\n  fi\n  exit 0\nfi\n\n# Otherwise, paste normal text\npbpaste -Prefer txt | tr -d '\\r'\n```\n\nhth. Lemme know if you need anything more."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2026-01-12T10:48:13Z",
+   "body": "> The way vscode handles this is that it creates a tempfile and then gives Claude the link to the tempfile\n\nOpencode creates its own tempfile using the native clipboard utilities of the platform it's on. But this code never gets hit in Wezterm because Wezterm sees a non-text clipboard and bails out of the call, at least as far as I could understand.\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2026-01-18T17:54:43Z",
+   "body": "> Opencode creates its own tempfile using the native clipboard utilities of the platform it's on.\n\nIf Opencode accesses the clipboard on its own via native tools, Wezterm isn't involved at all..\n\nI just started to play with Opencode (v1.1.23, on Wayland) this weekend and now tested pasting a copied image from the internet, it seems to work immediately for me, I press Ctrl-v in OC's prompt and it shows `[Image 1]` in the prompt, and the model can read it correctly.\n\nOP mentions being on Windows through WSL2, I think this is an integration issue where OC doesn't know how to get the clipboard data from inside WSL2 🤔\n\nWhat version of opencode are you guys using?"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2026-01-19T07:34:14Z",
+   "body": "> If Opencode accesses the clipboard on its own via native tools, Wezterm isn't involved at all..\n\nThis is not exactly true. Wezterm has to deliver the signal to opencode. Stepping through Wezterm's code, it seems that Wezterm is _not_ delivering the signal if there's no text data in the clipboard. It seems to silently swallow the paste event if there is no text in the clipboard.\n \n> OP mentions being on Windows through WSL2, I think this is an integration issue where OC doesn't know how to get the clipboard data from inside WSL2 🤔\n\nI don't think this is true either. Opencode is WSL aware. [See here.](https://github.com/anomalyco/opencode/blob/dev/packages/opencode/src/cli/cmd/tui/util/clipboard.ts#L47)\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2026-01-19T08:53:41Z",
+   "body": "But the 'signal' for Opencode is Ctrl-v, and this passed to the terminal the same way Ctrl-n or Ctrl-u is passed for example, there is nothing special by default (unless you've set a custom keybind for Ctrl-v in your Wezterm config)"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2026-01-19T11:54:44Z",
+   "body": "I don't think this is accurate. I'm not a Rust nor Wezterm developer so please forgive me if I'm wrong about something here, but stepping through the code this is what I think is happening:\n\n1. The entry point for the paste code is [here. ](https://github.com/wezterm/wezterm/blob/main/wezterm-gui/src/termwindow/mod.rs#L2716-L2718)\n2. `paste_from_clipboard` is implemented [here.](https://github.com/wezterm/wezterm/blob/main/wezterm-gui/src/termwindow/mod.rs#L2716-L2718). Note how there's no pattern match for `Err`, only `Ok`.\n3. The OS specific get_clipboard for Windows is raising an error. [We're calling `get_clipboard_string` here.](https://github.com/wezterm/wezterm/blob/main/wezterm-gui/src/termwindow/mod.rs#L2716-L2718). The return type is also `Future<String>`.\n4. If I keep following the call stack down you get to a call to Windows API `GetClipboardData(CF_UNICODETEXT)`. As I understand this will return NULL if there's only an image on the clipboard.\n\n[Here's a gist with my full analysis.](https://gist.github.com/participant4/36db27cc0e4f2ce2261e72e29872d4bd)\n\nIt really seems that in Windows Wezterm silently swallows an error if there is no string on the clipboard. I may have that wrong, but I've done a bunch of digging to try and prove that theory wrong and come up empty. \n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2026-01-19T12:31:10Z",
+   "body": "Except that your first assumption is incorrect: `Ctrl-v` doesn't trigger `PasteFrom(source)`\n\nTake a look at the default Weztem keybindings: https://wezterm.org/config/default-keys.html\n\n<img width=\"500\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/5462e6b3-5309-4cc2-ac53-4addf6a68c7a\" />\n\nThe default key that triggers `PasteFrom(source)` is `Super-v` or `Ctrl-Shift-v`, NOT `Ctrl-v` which is normally sent to the terminal and that Opencode can detect freely like `Ctrl-u` for example.\n(note: `Super-v` is `Win-v` on Windows, but is usually never hit because Windows intercepts it itself for its clipboard history feature)"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2026-01-19T12:39:29Z",
+   "body": "🤦 I do indeed have a custom mapping for CTRL + V.  And using Ctrl+Shift+V does actually paste the image!\n\nApologies for the diatribe. 🙇 I do wonder where the analysis went wrong even given the short cut being corrected?\n\nBut given Ctrl + Shift + V does paste the image... perhaps this issue can be closed? Claude Code still fails here, but it does display a message that no image was found on clipboard. I'm confident that's a Claude Code/WSL issue, but as Claude Code's code base is not open there's no way to know. \n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2026-01-19T17:48:25Z",
+   "body": "Without your custom Ctrl-v, did you try to use Ctrl-v in OC?"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2026-01-21T09:48:22Z",
+   "body": "> Without your custom Ctrl-v, did you try to use Ctrl-v in OC?\n\nChecked this. Removed my custom mappings then it worked fine for pasting the image, and Ctrl + Shift + V does nothing. With the customization Ctrl + Shift + V works, but bare Ctrl + V doesn't work.\n\nMy mappings, which explain my experience... 🤦 \n```lua\nconfig.keys = {\n    -- ...,\n    { key = 'v', mods = 'CTRL', action = wezterm.action.PasteFrom 'Clipboard' },\n    { key = 'v', mods = 'SHIFT|CTRL', action = wezterm.action_callback(function(window, pane)\n      window:perform_action(wezterm.action.SendKey{ key='v', mods='CTRL' }, pane) end),\n    }\n    -- ...,\n}\n```"
+  },
+  {
+   "author": "participant6",
+   "created_at": "2026-02-07T07:28:31Z",
+   "body": "in mac os + wezterm + opencode  CTRL + V works to paste images, but not using the default  CMD + V, it is weird because i can paste text with CMD + V but i need to use CTRL + V for images, vscode terminal works with the default CMD + V"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2026-02-07T08:41:54Z",
+   "body": "I think we can close this issue, there is nothing actionable for Wezterm specifically here as everyone can read in the discussion."
+  },
+  {
+   "author": "participant7",
+   "created_at": "2026-02-10T15:34:03Z",
+   "body": "Thanks to this thread i was able to ask the correct question to ChatGPT. Im using Control+B to \"paste\" image.\n\n```\n-- wezterm.lua\nlocal wezterm = require(\"wezterm\")\n\nlocal config = wezterm.config_builder()\n\n-- ------------------------------------------------------------\n-- Window / startup\n-- ------------------------------------------------------------\nconfig.initial_cols = 120\nconfig.initial_rows = 28\n\n-- Pick your preferred default shell (uncomment one).\n-- PowerShell 7 (pwsh) is usually nicer if installed:\n-- config.default_prog = { \"pwsh.exe\", \"-NoLogo\" }\n-- Windows PowerShell:\n-- config.default_prog = { \"powershell.exe\", \"-NoLogo\" }\n\n-- Ask before closing a window with running processes\nconfig.window_close_confirmation = \"AlwaysPrompt\"\n\n-- Resize-only decorations (as you already do)\nconfig.window_decorations = \"RESIZE\"\n\n-- Add some breathing room around text\nconfig.window_padding = { left = 10, right = 10, top = 8, bottom = 6 }\n\n-- ------------------------------------------------------------\n-- Fonts / rendering\n-- ------------------------------------------------------------\nconfig.font = wezterm.font_with_fallback({\n  { family = \"JetBrains Mono\", weight = \"DemiBold\" },\n  { family = \"Fira Code\", weight = \"Regular\" },\n  { family = \"Segoe UI Emoji\" }, -- emojis\n})\n\nconfig.font_size = 10\nconfig.harfbuzz_features = { \"calt=1\", \"liga=1\", \"clig=1\" }\n\nconfig.freetype_load_target = \"Light\"\nconfig.freetype_render_target = \"HorizontalLcd\"\n\nconfig.cursor_blink_rate = 650\nconfig.default_cursor_style = \"BlinkingBar\"\nconfig.force_reverse_video_cursor = true\n\n-- ------------------------------------------------------------\n-- Colors / background\n-- ------------------------------------------------------------\nconfig.color_scheme = \"AdventureTime\"\n\nconfig.window_background_image = \"C:/Users/<user>/wizterm_wallpaper.png\"\nconfig.window_background_opacity = 0.90\n\nconfig.window_background_image_hsb = {\n  brightness = 0.15,\n  hue = 1.0,\n  saturation = 1.0,\n}\n\nconfig.inactive_pane_hsb = {\n  saturation = 0.9,\n  brightness = 0.7,\n}\n\n-- ------------------------------------------------------------\n-- Tabs / UI polish\n-- ------------------------------------------------------------\nconfig.enable_tab_bar = true\nconfig.hide_tab_bar_if_only_one_tab = true\nconfig.use_fancy_tab_bar = false\nconfig.tab_max_width = 32\nconfig.switch_to_last_active_tab_when_closing_tab = true\n\n-- ------------------------------------------------------------\n-- Scrollback / performance\n-- ------------------------------------------------------------\nconfig.scrollback_lines = 10000\nconfig.adjust_window_size_when_changing_font_size = false\nconfig.animation_fps = 60\nconfig.max_fps = 120\n\n-- ------------------------------------------------------------\n-- Helpers: Clipboard image -> file -> paste path\n-- ------------------------------------------------------------\n\n---Return a temp directory path suitable for the current OS.\n---@return string\nlocal function get_temp_dir()\n  -- Prefer OS temp env vars; fall back to HOME-based locations.\n  local tmp = os.getenv(\"TMPDIR\") or os.getenv(\"TEMP\") or os.getenv(\"TMP\")\n  if tmp and #tmp > 0 then\n    return tmp\n  end\n\n  if wezterm.target_triple == \"x86_64-pc-windows-msvc\" then\n    -- Reasonable fallback on Windows if env vars are missing.\n    local userprofile = os.getenv(\"USERPROFILE\") or \"C:\\\\\"\n    return userprofile .. \"\\\\AppData\\\\Local\\\\Temp\"\n  end\n\n  return \"/tmp\"\nend\n\n---Generate a fairly-unique filename (timestamp + random) with .png extension.\n---@return string\nlocal function make_random_png_name()\n  -- Seed once per config load\n  math.randomseed(os.time())\n  local stamp = wezterm.strftime(\"%Y%m%d_%H%M%S\") -- :contentReference[oaicite:3]{index=3}\n  local r = math.random(100000, 999999)\n  return (\"wez_clip_%s_%d.png\"):<nick>(stamp, r)\nend\n\n---Join directory + filename using OS-correct separator.\n---@param dir string\n---@param name string\n---@return string\nlocal function path_join(dir, name)\n  if wezterm.target_triple == \"x86_64-pc-windows-msvc\" then\n    -- Ensure we don't double up slashes\n    dir = dir:gsub(\"[/]+$\", \"\")\n    return dir .. \"\\\\\" .. name\n  end\n\n  dir = dir:gsub(\"[/]+$\", \"\")\n  return dir .. \"/\" .. name\nend\n\n---Attempt to save clipboard image to outfile. Returns (ok:boolean, err:string|nil).\n---@param outfile string\n---@return boolean, string|nil\nlocal function save_clipboard_image(outfile)\n  -- WINDOWS: PowerShell + .NET Clipboard\n  if wezterm.target_triple == \"x86_64-pc-windows-msvc\" then\n    -- Use Windows PowerShell if present; otherwise pwsh should also work on Windows,\n    -- but Clipboard types are most reliable in Windows PowerShell.\n    local ps = \"powershell.exe\"\n\n    -- PowerShell command:\n    -- - Gets Clipboard image; if none, exits with non-zero.\n    -- - Saves as PNG.\n    -- - Prints the file path on success (not required, but helpful for debugging).\n    local cmd = table.concat({\n      \"$ErrorActionPreference='Stop';\",\n      \"Add-Type -AssemblyName System.Windows.Forms;\",\n      \"Add-Type -AssemblyName System.Drawing;\",\n      \"$img=[System.Windows.Forms.Clipboard]::GetImage();\",\n      \"if ($null -eq $img) { Write-Error 'Clipboard does not contain an image.' }\",\n      \"$path='\" .. outfile:gsub(\"'\", \"''\") .. \"';\",\n      \"$img.Save($path,[System.Drawing.Imaging.ImageFormat]::Png);\",\n      \"Write-Output $path;\",\n    }, \" \")\n\n    local ok, stdout, stderr = wezterm.run_child_process({ ps, \"-NoProfile\", \"-NonInteractive\", \"-Command\", cmd }) -- :contentReference[oaicite:4]{index=4}\n    if not ok then\n      return false, (stderr and #stderr > 0) and stderr or \"Failed to run PowerShell to extract clipboard image.\"\n    end\n    return true, nil\n  end\n\n  -- macOS: pngpaste\n  if wezterm.target_triple:find(\"apple\") then\n    -- pngpaste writes PNG from clipboard to file. It exits non-zero if no image.\n    local ok, _, stderr = wezterm.run_child_process({ \"pngpaste\", outfile }) -- :contentReference[oaicite:5]{index=5}\n    if not ok then\n      return false, (stderr and #stderr > 0) and stderr or \"pngpaste failed. Install with: brew install pngpaste\"\n    end\n    return true, nil\n  end\n\n  -- Linux: try wl-paste (Wayland) then xclip (X11)\n  -- Use bash -lc so we can do a small fallback script.\n  local bash_script = table.concat({\n    \"set -euo pipefail;\",\n    \"OUT=\" .. wezterm.shell_quote_arg(outfile) .. \";\",\n    -- Wayland\n    \"if command -v wl-paste >/dev/null 2>&1; then\",\n    \"  wl-paste --no-newline --type image/png > \\\"$OUT\\\" && exit 0;\",\n    \"fi;\",\n    -- X11\n    \"if command -v xclip >/dev/null 2>&1; then\",\n    \"  xclip -selection clipboard -t image/png -o > \\\"$OUT\\\" && exit 0;\",\n    \"fi;\",\n    \"echo 'No wl-paste or xclip found, or clipboard has no PNG image.' 1>&2;\",\n    \"exit 2;\",\n  }, \" \")\n\n  local ok, _, stderr = wezterm.run_child_process({ \"bash\", \"-lc\", bash_script }) -- :contentReference[oaicite:6]{index=6}\n  if not ok then\n    return false, (stderr and #stderr > 0) and stderr or \"Failed to extract clipboard image (need wl-paste or xclip).\"\n  end\n\n  return true, nil\nend\n\n---Ctrl+b handler: save clipboard image to a random file and paste its path into the pane.\n---@param window any\n---@param pane any\nlocal function paste_clipboard_image_path(window, pane)\n  local tmpdir = get_temp_dir()\n  local outfile = path_join(tmpdir, make_random_png_name())\n\n  local ok, err = save_clipboard_image(outfile)\n  if not ok then\n    -- Show something actionable to you without breaking the session.\n    wezterm.log_error(\"Clipboard image -> file failed: \" .. (err or \"unknown error\"))\n    -- Optional: also paste a comment into the terminal so you see it immediately.\n    pane:send_paste(\"# wezterm: clipboard has no image (or missing deps)\\n\") -- :contentReference[oaicite:7]{index=7}\n    return\n  end\n\n  -- Paste the full path directly into the active program.\n  pane:send_paste(outfile) -- :contentReference[oaicite:8]{index=8}\nend\n\n-- ------------------------------------------------------------\n-- Keybindings\n-- ------------------------------------------------------------\nlocal act = wezterm.action\n\n-- Better: use a leader key to create a “command mode”\nconfig.leader = { key = \"a\", mods = \"CTRL\", timeout_milliseconds = 1000 }\n\nconfig.keys = {\n  -- Copy/Paste that match terminal muscle memory\n  { key = \"c\", mods = \"CTRL|SHIFT\", action = act.CopyTo(\"Clipboard\") },\n  { key = \"v\", mods = \"CTRL|SHIFT\", action = act.PasteFrom(\"Clipboard\") },\n\n  -- NEW: Ctrl+b => save clipboard IMAGE to a file and paste the file path\n  {\n    key = \"b\",\n    mods = \"CTRL\",\n    action = wezterm.action_callback(function(window, pane) -- :contentReference[oaicite:9]{index=9}\n      paste_clipboard_image_path(window, pane)\n    end),\n  },\n\n  -- Quick font size adjust\n  { key = \"+\", mods = \"CTRL\", action = act.IncreaseFontSize },\n  { key = \"-\", mods = \"CTRL\", action = act.DecreaseFontSize },\n  { key = \"0\", mods = \"CTRL\", action = act.ResetFontSize },\n\n  -- Pane splits (tmux-like) using leader\n  { key = \"/\", mods = \"LEADER\", action = act.SplitHorizontal({ domain = \"CurrentPaneDomain\" }) },\n  { key = \"-\", mods = \"LEADER\", action = act.SplitVertical({ domain = \"CurrentPaneDomain\" }) },\n\n  -- Move between panes (leader + hjkl)\n  { key = \"a\", mods = \"LEADER\", action = act.ActivatePaneDirection(\"Left\") },\n  { key = \"s\", mods = \"LEADER\", action = act.ActivatePaneDirection(\"Down\") },\n  { key = \"w\", mods = \"LEADER\", action = act.ActivatePaneDirection(\"Up\") },\n  { key = \"d\", mods = \"LEADER\", action = act.ActivatePaneDirection(\"Right\") },\n\n  -- Toggle zoom for current pane\n  { key = \"z\", mods = \"LEADER\", action = act.TogglePaneZoomState },\n\n  -- Spawn a new tab in the same domain\n  { key = \"t\", mods = \"LEADER\", action = act.SpawnTab(\"CurrentPaneDomain\") },\n\n  -- Keep your SHIFT+Enter behavior\n  { key = \"Enter\", mods = \"SHIFT\", action = wezterm.action.SendString(\"\\n\") },\n\n  -- Close current pane/tab with confirmation\n  { key = \"x\", mods = \"LEADER\", action = act.CloseCurrentPane({ confirm = true }) },\n\n  -- Search scrollback\n  { key = \"f\", mods = \"CTRL|SHIFT\", action = act.Search(\"CurrentSelectionOrEmptyString\") },\n}\n\nreturn config\n```\n"
+  },
+  {
+   "author": "participant8",
+   "created_at": "2026-02-28T00:22:20Z",
+   "body": "I've been working on a built-in solution for this and submitted a PR: #7621\n\nIt adds native clipboard image paste support across all platforms (macOS, Windows, Linux X11/Wayland) without requiring any Lua configuration or external tools (except `xclip`/`xsel` or `wl-paste` on Linux).\n\n**How it works:**\n\n- `Cmd+V` (macOS) / `Ctrl+V` (Windows/Linux) — smart paste: if the clipboard has text, paste text as usual; if it only has an image, save the image locally and paste the file path\n- `PasteImageToSshUpload` — a new key assignment that uploads clipboard images to remote SSH servers via SFTP/SCP and pastes the remote path (useful for tools like Claude Code or OpenCode over SSH)\n- Configurable via `image_paste_local_path` and `ssh_image_paste_remote_path`\n\nThis should address the core use case discussed here — pasting screenshots into CLI tools — natively, without needing per-user Lua workarounds."
+  },
+  {
+   "author": "participant9",
+   "created_at": "2026-02-28T06:52:15Z",
+   "body": "  The following simple update to wezterm.lua works for me.\n  Updated keybindings to:\n  - Forward Ctrl+V to the foreground app (Codex handles image/text paste)\n  - Keep Ctrl+Shift+V as explicit terminal text paste\n\n  { key = 'v', mods = 'CTRL', action = act.SendKey { key = 'v', mods = 'CTRL' } },\n  { key = 'v', mods = 'CTRL|SHIFT', action = act.PasteFrom 'Clipboard' },\n\nYou don't necessary need the ctrl+shift+v shortcut if you don't want. "
+  },
+  {
+   "author": "participant1",
+   "created_at": "2026-02-28T09:57:31Z",
+   "body": "> The following simple update to wezterm.lua works for me. Updated keybindings to:\n> \n>     * Forward Ctrl+V to the foreground app (Codex handles image/text paste)\n> \n>     * Keep Ctrl+Shift+V as explicit terminal text paste\n> \n> \n> { key = 'v', mods = 'CTRL', action = act.SendKey { key = 'v', mods = 'CTRL' } }, { key = 'v', mods = 'CTRL|SHIFT', action = act.PasteFrom 'Clipboard' },\n> \n> You don't necessary need the ctrl+shift+v shortcut if you don't want.\n\nHuh, the Ctrl-v one is not needed, what you did is already the default behavior (when a keybind is not found in the config it is sent as-is to the foreground app).\nThe Ctrl-Shift-v also shouldn't be needed, there is a default keybinding for this already.."
+  },
+  {
+   "author": "github-actions[bot]",
+   "created_at": "2026-03-31T04:01:17Z",
+   "body": "I'm going to lock this issue because it has been closed for _30 days_ ⏳. This helps our maintainers find and focus on the active issues. If you have found a problem that seems similar to this, please open a new issue and complete the issue template so we can capture all the details necessary to investigate further."
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "wezterm/wezterm",
+  "default_branch": "main",
+  "commit_sha": "bf9a2aeebacec19fd07b55234d626f006b22d369",
+  "as_of": "2025-09-30T14:31:24Z",
+  "method": "github_commits_until"
+ },
+ "images": [
+  {
+   "where": "c4",
+   "source_url": "https://github.com/user-attachments/assets/31a279b8-64bd-4fd3-bea3-e479b6cbaeed",
+   "file": "gh_wezterm_wezterm_7272_img0.png"
+  },
+  {
+   "where": "c7",
+   "source_url": "https://github.com/user-attachments/assets/3f9356a2-a120-4f71-9e2d-59fbb82a4a4b",
+   "file": "gh_wezterm_wezterm_7272_img1.jpg"
+  },
+  {
+   "where": "c15",
+   "source_url": "https://github.com/user-attachments/assets/5462e6b3-5309-4cc2-ac53-4addf6a68c7a",
+   "file": "gh_wezterm_wezterm_7272_img2.png"
+  }
+ ],
+ "slug": "gh_wezterm_wezterm_7272"
+}

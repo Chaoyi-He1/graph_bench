@@ -1,0 +1,179 @@
+{
+ "repo": "langchain-ai/langchain",
+ "number": 1349,
+ "url": "https://github.com/langchain-ai/langchain/issues/1349",
+ "title": "model's maximum context length",
+ "state": "closed",
+ "labels": [],
+ "reporter": "reporter",
+ "created_at": "2023-03-01T03:22:21Z",
+ "closed_at": "2023-11-15T16:10:22Z",
+ "body": "have been very often running into openai.error.InvalidRequestError for getting over 4097 tokens maximum context length. Is there a module/ best practice to manage the context length ?\r\n\r\nQuick example I am adding the map reduce summary chain to the URL data loader and its throwing that error:\r\n\r\n```\r\nfrom langchain.document_loaders import UnstructuredURLLoader\r\n\r\nurls = [\r\n    \"https://<redacted-host>/backgrounder/russian-offensive-campaign-assessment-february-8-2023\",\r\n    \"https://<redacted-host>/backgrounder/russian-offensive-campaign-assessment-february-9-2023\"\r\n]\r\n\r\nloader = UnstructuredURLLoader(urls=urls)\r\n\r\ndata = loader.load()\r\n\r\nfrom langchain.chains.summarize import load_summarize_chain\r\nfrom langchain import OpenAI\r\nimport os\r\nos.environ[\"OPENAI_API_KEY\"] = \"*\"\r\n\r\nllm = OpenAI(temperature=0)\r\nchain = load_summarize_chain(llm, chain_type=\"map_reduce\")\r\nprint(chain.run(data))\r\n```\r\n\r\nError:  `openai.error.InvalidRequestError: This model's maximum context length is 4097 tokens, however you requested 8356 tokens (8100 in your prompt; 256 for the completion). Please reduce your prompt; or completion length.\r\n`",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2023-03-14T20:11:00Z",
+   "body": "How did you manage this issue?"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-03-15T08:57:10Z",
+   "body": "My case was a bit simpler, in which I was providing context  plus questions and retrieving the answers,  I was appending the in the message, but I think in your case  check that the data you passing is not repeating, if not then pass  the data into chunks\r\n\r\nI think I confuse my issue with yours, Your case might be different from the one which I faced"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-03-17T07:42:39Z",
+   "body": "I have the same issue.  I try to set chunk size for a splitter and it works.\r\n`\r\ntext_splitter = CharacterTextSplitter(chunk_size=3000)\r\ndocs = WebBaseLoader(url).load_and_split(text_splitter)\r\n`\r\n\r\n"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2023-03-21T22:23:31Z",
+   "body": "get same error any work around? "
+  },
+  {
+   "author": "participant5",
+   "created_at": "2023-03-30T03:55:29Z",
+   "body": "get the same error"
+  },
+  {
+   "author": "participant6",
+   "created_at": "2023-03-31T03:25:27Z",
+   "body": "I have the same issue when using `PyPDFLoader` with `load_and_split` method."
+  },
+  {
+   "author": "participant7",
+   "created_at": "2023-03-31T08:59:36Z",
+   "body": "Same, with Character Text Splitter. Without having looked at the source, my hunch is that the chunking seems to only use the chunk size as a reference but actually chunks on the nearest line break or other character. So there does not seem to be any guarantee that a chunk fits in the context length. \r\n\r\nIf you have this issue with e.g. the `CharacterTextSplitter` a work around is to use the `RecursiveCharacterTextSplitter` and set a couple of separators that work for you. This reduces the chance of having a chunk that doesn't fit, e.g.:\r\n\r\n```python\r\ntext_splitter = RecursiveCharacterTextSplitter(\r\n    chunk_size=1000, chunk_overlap=0, separators=[\" \", \",\", \"\\n\"]\r\n    )\r\n ```\r\n \r\n In general, reduce chunk size and set a separator that appears frequently."
+  },
+  {
+   "author": "participant8",
+   "created_at": "2023-03-31T19:08:11Z",
+   "body": "I have the same error with `CharacterTextSplitter`"
+  },
+  {
+   "author": "participant9",
+   "created_at": "2023-04-09T20:59:43Z",
+   "body": "I have the same issue with `[Recursive]CharacterTextSplitter` . Specifying custom separators didn't help."
+  },
+  {
+   "author": "participant10",
+   "created_at": "2023-04-13T05:32:27Z",
+   "body": "try to use \r\n`chain = RetrievalQAWithSourcesChain.from_chain_type(llm, chain_type=\"stuff\", retriever=db.as_retriever(), reduce_k_below_max_tokens=True,)`\r\n"
+  },
+  {
+   "author": "participant11",
+   "created_at": "2023-04-19T22:51:24Z",
+   "body": "@participant7 answer worked for me. I switched now to `RecursiveCharacterTextSplitter`:\r\n\r\n```python\r\ntext_splitter = RecursiveCharacterTextSplitter(\r\n    chunk_size=4000, chunk_overlap=0, separators=[\" \", \",\", \"\\n\"]\r\n    )\r\n```"
+  },
+  {
+   "author": "participant12",
+   "created_at": "2023-04-25T10:40:52Z",
+   "body": "The problem is not with separation initial data into chunks of right size.\r\nThe problem is the following: after creating summaries for each chunk it collects them into one prompt and it could reach the limit. So, bigger chunks could help in some cases, but if there are many splitted documents, after some amount it still will reach token limit.\r\nThe issue is still present. I think the correct solution is that `load_summarize_chain` should check last request for limit based on some parameter like `max_tokens` or based on chosen model. And split it again for a couple of requests.\r\nPerhaps, for requests there should be recursive algorithm based on limit size.\r\nExample:\r\n1. last query for generation final summary based on sub-summaries is more than tokens limit\r\n2. it should be splitted into two requests and find summary for both of them (or again splitted)\r\n3. try again to generate final summary"
+  },
+  {
+   "author": "participant13",
+   "created_at": "2023-05-28T15:32:56Z",
+   "body": "The map_reduce should in fact apply recursively, not only once and then hope all the summaries will magically fit into one prompt. It's likely the concatenated summaries won't, and in such case the chain should apply again."
+  },
+  {
+   "author": "participant14",
+   "created_at": "2023-05-30T02:13:53Z",
+   "body": "indeed, map_reduce should be applied recursively to fit for 4096 "
+  },
+  {
+   "author": "participant15",
+   "created_at": "2023-05-31T10:48:42Z",
+   "body": "The process should at least give a better trace of the error since it is hard to understand what is happening at first sight. \r\n\r\nIt could be a bit dangerous to have a recursive process here in my view, even if you set a max_depth. A different feature could be for example to allow you to process the intermediate summaries (LLMs are very verbose, you can easily clean up and save tokens) before passing it to the combined summary."
+  },
+  {
+   "author": "participant13",
+   "created_at": "2023-05-31T11:45:05Z",
+   "body": "The recursiveness and cost impacts of course relevant. It could be\noptional, but still I think it would benefit the user case.\n\nThe alternative today is an error. It simply doesn't work for big documents\n(or I missed something).\n\nEl mié, 31 may 2023, 12:48, Luis Roque ***@***.***> escribió:\n\n> The process should at least give a better trace of the error since it is\n> hard to understand what is happening at first sight.\n>\n> It could be a bit dangerous to have a recursive process here in my view,\n> even if you set a max_depth. A different feature could be for example to\n> allow you to process the intermediate summaries (LLMs are very verbose, you\n> can easily clean up and save tokens) before passing it to the combined\n> summary.\n>\n> —\n> Reply to this email directly, view it on GitHub\n> <https://github.com/hwchase17/langchain/issues/1349#issuecomment-1569958767>,\n> or unsubscribe\n> <https://github.com/notifications/unsubscribe-auth/AACRLWQXQWZNSA5JLRTCBCTXI4OZLANCNFSM6AAAAAAVLQHNUM>\n> .\n> You are receiving this because you commented.Message ID:\n> ***@***.***>\n>\n"
+  },
+  {
+   "author": "participant15",
+   "created_at": "2023-06-02T16:26:20Z",
+   "body": "I think the use case here is not to process very large documents (for that, you have to consider other approaches such as using a vectorDB and semantic search) but to extend mildly the token limits from where they are today. Even so, I agree that the error is not verbose, and you should get a bit more control over what the token extension could look like. Are we talking about ingesting a doc of ~40k tokens in an API with a limit of ~4k? So 10x increase? Or just 3x or 4x. I understand the complexity since the models are not deterministic and can output very different things, especially considering that you can change the prompt. But that is why I shared the possibility of processing the intermediate summaries to save tokens since the outputs of the models are very verbose. "
+  },
+  {
+   "author": "participant16",
+   "created_at": "2023-06-08T01:35:54Z",
+   "body": "+1 for map reduce support recursive algorithm"
+  },
+  {
+   "author": "participant17",
+   "created_at": "2023-06-13T19:59:44Z",
+   "body": "Any updates on that topic?"
+  },
+  {
+   "author": "participant18",
+   "created_at": "2023-06-20T02:20:48Z",
+   "body": "Another case this comes up is if you want to use [load_summarize_chain](https://<redacted-host>/docs/modules/chains/popular/summarize), but with the more affordable `text-curie-001` model (one of curie's use cases is faster/cheaper summarization). This constructs the final prompt correctly:\r\n```\r\nsummary_chain = load_summarize_chain(llm=OpenAI(model=\"text-curie-001\", temperature=0), chain_type=\"map_reduce\", verbose=True)\r\nposs_summary = summary_chain.run(pages).strip(\" \\n\\t\")\r\n```\r\n\r\nBut errors on use because\r\n```\r\nThis model's maximum context length is 2049 tokens, however you requested 3230 tokens (2974 in your prompt; 256 for the completion). Please reduce your prompt; or completion length.\r\n```\r\n\r\nI thought I might be able to pass `token_max=1700` in as a kwarg, but I get \r\n```\r\n1 validation error for MapReduceDocumentsChain\r\nkwargs\r\nextra fields not permitted (type=value_error.extra)\r\n```"
+  },
+  {
+   "author": "participant19",
+   "created_at": "2023-06-28T07:07:59Z",
+   "body": "For those that are still struggling with this, here is some code I wrote to get around this for now. Note that this doesn't use documents, though it could be easily converted to do so. Hope this helps people while the Langchain contributors work on this issue!\r\n\r\n```python\r\nimport tiktoken\r\nfrom langchain.chat_models import ChatOpenAI\r\nfrom langchain.prompts.chat import (\r\n    ChatPromptTemplate,\r\n    SystemMessagePromptTemplate,\r\n    HumanMessagePromptTemplate,\r\n)\r\n\r\nENCODING = tiktoken.get_encoding(\"cl100k_base\")\r\nSUMMARIZE_MODEL = ChatOpenAI(model=\"gpt-3.5-turbo-0613\", temperature=0.2)\r\nMAX_TOKENS_SUMMARY = 3000\r\nSUMMARY_SYS_MSG = \"\"\"You are SummaryGPT, a model designed to ingest content and summarize it concisely and accurately.\r\nYou will receive an input string, and your response will be a summary of this information.\"\"\"\r\n\r\n\r\ndef token_len(input: str) -> int:\r\n    \"\"\"Get token length for openai\"\"\"\r\n    return len(ENCODING.encode(input))\r\n\r\ndef chunk(input: str) -> list:\r\n    input_tokens = token_len(input)\r\n    count = math.ceil(input_tokens / MAX_TOKENS_SUMMARY)\r\n    k, m = divmod(len(input), count)\r\n    chunks = [\r\n        input[i * k + min(i, m) : (i + 1) * k + min(i + 1, m)] for i in range(count)\r\n    ]\r\n    return chunks\r\n\r\ndef summarize(input: str) -> str:\r\n    system_message = SystemMessagePromptTemplate.from_template(\r\n        template=SUMMARY_SYS_MSG\r\n    )\r\n    human_message = HumanMessagePromptTemplate.from_template(\r\n        template=\"Input: {input}\"\r\n    )\r\n\r\n    chunks = chunk(input=input)\r\n\r\n    summary = \"\"\r\n\r\n    for i in chunks:\r\n        prompt = ChatPromptTemplate(\r\n            input_variables=[\"input\"],\r\n            messages=[system_message, human_message],\r\n        )\r\n\r\n        _input = prompt.format_prompt(input=i)\r\n        output = SUMMARIZE_MODEL(_input.to_messages())\r\n        summary += f\"\\n{output.content}\"\r\n\r\n    sum_tokens = token_len(input=summary)\r\n\r\n    if sum_tokens > MAX_TOKENS_SUMMARY:\r\n        return summarize(input=summary)\r\n\r\n    return summary\r\n```"
+  },
+  {
+   "author": "participant20",
+   "created_at": "2023-06-30T00:08:37Z",
+   "body": "@participant19 @participant16 @participant14 What you all have been asking for, is precisely how the langchain JS lib has implemented mapreduce. In fact, I switched from Langchain JS -> Python and was stumped to see that the mapreduce chain was so vastly different and that this was undocumented. In the JS version it was rather straightforward to reason about the mapreduce. I have messaged the authors asking about this design decision.\r\n\r\nhttps://github.com/hwchase17/langchainjs/blob/89b1d8cced16be384e468d01e1a89d658f3f8f70/langchain/src/chains/combine_docs_chain.ts#L165"
+  },
+  {
+   "author": "participant20",
+   "created_at": "2023-07-05T07:45:33Z",
+   "body": "@participant19 @participant18 @participant17 @participant16 @participant13  @reporter I am discussing with langchain team regarding overhauling the mapreduce implementation itself. My aim is to incorporate iterative mapping, like in the JS version or at least an equivalent into the Python version. \r\n\r\nIf you want to be able to set `token_max` until then here is how you can do that :) I see this hasn't been suggested elsewhere and no one else has trawled through the chain's code to figure out how to pass in the kwargs for token_max so here it is:\r\n\r\n```\r\nres = await chain(inputs={'input_documents': texts, 'token_max': 12000}, return_only_outputs=True)\r\n```"
+  },
+  {
+   "author": "participant20",
+   "created_at": "2023-07-05T15:55:30Z",
+   "body": "@participant19 @participant18 @participant17 @participant16 @participant13 @reporter  https://github.com/hwchase17/langchain/pull/6994 This should solve most issues related to this. Also the token_max can now be passed in load_summarize_chain or as an initializing arg to the Reduce Chain. That should be merged in the the next version bump."
+  },
+  {
+   "author": "participant21",
+   "created_at": "2023-07-05T23:12:15Z",
+   "body": "When will this be available?"
+  },
+  {
+   "author": "participant22",
+   "created_at": "2023-07-14T15:36:22Z",
+   "body": "> @participant19 @participant18 @participant17 @participant16 @participant13 @reporter I am discussing with langchain team regarding overhauling the mapreduce implementation itself. My aim is to incorporate iterative mapping, like in the JS version or at least an equivalent into the Python version.\r\n> \r\n> If you want to be able to set `token_max` until then here is how you can do that :) I see this hasn't been suggested elsewhere and no one else has trawled through the chain's code to figure out how to pass in the kwargs for token_max so here it is:\r\n> \r\n> ```\r\n> res = await chain(inputs={'input_documents': texts, 'token_max': 12000}, return_only_outputs=True)\r\n> ```\r\n\r\nIt didn't work from my side, still got the error\r\n`InvalidRequestError: This model's maximum context length is 4096 tokens. However, your messages resulted in 4221 tokens....\r\n`\r\n\r\nWould anyone know how can we change the maximum context length?  I am using gpt-4-32k, it shouldn't be 4096"
+  },
+  {
+   "author": "participant23",
+   "created_at": "2023-08-09T01:41:17Z",
+   "body": "I also encountered this problem, but I haven't found a solution yet. I only asked 1+1, and this error occurred. I want to know how to see the content of prompt and completion when he said that the length is exceeded."
+  },
+  {
+   "author": "participant10",
+   "created_at": "2023-08-09T01:59:39Z",
+   "body": "> I also encountered this problem, but I haven't found a solution yet. I only asked 1+1, and this error occurred. I want to know how to see the content of prompt and completion when he said that the length is exceeded.\r\n\r\nturn on debug mode or locate 'llm.py' -> find  the 'generate' func and  print"
+  },
+  {
+   "author": "participant20",
+   "created_at": "2023-08-09T04:42:54Z",
+   "body": "@participant22 @participant24 https://github.com/langchain-ai/langchain/pull/7183"
+  },
+  {
+   "author": "participant23",
+   "created_at": "2023-08-09T10:14:40Z",
+   "body": "hi, @participant10 , I try to break the point and break the point in the source code of langchain, but the program will not enter the source code and pause. I use anaconda notebooks"
+  },
+  {
+   "author": "dosubot[bot]",
+   "created_at": "2023-11-08T16:03:27Z",
+   "body": "Hi, @reporter! I'm Dosu, and I'm helping the LangChain team manage their backlog. I wanted to let you know that we are marking this issue as stale. \n\nFrom what I understand, you encountered an `openai.error.InvalidRequestError` due to exceeding the maximum context length of 4097 tokens when using the OpenAI model. You were asking if there is a module or best practice to manage the context length and provided an example that triggers the error. Some users have suggested workarounds such as using a splitter or reducing the chunk size. The Langchain team is currently discussing overhauling the mapreduce implementation to address this issue.\n\nBefore we close this issue, we wanted to check if it is still relevant to the latest version of the LangChain repository. If it is, please let us know by commenting on the issue. Otherwise, feel free to close the issue yourself or it will be automatically closed in 7 days.\n\nThank you for your contribution to the LangChain repository!"
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "langchain-ai/langchain",
+  "default_branch": "master",
+  "commit_sha": "35f1e8f5694a1323ea2601f01502d301393ebb9e",
+  "as_of": "2023-03-01T03:22:21Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_langchain-ai_langchain_1349"
+}

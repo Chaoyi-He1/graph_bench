@@ -1,6 +1,6 @@
 # Review: gh_vllm-project_vllm_29595
 
-**Qwen3-VL grounding accuracy degrades in vLLM 0.11.1 and later**
+**Qwen3-VL-235B grounding accuracy degrades in vLLM 0.11.1 and later on Hopper GPUs**
 
 - source: https://github.com/vllm-project/vllm/issues/29595
 - kind: LLM draft (needs review)
@@ -10,20 +10,20 @@
 ```mermaid
 flowchart LR
     N0["<b>N0 grounding degradation reported</b><br/><small>info: 4</small>"]
-    N1["<b>N1 backend and hardware scope collected</b><br/><small>info: 6</small>"]
-    N2["<b>N2 encoder backend and tensor parallel probes completed</b><br/><small>info: 8</small>"]
-    N3["<b>N3 eager execution isolates compiled path</b><br/><small>info: 10</small>"]
-    N4["<b>N4 corrected Triton build verified</b><br/><small>info: 11</small>"]
-    N_terminal["<b>terminal grounding accuracy restored</b><br/><small>info: 12</small>"]
-    N0 -.->|"❓ startup_uses_flash_attention_on_v1, hopper_bad_ampere_good_version_comparisons"| N1
+    N1["<b>N1 backend and hardware scope collected</b><br/><small>info: 7</small>"]
+    N2["<b>N2 encoder backend and tensor parallelism ruled out</b><br/><small>info: 9</small>"]
+    N3["<b>N3 eager execution probe restores accuracy</b><br/><small>info: 10</small>"]
+    N4["<b>N4 corrected Triton builds verified by other affected operators</b><br/><small>info: 12</small>"]
+    N_terminal["<b>terminal fix established but reporter verification pending</b><br/><small>info: 13</small>"]
+    N0 -.->|"❓ flash_attention_backend_on_v1_engine, hopper_reproduces_while_a100_comparison_is_accurate"| N1
     linkStyle 0 stroke:#3b82f6,stroke-width:2px
-    N1 -.->|"❓ torch_sdpa_encoder_probe_same_output, single_gpu_tp1_probe_same_output"| N2
+    N1 -.->|"❓ torch_sdpa_encoder_probe_same_grounding_result, single_gpu_no_tensor_parallel_probe_same_result"| N2
     linkStyle 1 stroke:#3b82f6,stroke-width:2px
-    N2 -.->|"❓ enforce_eager_restores_grounding_on_0_11_1_and_0_11_2"| N3
+    N2 -.->|"❓ enforce_eager_restores_grounding_but_slows_inference"| N3
     linkStyle 2 stroke:#3b82f6,stroke-width:2px
-    N3 -.->|"❓ triton_3_4_or_9035_patched_build_restores_accuracy"| N4
+    N3 -.->|"❓ triton_340_downgrade_restores_accuracy, rebuilt_triton_with_codegen_patch_restores_accuracy"| N4
     linkStyle 3 stroke:#3b82f6,stroke-width:2px
-    N4 ==>|"⚡ Replace the buggy TorchInductor/Triton compiled-kernel path with a Triton build containing the compiler correction, while retaining compiled vLLM execution, and have the user rerun the grounding benchmark before declaring resolution."| N_terminal
+    N4 ==>|"⚡ Replace the affected torch.compile/Inductor Triton code generation path with a corrected Triton build: temporarily use Triton 3.4.0 or rebuild the compatible Triton release with the upstream compiler correction, then verify the same grounding examples before declaring the reporter's deployment resolved."| N_terminal
     linkStyle 4 stroke:#f97316,stroke-width:2px
     class N0 start
     class N1 normal
@@ -38,36 +38,36 @@ flowchart LR
 
 ## Opening (body)
 
-> I am seeing a grounding accuracy issue with Qwen3-VL-235B-A22B-Instruct on vLLM versions starting with v0.11.1. Bounding-box grounding results are inaccurate compared with the expected locations. My server uses Ubuntu 22.04, PyTorch 2.9.0+cu129, Python 3.12, and eight NVIDIA H20 GPUs. I attached examples of the grounding output.
+> I'm seeing degraded grounding accuracy with Qwen3-VL-235B-A22B-Instruct on vLLM 0.11.1 and later. My environment is Ubuntu 22.04 with PyTorch 2.9.0+cu129, Python 3.12, and 8 NVIDIA H20 GPUs. Grounding examples and environment details are attached.
 
 ## Satisfaction conditions
 
-1. Must identify the root cause as incorrect kernels generated through the TorchInductor/torch.compile Triton path, associated with the affected Triton compiler behavior corrected by triton-lang/triton PR 9035.
-2. The diagnosis must be grounded in the collected contrasts: TORCH_SDPA for the multimodal encoder and TP=1 do not change the output, eager execution restores accuracy, and Triton 3.4 or a PR-9035-patched Triton build restores accuracy.
-3. Must not blame Flash Attention, the multimodal encoder backend, tensor parallelism, or CUDA-graph capture itself as the final cause; the in-case probes do not support those directions.
-4. Must recommend a corrected Triton runtime, such as Triton 3.4.0 or a compatible build containing PR 9035, rather than treating full --enforce-eager as the preferred permanent solution because eager execution significantly reduces inference speed.
-5. Must ask the user to rerun the same grounding example or benchmark on a runtime containing the correction and confirm accurate coordinates before treating the issue as resolved.
+1. Must identify the final accepted root cause as faulty torch.compile/Inductor Triton-generated kernel behavior, not Flash Attention itself, multimodal encoder attention, tensor parallelism, or CUDA-graph capture.
+2. Diagnosis must be grounded in the collected probes: TORCH_SDPA and single-GPU execution do not change the error, eager execution restores accuracy with a speed penalty, and corrected or older Triton builds restore accuracy.
+3. Must recommend a compatible corrected toolchain, specifically Triton 3.4.0 as a temporary pin or a compatible Triton build containing the confirmed compiler correction; --enforce-eager may be offered only as a temporary slower workaround.
+4. Must not present changing the multimodal encoder to TORCH_SDPA or disabling tensor parallelism as the fix, because both were tested without changing the grounding result.
+5. Must ask the original reporter to rerun the same grounding examples on the corrected environment and must not declare the reporter's deployment resolved until that verification is received.
 
 ## Edges
 
 | edge | type | gates / info | payload |
 |---|---|---|---|
-| `e1_N0__N1` | clarification_only | asks: startup_uses_flash_attention_on_v1, hopper_bad_ampere_good_version_comparisons | My startup log says that I am using the Flash Attention backend on the V1 engine. / Yes. I am using 8 H20 Hopper GPUs and see the degradation. In our combined tests, vLLM 0.11.1 or 0.11.2 gives  |
-| `e2_N1__N2` | clarification_only | asks: torch_sdpa_encoder_probe_same_output, single_gpu_tp1_probe_same_output | I launched with `--mm-encoder-attn-backend TORCH_SDPA`. There was no change; the result was the same as before / I ran Qwen3-VL-30B-A3B-Thinking on one H100 with `--tensor-parallel-size 1 --pipeline-parallel-size 1 --max-mo |
-| `e3_N2__N3` | clarification_only | asks: enforce_eager_restores_grounding_on_0_11_1_and_0_11_2 | Yes. Adding `--enforce-eager` restores the grounding result for qwen3-vl-235b-a22b-instruct-fp8 on both vLLM 0 |
-| `e4_N3__N4` | clarification_only | asks: triton_3_4_or_9035_patched_build_restores_accuracy | I tested the alternatives. Downgrading Triton from 3.5.0 to 3.4.0 restored accuracy. Rebuilding Triton 3.5 wit |
-| `e5_N4__N_terminal` | solution_only | req_info: qwen3_vl_235b_grounding_inaccurate_from_vllm_0_11_1, hopper_bad_ampere_good_version_comparisons, startup_uses_flash_attention_on_v1, torch_sdpa_encoder_probe_same_output, single_gpu_tp1_probe_same_output, enforce_eager_restores_grounding_on_0_11_1_and_0_11_2, triton_3_4_or_9035_patched_build_restores_accuracy<br>elements: identifies_torchinductor_triton_compiled_kernel_path_as_root_cause, distinguishes_buggy_compilation_from_flash_attention_and_cuda_graph_capture, recommends_triton_3_4_or_a_triton_build_containing_pr_9035, does_not_present_full_enforce_eager_as_the_preferred_permanent_fix, asks_user_to_verify_on_a_runtime_containing_the_triton_correction | Replace the buggy TorchInductor/Triton compiled-kernel path with a Triton build containing the compiler correction, while retaining compiled vLLM execution, and have the user rerun the grounding benchmark before declaring resolution. |
+| `e1_N0__N1` | clarification_only | asks: flash_attention_backend_on_v1_engine, hopper_reproduces_while_a100_comparison_is_accurate | My startup log says that I'm using the Flash Attention backend on the V1 engine. / Yes. I reproduce the degradation on Hopper hardware, including H20, H100 and H200 systems. With the same Wikip |
+| `e2_N1__N2` | clarification_only | asks: torch_sdpa_encoder_probe_same_grounding_result, single_gpu_no_tensor_parallel_probe_same_result | There is no change with --mm-encoder-attn-backend TORCH_SDPA. The grounding result is the same as before. / I ran Qwen3-VL-30B-A3B-Thinking on one H100 with --tensor-parallel-size 1 and --pipeline-parallel-size 1. The  |
+| `e3_N2__N3` | clarification_only | asks: enforce_eager_restores_grounding_but_slows_inference | Adding --enforce-eager restores the grounding accuracy on both vLLM 0.11.1 and 0.11.2 for my Qwen3-VL-235B-A22 |
+| `e4_N3__N4` | clarification_only | asks: triton_340_downgrade_restores_accuracy, rebuilt_triton_with_codegen_patch_restores_accuracy | I downgraded Triton from 3.5.0 to 3.4.0 and the grounding accuracy was restored. / I rebuilt Triton 3.5 with triton-lang/triton#9035 cherry-picked, and it fixed the issue. This was confirmed wi |
+| `e5_N4__N_terminal` | solution_only | req_info: qwen3_vl_235b_grounding_degraded_since_vllm_0111, reporter_uses_eight_h20_gpus, reporter_environment_pytorch_290_cuda129, hopper_reproduces_while_a100_comparison_is_accurate, flash_attention_backend_on_v1_engine, torch_sdpa_encoder_probe_same_grounding_result, single_gpu_no_tensor_parallel_probe_same_result, enforce_eager_restores_grounding_but_slows_inference, triton_340_downgrade_restores_accuracy, rebuilt_triton_with_codegen_patch_restores_accuracy<br>elements: identifies_torch_compile_inductor_triton_compiled_kernels_as_root_cause, recommends_triton_340_or_a_compatible_triton_build_with_the_compiler_correction, does_not_misidentify_cuda_graph_capture_or_multimodal_encoder_attention_as_root_cause, treats_enforce_eager_as_a_temporary_slow_workaround_not_the_preferred_fix, asks_reporter_to_verify_the_original_grounding_examples_after_installing_the_corrected_build | Replace the affected torch.compile/Inductor Triton code generation path with a corrected Triton build: temporarily use Triton 3.4.0 or rebuild the compatible Triton release with the upstream compiler correction, then verify the same grounding examples before declaring the reporter's deployment resolved. |
 
 ## Nodes
 
 | node | terminal | volunteered | images | symptoms |
 |---|---|---|---|---|
-| `N0` |  | 3 | 0 | Qwen3-VL-235B-A22B-Instruct returns grounding boxes at the wrong locations on vLLM 0.11.1 and later. |
-| `N1` |  | 0 | 0 | The grounding boxes remain inaccurate on the H20 server with the default Flash Attention backend. Comparable tests on H100, H200, and H20 sh |
-| `N2` |  | 0 | 0 | The same misplaced grounding result appears with TORCH_SDPA selected for the multimodal encoder. The same misplaced grounding result appears |
-| `N3` |  | 1 | 0 | With --enforce-eager, the grounding locations are correct on both vLLM 0.11.1 and 0.11.2. With the normal compiled execution path, the groun |
-| `N4` |  | 0 | 0 | The same grounding test returns accurate locations after using Triton 3.4.0 or rebuilding Triton 3.5 with pull request 9035 cherry-picked. |
-| `N_terminal` | ✓ | 0 | 0 | Qwen3-VL returns grounding coordinates at the expected image locations with compiled vLLM execution after installing a Triton build containi |
+| `N0` |  | 2 | 0 | Qwen3-VL-235B-A22B-Instruct returns inaccurate grounding locations on vLLM 0.11.1 and later in my 8×H20 environment. |
+| `N1` |  | 1 | 0 | Grounding boxes are inaccurate with the default Flash Attention backend on Hopper systems, while an A100 comparison produces an accurate loc |
+| `N2` |  | 0 | 0 | The inaccurate grounding result is unchanged when the multimodal encoder uses TORCH_SDPA and when the smaller model is run on one H100 witho |
+| `N3` |  | 0 | 0 | With --enforce-eager, the grounding locations are accurate again on vLLM 0.11.1 and 0.11.2, but inference is significantly slower. |
+| `N4` |  | 0 | 0 | Affected operators report accurate grounding after either downgrading Triton from 3.5.0 to 3.4.0 or rebuilding Triton 3.5 with the identifie |
+| `N_terminal` | ✓ | 0 | 0 | Grounding output is accurate in affected operators' environments after installing a Triton build without the faulty compiled-kernel behavior |
 
 ## Machine review (audit pass, adversarially verified)
 

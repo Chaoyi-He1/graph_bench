@@ -1,6 +1,6 @@
 # Review: gh_curl_curl_11203
 
-**Hyper slowness issue**
+**Hyper backend pauses for about 30 seconds between multiple URLs**
 
 - source: https://github.com/curl/curl/issues/11203
 - kind: LLM draft (needs review)
@@ -9,25 +9,23 @@
 
 ```mermaid
 flowchart LR
-    N0["<b>N0 Hyper transfers reported extremely slow</b><br/><small>info: 5</small>"]
-    N1["<b>N1 current dependencies and cross-platform reproduction confirmed</b><br/><small>info: 7</small>"]
-    N2_x["<b>N2_x initial Hyper polling patch aftermath</b><br/><small>info: 9</small>"]
-    N2["<b>N2 protocol trace and packet evidence collected</b><br/><small>info: 12</small>"]
-    N3["<b>N3 rebuilt with fix, unverified</b><br/><small>info: 12</small>"]
-    N_terminal["<b>terminal Hyper minute-long stalls resolved</b><br/><small>info: 16</small>"]
-    N0 -.->|"❓ linux_hyper_build_reproduces_slowness"| N1
-    linkStyle 0 stroke:#3b82f6,stroke-width:2px
-    N1 ==>|"💥 blind: Apply the initial Hyper polling and wake-handling changes from PR #11344 to make completed Hyper tasks available without waiting for a later transfer-loop poll."| N2_x
-    linkStyle 1 stroke:#ef4444,stroke-width:2px
-    N2_x -.->|"❓ trace_shows_two_approximately_30_second_idle_periods, packet_capture_shows_repeated_h2_preface_per_request, forcing_http11_completes_in_about_300ms"| N2
+    N0["<b>N0 Hyper multi-URL slowness reported</b><br/><small>info: 6</small>"]
+    N1_x["<b>N1_x early polling workaround aftermath</b><br/><small>info: 7</small>"]
+    N2["<b>N2 protocol-mode timing collected</b><br/><small>info: 8</small>"]
+    N3["<b>N3 repeated HTTP/2 setup observed</b><br/><small>info: 9</small>"]
+    N_terminal["<b>terminal long pauses resolved</b><br/><small>info: 10</small>"]
+    N0 ==>|"💥 blind: Work around the delay by polling Hyper's executor again immediately after an empty result and applying the associated early Hyper-stream polling changes."| N1_x
+    linkStyle 0 stroke:#ef4444,stroke-width:2px
+    N1_x -.->|"❓ protocol_mode_benchmark_default_over_sixty_seconds_http11_300ms"| N2
+    linkStyle 1 stroke:#3b82f6,stroke-width:2px
+    N2 -.->|"❓ wire_capture_normal_one_h2_preface_hyper_repeats_preface_per_request"| N3
     linkStyle 2 stroke:#3b82f6,stroke-width:2px
-    N2 ==>|"⚡ Disable HTTP/2 in curl's Hyper integration and use HTTP/1.1 as the safe temporary path, because curl creates a Hyper client connection per request and sends a new HTTP/2 connection preface on an already reused connection; restoring Hyper HTTP/2 requires connection-scoped lifecycle integration."| N3
+    N3 ==>|"⚡ Temporarily disable HTTP/2 in the Hyper backend so requests use the working HTTP/1.1 path, avoiding invalid repeated HTTP/2 connection setup until the Hyper integration can be redesigned around connection lifetimes."| N_terminal
     linkStyle 3 stroke:#f97316,stroke-width:2px
-    N3 -.->|"❓ rebuild_benchmark_three_transfers_finish_near_one_second"| N_terminal
-    linkStyle 4 stroke:#3b82f6,stroke-width:2px
+    N0 ==>|"🚀 Temporarily disable HTTP/2 in the Hyper backend and fall back to HTTP/1.1 because the integration creates request-scoped Hyper client connections that emit invalid repeated HTTP/2 setup on a reused connection. (skip 3)"| N_terminal
+    linkStyle 4 stroke:#0ea5e9,stroke-width:2px
     class N0 start
-    class N1 normal
-    class N2_x normal
+    class N1_x normal
     class N2 normal
     class N3 normal
     class N_terminal terminal
@@ -38,42 +36,41 @@ flowchart LR
 
 ## Opening (body)
 
-> I'm transferring three flight-information URLs with curl on Windows 10. With a build using `-DUSE_HYPER`, the command takes at least a minute, with long pauses between URLs, whether the URLs come from a config file or the command line and whether or not I use `--parallel`. The curl bundled with Windows completes the same three requests in under a second. My build is curl 8.2.0-DEV with Hyper 1.0.0-rc.3.
+> I am fetching three flight-information URLs with curl on Windows 10. A build made with `-DUSE_HYPER` takes at least a minute, with long pauses between URLs, whether the URLs come from a config file or the command line and whether or not I use `--parallel`. The curl bundled with Windows completes the same three requests in under a second. My development build is curl 8.2.0-DEV with Hyper 1.0.0-rc.3. Updating Rust, pulling Hyper master, and rebuilding everything did not change the behavior.
 
 ## Satisfaction conditions
 
-1. Must identify the root cause: curl's Hyper integration created a new `hyper_clientconn` for each request on a reused HTTP/2 connection, sending repeated HTTP/2 connection prefaces and provoking server GOAWAY/error handling that caused long delays or dropped requests.
-2. The diagnosis must be grounded in the collected trace, packet capture, and protocol comparison: two roughly 30-second idle periods, repeated HTTP/2 prefaces, and fast completion when forcing HTTP/1.1.
-3. The practical fix must disable HTTP/2 for the Hyper backend and fall back to HTTP/1.1 until the Hyper client/executor lifecycle can be redesigned for connection-scoped multiplexing.
-4. Must not present PR #11344's polling changes as the resolution; they were tested in-case and the reporter still observed a roughly 61-second runtime and missing output.
-5. Must require user verification on a rebuilt fixed version, with all three requests completing without the long pauses, before declaring the issue resolved.
+1. Must identify the final accepted root cause: curl's Hyper integration created a Hyper client connection per request rather than per underlying connection, so an HTTP/2 connection received repeated connection prefaces and settings; server GOAWAY handling then produced delays, retries, or dropped requests.
+2. The diagnosis must be grounded in the collected evidence: the default Hyper path takes over a minute while the explicitly selected HTTP/1.1 path takes about 300 ms, and the packet capture shows one preface for the normal backend but a new preface before every Hyper request.
+3. The practical fix must disable HTTP/2 for the Hyper backend and use HTTP/1.1 until the integration is reworked around curl connection lifetimes; it must not imply that HTTP/2 itself is generally slow.
+4. Must not present the earlier extra-executor-poll or small polling changes as sufficient, because the reporter still measured 61.321 seconds and sometimes lost a response after those changes.
+5. Must ask the reporter to verify a current build before declaring resolution; the graph establishes successful verification at 0.974 seconds with no minute-long pauses.
 
 ## Edges
 
 | edge | type | gates / info | payload |
 |---|---|---|---|
-| `e1_N0__N1` | clarification_only | asks: linux_hyper_build_reproduces_slowness | I can reproduce it on Linux too. Normal curl takes one or two seconds, while curl with Hyper takes about a min |
-| `e2_N1__N2_x` | solution_only **BLIND** | req_info: hyper_build_three_urls_take_at_least_one_minute<br>elements: mentions_initial_hyper_polling_patch | Apply the initial Hyper polling and wake-handling changes from PR #11344 to make completed Hyper tasks available without waiting for a later transfer-loop poll. |
-| `e3_N2_x__N2` | clarification_only | asks: trace_shows_two_approximately_30_second_idle_periods, packet_capture_shows_repeated_h2_preface_per_request, forcing_http11_completes_in_about_300ms | The first response arrives quickly. Then `Curl_hyper_stream` is called about once per second with `select_res` / In my decrypted capture, normal curl sends one HTTP/2 connection preface, settings/window update, and then req / Yes. The default Hyper run takes more than 60 seconds for this endpoint, while `curl --http1.1` completes the  |
-| `e4_N2__N3` | solution_only | req_info: hyper_build_three_urls_take_at_least_one_minute, parallel_mode_does_not_remove_delays, trace_shows_two_approximately_30_second_idle_periods, packet_capture_shows_repeated_h2_preface_per_request, forcing_http11_completes_in_about_300ms<br>elements: identifies_per_request_hyper_clientconn_as_source_of_repeated_h2_prefaces, disables_http2_for_hyper_as_temporary_fix, uses_http11_fallback, notes_connection_lifecycle_rearchitecture_needed_before_restoring_h2 | Disable HTTP/2 in curl's Hyper integration and use HTTP/1.1 as the safe temporary path, because curl creates a Hyper client connection per request and sends a new HTTP/2 connection preface on an already reused connection; restoring Hyper HTTP/2 requires connection-scoped lifecycle integration. |
-| `e5_N3__N_terminal` | clarification_only | asks: rebuild_benchmark_three_transfers_finish_near_one_second | Rebuilt from current master and re-ran my three-URL script (responses discarded to NUL): much better — 1.137s  |
+| `e1_N0__N1_x` | solution_only **BLIND** | req_info: hyper_three_url_transfer_takes_at_least_one_minute, slowness_only_with_use_hyper_build<br>elements: proposes_extra_immediate_hyper_executor_poll | Work around the delay by polling Hyper's executor again immediately after an empty result and applying the associated early Hyper-stream polling changes. |
+| `e2_N1_x__N2` | clarification_only | asks: protocol_mode_benchmark_default_over_sixty_seconds_http11_300ms | With the normal Hyper invocation the three URLs take more than 60 seconds. Running the same command with `--ht |
+| `e3_N2__N3` | clarification_only | asks: wire_capture_normal_one_h2_preface_hyper_repeats_preface_per_request | In Wireshark, the normal backend sends one HTTP/2 connection preface, settings and window update, followed by  |
+| `e4_N3__N_terminal` | solution_only | req_info: slowness_only_with_use_hyper_build, early_executor_poll_changes_still_leave_minute_delay_and_dropped_response, protocol_mode_benchmark_default_over_sixty_seconds_http11_300ms, wire_capture_normal_one_h2_preface_hyper_repeats_preface_per_request<br>elements: identifies_per_request_hyper_client_connection_as_causing_repeated_http2_prefaces, explains_that_repeated_prefaces_trigger_server_rejection_and_retry_or_drop_behavior, temporarily_disables_http2_for_the_hyper_backend_and_uses_http11, does_not_present_the_early_extra_poll_change_as_the_complete_fix, asks_user_to_verify_on_a_build_containing_the_hyper_http2_disable | Temporarily disable HTTP/2 in the Hyper backend so requests use the working HTTP/1.1 path, avoiding invalid repeated HTTP/2 connection setup until the Hyper integration can be redesigned around connection lifetimes. |
+| `e5_N0__N_terminal` | solution_only | req_info: hyper_three_url_transfer_takes_at_least_one_minute, windows_builtin_curl_completes_under_one_second, slowness_only_with_use_hyper_build<br>elements: identifies_broken_hyper_http2_connection_lifecycle, temporarily_disables_http2_for_the_hyper_backend_and_uses_http11, asks_user_to_verify_on_a_build_containing_the_hyper_http2_disable | Temporarily disable HTTP/2 in the Hyper backend and fall back to HTTP/1.1 because the integration creates request-scoped Hyper client connections that emit invalid repeated HTTP/2 setup on a reused connection. |
 
 ## Nodes
 
 | node | terminal | volunteered | images | symptoms |
 |---|---|---|---|---|
-| `N0` |  | 0 | 0 | My curl build with `-DUSE_HYPER` takes at least a minute to fetch three small HTTPS URLs, with long pauses between them. The same requests f |
-| `N1` |  | 1 | 0 | The long pauses remain after updating Rust, pulling Hyper master, and rebuilding everything. I can also reproduce the roughly one-minute run |
-| `N2_x` |  | 2 | 0 | After rebuilding with the proposed changes, the three-URL command still takes about 61 seconds instead of about 1.5 seconds with the Windows |
-| `N2` |  | 0 | 0 | The first response arrives immediately, followed by pauses of about 30 seconds before the later responses. Forcing HTTP/1.1 makes the same t |
-| `N3` |  | 0 | 0 | I've rebuilt curl and Hyper from current git master containing the change; I haven't re-run my three-URL benchmark yet. |
-| `N_terminal` | ✓ | 0 | 0 | The rebuilt curl finishes my three-URL script in about a second — the minute-long pauses are gone (the Windows-bundled curl remains somewhat |
+| `N0` |  | 1 | 0 | My `-DUSE_HYPER` curl build pauses for a long time between three URLs and takes at least a minute overall. Using `--parallel` does not remov |
+| `N1_x` |  | 1 | 0 | After updating to the build with the early Hyper polling changes, my Hyper build still takes 61.321 seconds versus 1.515 seconds for the Win |
+| `N2` |  | 0 | 0 | The default Hyper request still takes more than 60 seconds, but the same three URLs finish in about 300 milliseconds when I run them with `- |
+| `N3` |  | 0 | 0 | The default Hyper run still has roughly 30-second pauses after the first response, while the explicitly selected HTTP/1.1 run is fast. |
+| `N_terminal` | ✓ | 1 | 0 | After rebuilding the latest curl and Hyper sources, the three URLs complete in 0.974 seconds with no minute-long pauses; the Windows curl ta |
 
 ## Machine review (audit pass, adversarially verified)
 
-Auditor verdict: **good_enough** · 0 of 0 findings survived independent refutation.
+Auditor verdict: **n/a** · 0 of 0 findings survived independent refutation.
 
-_Test of schema shape._
+__
 
 
 ## Review checklist

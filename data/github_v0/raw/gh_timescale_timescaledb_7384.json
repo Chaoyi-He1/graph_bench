@@ -1,0 +1,147 @@
+{
+ "repo": "timescale/timescaledb",
+ "number": 7384,
+ "url": "https://github.com/timescale/timescaledb/issues/7384",
+ "title": "[Bug]: negative bitmapset member not allowed on query with sort",
+ "state": "closed",
+ "labels": [
+  "bug",
+  "Columnstore"
+ ],
+ "reporter": "reporter",
+ "created_at": "2024-10-23T08:18:28Z",
+ "closed_at": "2024-10-25T14:51:13Z",
+ "body": "### What type of bug is this?\r\n\r\nIncorrect result\r\n\r\n### What subsystems and features are affected?\r\n\r\nQuery executor, Query planner\r\n\r\n### What happened?\r\n\r\nSince upgrading to PostgreSQL 17 with timescaledb 2.17, I encounter the following error when performing or planning certain queries with sorting: `SQL Error [XX000]: ERROR: negative bitmapset member not allowed`.\r\n\r\nSample query:\r\n`  SELECT ts, col1, col2, col3\r\n                FROM ts_rr WHERE ident=66091\r\n                order by ts\r\n`\r\n\r\nThe query does not fail if the order by clause is missing. `ts` is a TIMESTAMP column, `ident` is int. The table is partitioned by time with a chunk_time_interval of 24 hours. The error also occurs if a filter is applied to `ts` that would restrict the lookup to one chunk. This also happens if it only filters on uncompressed chunks.\r\n\r\nThe table contains several billion rows, but with the filter the query shouldn't return more than 50 rows. \r\n`VACUUM ANALYZE ts_rr` was performed before executing the query. The error also occurs on other tables with similar structure.\r\n\r\nThis might be related to the query planner as the error already occurs when I execute the query with `explain`.\r\n\r\n\r\n\r\n\r\n\r\n### TimescaleDB version affected\r\n\r\n2.17.1\r\n\r\n### PostgreSQL version used\r\n\r\n17.0\r\n\r\n### What operating system did you use?\r\n\r\ndebian bookworm\r\n\r\n### What installation method did you use?\r\n\r\nDeb/Apt\r\n\r\n### What platform did you run on?\r\n\r\nOn prem/Self-hosted\r\n\r\n### Relevant log output and stack trace\r\n\r\n```bash\r\nSQL Error [XX000]: ERROR: negative bitmapset member not allowed\r\n```\r\n\r\n\r\n### How can we reproduce the bug?\r\n\r\n```bash\r\nI'm not really sure how to debug this further, but I'm happy to provide more information. I created a similar table and added a subset of data to that table, but wasn't able to reproduce the error. On the actual tables, the error occurs on each query that sorts the results. Therefore, I believe the amount of rows in the table causes this error.\r\n\r\nI believe that this is connected to Postgres 17, but as the upgrade to timescaledb 2.17 was performed shortly before upgrading Postgres, I'm not able to say for sure after which upgrade this started. However, this also occurs on chunks that were added after the upgrade, so I don't believe it's caused by upgrading.\r\n```\r\n",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2024-10-23T08:27:42Z",
+   "body": "I'm afraid version 2.7.1 doesn't have support for pg17 which was only introduced with 2.17\n\nIs this a typo i.e. you wrote 2.7 instead of 2.17 ? If not, I would suggest upgrading to 2.17\n\nThanks."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-10-23T08:29:00Z",
+   "body": "Sorry, I meant 2.17.1. I initially upgraded with 2.17.0, but upgrading to 2.17.1 doesn't solve the problem."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-10-23T08:34:32Z",
+   "body": "Can you try this query on individual chunks? For instance, doing:\n```\nSELECT ts, col1, col2, col3 FROM _timescaledb_internal._hyper_x_x_chunk WHERE ident=66091 order by ts\n```\nIf it succeeds, can you post the explain plan here? I suggest trying it on a compressed and uncompressed chunk as well.\nThis is just to pinpoint the chunk that might be causing this.\n\nThanks."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-10-23T08:50:01Z",
+   "body": "Querying the chunk directly doesn't cause the error and returns results as expected.\r\n\r\n`QUERY PLAN                                                                                               |\r\n---------------------------------------------------------------------------------------------------------+\r\nIndex Only Scan using \"6896_3571_ts_rr_pkey\" on _hyper_8_6896_chunk  (cost=0.57..38.23 rows=224 width=12)|\r\n  Index Cond: ((ident = 66091) AND (ts >= (now() - '04:00:00':<nick>)) AND (ts <= now()))               |\r\n`\r\n\r\nThe query I performed uses a restriction on the time to restrict it on one chunk, but the same query fails on the main table.\r\n\r\nI'll try it on all chunks and will report back."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-10-23T08:53:16Z",
+   "body": "I tested all chunks and the error occurs whenever I execute it on a compressed chunk. Executing on an uncompressed chunk directly does not lead to an error.\r\n\r\nEDIT: It only affects chunks that were compressed since the update. So I guess there might be a data corruption in those chunks? Chunks compressed prior to upgrading are not affected."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-10-23T08:59:37Z",
+   "body": "Can you just send what compression settings are you using on this hypertable?\n\nThanks."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-10-23T09:02:52Z",
+   "body": "From `select * from timescaledb_information.compression_settings`:\r\n\r\n`\r\nhypertable_schema|hypertable_name|attname|segmentby_column_index|orderby_column_index|orderby_asc|orderby_nullsfirst|\r\n-----------------+---------------+-------+----------------------+--------------------+-----------+------------------+\r\npublic           |ts_rr          |ident    |                     1|                    |           |                  |\r\npublic           |ts_rr          |ts     |                      |                   1|true       |false             |\r\n`\r\n\r\nSorry, the output doesn't fully align, please let me know if you need another output format or info from another table."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-10-23T09:08:37Z",
+   "body": "Have you changed these settings on the hypertable? What I'm wondering if you have compressed chunks with different compression settings and if that might be causing the problem. \n\nCan you check that in `SELECT * from timescaledb_information.chunk_compression_settings ;`?\n\nI understand you probably have a lot of chunks, just trying to get to the bottom of the problem.\n\nFWIW I don't think this is data corruption, more of a planning bug based on the fact data is present when the chunk is queried directly."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-10-23T09:11:51Z",
+   "body": "I haven't changed the settings in a long time. Most of the tables affected do not have that many chunks as old chunks are deleted. Here's the output of the query. Again, it doesn't really align here but the rows look the same for all chunks:\r\n\r\n`\r\nts_rr\t_timescaledb_internal._hyper_8_6842_chunk\tident\tts\r\nts_rr\t_timescaledb_internal._hyper_8_6751_chunk\tident\tts\r\nts_rr\t_timescaledb_internal._hyper_8_6765_chunk\tident\tts\r\nts_rr\t_timescaledb_internal._hyper_8_6771_chunk\tident\tts\r\nts_rr\t_timescaledb_internal._hyper_8_6702_chunk\tident\tts\r\nts_rr\t_timescaledb_internal._hyper_8_6782_chunk\tident\tts\r\nts_rr\t_timescaledb_internal._hyper_8_6855_chunk\tident\tts\r\nts_rr\t_timescaledb_internal._hyper_8_6794_chunk\tident\tts\r\nts_rr\t_timescaledb_internal._hyper_8_6802_chunk\tident\tts\r\nts_rr\t_timescaledb_internal._hyper_8_6695_chunk\tident\tts\r\nts_rr\t_timescaledb_internal._hyper_8_6812_chunk\tident\tts\r\nts_rr\t_timescaledb_internal._hyper_8_6825_chunk\tident\tts\r\nts_rr\t_timescaledb_internal._hyper_8_6673_chunk\tident\tts\r\nts_rr\t_timescaledb_internal._hyper_8_6833_chunk\tident\tts\r\nts_rr\t_timescaledb_internal._hyper_8_6683_chunk\tident\tts\r\nts_rr\t_timescaledb_internal._hyper_8_6723_chunk\tident\tts\r\nts_rr\t_timescaledb_internal._hyper_8_6714_chunk\tident\tts\r\nts_rr\t_timescaledb_internal._hyper_8_6733_chunk\tident\tts\r\nts_rr\t_timescaledb_internal._hyper_8_6863_chunk\tident\tts\r\nts_rr\t_timescaledb_internal._hyper_8_6744_chunk\tident\tts\r\n`"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-10-23T09:18:54Z",
+   "body": "If there isn't a lot of chunks, you could potentially fix this by recompressing the old chunks but lets not do that until we get to the bottom of why this is happening in the first place.\n\nI'm trying to reproduce this locally, any chance you can share the schema of your hypertable?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-10-23T09:22:38Z",
+   "body": "Here's the schema. Please note that this seems to happen to all tables with a similar schema. In one of them, the ident column also has a different data type. I could try to recompress one chunk and see if manual compression fixes it?\r\n\r\nAs said before, chunks compressed before the upgrade to pg17 (and timescale 2.17) work fine, it's just the newly compressed chunks.\r\n\r\n\r\n`CREATE TABLE public.ts_rr (\r\n\tident int4 NOT NULL,\r\n\tts timestamp(0) NOT NULL,\r\n\tcs text NULL,\r\n\ta int4 NULL,\r\n\ts int2 NULL,\r\n\tvs int2 NULL,\r\n\thea int2 NULL,\r\n\tla int4 NULL,\r\n\tlo7 int4 NULL,\r\n\tCONSTRAINT ts_fr_pkey PRIMARY KEY (hex, ts)\r\n)\r\nTABLESPACE spillover\r\n;`"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-10-23T09:37:36Z",
+   "body": "Can you uncompress the new chunks manually which are causing issues and run the query again to get the explain plan?\n\nI think recompressing a single chunk wouldn't help, you would have to do it to all the chunks on the hypertable. Since you have multiple tables with same structure that this is happening on, you can try doing it and see if it helps."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-10-23T09:43:59Z",
+   "body": "Uncompressing all affected compressed chunks of one table will take a while, I'd also have to check if disk space is sufficient for that. \r\n\r\nFor now, I decompressed one of the affected chunks. After decompressing, the query worked (it doesn't return any results as the time is out of range for the chunk):\r\n`Index Scan Backward using _hyper_8_6863_chunk_ts_rr_ts_idx on _hyper_8_6863_chunk  (cost=0.58..2.80 rows=1 width=12)\r\n  Index Cond: ((ts >= (now() - '04:00:00':<nick>)) AND (ts <= now()))\r\n  Filter: (ident = 66091)`\r\n\r\nI then compressed it again and ran the same query. The error occured again: `SQL Error [XX000]: ERROR: negative bitmapset member not allowed`. \r\n\r\nPrior to this, I performed `VACUUM` on the whole database. No errors were logged during compression.\r\n\r\nSo I guess decompressing would make the error go away, but isn't feasible due to available disk space."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-10-23T09:47:46Z",
+   "body": "One more observation: The error does not seem to occur when I don't filter by `ident`. Since this is the column the table is segmented by, I guess this filter causes the issue, not the filter by time (which I can remove and still get the same error). "
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-10-23T09:51:26Z",
+   "body": "Can you show what does the plan look like for older chunks which aren't causing this problem? Or actually, the whole plan would be good."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-10-23T09:53:46Z",
+   "body": "> Can you show what does the plan look like for older chunks which aren't causing this problem? Or actually, the whole plan would be good.\r\n\r\nSure: \r\n`Custom Scan (DecompressChunk) on _hyper_8_6733_chunk  (cost=1.57..3.14 rows=2000 width=12)\r\n  Vectorized Filter: ((ts <= \"timestamp\"(now())) AND (ts >= \"timestamp\"((now() - '04:00:00':<nick>))))\r\n  ->  Index Scan using compress_hyper_10_6768_chunk__compressed_hypertable_10_ident__ts_ on compress_hyper_10_6768_chunk  (cost=0.42..3.14 rows=2 width=60)\r\n        Index Cond: (ident = 66091)`"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-10-23T11:05:10Z",
+   "body": "Would you mind doing:\n```\n\\d+ _timescaledb_internal.compress_hyper_10_6768_chunk\n```\nSorry for the long back and forth, I'm still trying to figure out whats going on here.\n\nThanks!"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-10-23T11:45:23Z",
+   "body": "No worries, thanks for your extensive help! Here's the output:\r\n\r\n`\r\nTable \"_timescaledb_internal.compress_hyper_10_6768_chunk\"\r\n        Column         |                 Type                  | Collation | Nullable | Default | Storage  | Compression | Stats target | Description\r\n-----------------------+---------------------------------------+-----------+----------+---------+----------+-------------+--------------+-------------\r\n ident                 | integer                               |           |          |         | plain    |             | 1000         |\r\n ts                    | _timescaledb_internal.compressed_data |           |          |         | external |             | 0            |\r\n cs                    | _timescaledb_internal.compressed_data |           |          |         | extended |             | 0            |\r\n a                     | _timescaledb_internal.compressed_data |           |          |         | external |             | 0            |\r\n s                     | _timescaledb_internal.compressed_data |           |          |         | external |             | 0            |\r\n vs                    | _timescaledb_internal.compressed_data |           |          |         | external |             | 0            |\r\n hea                   | _timescaledb_internal.compressed_data |           |          |         | external |             | 0            |\r\n la                    | _timescaledb_internal.compressed_data |           |          |         | external |             | 0            |\r\n lo7                   | _timescaledb_internal.compressed_data |           |          |         | external |             | 0            |\r\n _ts_meta_count        | integer                               |           |          |         | plain    |             | 1000         |\r\n _ts_meta_sequence_num | integer                               |           |          |         | plain    |             | 1000         |\r\n _ts_meta_min_1        | timestamp without time zone           |           |          |         | plain    |             | 1000         |\r\n _ts_meta_max_1        | timestamp without time zone           |           |          |         | plain    |             | 1000         |\r\nIndexes:\r\n    \"compress_hyper_10_6768_chunk__compressed_hypertable_10_hex__ts_\" btree (ident, _ts_meta_sequence_num), tablespace \"spillover\"\r\nTablespace: \"spillover\"\r\nAccess method: heap\r\nOptions: toast_tuple_target=128`\r\n\r\n\r\nSome further stats to give you an impression of the size of each chunk: `_hyper_8_6863_chunk` contains ~123m entries with 63148 distinct values of ident."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-10-23T11:49:17Z",
+   "body": "The details you requested were for a chunk that worked. Was that intended? There's the details on the (recompressed) chunk that doesn't work. It looks different:\r\n\r\n` \\d+ _timescaledb_internal._hyper_8_6863_chunk\r\n                                        Table \"_timescaledb_internal._hyper_8_6863_chunk\"\r\n  Column  |              Type              | Collation | Nullable | Default | Storage  | Compression | Stats target | Description\r\n----------+--------------------------------+-----------+----------+---------+----------+-------------+--------------+-------------\r\n ident    | integer                        |           | not null |         | plain    |             |              |\r\n ts       | timestamp(0) without time zone |           | not null |         | plain    |             |              |\r\n cs       | text                           |           |          |         | extended |             |              |\r\n a        | integer                        |           |          |         | plain    |             |              |\r\n s        | smallint                       |           |          |         | plain    |             |              |\r\n vs       | smallint                       |           |          |         | plain    |             |              |\r\n hea      | smallint                       |           |          |         | plain    |             |              |\r\n la       | integer                        |           |          |         | plain    |             |              |\r\n lo7      | integer                        |           |          |         | plain    |             |              |\r\nIndexes:\r\n    \"6863_3553_ts_rr_pkey\" PRIMARY KEY, btree (ident, ts)\r\n    \"_hyper_8_6863_chunk_ts_rr_ts_idx\" btree (ts DESC), tablespace \"spillover\"\r\nCheck constraints:\r\n    \"constraint_3553\" CHECK (ts >= '2024-10-20 00:00:00':<nick> without time zone AND ts < '2024-10-21 00:00:00':<nick> without time zone)\r\nInherits: ts_rr\r\nTablespace: \"spillover\"\r\nAccess method: heap`"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-10-23T13:17:41Z",
+   "body": "Could you check the max OID in your database?\n\n```\nSELECT MAX(oid) FROM pg_class;\n```\n\nThanks."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-10-23T13:29:21Z",
+   "body": "All the way at the top; `4294091789`. I used to have some messages regarding vacuum to prevent wraparound, but since vacuuming more, that has disappeared. That's also why I ran vacuum on the db before replicating it here, hoped that this way it wouldn't play a role. \r\n\r\nIf it matters, the job with the highest oid is a timescaledb compression: `relname: compress_hyper_6_2664_chunk__compressed_hypertable_6_ident__ts_me`"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-10-23T14:50:01Z",
+   "body": "Yeah, that's the problem. Bug is triggered by using oids improperly for certain queries so this happens.\n\nI'm gonna work on a bugfix for this but in the meantime, for a workaround, you might want to consider migrating to a fresh instance to reset the oid values. Don't know how big of a problem is that for you.\n\nHope this helps."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-10-23T14:52:12Z",
+   "body": "Migrating over to a fresh instance wouldn't really be feasible. But I've stopped sorting by ts and will sort in the calling application. That seems to fix it for now, performance penalty also isn't too big. \r\n\r\nMany thanks for all your help, looking forward to the fix!"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-11-02T09:29:47Z",
+   "body": "We also encountered the error `negative bitmapset member not allowed (SQLSTATE XX000)` after upgrading to version `2.17.1`. Unfortunately, we were unable to reproduce this error in staging environments and only experienced it in production.\r\n\r\n@participant1, I noticed that the MR has already been merged, but a new release has not yet been published. Could you please confirm if [building](https://github.com/timescale/timescaledb/blob/main/docs/BuildSource.md#building-from-source-unix-based-systems) from the source code of the `2.17.x` branch would be sufficient?\r\n\r\nUPD: Yes, it helped.\r\n```shell\r\ngit clone --branch 2.17.x --single-branch https://github.com/timescale/timescaledb.git\r\ncd timescaledb\r\n./bootstrap\r\ncd build && make\r\nmake install\r\n# restart postgres\r\n```"
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "timescale/timescaledb",
+  "default_branch": "main",
+  "commit_sha": "64c36719fbe4a830d6a80eb9d4f45fe48c31387f",
+  "as_of": "2024-10-23T08:18:28Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_timescale_timescaledb_7384"
+}

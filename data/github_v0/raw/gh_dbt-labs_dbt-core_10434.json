@@ -1,0 +1,144 @@
+{
+ "repo": "dbt-labs/dbt-core",
+ "number": 10434,
+ "url": "https://github.com/dbt-labs/dbt-core/issues/10434",
+ "title": "[Regression] 1.8.2 slower to build than 1.5.9 when tag+ includes many nodes",
+ "state": "closed",
+ "labels": [
+  "type:bug",
+  "performance",
+  "regression"
+ ],
+ "reporter": "cajubelt",
+ "created_at": "2024-07-12T03:33:25Z",
+ "closed_at": "2024-08-30T21:12:10Z",
+ "body": "### Is this a regression in a recent version of dbt-core?\r\n\r\n- [X] I believe this is a regression in dbt-core functionality\r\n- [X] I have searched the existing issues, and I could not find an existing issue for this regression\r\n\r\n### Current Behavior\r\n\r\n`dbt build -s tag:my_tag+` takes about 20 minutes longer to start on dbt 1.8.2 than it does on 1.5.9 with the same tag. The tag used has a lot of downstream nodes in our project, about 11k. Generally we’re seeing better performance on 1.8 so we were surprised to see this big regression in performance. \r\n\r\n### Expected/Previous Behavior\r\n\r\nPreviously building everything downstream of a tag with lots of nodes would take a couple minutes of startup time and then begin running queries against our db. Now it takes 20+ minutes. \r\n\r\n### Steps To Reproduce\r\n\r\n1. Set up dbt project with a tag that has about 11k downstream nodes\r\n2. Install dbt 1.8.2\r\n3. Run dbt build -s tag:my_tag+\r\n\r\n### Relevant log output\r\n\r\n_No response_\r\n\r\n### Environment\r\n\r\n```markdown\r\n- OS: MacOS 14.5 and Ubuntu 22.04\r\n- Python: 3.9.12\r\n- dbt (working version): 1.5.9\r\n- dbt (regression version): 1.8.2\r\n```\r\n\r\n\r\n### Which database adapter are you using with dbt?\r\n\r\nbigquery\r\n\r\n### Additional Context\r\n\r\nThe reason we need this is because we have a selector used in CI/CD that excludes everything downstream of a tag that is upstream of many nodes. The example given is a simpler version of the original issue we found with that selector. (We tested the simpler version and found to also have the same performance issue.) The selector was something like\r\n```\r\n- name: my_selector\r\n  definition: \r\n    union:\r\n      - state:modified+\r\n      - exclude:\r\n        - tag:my_tag+\r\n```",
+ "comments": [
+  {
+   "author": "jtcohen6",
+   "created_at": "2024-07-12T12:44:26Z",
+   "body": "Thanks @cajubelt! Is this only for the `build` command (i.e. not `run`)?\r\n\r\nI suspect this might be due to the large number of tests in your project (per our conversation), and the additional time that dbt spends \"linking\" the DAG (adding edges between test on upstream model -> downstream models, so that they skip on test failure). While it's not immediately clear to me what change we made between v1.5 -> v1.8 to that logic, if you only see this slowdown on `build`, it would be a strong indication that therein lies the problem."
+  },
+  {
+   "author": "cajubelt",
+   "created_at": "2024-07-12T14:01:06Z",
+   "body": "@jtcohen6 yes I just confirmed that dbt run doesn't have any noticeable slowdown on 1.8 with the same selector. "
+  },
+  {
+   "author": "jtcohen6",
+   "created_at": "2024-07-12T14:52:21Z",
+   "body": "@cajubelt Okay! So I think the hypothesis is:\r\n- A project with a lot of tests (~5k models and ~15k data tests) is meaningfully slower at startup for `dbt build` in v1.8 compared to v1.5\r\n- My suspicion is that this slowdown is happening within (or closely adjacent to) the [`add_test_edges`](https://github.com/dbt-labs/dbt-core/blob/1aeff2c58ffd608bb35320b7d0ef35850a88da42/core/dbt/compilation.py#L193) method"
+  },
+  {
+   "author": "jtcohen6",
+   "created_at": "2024-07-12T15:05:20Z",
+   "body": "If you're up for it, there are two ways to try confirming that hypothesis by profiling dbt's performance:\r\n- Using snakeviz as documented here: https://docs.getdbt.com/reference/global-configs/record-timing-info (this way is a bit older, but more familiar to me)\r\n- Using `py-spy` (snazzier) in the way @peterallenwebb recommends [here](https://github.com/dbt-labs/dbt-core/issues/10127#issuecomment-2105107655):\r\n```\r\npip install py-spy\r\nsudo py-spy record -s -f speedscope -- dbt build\r\n```"
+  },
+  {
+   "author": "gshank",
+   "created_at": "2024-07-12T17:41:30Z",
+   "body": "We have the ability to exclude tests from the build resource types, but that doesn't affect whether or not we pass \"add_test_edges\" to compile. It would be possible to check the resource types and if tests are excluded, pass \"add_test_edges\" = False.\r\n\r\nOf course if you do want tests to run, that doesn't help."
+  },
+  {
+   "author": "cajubelt",
+   "created_at": "2024-07-15T00:46:47Z",
+   "body": "We do want to run tests if possible.\r\n\r\n@jtcohen6 here's a screenshot of a search through py-spy's output for the longest segments of the flame graph. Looks like `generic_bfs_edges` is adding 12:41, not sure if that's particularly revealing however\r\n\r\n<img width=\"735\" alt=\"Screenshot 2024-07-14 at 8 43 37 PM\" src=\"https://github.com/user-attachments/assets/4f5c8996-4535-446d-b4aa-bb8170c3b183\">\r\n"
+  },
+  {
+   "author": "stefankeidel",
+   "created_at": "2024-07-25T11:17:22Z",
+   "body": "@jtcohen6 Not super sure if related to this issue but we're seeing an extreme slowdown when `build`ing a large chunk of a fairly big graph with `--indirect-selection buildable` in CI/CD. The project has `2573 models, 13 snapshots, 7 analyses, 2254 data tests, 20 seeds, 1 operation, 359 sources, 44 exposures, 1408 macros, 1 group, 13 unit tests`\r\n\r\n`cautious` and `eager` end up being fine, but with `buildable`, the process \"hangs\" for up to 20 minutes after it prints the project stats \"Found 2573 models ...\" etc. and before the \"Concurrency: 4 threads (target='test')\" message. No other output, even on `debug` log level. \r\n\r\nI tried to figure out what's going on using the `trace` module but it was a bit too much spam :). Will try add some trace output when I find a minute"
+  },
+  {
+   "author": "stefankeidel",
+   "created_at": "2024-07-25T12:11:06Z",
+   "body": "here's me waiting for about 5minutes for the `generic_bfs_edges` traversal\r\n\r\n<img width=\"1338\" alt=\"image\" src=\"https://github.com/user-attachments/assets/70c39911-c0a4-490c-9725-f6fb6739b453\">\r\n\r\nIn a \"good\" run with `eager` selection this takes about two seconds with the exact same selector (the rest is dbt actually starting to execute, which I didn't wait for in the other run)\r\n\r\n<img width=\"1306\" alt=\"image\" src=\"https://github.com/user-attachments/assets/e59c7fb7-bc43-403a-837b-1adf520d87c5\">\r\n"
+  },
+  {
+   "author": "ttusing",
+   "created_at": "2024-08-03T08:40:13Z",
+   "body": "What percentage of your graph (including tests) is selected by the tag, and what % is selected by the selector?\r\n\r\nI had someone on my team try using the `@` decorator on a selector (which I don't normally do) and we both had DBT hang. I kind of pushed it out of my head, will be thinking on this now.\r\n\r\nI don't really understand the `py-spy` output (worked with SnakeViz).... if I had to guess what might be happening:\r\n* for some reason, `generic_bfs_edges` is either really slow or being called a lot\r\n* `collect_specified_neighbors` in `selector.py` calls `self.graph.select_children` when passed certain selector patterns\r\n* `self.graph.select_children` applies the `self.descendants` method for each node, which is perhaps a lot of times, or maybe it uses up a lot of memory.\r\n* the slow part based on your output is `filter_edges_by_type`, which is calling `get_edge_data` in `networkx`,\r\n\r\nIf you can share the snakeviz would help out, also maybe check your memory usage? Last bug I worked on for this graph optimization stuff was having performance issues from running out of memory when the DAG got too big.\r\n\r\nIf my stab in the dark here is in the right direction, maybe there is a pruning that could be done to reduce calling `descendants` so much. Like, if you have a ton of nodes in your selector for which many are already descendents of each other, you don't need to re-tread and evaluate each node. could first get a list of all descendents for each node with a depth of `1`, then take the difference of that and the list of nodes in the selector to restrict to searching for descendents of unsearched nodes, find descendents of depth 1 from that list, and iterate.\r\n\r\nFor your graph has 20k nodes, if 1k have the tag, 10k are descendents, and each descendent is on average the descendent of 70% of the tagged nodes, this takes the number of times each of the descendents has to be evaluated by ~700. 700*10,000 is a lot of calls.\r\n\r\nAfter writing this out this seems actually pretty likely XD. Think an update to `select_children` with this logic would be the place to implement this. This seems similar to https://github.com/dbt-labs/dbt-core/pull/7194\r\n\r\nAlso if the slow part is `filtered_graph = self.exclude_edge_type(\"parent_test\")`, maybe could cache that or pass it as a parameter into `descendants`?\r\n\r\nwill try tests on my own project with ~500 models and ~5000 tests next week."
+  },
+  {
+   "author": "ttusing",
+   "created_at": "2024-08-06T00:51:41Z",
+   "body": "I added a PR! https://github.com/dbt-labs/dbt-core/pull/10526\r\n\r\nI believe I was able to recreate the issue in my project, which has: `Found 442 models, 43 snapshots, 5112 data tests, 32 seeds, 2 operations, 134 sources, 23 exposures, 1075 macros`\r\n\r\nRunning `dbt build --select tag:silver+` on my DAG on 1.8.4, it takes 132 seconds to start building. `dbt build` just takes 11 seconds.\r\n\r\nMy PR applies the pruning strategy I described. I saw the runtime improve for `dbt build --select tag:silver+` to 66 seconds. Using SnakeViz, I identified that the number of calls to `get_edge_data` reduced from `14,332,569` to `383,916`.\r\n\r\nI am unsure how much DBT 1.9/main branch contains performance improvements... the total runtime improvement was 66 seconds, but `select_children` only improved from 80 seconds to 45 seconds (35 seconds improvement). Going to try to run `main` branch for performance check.\r\n\r\nFeedback welcome, especially if you can test/review the change!"
+  },
+  {
+   "author": "peterallenwebb",
+   "created_at": "2024-08-09T13:18:22Z",
+   "body": "I've reviewed and suggested some changes to @ttusing's PR but we should be close to a fix on this."
+  },
+  {
+   "author": "peterallenwebb",
+   "created_at": "2024-08-09T21:39:37Z",
+   "body": "This is now resolved in 1.9+, but I'm re-opening this issue so we can consider backports."
+  },
+  {
+   "author": "ttusing",
+   "created_at": "2024-08-09T21:45:47Z",
+   "body": "I'm also interested in seeing performance reports from @stefankeidel and @cajubelt. [This](https://github.com/dbt-labs/dbt-core/pull/10526) should help, but checking the edge type seems to be inherently slow. Wonder if the runtime will improve from 20 minutes to like 15, 10, or 5 minutes and if there are further improvements that can be made in the edge type lookup speed.\r\n\r\nI could image avoiding the edge type lookup altogether somehow with the knowledge that tests cannot depend on tests. So, don't check the edge type for searching children if the node is a test (or if parent is a test for ancestors) or something like that. Or, building the subgraph with all non-tests nodes first."
+  },
+  {
+   "author": "cajubelt",
+   "created_at": "2024-08-09T21:54:50Z",
+   "body": "Just saw the great activity on this after it fell off my radar for a bit, thanks all. Will follow up on Monday with a perf report, I have personal commitments this weekend. \n\nWe'd love to see a backport to 1.8. "
+  },
+  {
+   "author": "stefankeidel",
+   "created_at": "2024-08-10T06:10:45Z",
+   "body": "Thanks for the update and amazing work! I am currently traveling on a sabbatical leave so I won’t be able to test this before I’m back in November, but will make sure to do so then!On 9. Aug 2024, at 23:55, Charlie Andrews-Jubelt ***@***.***> wrote:﻿\r\nJust saw the great activity on this after it fell off my radar for a bit, thanks all. Will follow up on Monday with a perf report, I have personal commitments this weekend.\r\nWe'd love to see a backport to 1.8 since our project is fairly large and we are unlikely to update to 1.9 before some key deadlines this Fall.\r\n\r\n—Reply to this email directly, view it on GitHub, or unsubscribe.You are receiving this because you were mentioned.Message ID: ***@***.***>"
+  },
+  {
+   "author": "ttusing",
+   "created_at": "2024-08-12T08:42:51Z",
+   "body": "So I'm looking at this section:\r\n\r\nhttps://github.com/dbt-labs/dbt-core/blob/63262e93cb59ed3b5143a1194bc46ba4c03feca1/core/dbt/compilation.py#L197-L215\r\n\r\nThis adds a huge amount of edges. For probably most but pathological DAGs, this is an edge between every test and all nodes downstream of what its testing. For the example of 5k models and 15k data tests, this might be added approximately (5k*15k/2)= **37.5 million edges**.\r\n\r\nWas added in https://github.com/dbt-labs/dbt-core/pull/7276, I don't really understand the purpose of this code. @gshank can you explain why it is necessary to add all of these edges? It seems like a huge factor limiting DBT scaling. If the goal is to get `dbt build` to run tests on parents before children, isn't enough to just do this with a depth of 1?\r\n\r\nI'm guessing the get edge type function is slow because of the millions of edges. There are way less nodes (thousands), so getting node type should probably be way faster, and I am nearly certain nothing can directly depend on tests (only `parent_edge` type), so I think checking the node types is another potential huge optimization.\r\n\r\nSomewhat separately, I wonder about a feature enhancement to print simple DAG stats with like `--dag-debug` for helping with these. Might show the total number of edges, highest degree node (or distribution stats on degree), highest number of tests on a single model (or distribution), etc."
+  },
+  {
+   "author": "cajubelt",
+   "created_at": "2024-08-13T12:25:44Z",
+   "body": "Ok I did some profiling last night on `dbt build --select tag:large_tag+`. Looks like get_edge_data accounted for about 36 minutes and was called 710,951,628 times. Total time to build was 81 minutes. (I used --empty and it errored out immediately when writing to tables so none of this was time waiting for the db writes.) I used dbt 1.8.2. Will try again tonight on 1.9 if that's helpful"
+  },
+  {
+   "author": "cajubelt",
+   "created_at": "2024-08-14T02:00:00Z",
+   "body": "Ok, ran it again with `1.9.0-a1` and the improvement was dramatic. The build time was just 10 minutes. `get_edge_data` was called 11,778,492, a 98% reduction, and accounted for just 21 seconds. "
+  },
+  {
+   "author": "cajubelt",
+   "created_at": "2024-08-14T02:01:18Z",
+   "body": "Some stats about my project: 5799 models, 20 snapshots, 91 analyses, 18763 data tests, 186 seeds, 1 operation, 1086 sources, 69 exposures, 1899 macros"
+  },
+  {
+   "author": "dbeatty10",
+   "created_at": "2024-08-30T21:12:10Z",
+   "body": "Resolved for dbt-core 1.9+ in https://github.com/dbt-labs/dbt-core/pull/10526 and backported to dbt-core 1.8 in https://github.com/dbt-labs/dbt-core/pull/10567."
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "dbt-labs/dbt-core",
+  "default_branch": "main",
+  "commit_sha": "1aeff2c58ffd608bb35320b7d0ef35850a88da42",
+  "as_of": "2024-07-12T03:33:25Z",
+  "method": "github_commits_until"
+ },
+ "images": [
+  {
+   "where": "c5",
+   "source_url": "https://github.com/user-attachments/assets/4f5c8996-4535-446d-b4aa-bb8170c3b183",
+   "file": "gh_dbt-labs_dbt-core_10434_img0.png"
+  },
+  {
+   "where": "c7",
+   "source_url": "https://github.com/user-attachments/assets/70c39911-c0a4-490c-9725-f6fb6739b453",
+   "file": "gh_dbt-labs_dbt-core_10434_img1.png"
+  },
+  {
+   "where": "c7",
+   "source_url": "https://github.com/user-attachments/assets/e59c7fb7-bc43-403a-837b-1adf520d87c5",
+   "file": "gh_dbt-labs_dbt-core_10434_img2.png"
+  }
+ ],
+ "slug": "gh_dbt-labs_dbt-core_10434"
+}

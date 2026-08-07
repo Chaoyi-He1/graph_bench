@@ -1,0 +1,141 @@
+{
+ "repo": "coredns/coredns",
+ "number": 7177,
+ "url": "https://github.com/coredns/coredns/issues/7177",
+ "title": "PR #6898 unexpectedly breaks creation of PTR records",
+ "state": "closed",
+ "labels": [
+  "bug"
+ ],
+ "reporter": "reporter",
+ "created_at": "2025-03-04T23:58:52Z",
+ "closed_at": "2025-04-07T21:20:25Z",
+ "body": "**What happened**:\nI have a single headless service associated to a deployment. Each pod in the deployment has two containers. One container is responsible for serving incoming gRPC requests (some compute heavy task). The other container is responsible for communicating with a custom load balancer service we have. On startup, it first does a reverse DNS lookup to get the DNS name of the pod. This DNS name is given to the load balancer service so whichever client needs to connect to it, does so through the DNS name of the specific pod. This way, we can precisely control which clients go to which service pods.\n\n**What you expected to happen**:\nThat I can do a reverse DNS lookup of a pod and get a DNS record. In other words, if a pod has IP address 1.2.3.4, I should be able to run the following command and see the following output:\n\ngetent hosts 1.2.3.4\n1.2.3.4   <redacted-host>\n\nHowever, as a result of https://github.com/coredns/coredns/pull/6898, I no longer get the DNS record returned when running the command. If I set the hostname to some value 'foo', I will get a DNS record returned. However, the DNS record is now the same for all pods as it is based on that value 'foo'. This completely breaks my load balancing service as I can no longer route requests to a specific pod. What I need, is a way to get back to the behavior before PR #6898 was merged. I do not have multiple services, only one and I would like the PTR records created as they were before. It seems to me like the change should have been scoped to the special case when you have pods associated with multiple services.\n\n**How to reproduce it (as minimally and precisely as possible)**:\nCreate a headless service associated to a deployment. Run getent hosts on the IP address for one of the pods. Before PR #6898, you will get a DNS record returned. After, you will not.\n\n**Anything else we need to know?**:\n\n**Environment**:\nThe environment is not relevant as this issue is a direct result of the change in behavior as caused by PR #6898 ",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2025-03-05T12:50:57Z",
+   "body": "cross posting from the original kubernetes issue https://github.com/kubernetes/kubernetes/issues/127716#issuecomment-2700445224\n\nDon't you get the pod name using the reverse lookup?"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-03-05T13:21:39Z",
+   "body": "> cross posting from the original kubernetes issue [kubernetes/kubernetes#127716 (comment)](https://github.com/kubernetes/kubernetes/issues/127716#issuecomment-2700445224)\n> \n> Don't you get the pod name using the reverse lookup?\n\nNo - without setting hostname and subdomain and this new coredns, we now get nothing.  The proper change could have checked if hostname and subdomain are not set to continue with prior behavior and if set use the new behavior.\n\nHowever, with this change there are now no DNS entries for the pod's IP address.  Reverse lookup of the IP address fails.\n\nSince we are stuck on this, we are looking at some workarounds where we inject a unique hostname into each pod of the deployment and have it use that but I don't know what that may break.  (Note that we never had them set and it was just a deployment with a replicaset and not a statefulset)"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-03-05T13:23:39Z",
+   "body": "This is the original bug that the patch was trying to fix:\nThere are 2 services pointing at a single Statefulset, which results in 2 PTR records:\n\nBefore the patch:\n```\nroot@participant9:/# dig +short -x  10.244.0.29\n<redacted-host>.\n<redacted-host>.\n```\n\nAfter the patch:\n```\nroot@participant9:/# dig +short -x  10.244.0.29\n<redacted-host>.\n```\n\nWhat that also meant, was that PTR records without the hostname in it, are now not generated.\nBefore:\n```\nroot@participant9:/# dig +short -x 10.244.0.22\n<redacted-host>.\n```\n\nAfter:\n```\nroot@participant9:/# dig +short -x 10.244.0.22\nroot@participant9:/#\n```\n\nMy understanding is that the logic is currently: Only create PTR records for Endpoint IP addresses that contain a hostname.\n\nI assume what we need is: Create a PTR record for every IP address of every endpoint, if a hostname exists for an address, create it with the hostname, else, use the IP address in the name.\n\nThat's my understanding that will fix the original bug (https://github.com/kubernetes/kubernetes/issues/127716) but also satisfy the need to have PTR records (and specifically, a single PTR record per IP).\n\n\n"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-03-05T13:29:42Z",
+   "body": "> My understanding is that the logic is currently: Only create PTR records for Endpoint IP addresses that contain a hostname.\n> \n> I assume what we need is: Create a PTR record for every IP address of every endpoint, if a hostname exists for an address, create it with the hostname, else, use the IP address in the name.\n> \n> That's my understanding that will fix the original bug ([kubernetes/kubernetes#127716](https://github.com/kubernetes/kubernetes/issues/127716)) but also satisfy the need to have PTR records (and specifically, a single PTR record per IP).\n\nYes - you are correct - that is what happened and what I think the correct fix would have been."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-03-05T17:25:51Z",
+   "body": "The design of the PTR logic for stateful was:\n\nYou get a PTR record IF and ONLY IF:\n\n1) The pod has `subdomain` set; AND\n2) The pod is an endpoint in a headless service; AND\n3) The headless service's name is the same as the pod's `subdomain` field\n\nIf a pod qualifies, this PTR is *instead of* the \"regular\" IP-derived PTR.\n\nThis should ensure that only 1 PTR record is ever created, right? \n\nAll of the behavior around Pods and DNS is under-documented and overly-twisty.  It was designed to avoid having lots of wasted DNS updates for pods which never use it and to avoid the need to watch pods from every DNS replica (sometimes a daemonset)."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-03-05T17:42:25Z",
+   "body": "A while back I opened https://github.com/kubernetes/kubernetes/pull/106732 to *always* set `pod.spec.hostname` when `subdomain` was set.  It is imperfect in some ways, but it might help clarify the intentions around this?\n\nThe main problem with it is that a pod's name is a DNS subdomain (long, with dots) while we expect hostname to be a DNS label (short, without dots).  That PR tries to best-effort map it, assuming that will be better than a random hash.  Challenge that assumption.\n\nISTR another PR which proposed to allow hostnames with dots, but it was not clear what the impact on DNS would be. "
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-03-05T17:43:01Z",
+   "body": "> If a pod qualifies, this PTR is instead of the \"regular\" IP-derived PTR.\n\n> This should ensure that only 1 PTR record is ever created, right?\n\nThis makes sense, and we seem to have regressed, in that this is the only condition that a PTR record is created. \n\n"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-03-05T17:47:59Z",
+   "body": "The problem is that our stateless services pods do not set any of this.  There is no hostname or subdomain as they are a stateless service replicaset.  This means that, normally, they are addressed by the kubernetes load balancer via the service name.  However, when implementing a custom load balancer, we get into a case that we use the pod's generated DNS name such that we can direct traffic to the specific pod rather than the generic service endpoint.\n\nThe subtle change here was to no longer have a PTR for the pod's IP address anymore, which breaks the dependency on the DNS record in that case.\n\nThe simplest change is to notice that there is no hostname and continue as before.\n\nThe code change would look like:\n\n```\n\t\tfor _, eps := range ep.Subsets {\n\t\t\tfor _, addr := range eps.Addresses {\n\t\t\t\tif addr.IP == ip {\n\t\t\t\t\tvar domain string\n\t\t\t\t\t// If the pod specifies a hostname (such as statefulset does), use the hostname to build PTR\n\t\t\t\t\t// However, in case where hostname is not set, containue to produce a PTR based on the pod address\n\t\t\t\t\t// This fixes the major regression: https://github.com/coredns/coredns/issues/7177\n\t\t\t\t\tif addr.Hostname != \"\" {\n\t\t\t\t\t\tdomain = strings.Join([]string{addr.Hostname, ep.Index, Svc, k.primaryZone()}, \".\")\n\t\t\t\t\t} else {\n\t\t\t\t\t\tdomain = strings.Join([]string{endpointHostname(addr, k.endpointNameMode), ep.Index, Svc, k.primaryZone()}, \".\")\n\t\t\t\t\t}\n\t\t\t\t\tsvcs = append(svcs, msg.Service{Host: domain, TTL: k.ttl})\n\t\t\t\t}\n\t\t\t}\n\t\t}\n```\n"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-03-05T17:49:06Z",
+   "body": "Too bad the makefile has no \"test\" target..."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-03-06T00:12:08Z",
+   "body": "The DNS spec says that there's a PTR record for pods if they have ` hostname`.  That said, it also says that pods behind a headless service have a PTR of the form \"<redacted-host>.\" and in simple testing it looks like we don't spec that tightly enough to prevent multiple PTR!\n\nIt's pretty rare to have 2 service selecting a pod and also rare to rely on PTR, so the intesection of rarities means nobody has really complained about this.\n"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2025-03-06T01:56:43Z",
+   "body": "Pedantry trigger alert :). Stop reading if pedantry makes you want to punch me.\n\n> The DNS spec says that there's a PTR record for pods if they have ` hostname`. That said, it also says that pods behind a headless service have a PTR of the form \"<redacted-host>.\" and in simple testing it looks like we don't spec that tightly enough to prevent multiple PTR!\n\nRelevant spec is here: https://github.com/kubernetes/dns/blob/master/docs/specification.md#243---ptr-records\n\n> #### 2.4.3 - `PTR` Records\n>\n> Given a _ready_ endpoint with _hostname_ of `<hostname>` and IPv4 address\n> `<a>.<b>.<c>.<d>`, a `PTR` record of the following form must exist.\n> - Record Format:\n>   - `<d>.<c>.<b>.<a>.in-addr.arpa. <ttl> IN PTR <hostname>.<service>.<ns>.svc.<zone>.`\n> - Question Example:\n>   - `100.0.3.10.in-addr.arpa. IN PTR`\n> - Answer Example:\n>   - `100.0.3.10.in-addr.arpa. 14 IN PTR <redacted-host>.`\n\n\nwhere:\n\n\n>  - In order of precedence, the _hostname_ of an endpoint is:\n>    - The value of the endpoint's `hostname` field.\n>    - A unique, system-assigned identifier for the endpoint. The exact format and source of this identifier is not prescribed by this specification. However, it must be possible to use this to identify a specific endpoint in the context of a Service. This is used in the event no explicit endpoint hostname is defined.\n\nWe just always used the IP as the identifier...almost always anyway. But it's not strictly necessary and I seem to recall sometimes we don't. But you are right, there is *nothing* about disambiguating two PTRs that would fall out of this spec.\n\nTechnically multiple PTRs are allowed. Just \"not recommended\". If they don't cause problems for a given use case, we should probably just allow it."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-03-06T15:00:37Z",
+   "body": "Just to explain our current workaround and why we did it this way.\n\nFirst the why.  We don't control the coredns version that is running in the clusters as they are created by a managed cluster service (in our case Azure AKS).  Since we can't control it, we are left asking the AKS service to change coredns versions to older version or patch the version to restore the behavior.  I claim the current behavior is very broken since no DNS entry is created for the ready endpoint of our stateless service pods with this current coredns.\n\nTo make the current coredns generate a PTR record for the ready pods, we need to set the hostname and subdomain fields appropriately.  The problem is that to get a unique DNS entry for each pod, we needed a unique hostname field in each pod and that does not happen with stateless services as the replicaset/deployment does not do that.\n\nTo get around this problem, we have our admission controller notice pods that need this (via an annotation that says they do) and inject the correct subdomain for the service and a unique hostname (g-<UUID>) - Unfortunately I had to create it this way as pods that are stateless do not have their pod name or pod UID defined yet at admission time so the only choice was to go with the UUID mechanism.  Also, we prefix the UUID with \"g-\" since RFC-1035 specifically states that DNS entries must start with a letter (non-digit).  (note that the coredns prior behavior did not follow this rule but it needs to be followed when setting the hostname field)\n\nThe net result is that our stateless services with this admission controller and the annotation to enable it get assigned a DNS entry for each pod again to work around the current coredns not assigning any.\n\n(Funny thing is that the admission controller is itself one of these services but it can't apply to itself so it does not get the DNS entries made when it becomes ready - but luckily nothing cared here since everything just goes through the standard kubernetes load balancer)"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-03-06T18:46:23Z",
+   "body": "I've put up a quick PR to try solve this: https://github.com/coredns/coredns/pull/7180"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2025-03-06T21:06:15Z",
+   "body": "Two PRs that purport to fix this but have different results...let's decide on behavior first:\n\nSingle service\n* If hostname is set, use that, otherwise use the IP-based auto-derived name.\n\nMultiple services\n* Can I set the hostname different in each service (I don't recall the details here)? Below questions assume \"yes\".\n* If no hostname is set anywhere, should we return both PTRs, or just one? If just one, how do we select?\n* If hostname is set in exactly one service and not others, do we return just one? Or do we return that one plus the IP-based one for all the other services?\n* If hostname is set in more than one service, do we return just those, or those plus IP-based ones for the other services?"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-03-07T00:30:59Z",
+   "body": "The \"original bug\" in https://github.com/coredns/coredns/issues/7177#issuecomment-2700921122 seems to have been \"correct\" (in that we don't actually specify what happens when there are 2 services selecting a pod, but we do spec that \"Given a ready endpoint ... a PTR record of the following form must exist\".  The logical conclusion is that 2 PTRs was the intention (it's not TRUE but that conclusion is supported by the spec).\n\nWe added `Pod.spec.subdomain` specifically to disambiguate, and I *swear* that included PTR.  In fact, I did some spelunking and the old kube-dns implementation only did PTR records for Endpoints which had `hostname` set (https://github.com/kubernetes/dns/blob/master/pkg/dns/dns.go#L566-L570) and that is only set (https://github.com/kubernetes/kubernetes/blob/master/pkg/controller/endpoint/endpoints_controller.go#L420-L422) when the pod has a hostname and subdomain (https://github.com/kubernetes/kubernetes/blob/master/staging/src/k8s.io/endpointslice/util/controller_utils.go#L116-L118).  I thought that also checked for the service being headless.\n\nEither way, that implementation diverged from the spec (as far as I can tell).  CoreDNS seems to have followed the spec (even when the spec was bad) until recently.\n\nI acknowledge my complicity in the problem (https://<redacted-host>/archives/C09QYUH5W/p1713088975540039)\n\nTL;DR: I think 2 PTRs is strictly correct, and while https://github.com/coredns/coredns/pull/6898 matches the original kube-dns behavior, _that's not what the spec says_.\n\nSooooo.  Do we fix the spec (breaking users like @participant2) or revert coredns (breaking users like @participant3)?\n\nOR someone points out that my read of the spec is flawed..."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-03-07T00:35:32Z",
+   "body": "Also, in parallel - if someone wanted to reopen https://github.com/kubernetes/kubernetes/pull/106732 (see https://github.com/coredns/coredns/issues/7177#issuecomment-2701643260) we might be able to make it work better for users of non-statefulset workloads (does not help today's problem)"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-03-07T09:54:42Z",
+   "body": "> The \"original bug\" in https://github.com/coredns/coredns/issues/7177#issuecomment-2700921122 seems to have been \"correct\" (in that we don't actually specify what happens when there are 2 services selecting a pod, but we do spec that \"Given a ready endpoint ... a PTR record of the following form must exist\". The logical conclusion is that 2 PTRs was the intention (it's not TRUE but that conclusion is supported by the spec).\n\nFor some reason when reading I've been reading the spec, I had always been conflating the current implementation, meaning I came to a different conclusion. But, I see what you're saying now, I agree that 2 PTR could be possible, however...\n\nwhat I'm not sure about, is the \"hostname\" part of the spec.\n\n> Given a ready endpoint with **hostname of `<hostname>`** and IPv4 address `<a>.<b>.<c>.<d>`, a PTR record of the following form must exist\n\nI'm unsure what should happen (according to the spec) when hostname is **not** present. The current StatefulSet implementation can allow for this scenario. (Specifically when a service exists that doesn't match the StatefulSet's `.spec.serviceName`).\nMy interpretation of the spec is that a hostname is required, before it will make a PTR record.\n\n> CoreDNS seems to have followed the spec (even when the spec was bad) until recently.\n\nPrior to https://github.com/coredns/coredns/pull/6898, CoreDNS could return two PTR records:\n1. `<hostname>.<service>.<ns>.svc.<zone>`\n2. `<ip-address>.<service>.<ns>.svc.<zone>`\n\nMy confusion is mostly where that second entry comes from, according to the spec.\n\n\n> Sooooo. Do we fix the spec (breaking users like [@participant2](https://github.com/participant2)) or revert coredns (breaking users like [@participant3](https://github.com/participant3))?\n\nReverting CoreDNS will cause users that use multiple overlapping Services (multiple services matching a single set of Pods) to get multiple PTR records, without the ability to \"pick a primary PTR\".\n\n< insert two buttons meme > "
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-03-07T16:28:42Z",
+   "body": "> I'm unsure what should happen (according to the spec) when hostname is not present. \n\nThe spec also defines \"hostname\" as either the literal field `hostname` or else a system defined unique identifier.  \n\nIt's worth pointing out that the DNS spec talks about endpoints, not pods.  Each endpoint in an Endpoints or Endpointslice has a hostname field.  That field is set by the standard controllers only when the service name matches the pods subdomain field.  The problem is that the DNS spec has the \"or a system defined ID\" part.  \n\n> My confusion is mostly where that second entry comes from, according to the spec.\n\nThe way I am reading the spec today says that EVERY endpoint has a hostname, whether explicit or system defined, and that (for a headless service) EVERY endpoint must have a PTR.  Thus, if you have two headless services. You must have two PTRs.  \n\n> Reverting CoreDNS will cause users that use multiple overlapping Services (multiple services matching a single set of Pods) to get multiple PTR records, without the ability to \"pick a primary PTR\".\n\nUnderstood, but that is the behavior that has existed for I don't know how long, right?  It's not a violation of any RFC, as far as I can tell, but it is frowned upon for the reason you cite.  All things considered, I lean towards the \"compatible but slightly wrong\" option as the slightly lesser evil when compared with \"breaking change\".\n\nI'm still hoping someone can show me that I am misinterpreting the spec, but clearly people were depending on the previous behavior. Right or wrong. \n\nWe could try to fix this by extension, maybe.  For example, each endpoint could indicate whether it wants a reverse record or not. That would have to cascade up to the service API, because almost nobody writes endpoints manually.  That would require a KEP, which means that practically we're talking about multiple kubernetes releases to get this into the wild. And I don't love the idea as I have sketched it.  DNS is \"an example\" of service discovery. Linking them too tightly was a mistake.  Is still a mistake.\n\nThe real problem here is that reverse lookups are often used as an authentication mechanism. Giving the average user the ability to define A records within their namespace is one thing, but PTR records are keyed by IP, and IP is not bounded to a namespace over time.  To do PTR records PROPERLY I think we need something different.  That isn't super helpful for this discussion, though.\n\n"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-03-07T17:16:56Z",
+   "body": "> > I'm unsure what should happen (according to the spec) when hostname is not present.\n> \n> The spec also defines \"hostname\" as either the literal field `hostname` or else a system defined unique identifier.\n\n🤦 Yup, you're right!\n\n> > Reverting CoreDNS will cause users that use multiple overlapping Services (multiple services matching a single set of Pods) to get multiple PTR records, without the ability to \"pick a primary PTR\".\n> \n> Understood, but that is the behavior that has existed for I don't know how long, right? It's not a violation of any RFC, as far as I can tell, but it is frowned upon for the reason you cite. All things considered, I lean towards the \"compatible but slightly wrong\" option as the slightly lesser evil when compared with \"breaking change\".\n\nI agree, now that I've read the spec correctly 🙄 it's clear to me that the previous behaviour is the correct (according to the spec behaviour), and PR #6898 should be reverted. "
+  },
+  {
+   "author": "participant6",
+   "created_at": "2025-03-10T15:37:41Z",
+   "body": "I'm +1 on reverting, who wants to drive that? As I've pointed out above I also think there are UT gaps (both positive and negative cases) in the use case matrix that we can reinforce (quick follow-up PR after the revert lands?) that would better help us to answer the \"what is the actual behavior in practice?\" questions that have come up during this exercise. Having 100% use-case outcome coverage should also prevent breaking changes in the future, as the PR surface area for any change would more explicitly reflect said breakage in the diff (althought #6898 did explicitly change UT outcomes and could have been caught, but I digress...)."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-03-10T16:40:05Z",
+   "body": "> I'm +1 on reverting, who wants to drive that? \n\nDone: https://github.com/coredns/coredns/pull/7194\n\nI'll ping the thread on https://<redacted-host>/archives/C09QYUH5W/p1713088975540039 to get eyes from a maintainer\n\n> As I've pointed out above I also think there are UT gaps (both positive and negative cases) in the use case matrix that we can reinforce (quick follow-up PR after the revert lands?) that would better help us to answer the \"what is the actual behavior in practice?\"\n\nI'm happy to do this with you if you want so we can ensure that there is sufficient coverage\n"
+  },
+  {
+   "author": "participant7",
+   "created_at": "2025-03-20T19:39:42Z",
+   "body": "Thank you, @participant3 @participant8 and team, for reverting in https://github.com/coredns/coredns/pull/7194. I took a quick look at this project's milestones but it was not clear to me when a coredns release containing this fix may be available; I'm sure I'm not the only one interested in any insights there. Thanks!"
+  },
+  {
+   "author": "participant8",
+   "created_at": "2025-03-21T21:49:42Z",
+   "body": "> Thank you, [@participant3](https://github.com/participant3) [@participant8](https://github.com/participant8) and team, for reverting in [#7194](https://github.com/coredns/coredns/pull/7194). I took a quick look at this project's milestones but it was not clear to me when a coredns release containing this fix may be available; I'm sure I'm not the only one interested in any insights there. Thanks!\n\nIt can be now I think. But I think there are some build issues I haven’t had time to look into yet. Recent PRs failing checks. Once that’s resolved I think we can do a release. \n"
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "coredns/coredns",
+  "default_branch": "master",
+  "commit_sha": "669ff527bf5275b34d4a3626642e9bddf26ad1ae",
+  "as_of": "2025-03-04T23:58:52Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_coredns_coredns_7177"
+}

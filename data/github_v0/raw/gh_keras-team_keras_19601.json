@@ -1,0 +1,106 @@
+{
+ "repo": "keras-team/keras",
+ "number": 19601,
+ "url": "https://github.com/keras-team/keras/issues/19601",
+ "title": "Custom loss defined as a class instance vs function",
+ "state": "closed",
+ "labels": [
+  "type:Bug"
+ ],
+ "reporter": "reporter",
+ "created_at": "2024-04-23T17:10:36Z",
+ "closed_at": "2024-05-15T10:04:21Z",
+ "body": "When migrating my `keras 2` custom loss to `keras 3`, I noticed a weird behavior in `keras 3`. My class-defined loss crashes my jupyter kernel while my function-defined loss is working well. I don't understand what I am doing wrong when subclassing `keras.losses.Loss`?\r\n\r\nThis is not working:\r\n\r\n```python\r\nclass QuantileLoss(losses.Loss):\r\n    def __init__(\r\n        self,\r\n        name: str = \"quantile\",\r\n        quantile: float = 0.5,\r\n        reduction=\"sum_over_batch_size\",\r\n    ) -> None:\r\n        super().__init__(name=name, reduction=reduction)\r\n        self.quantile = quantile\r\n\r\n    def call(self, y_true, y_pred):\r\n        error = y_pred - y_true\r\n        loss = ops.maximum((self.quantile * error), (self.quantile - 1) * error)\r\n        return ops.mean(loss)\r\n\r\nmodel.compile(loss=QuantileLoss(quantile=0.5))\r\n```\r\n\r\nThis is working:\r\n\r\n```python\r\ndef quantile_loss_fn(quantile):\r\n    def fn(y_true, y_pred):\r\n        error = y_pred - y_true\r\n        loss = ops.maximum((quantile * error), (quantile - 1) * error)\r\n        return ops.mean(loss)\r\n\r\n    return fn\r\n\r\nmodel.compile(loss=quantile_loss_fn(0.5))\r\n```\r\n\r\nThanks in advance",
+ "comments": [
+  {
+   "author": "reporter",
+   "created_at": "2024-04-23T17:48:03Z",
+   "body": "I can make it work with a basic class instance without subclassing `keras.losses.Loss`:\r\n\r\n```python\r\nclass QuantileLoss:\r\n    def __init__(self, quantile: float = 0.5):\r\n        self.quantile = quantile\r\n\r\n    def __call__(self, y_true, y_pred):\r\n        error = y_pred - y_true\r\n        loss = ops.maximum((self.quantile * error), (self.quantile - 1) * error)\r\n        return ops.mean(loss)\r\n\r\nmodel.compile(loss=QuantileLoss(quantile=0.5))\r\n```\r\n\r\nIs it the way to go since `keras 3`?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-04-23T17:53:59Z",
+   "body": "The code looks fine, what is the error you encounter?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-04-23T20:49:20Z",
+   "body": "My code is run by a jupyterlab server (using the lastest official docker images `jupyter/tensorflow-notebook` and `jupyter/pytorch-notebook` from [jupyter/docker-stack](https://github.com/jupyter/docker-stacks/)) and I connect to it via the [vscode-jupypter extension](https://github.com/microsoft/vscode-jupyter).\r\n\r\nThe crash is caused by the `model.fit()` call. It happens within a few seconds when using the `torch` backend, and a bit later with the `tensorflow` backend (after a few epochs). But there is no explicit error message I can share with you.\r\n\r\nAccording to this [link](https://github.com/microsoft/vscode-jupyter/wiki/Kernel-crashes-when-using-tensorflow), the root cause could be a buggy installation of tensorflow/pytorch due to mixing `pip` and `conda` packages (jupyter official image [installs tensorflow via pip](https://github.com/jupyter/docker-stacks/blob/abea5caf78da2dbe1af0ded0b1e184191016ba57/images/tensorflow-notebook/Dockerfile#L16) while the other packages are installed via [mamba/conda)](https://github.com/jupyter/docker-stacks/blob/abea5caf78da2dbe1af0ded0b1e184191016ba57/images/base-notebook/Dockerfile#L41)"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-05-06T14:15:21Z",
+   "body": "I reproduced the bug with the latest `tensorflow/tensorflow` officiel Docker image with the following code:\r\n\r\nRun the official image:\r\n```bash\r\ndocker run -it --rm tensorflow/tensorflow bash\r\n```\r\n\r\nInstall `pandas`, copy and run the python code:\r\n```bash\r\napt-get update && apt-get install vim\r\npip install pandas\r\nvim test.py # and then copy and save the code below\r\npython test.py\r\n```\r\n\r\nPython code:\r\n```python\r\nimport numpy as np\r\nimport pandas as pd\r\n\r\nfrom keras.layers import Dense, Input\r\nfrom keras.models import Model\r\nfrom keras.losses import Loss\r\nfrom keras import ops\r\n\r\nclass QuantileLoss(Loss):\r\n    def __init__(\r\n        self,\r\n        name: str = \"quantile\",\r\n        quantile: float = 0.5,\r\n        reduction=\"sum_over_batch_size\",\r\n    ) -> None:\r\n        super().__init__(name=name, reduction=reduction)\r\n        self.quantile = quantile\r\n\r\n    def call(self, y_true, y_pred):\r\n        error = y_pred - y_true\r\n        loss = ops.maximum((self.quantile * error), (self.quantile - 1) * error)\r\n        return ops.mean(loss)\r\n\r\n\r\nX = np.random.random((100000, 100))\r\ny = pd.Series(np.random.random((100000,)))\r\n\r\nfeatures = Input(shape=(X.shape[1],))\r\nlayers = Dense(200, activation=\"relu\")(features)\r\nlabels = Dense(1, activation=None)(layers)\r\n\r\nmodel = Model(features, labels)\r\n\r\nmodel.compile(optimizer=\"adam\", loss=QuantileLoss(quantile=0.5))\r\n\r\nmodel.fit(\r\n    X,\r\n    y.to_numpy(), # Working well with just `y`\r\n    verbose=True,\r\n    epochs=50,\r\n    batch_size=10000,\r\n)\r\n```\r\n\r\nTraining time and memory usage is very different depending on the type of the `y` target:\r\n\r\n1. `pd.Series`: I have 8 ms/step during training\r\n2. `np.ndarray`: I have 600 ms/step with high memory usage (that crashes/freezes my laptop)\r\n\r\nMy code runs on CPU (i7-9750H) / Ubuntu 23.10 / Docker 24.0.5 with Keras 3.0.5 and Tensorflow 2.16.1"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-05-07T19:30:10Z",
+   "body": "I cannot reproduce with image `glcr.b-data.ch/jupyterlab/cuda/python/scipy:3.12.3` (Container: CUDA 12.4.1 + Python 3.12.3).\r\n\r\nCross reference:\r\n\r\n* https://github.com/b-data/jupyterlab-python-docker-stack/issues/8#issuecomment-2098779161\r\n\r\nCode run on CPU (Intel(R) Xeon(R) Silver 4210R) / GPU (Quadro RTX 4000, Compute Capability 7.5) / Ubuntu 22.04 (Container) with Keras 3.3.3, Numpy 1.26.4 and Tensorflow 2.16.1."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-05-07T19:45:52Z",
+   "body": "This strange behavior may be CPU-specific. Could you reproduce the bug using only the CPU without CUDA? "
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-05-07T19:57:02Z",
+   "body": "> This strange behavior may be CPU-specific. Could you reproduce the bug using only the CPU without CUDA?\r\n\r\nNo. I cannot reproduce with image `glcr.b-data.ch/jupyterlab/python/scipy:3.12.3` (Container: Python 3.12.3) on Debian 12 (bookworm) using Docker 26.1.0 either:\r\n\r\nCross reference:\r\n\r\n* https://github.com/b-data/jupyterlab-python-docker-stack/issues/8#issuecomment-2099191216\r\n\r\nCode run on CPU (Intel(R) Xeon(R) Silver 4210R) / Ubuntu 22.04 (Container) with Keras 3.3.3, Numpy 1.26.4 and Tensorflow 2.16.1."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-05-07T20:23:27Z",
+   "body": "Thanks @participant2 for testing it! \r\n\r\n@participant4 : Now that we know that this issue is not reproductible easily, is there something else I should look at and/or test to better diagnose the issue?"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-05-07T20:36:00Z",
+   "body": "> Thanks @participant2 for testing it!\r\n\r\nP.S.: On my machine, I cannot reproduce the bug with the latest `tensorflow/tensorflow` (using CPU) either."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-05-07T20:46:50Z",
+   "body": "> is there something else I should look at and/or test to better diagnose the issue?\r\n\r\nYes: Output of `python test.py`, i.e. log files. (Optional: Use latest versions of docker, numpy, keras and pandas)"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-05-07T22:26:35Z",
+   "body": "I confirm that my issue happens on CPU with latest versions of Tensorflow 2.16.1 / Keras 3.3.3 / Numpy 1.26.4 / Pandas 2.2.2. It only happens when using my CPU (it is working well on my GPU with `tensorflow/tensorflow:latest-gpu` image)\r\n\r\nRunning `test.py` with a `np.ndarray` for the `y` target:\r\n```sh\r\nroot@participant5:/# python test.py\r\n2024-05-07 22:02:20.541375: I tensorflow/core/platform/cpu_feature_guard.cc:210] This TensorFlow binary is optimized to use available CPU instructions in performance-critical operations.\r\nTo enable the following instructions: AVX2 FMA, in other operations, rebuild TensorFlow with the appropriate compiler flags.\r\nEpoch 1/50\r\n2024-05-07 22:02:23.140812: W external/local_tsl/tsl/framework/cpu_allocator_impl.cc:83] Allocation of 400000000 exceeds 10% of free system memory.\r\n2024-05-07 22:02:23.300856: W external/local_tsl/tsl/framework/cpu_allocator_impl.cc:83] Allocation of 400000000 exceeds 10% of free system memory.\r\n2024-05-07 22:02:23.451243: W external/local_tsl/tsl/framework/cpu_allocator_impl.cc:83] Allocation of 400000000 exceeds 10% of free system memory.\r\n2024-05-07 22:02:23.637732: W external/local_tsl/tsl/framework/cpu_allocator_impl.cc:83] Allocation of 400000000 exceeds 10% of free system memory.\r\n2024-05-07 22:02:23.816659: W external/local_tsl/tsl/framework/cpu_allocator_impl.cc:83] Allocation of 400000000 exceeds 10% of free system memory.\r\n10/10 ━━━━━━━━━━━━━━━━━━━━ 8s 663ms/step - loss: 0.1569\r\nEpoch 2/50\r\n10/10 ━━━━━━━━━━━━━━━━━━━━ 7s 645ms/step - loss: 0.1397\r\nEpoch 3/50\r\n10/10 ━━━━━━━━━━━━━━━━━━━━ 7s 657ms/step - loss: 0.1344\r\nEpoch 4/50\r\n10/10 ━━━━━━━━━━━━━━━━━━━━ 7s 663ms/step - loss: 0.1313\r\nEpoch 5/50\r\n10/10 ━━━━━━━━━━━━━━━━━━━━ 7s 658ms/step - loss: 0.1293\r\n[...]\r\n```\r\n\r\nRunning `test.py` with a `pd.Series` for the `y` target:\r\n```sh\r\nroot@participant5:/# python test.py\r\n2024-05-07 22:04:24.869910: I tensorflow/core/platform/cpu_feature_guard.cc:210] This TensorFlow binary is optimized to use available CPU instructions in performance-critical operations.\r\nTo enable the following instructions: AVX2 FMA, in other operations, rebuild TensorFlow with the appropriate compiler flags.\r\nEpoch 1/50\r\n10/10 ━━━━━━━━━━━━━━━━━━━━ 0s 8ms/step - loss: 0.1597  \r\nEpoch 2/50\r\n10/10 ━━━━━━━━━━━━━━━━━━━━ 0s 8ms/step - loss: 0.1419 \r\nEpoch 3/50\r\n10/10 ━━━━━━━━━━━━━━━━━━━━ 0s 8ms/step - loss: 0.1360 \r\nEpoch 4/50\r\n10/10 ━━━━━━━━━━━━━━━━━━━━ 0s 7ms/step - loss: 0.1326 \r\nEpoch 5/50\r\n10/10 ━━━━━━━━━━━━━━━━━━━━ 0s 8ms/step - loss: 0.1298\r\n[...]\r\n```\r\n\r\nMy docker version is 24.0.5. Haven't tested it with latest version of Docker but I could try it next week if necessary."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-05-15T08:39:17Z",
+   "body": "Hi @reporter, I tried to reproduce your issue but failed. However, I do find the solution to your problem -- it's all about the tensor shape.\r\n\r\nI print out the shape of `y_true`, `y_pred`, `loss` in `QuantileLoss.call` and compile the model with `run_eagerly=True` to show the middle output correctly:\r\n\r\n```\r\ny is a numpy array of shape (100000,):\r\n\r\n[#1 QuantileLoss(Loss)]\r\n(10000,) (10000, 1) (10000, 10000)\r\n\r\n[#2 QuantileLoss]\r\n(10000, 1) (10000, 1) (10000, 1)\r\n\r\n[#3 quantile_loss_fn]\r\n(10000, 1) (10000, 1) (10000, 1)\r\n```\r\n\r\n```\r\ny is a pandas series of shape (100000,):\r\n\r\n[#1 QuantileLoss(Loss)]\r\n(10000, 1) (10000, 1) (10000, 1)\r\n\r\n[#2 QuantileLoss]\r\n(10000, 1) (10000, 1) (10000, 1)\r\n\r\n[#3 quantile_loss_fn]\r\n(10000, 1) (10000, 1) (10000, 1)\r\n```\r\n\r\nNow we can see that the only \"strange\" case happens when you subtract `y_pred` with `y_true` in custom loss that subclasses `keras.losses.Loss` -- (10000,) - (10000,1) => (10000, 10000). This is the reason why the training process is much slower. And probably, I guess it is this large tensor that crashed your jupyter kernel.\r\n\r\nSo it is now clear all you need to do is to ensure `y_true` has the same rank or dimension like `y_pred`. You could use `ops.squeeze`: `error = ops.squeeze(y_pred) - ops.squeeze(y_true)`. This way the speed will be the same.\r\n\r\nCheck out this colab notebook here:\r\nhttps://colab.research.google.com/drive/1tMDC0repnsJ8Z3R_sn-Ef1MCxkduBrhJ?usp=sharing\r\n\r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-05-15T10:04:21Z",
+   "body": "Wonderful! Thanks a lot @participant3 for pointing this out! \r\n\r\nI am still curious to understand why the slow training only happens on my specific CPU (working well on other CPUs or on my GPU). Could it be because of hardware-dependent JIT or graph-building optimizations?\r\n\r\n"
+  },
+  {
+   "author": "google-ml-butler[bot]",
+   "created_at": "2024-05-15T10:04:23Z",
+   "body": "Are you satisfied with the resolution of your issue?\n<a href=\"https://docs.google.com/forms/d/e/1FAIpQLSdHag0RVFS7UXzZkKcsFCKOcX8raCupKK9RHSlYxp5U8lSJbQ/viewform?entry.492125872=Yes&entry.243948740=https://github.com/keras-team/keras/issues/19601\">Yes</a>\n<a href=\"https://docs.google.com/forms/d/e/1FAIpQLSdHag0RVFS7UXzZkKcsFCKOcX8raCupKK9RHSlYxp5U8lSJbQ/viewform?entry.492125872=No&entry.243948740=https://github.com/keras-team/keras/issues/19601\">No</a>\n"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-05-15T10:44:24Z",
+   "body": "@reporter My pleasure to see that it solved your problem 😄.\r\n\r\nBy the way, I don't understand very well that slow training only happens on your CPU... I've tried it on colab and on my local servers. All of them show that (10000, 10000) is slower than the (10000, 1) case. Emmm, since the former one is a larger array, it is reasonable that your CPU works on it for a longer time."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-05-15T11:47:52Z",
+   "body": "Ah, I may have misunderstood what you meant by `I tried to reproduce your issue but failed` in your previous message. It makes sense if you also see the slow down. "
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "keras-team/keras",
+  "default_branch": "master",
+  "commit_sha": "3ebb36fce26c37b5095853a605f07c5f18b57597",
+  "as_of": "2024-04-23T17:10:36Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_keras-team_keras_19601"
+}

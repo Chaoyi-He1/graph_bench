@@ -1,0 +1,127 @@
+{
+ "repo": "onnx/onnx",
+ "number": 6887,
+ "url": "https://github.com/onnx/onnx/issues/6887",
+ "title": "Introduce BitCast (reinterpret cast)",
+ "state": "closed",
+ "labels": [
+  "topic: operator"
+ ],
+ "reporter": "reporter",
+ "created_at": "2025-04-11T15:30:53Z",
+ "closed_at": "2026-02-18T22:37:45Z",
+ "body": "# New Operator\n\n## Describe the operator\n\n- Following https://github.com/onnx/onnx/issues/4343, the only operator missing is BitCast. With models coming from frameworks often do reinterpretation of weights (https://github.com/onnx/onnx/issues/4343#issuecomment-2753441860, https://github.com/pytorch/pytorch/issues/126921). A simple example is\n\n```py\nclass Float4Module(torch.nn.Module):\n    def forward(self, input: torch.Tensor):\n        input = input.view(torch.float4_e2m1fn_x2)\n        return input\n```\n\n### Implementation cost\n\nBeing a fundamental operator in programming languages and hardwares, supporting the operator should be straightfoward.\n\n## Can this operator be constructed using existing onnx operators?\n\nNo.\n\n## Is this operator used by any model currently? Which one?\n\n## Are you willing to contribute it? (Y/N)\n\n## Notes\n<!-- Any additional information -->\n\ncc @onnx/sig-operators ",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2025-07-07T03:25:44Z",
+   "body": "`BitCast` would be useful for Chromium when the underlying backend awkwardly missed registering some data types, notably for pure data movement operators (gather/scatter/where/onehot/tile...) where the data type representation doesn't matter anyway. One example is the `where` operator where ORT's CPU EP supports `uint8` and `int32`, but surprisingly *not* `int8` and `uint32` (even though it would introduce no additional DLL code bloat to support both uint8 and int8, since they are bitwise identical). With `BitCast`, at least the caller (Chromium) could mitigate the issue and insert a BitCast before reaching ORT (and then remove it if ORT handles the data types directly).\n\nContext:\n- \"ORT CPU EP should support int8, uint32, and uint64 for where operation\"<br/>https://<redacted-host>/issues/429859156\n- \"WebNN: Implement where operation for ORT backend\"<br/>https://<redacted-host>/c/chromium/src/+/6702792\n- \"add minimum data types and rank range for operations\"<br/>https://github.com/webmachinelearning/webnn/pull/910"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-09-28T03:21:15Z",
+   "body": "@reporter : Here's another case where `BitCast` might be useful:\nhttps://<redacted-host>/c/chromium/src/+/6970493\n\n> WebNN: Eliminate redundant cast operations for ONNX Runtime backend\n> This CL implements graph optimization to eliminate redundant cast\noperations between bool and uint8 data types in WebNN ONNX Runtime\nbackend.\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-09-28T14:41:03Z",
+   "body": "Thank you! I think we just need someone to create a PR. Currently the team is spread a little thin. "
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-11-12T05:55:53Z",
+   "body": "Hi @reporter,\n\nIs there a convenient way to replace view(dtype) to support a tensor dtype reinterpret cast operation?\n\nI want to successfully export the model to ONNX."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-11-12T21:54:02Z",
+   "body": "There isn’t without this op, to my knowledge. What’s the use case?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-12-18T16:08:35Z",
+   "body": "> Thank you! I think we just need someone to create a PR. Currently the team is spread a little thin.\n\nHmm, I'm tempted to try the \"assign to copilot\" button 😉."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-12-19T00:39:29Z",
+   "body": "@participant1 assigned to copilot. What should the behavior be when dtype bit widths are different?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-12-19T00:40:47Z",
+   "body": "Looks like this is tf's behavior:\n\nIf the input datatype T is larger than the output datatype type then the shape changes from [...] to [..., sizeof(T)/sizeof(type)].\n\nIf T is smaller than type, the operator requires that the rightmost dimension be equal to sizeof(type)/sizeof(T). The shape then goes from [..., sizeof(type)/sizeof(T)] to [...]."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-12-19T01:19:49Z",
+   "body": "> What should the behavior be when dtype bit widths are different?\n> Looks like this is tf's behavior\n\n@reporter: Hmm, that's novel. I've only ever needed bit casting between elements of the *same size*, and casting between elements of differing bitsizes introduces a few important other questions:\n\n- What happens for elements that are not multiples of each other? e.g. uint32 input and [float6](https://github.com/onnx/onnx/pull/7145) output\n- What about endianness issues? Although ONNX *files* store their data in LE, I could see a BE device loading the model and byte-swapping the data, such that during *execution*, the data is BE. So then you have some awkward splicing if you bitcast a uint32 to 2x uint16's, because the uint16's would exchange even/odd coordinates depending on architecture.\n\nSo I feel safer *starting out* with the restriction that `bitsizeof(input.dataType) == bitsizeof(output.dataType)`, and then relaxing it later upon encountering TF models (converted to ONNX) that do such mixing, plus clearly documenting the expectations of such cases (saying it is \"implementation defined\" wouldn't be so good for predictable interchange). TF might be able to make some LE assumptions (like, maybe TF only builds to x86/x64/arm architectures 🤷‍♂️), and ORT only targets LE machines too (that I've *seen*), but ONNX as an interchange IR isn't necessary limited to one architecture."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-12-19T01:55:43Z",
+   "body": "Makes sense to me! @participant4 do you have thoughts?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-12-19T01:56:48Z",
+   "body": "Does it mean there is no way then to re-interpret anything to a float6 dtype?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-12-19T02:05:53Z",
+   "body": "@participant3 would you like to chime in? I remember you needed to reinterpret uint32 to float8 or something?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-12-19T03:08:03Z",
+   "body": "> Does it mean there is no way then to re-interpret anything to a float6 dtype?\n\nWell, if a future `float3` or `float12` exists, then that would be a nice multiple of `float6` 😉. Actually, if you had a byte array of `uint8[3,4,6]`, that reasonably could be castable to `float6[3,4,8]` (or `uint8[3,4,3]` and `float6[3,4,4]`), because the last dimension has the same number of bits wide for the lowest dimension stride:\n\n&nbsp;&nbsp;&nbsp;&nbsp;<img width=\"640\" height=\"198\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/c665b988-c9f4-4d37-803b-2d82e7fee075\" />\n\nSo I'm not *opposed* to reinterpreting across different element bit sizes (certainly there could be some perf benefits to a reinterpret cast to a larger type if you wanted to perform an operation in parallel), but if we do, we need to document these cases clearly (how it affects the last dimension, compatibility constraints, and endianness clarity)."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-12-29T17:07:58Z",
+   "body": "How about we say that the output will just be a **1d tensor**, and the user will reshape it afterward?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2026-01-06T05:57:30Z",
+   "body": "> How about we say that the output will just be a **1d tensor**, and the user will reshape it afterward?\n\nYou mean that for cases where the element bit sizes are identical (e.g. uint32 and float32, uint8 and bool8...), directly accept ND shapes (without requiring the caller to reshape to 1D first then back to the original shape again), but for cases of incompatible element bit sizes, require the input/output to be 1D? That's one way to avoid deciding policy around the oddly shaped cases, and I'm okay with that. I'd require the *input* to be 1D too though for such cases, as it would be weirdly asymmetric to accept any *input* ND shape but only *output* a 1D tensor. Also, we still expect the *total tensor* bit counts to be compatible in either case (e.g. total bit size `uint8[3,4,3]` matches that of `float6[3,4,4]`, because otherwise we'd have to trim down the leftover bits to match),"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2026-01-07T05:39:44Z",
+   "body": "@reporter : my use case was to reinterpret floating data type as same-size integer data type (to avoid automatic conversion of a buffer by model.float() etc). I did find a workaround later, but I do believe supporting direct translation of view(dtype) is important for coverage. Yes I am OK with requiring  1D shape on input/output in cases where sizes are not the same."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2026-01-08T06:35:31Z",
+   "body": "After reviewing [the PR](https://github.com/onnx/onnx/pull/7527) and considering the cases, I am more comfortable with allowing differing element bit sizes between input and output (given the last dimension has the same total bit count) without needing to go between 1D first and back.\n\nI left a comment about endianness to clarify that implementations should execute *as if* the data was little endian (because the ONNX file is already baked with LE weights, and so the model expects certain results), which means more work for any BE ONNX implementations (as they'd have to byteswap the elements, if there even are any implementations of ONNX on BE hardware), but it's no extra work for LE implementations (each EP just reinterprets the tensor data). Note any hypothetical BE implementations *already* have to behave *as if* little endian anyway for UINT4 and UINT2 element types."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-01-22T17:55:27Z",
+   "body": "Comment from today's sig-operators meeting: we will support dtypes of only the same bitwidth."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2026-01-22T22:56:03Z",
+   "body": "> Comment from today's sig-operators meeting: we will support dtypes of only the same bitwidth.\n\nSatisfies my needs! Thanks."
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "onnx/onnx",
+  "default_branch": "main",
+  "commit_sha": "f81f262978b43b0960f1a9f9343d40dda8dc30ef",
+  "as_of": "2025-04-11T15:30:53Z",
+  "method": "github_commits_until"
+ },
+ "images": [
+  {
+   "where": "c12",
+   "source_url": "https://github.com/user-attachments/assets/c665b988-c9f4-4d37-803b-2d82e7fee075",
+   "file": "gh_onnx_onnx_6887_img0.png"
+  }
+ ],
+ "slug": "gh_onnx_onnx_6887"
+}

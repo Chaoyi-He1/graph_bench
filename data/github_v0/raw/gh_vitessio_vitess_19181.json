@@ -1,0 +1,104 @@
+{
+ "repo": "vitessio/vitess",
+ "number": 19181,
+ "url": "https://github.com/vitessio/vitess/issues/19181",
+ "title": "v23 regression: inserting JSON values throws an error",
+ "state": "closed",
+ "labels": [
+  "Type: Enhancement",
+  "Component: Query Serving",
+  "Type: Regression",
+  "Component: VTTablet"
+ ],
+ "reporter": "reporter",
+ "created_at": "2026-01-20T00:18:05Z",
+ "closed_at": "2026-03-01T19:11:58Z",
+ "body": "### Overview of the Issue\n\nInserting JSON that has worked for almost the full history of Vitess now throws an error. I tried rolling back vtgate first, and that had no effect. Rolling back vttablet resolved the issue.\n\n`\ntarget: workspaces.0.primary: vttablet: rpc error: code = Unknown desc = Cannot create a JSON value from a string with CHARACTER SET 'binary'. (errno 3144) (sqlstate 22032) (CallerID: unsecure_grpc_client): Sql: \"insert into workspaces_rankings__pulls_by_team(workspace_id, team_id, pull_id, ranking_id, requested, keyword_id, keyword_sources) values (:v1, :v2, :v3, :v4, :v5, :v6, :v7)\", BindVars: {v1: \"type:INT64 value:\\\"15644401301101\\\"\"v2: \"type:INT64 value:\\\"910629795084904\\\"\"v3: \"type:INT64 value:\\\"2778530002\\\"\"v4: \"type:INT64 value:\\\"2783412902\\\"\"v5: \"type:INT64 value:\\\"1768867200\\\"\"v6: \"type:INT64 value:\\\"101323530\\\"\"v7: \"type:VARBINARY value:\\\"[]\\\"\"}\n`\n\n### Reproduction Steps\n\n```sql\nCREATE TABLE `json_test` (\n  `pk` int NOT NULL AUTO_INCREMENT,\n  `json_field` json DEFAULT NULL,\n  PRIMARY KEY (`pk`)\n) ENGINE=InnoDB AUTO_INCREMENT=3 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci\n```\n\n`INSERT INTO json_test (json_field) VALUES (?); ? = []`\n\n_copied from comment below_\n\nLooks like vttablet is treating string vs byte data differently.\n\nSucceeds\n```go\n_, err := db.ExecContext(c, \"INSERT INTO companies.json_test (json_field) VALUES (?)\", string(`[]`))\n```\n\nErrors with `Cannot create a JSON value from a string with CHARACTER SET 'binary'`\n```go\n_, err := db.ExecContext(c, \"INSERT INTO companies.json_test (json_field) VALUES (?)\", []byte(`[]`))\n```\n\nHere's the relevant log line\n```\nE0120 19:44:05.059370   16952 tabletserver.go:1709] Cannot create a JSON value from a string with CHARACTER SET 'binary'. (errno 3144) (sqlstate 22032) (CallerID: unsecure_grpc_client): Sql: \"insert into json_test(json_field) values (:v1)\", BindVars: {v1: \"type:VARBINARY value:\\\"[]\\\"\"}\n```\n\n### Binary Version\n\n```sh\nv23.0.0\n\nUsing Go vitessdriver `v0.10.3-0.20240819130500-fae754069009`\n```\n\n### Operating System and Environment details\n\n```sh\nGKE v1.33.5\n```\n\n### Log Fragments\n\n```sh\n\n```",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2026-01-20T08:18:08Z",
+   "body": "Looks like: https://github.com/vitessio/vitess/issues/18143"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2026-01-20T13:52:07Z",
+   "body": "@reporter can you please share more information? Were you upgrading multiple releases? The SQL statement you shared works fine in v23, FWIW. This would be related to the character set and JSON type handling and related improvements that have been made in recent versions as @participant1 already touched on."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-01-20T19:37:44Z",
+   "body": "Apologies for the truncated report, we had a minor outage with this and I was troubleshooting at the same time. This was an upgrade from v22.0.1 to v23.0.0. Let me see if I can make it more reproducible."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-01-20T19:47:51Z",
+   "body": "Looks like vttablet is treating string vs byte data differently.\n\nSucceeds\n```go\n_, err := db.ExecContext(c, \"INSERT INTO companies.json_test (json_field) VALUES (?)\", string(`[]`))\n```\n\nErrors with `Cannot create a JSON value from a string with CHARACTER SET 'binary'`\n```go\n_, err := db.ExecContext(c, \"INSERT INTO companies.json_test (json_field) VALUES (?)\", []byte(`[]`))\n```\n\nHere's the relevant log line\n```\nE0120 19:44:05.059370   16952 tabletserver.go:1709] Cannot create a JSON value from a string with CHARACTER SET 'binary'. (errno 3144) (sqlstate 22032) (CallerID: unsecure_grpc_client): Sql: \"insert into json_test(json_field) values (:v1)\", BindVars: {v1: \"type:VARBINARY value:\\\"[]\\\"\"}\n```"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2026-01-20T20:20:52Z",
+   "body": "@reporter that is a MySQL error. JSON by definition is unicode text. I think the fact that this used to work was the bug. With binary data, the binary collation should be used. But you cannot do that with JSON values. I think we previously allowed this in Vitess because for JSON columns we always modified the query to force text rather than properly using charsets and collations to match MySQL behavior. "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-01-20T20:39:04Z",
+   "body": "Are you saying that we need to cast json to a string everywhere before sending it, and that's the only way to upgrade to v23, now that vttablet isn't?"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2026-01-20T20:53:45Z",
+   "body": "@reporter I'm not sure what you mean by that. Let's start with this... can you execute the query in question directly against MySQL?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-01-20T21:18:21Z",
+   "body": "If I connect to vtgate using `go-sql-driver`, both string and byte query params work."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-01-20T22:03:21Z",
+   "body": "I tested against a local mysql instance using `go-sql-driver` and both string and byte versions also worked. I'm not sure if the driver is coercing the byte value somewhere"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2026-01-20T23:57:05Z",
+   "body": "@reporter ok, but it fails if you query the tablet directly? If a query works against vtgate but fails against vttablet (of the same version), then I'd be inclined to call that a bug."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-01-21T00:31:38Z",
+   "body": "How would I test querying the tablet directly?"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2026-01-21T01:47:48Z",
+   "body": "@reporter you could use the `ExecuteFetchAsApp` vtctldclient command, but your question makes me think that I misunderstood. I'm trying to understand where the problem may lie and if there's a bug, and what that bug might be. I don't see that yet. Apologies if I'm being blind or dense. 😄 (FWIW we are using v23 in PSDB and I'm not aware of any related issues)."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-01-21T02:59:36Z",
+   "body": "I don't know how to replicate the issue using `ExecuteFetchAsApp`, since the json wouldn't be sent in via query params, just as an inline string, which does work.\n\n> FWIW we are using v23 in PSDB and I'm not aware of any related issues\n\nIt feels to me like this is maybe a penalty for using the grpc driver that is sending through typed data that is lost on the wire using the mysql protocol. \n- If I use `string(\"[]\")` as the query param, it ISN'T typed as `VARBINARY`, and thus successfully executes. \n- If I use `[]byte(\"[]\")` as the query param, it IS typed as `VARBINARY`, causing the error\n\n```\nSql: \"insert into json_test(json_field) values (:v1)\"\nBindVars: {v1: \"type:VARBINARY value:\\\"[]\\\"\"}\n```\n\n> I'm trying to understand where the problem may lie\n\nHere's what I know at this point:\n\n1. the error is deterministically triggered by the Go type of the query param\n2. it only errors when using the grpc driver\n3. this didn't error <= v22.0.1 (we've been doing these same inserts for 6+ years)\n4. using vtgate v22 or v23 doesn't impact the error\n5. rolling vttablet back from v23 to v22 fixes the regression\n\n> With binary data, the binary collation should be used. But you cannot do that with JSON values. I think we previously allowed this in Vitess because for JSON columns we always modified the query to force text rather than properly using charsets and collations to match MySQL behavior.\n\nI see something in that ballpark here in vtgate, but I don't think it's triggered because the driver doesn't know that the `[]byte` it was given in the arg is json.\n\nhttps://github.com/vitessio/vitess/blob/main/go/vt/vtgate/evalengine/eval_json.go#L128-L132\n\n> I think the fact that this used to work was the bug\n\nIt's definitely a regression in behavior, especially since the same code works over the mysql protocol. I understand your point about how it may not be a \"bug\".\n\n- The benefit of handling this like before in vttablet is that vttablet reliably knows the destination column is json, and can be precise when doing string conversion. \n- Trying to handle this on the client, either the driver\n  - needs to maintain a column definition cache to do the conversion or it would need to check every time. \n  - To push it out to the application layer means that users can no longer use regular json that comes out as `[]byte`, instead requiring them to manually cast `string(jsonBytes)` before sending through a query param.\n\nI'm open to alternative solutions. Talking through it, I hope that we can reintroduce the conversion at the tablet layer. If we know it's a json column, and that binary data will always trigger this error, it seems safe to maintain the prior behavior. If it is invalid json, MySQL will reject it."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2026-01-21T16:13:07Z",
+   "body": "/cc @vitessio/query-serving "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-03-01T02:13:17Z",
+   "body": "Additional conversation with @participant3 in Slack\nhttps://<redacted-host>/archives/CMDJ2KFEZ/p1769209853656719?thread_ts=1769209853.656719&cid=CMDJ2KFEZ"
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "vitessio/vitess",
+  "default_branch": "main",
+  "commit_sha": "7154890137ef50f2d4a6b6e44afed70350711d95",
+  "as_of": "2026-01-20T00:18:05Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_vitessio_vitess_19181"
+}

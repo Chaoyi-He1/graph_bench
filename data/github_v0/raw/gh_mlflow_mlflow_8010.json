@@ -1,0 +1,147 @@
+{
+ "repo": "mlflow/mlflow",
+ "number": 8010,
+ "url": "https://github.com/mlflow/mlflow/issues/8010",
+ "title": "[FR] Experiment Pagination in UI",
+ "state": "closed",
+ "labels": [
+  "enhancement",
+  "area/uiux"
+ ],
+ "reporter": "reporter",
+ "created_at": "2023-03-10T21:07:02Z",
+ "closed_at": "2025-07-21T07:56:10Z",
+ "body": "### Willingness to contribute\n\nYes. I would be willing to contribute this feature with guidance from the MLflow community.\n\n### Proposal Summary\n\n#7804 went a long way in improving the performance of the UI by virtualizing the experiments list.\r\n\r\nEventually, the UI will stop scaling for large numbers of experiments because\r\nall experiments are fetched when loading the `HomePage` in the UI.\r\n\r\nThis issue is a follow up on the points from #7174 about batching/paginating the fetch for experiments.\r\n\r\nIt might be good for someone who is quite familiar with the code base to pick this up.\r\nI attempted in #7174 and ended up having to touch far more components than initially thought.\r\n\r\nThere are two? potential approaches:\r\n1. Decouple experiments in the redux store from components\r\n    * Each component is responsible for fetching any experiments it needs on the fly\r\n    * Might be more clean than option 2 \r\n    * May result in more http requests (possibly worth it)\r\n2. Find a way to paginate fetching of experiments and keep them in the redux store\r\n    * All components cannot rely on all experiments being in the store and \r\n    may have to fetch some on the fly.\r\n    * All fetched experiments probably can't remain in the store indefinitely (1,000,000 experiments would not bode well).\r\n    * Take some of the work from #7174 for this\r\n\r\nThings to watch out for if going the redux store route:\r\n* Clearing the store\r\n    - Filtering/list ordering is hard without clearing the store, items will get weirdly out of order.\r\n    Javascript map reorders the experiments in the store every time because the key is an int \r\n    - If the store is cleared, sharing a link to an experiment not in the store \r\n    will break.\r\n* Checked keys in the `ExperimentListView` requires some special state handling.\r\n* Sharing links - all components that involve experiment info in the query parameters would need a looking at \r\n\r\nSimilar request in https://github.com/mlflow/mlflow/issues/4288. It that got closed out as completed (likely by accident, the UI part got missed). \n\n### Motivation\n\n> #### What is the use case for this feature?\r\nAllowing the mlflow UI to scale beyond 5-10k experiments.\r\n\r\n> #### Why is this use case valuable to support for MLflow users in general?\r\nUsers with larger numbers of experiments can avoid client and server-side issues.\r\n\r\n> #### Why is this use case valuable to support for your project(s) or organization?\r\nOur use case has a large number of experiments with plans to grow.\r\n\r\n> #### Why is it currently difficult to achieve this use case?\r\nAll experiments are fetched at once. (and I'm not that great at react 🤣)\r\n\n\n### Details\n\nFor testing, I've included a python script to seed the development database vs. running `mlflow server`. \r\n\r\nWonder if it is worth including something like this in the repo itself and the contributing docs? It would allow \r\nthose contributing to the UI to devleop against a more realistic use case. \r\nMaybe something like this already exists?\r\n\r\n<details>\r\n\r\n```python\r\nimport argparse\r\nimport contextlib\r\nimport subprocess\r\nimport os\r\nfrom typing import Generator\r\nimport uuid\r\n\r\nfrom mlflow.store.tracking import sqlalchemy_store\r\nfrom mlflow.entities import RunStatus, SourceType\r\nfrom mlflow.entities.lifecycle_stage import LifecycleStage\r\nfrom mlflow.store.tracking.dbmodels.models import (\r\n    SqlExperiment,\r\n    SqlRun,\r\n)\r\nfrom mlflow.utils.uri import append_to_uri_path\r\n\r\n\r\n@participant10.contextmanager\r\ndef setup_mlflow_database(db_path: str, experiments: int, runs: int) -> Generator[str, str, None]:\r\n    \"\"\"Use mlflow store to set up a basic database and seed it.\"\"\"\r\n    if os.path.isfile(db_path):\r\n        os.remove(db_path)\r\n    db_uri = f\"sqlite:///{db_path}\"\r\n    # Does not use a windows path here because it can't be replaced\r\n    default_artifact_root = \"mlruns\"\r\n\r\n    store = sqlalchemy_store.SqlAlchemyStore(\r\n        db_uri=db_uri, default_artifact_root=default_artifact_root\r\n    )\r\n\r\n    store.create_experiment(name=\"what\")\r\n    experiments_to_make = [\r\n        SqlExperiment(name=name, artifact_location=f\"{default_artifact_root}/{name}\")\r\n        for name in (i for i in range(experiments))\r\n    ]\r\n    with store.ManagedSessionMaker() as session:\r\n        store._save_to_db(objs=experiments_to_make, session=session)\r\n\r\n    with store.ManagedSessionMaker() as session:\r\n        experiments_made = session.query(SqlExperiment).all()\r\n        runs_to_make = [\r\n            SqlRun(\r\n                name=f\"hello mlflow {r}\",\r\n                artifact_uri=append_to_uri_path(\r\n                    experiment.artifact_location,\r\n                    uuid.uuid4().hex,\r\n                    sqlalchemy_store.SqlAlchemyStore.ARTIFACTS_FOLDER_NAME,\r\n                ),\r\n                run_uuid=uuid.uuid4().hex,\r\n                experiment_id=experiment.experiment_id,\r\n                source_type=SourceType.to_string(SourceType.UNKNOWN),\r\n                source_name=\"\",\r\n                entry_point_name=\"\",\r\n                user_id=\"hello\",\r\n                status=RunStatus.to_string(RunStatus.RUNNING),\r\n                source_version=\"\",\r\n                lifecycle_stage=LifecycleStage.ACTIVE,\r\n            )\r\n            for r in range(runs)\r\n            for experiment in experiments_made\r\n        ]\r\n        print(f\"runs made {len(runs_to_make)}\")\r\n        store._save_to_db(objs=runs_to_make, session=session)\r\n    del store\r\n    try:\r\n        yield db_uri\r\n    finally:\r\n        os.remove(db_path)\r\n\r\n\r\ndef start_server(backend_store_uri: str) -> None:\r\n    _ = subprocess.check_output(\r\n        [\r\n            \"mlflow\",\r\n            \"ui\",\r\n            \"--backend-store-uri\",\r\n            backend_store_uri,\r\n            \"--host\",\r\n            \"localhost\",\r\n            \"--port\",\r\n            \"5000\",\r\n        ],\r\n    )\r\n\r\n\r\ndef main() -> int:\r\n    parser = argparse.ArgumentParser()\r\n    parser.add_argument(\"-e\", \"--experiments\", default=5000, help=\"Number of experiments to create\")\r\n    parser.add_argument(\"-r\", \"--runs\", default=50, help=\"Number of runs to create\")\r\n    parsed = parser.parse_args()\r\n    with setup_mlflow_database(\"test-db.db\", parsed.experiments, parsed.runs) as db_uri:\r\n        start_server(db_uri)\r\n    return 0\r\n\r\n\r\nif __name__ == \"__main__\":\r\n    exit(main())\r\n\r\n\r\n```\r\n\r\n</details>\n\n### What component(s) does this bug affect?\n\n- [ ] `area/artifacts`: Artifact stores and artifact logging\n- [ ] `area/build`: Build and test infrastructure for MLflow\n- [ ] `area/docs`: MLflow documentation pages\n- [ ] `area/examples`: Example code\n- [ ] `area/model-registry`: Model Registry service, APIs, and the fluent client calls for Model Registry\n- [ ] `area/models`: MLmodel format, model serialization/deserialization, flavors\n- [ ] `area/recipes`: Recipes, Recipe APIs, Recipe configs, Recipe Templates\n- [ ] `area/projects`: MLproject format, project running backends\n- [ ] `area/scoring`: MLflow Model server, model deployment tools, Spark UDFs\n- [ ] `area/server-infra`: MLflow Tracking server backend\n- [ ] `area/tracking`: Tracking Service, tracking client APIs, autologging\n\n### What interface(s) does this bug affect?\n\n- [X] `area/uiux`: Front-end, user experience, plotting, JavaScript, JavaScript dev server\n- [ ] `area/docker`: Docker use across MLflow's components, such as MLflow Projects and MLflow Models\n- [ ] `area/sqlalchemy`: Use of SQLAlchemy in the Tracking Service or Model Registry\n- [ ] `area/windows`: Windows support\n\n### What language(s) does this bug affect?\n\n- [ ] `language/r`: R APIs and clients\n- [ ] `language/java`: Java APIs and clients\n- [ ] `language/new`: Proposals for new client languages\n\n### What integration(s) does this bug affect?\n\n- [ ] `integrations/azure`: Azure and Azure ML integrations\n- [ ] `integrations/sagemaker`: SageMaker integrations\n- [ ] `integrations/databricks`: Databricks integrations",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2023-03-13T22:41:46Z",
+   "body": "Thanks @reporter!\r\n\r\n@participant3 Can you advise here? Option 1 sounds quite appealing :)"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-03-18T00:12:45Z",
+   "body": "<!-- assign-maintainer -->\n@participant11 @participant1 @participant12 @participant13 Please assign a maintainer and start triaging this issue."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-03-19T17:55:25Z",
+   "body": "Hey @reporter thank you for the suggestions. \r\n\r\n> Each component is responsible for fetching any experiments it needs on the fly\r\n\r\nCan you explain a bit more here? Basically are we just talking about the experiment list on the left side where it only requires the name so only fetch the name, and let the right side fetch everything else? Or am I missing something? \r\nI think the right side is already configured to fetch just 1 experiment it requires as far as I remember. \r\n\r\nAlso I like the paginated approach to just fetch the name of the experiment. Shouldn't be as bad to store 1M(which is super unlikely that a user creates 1M experiments) experiment names in the redux store. "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-03-24T21:14:42Z",
+   "body": "> Can you explain a bit more here? Basically are we just talking about the experiment list on the left side where it only requires the name so only fetch the name, and let the right side fetch everything else? Or am I missing something? I think the right side is already configured to fetch just 1 experiment it requires as far as I remember.\r\n\r\nWhen not pulling all experiments right away, it was causing a bunch of issues if an experiment wasn't in the store but a user navigates to it. Maybe I'll give a go around at: \r\n* Disconnecting the list from the store entirely\r\n* Removing the initial fetch for all experiments\r\n\r\nAnd see what the issues that might cause. Then we could talk through them?\r\n\r\n> Also I like the paginated approach to just fetch the name of the experiment. Shouldn't be as bad to store 1M(which is super unlikely that a user creates 1M experiments) experiment names in the redux store.\r\n\r\nI like this idea. Is there an api that returns only experiment names? Or maybe parse the full json and only retain the name?\r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-04-05T16:48:17Z",
+   "body": "@participant3 an example PR in #8180 if you want to take a look."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2023-04-12T14:39:16Z",
+   "body": "@reporter \r\n🤔 we should make sure that the solution to this issue will be both well working and intuitive to use. We will try to engage a UX designer and get some guidelines on how to solve this properly, then get back to this thread with some ideas"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-04-12T16:55:46Z",
+   "body": "> @reporter 🤔 we should make sure that the solution to this issue will be both well working and intuitive to use. We will try to engage a UX designer and get some guidelines on how to solve this properly, then get back to this thread with some ideas\r\n\r\nThat would be awesome. #8180 is not a good solution IMO, more an example of pitfalls."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-07-12T18:04:34Z",
+   "body": "Any updates on getting a UX designer involved? Fetching around 5000 experiments seems to be a tipping point since the payload is pretty large. Depending on network latency/the pc the ui runs on for the js parsing the response body."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2023-07-13T22:47:16Z",
+   "body": "Hi @reporter - I'm a UX designer and looking into this. Wondering if a simple pagination control here could help solve this issue?\r\n\r\n![CleanShot 2023-07-13 at 15 44 14@2x](https://github.com/mlflow/mlflow/assets/107518592/56587e69-3015-4d74-8425-1c0ca4dd77e4)\r\n\r\nWe can perhaps have upto, lets say 100 runs show up per page, so users don't have to keep switching between pages and can still browse through their list of experiments. Thoughts? CC @participant4 \r\n"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2023-07-14T07:16:48Z",
+   "body": "@participant5 thanks! the issue here is that the search experiments API uses cursor-based page tokens, meaning we can get the next/previous page but we don't have an indicator of how many pages/results are there. That being said, I believe we have to either\r\n- use \"Next page\" / \"Prev page\" (just like in model list page)\r\n\r\nor alternatively\r\n- use \"Load more\" pattern like in experiment runs page\r\n\r\nwhat's the better approach here?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-07-14T13:11:49Z",
+   "body": "Thanks for taking a look @participant5 :). \r\n\r\nI'll add a bit more detail. The main thing left to solve for is on loading the home page, [all experiments in the experiment table are fetched](https://github.com/mlflow/mlflow/blob/203afbab11f47733476275f1462b33c6ebf8991d/mlflow/server/js/src/experiment-tracking/components/HomePage.tsx#L40-L45) and put in the redux store. This gets slow when it's a large payload.\r\n\r\nThe rest of the components expect the experiments to exist in the store (like a local copy of the database table). If all experiments don't exist in the redux store, the other components break Ex. only experiment 0-25 are fetched on load and in the redux store (so in your example page 1), then  navigating directly to the link for experiment 5000 404's.\r\n\r\nI'm pretty indifferent to how to pagination in the UI actually happens, but think we might run in to the same ordering issues regardless of the pagination style when everything isn't loaded at once."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2023-07-14T22:56:17Z",
+   "body": "Gotcha! Thanks @participant4 and @reporter. @participant4 from a UI standpoint, neither of the approaches are ideal here since we'd want the ability for users to go to a specific page in the list (e.g. if they want to see the oldest experiments). That being said, I'm thinking that for consistency purposes on this page (with runs list), we could go with the \"load more\" pattern here."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2023-07-17T08:16:53Z",
+   "body": "Thanks @participant5! In this case, we just need to memorize the last next_page_token and use it on hitting \"Load more\", just like with experiment runs. @reporter do you think you want to tackle this one? "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-07-19T13:06:22Z",
+   "body": "> Thanks @participant5! In this case, we just need to memorize the last next_page_token and use it on hitting \"Load more\", just like with experiment runs. @reporter do you think you want to tackle this one?\r\n\r\nRan in to quite a few problems last time when trying to not pull everything at once. I've been pretty pressed for time lately so don't think I'd be able to pick it up.  Might be better for someone more familiar with the code base/redux."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2023-08-17T13:41:08Z",
+   "body": "@reporter Is this still a blocker on your side? Sadly we can't prioritize fixing this issue at the moment, but it will be on our radar."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-08-17T14:33:17Z",
+   "body": "It does limit the scalability of the UI generally. It's mostly future proofing for the number of experiments growing over time. So not directly blocked at the moment. Once there's around 10k experiments, that's where it starts presenting."
+  },
+  {
+   "author": "participant6",
+   "created_at": "2023-09-13T13:08:05Z",
+   "body": "Guys, any updates here?\r\n\r\nI think a realistic production use must support 1M+ experimets / runs. They may be divided over time into \"hot\" for more recent ones and \"cold\" for the old ones which will tke more time to fetch.  But currently the product suffers from very bad user experience where with only 1K experimets the user experiences very slow response times that can take minutes. \r\n\r\nDo you guys have any roadmap for improving performance? If this is interesting to you, I am willing to contribute to the subject."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2023-09-15T11:46:23Z",
+   "body": "Hello @participant6 \r\nThanks for reaching out! Sadly improvements to the experiment list are not prioritized at the moment - however, it would be wonderful if you could contribute here. We can provide support where necessary. \r\n\r\nTo recap the necessary steps to improve the performance here, here's the proposal on how to fix it by implementing simple pagination based on the @participant5's guidelines above:\r\n- make the search API call experiment limit modifiable e.g. by function param ([here](https://github.com/mlflow/mlflow/blob/master/mlflow/server/js/src/experiment-tracking/actions.ts#L28))\r\n- fetch fewer experiments on the initial call (e.g. 100)\r\n- after retrieving the experiment list, check if there's `next_page_token` field present in the response and if true, show \"Load more\" button at the end of the list\r\n  - (clicking \"Load more\" should perform a call similar to the initial one, but with `next_page_token` attached)\r\n- wire up filter input box to the request query, i.e. implement a mechanism that will add `filter=name ILIKE \"<filter-value>%\"` query parameter to the search experiments GET API call (according to [those](https://mlflow.org/docs/latest/rest-api.html#mlflowsearchexperiments) docs)\r\n- make sure that the page token gets reset after changing the filter query\r\n\r\nDoes this make sense to you @participant6 ?"
+  },
+  {
+   "author": "participant7",
+   "created_at": "2024-03-26T15:49:44Z",
+   "body": "Hi everyone!\r\nIs there any plan for this feature?\r\nI'm looking into mlflow, and IMO when this feature is missing it really makes the UI unusable. A standard ML ecosystem deployment will have thousands of experiments which will already make the UI overloaded.\r\nAlso there's no way to see experiment creation date, sort by date etc.\r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-04-15T15:27:38Z",
+   "body": "> Hi everyone! Is there any plan for this feature? I'm looking into mlflow, and IMO when this feature is missing it really makes the UI unusable. A standard ML ecosystem deployment will have thousands of experiments which will already make the UI overloaded. Also there's no way to see experiment creation date, sort by date etc.\r\n\r\nIt requires some pretty heavy refactoring. I haven't had the bandwidth to give it another shot."
+  },
+  {
+   "author": "participant7",
+   "created_at": "2024-10-28T12:59:24Z",
+   "body": "@reporter Any progress with the issue? Really looking forward for this "
+  },
+  {
+   "author": "participant8",
+   "created_at": "2025-02-10T02:43:18Z",
+   "body": "Hi, any updates regarding this issue? @participant11 Are there plans to incorporate a fix to this in v2.21.0?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-02-10T03:08:29Z",
+   "body": "I do not plan to pursue this any time soon. It's essentially a rewrite of the front end which is a large project."
+  },
+  {
+   "author": "participant9",
+   "created_at": "2025-07-21T07:56:10Z",
+   "body": "this should be addressed in MLflow 3.2 by #16464"
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "mlflow/mlflow",
+  "default_branch": "master",
+  "commit_sha": "e95bd035167407a2b1c09eec54fd86ff7cde6c55",
+  "as_of": "2023-03-10T21:07:02Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_mlflow_mlflow_8010"
+}

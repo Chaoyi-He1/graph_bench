@@ -1,0 +1,232 @@
+{
+ "repo": "pola-rs/polars",
+ "number": 10016,
+ "url": "https://github.com/pola-rs/polars/issues/10016",
+ "title": "Configure handling of null values in aggregations",
+ "state": "closed",
+ "labels": [
+  "A-ops",
+  "reference"
+ ],
+ "reporter": "stinodego",
+ "created_at": "2023-07-21T10:34:53Z",
+ "closed_at": "2025-01-19T15:41:40Z",
+ "body": "### Problem description\r\n\r\nThis is an often-requested feature.\r\n\r\nThere is some inconsistency between aggregations on how null values are handled, and the way they are handled is currently not configurable.\r\n\r\nExamples:\r\n\r\nVertical aggregation\r\n```python\r\nimport polars as pl\r\n\r\ndf = pl.DataFrame({\"a\": [1, 2, None], \"b\": [3, None, None]})\r\n\r\n# Nulls are ignored. What if I want to raise on null values?\r\ndf[\"a\"].sum()  # 3\r\n\r\n# One null means the product is null. What if I want to ignore null values?\r\ndf[\"a\"].product()  # None - EDIT: Fixed, now returns 2\r\n```\r\n\r\nHorizontal aggregation\r\n```python\r\n# A single null results in null. What if I want null to be treated as 0? - EDIT: Nulls are now ignored\r\ndf.with_columns(pl.sum_horizontal(\"a\", \"b\"))\r\nshape: (3, 3)\r\n┌──────┬──────┬──────┐\r\n│ a    ┆ b    ┆ sum  │\r\n│ ---  ┆ ---  ┆ ---  │\r\n│ i64  ┆ i64  ┆ i64  │\r\n╞══════╪══════╪══════╡\r\n│ 1    ┆ 3    ┆ 4    │\r\n│ 2    ┆ null ┆ 2    │\r\n│ null ┆ null ┆ 0    │\r\n└──────┴──────┴──────┘\r\n\r\n# Nulls are ignored, all nulls results in null. What if I want to propagate null values?\r\ndf.with_columns(pl.max_horizontal(\"a\", \"b\"))\r\nshape: (3, 3)\r\n┌──────┬──────┬──────┐\r\n│ a    ┆ b    ┆ max  │\r\n│ ---  ┆ ---  ┆ ---  │\r\n│ i64  ┆ i64  ┆ i64  │\r\n╞══════╪══════╪══════╡\r\n│ 1    ┆ 3    ┆ 3    │\r\n│ 2    ┆ null ┆ 2    │\r\n│ null ┆ null ┆ null │\r\n└──────┴──────┴──────┘\r\n```\r\n\r\nWe should add some conguration options to both horizontal and vertical aggregations.\r\n\r\nPlease use this thread to discuss possible configuration options.",
+ "comments": [
+  {
+   "author": "ritchie46",
+   "created_at": "2023-07-21T11:29:57Z",
+   "body": "Can you elaborate a bit on what you mean?\r\n\r\nNull values are sometimes handled differently by design. A `sum` of an empty set is 0, while a `var` of an empty set doesn't exist and returns None.\r\n\r\nThe empty set analogy was discussed earlier and that is what we are following now. If we deviate from that somewhere, I think we must open an issue for that on a per case basis."
+  },
+  {
+   "author": "stinodego",
+   "created_at": "2023-07-21T11:53:09Z",
+   "body": "Added some examples from the linked issues.\r\n\r\nI believe @avimallu also requested this in a PR somewhere."
+  },
+  {
+   "author": "avimallu",
+   "created_at": "2023-07-21T13:24:07Z",
+   "body": "Thanks @stinodego. If the empty set analogy was added in, then I think https://github.com/pola-rs/polars/issues/8184 should be closed.\n\nI think there are two suggestions mainly from users: some want null propagation whenever there is null (like me), and some want nulls to be excluded whenever it is there.\n\nIn the case of horizontal aggregations, some of the functions (like `sum_horizontal`) propagate `null`s always, while some (like `max_horizontal`) only when the entire set of values is `null` propagate it.\n\nIn the case of vertical aggregations (that is, by column), we ignore `null`s and don't provide a way to go around it (in case someone wants to).\n\nMy thought on this is that whatever Polars decides to do, it should do so consistently:\n- If Polars decides to provide an argument to handle `null` values, all relevant functions should have it i.e. the `null_strategy` argument (which is named as `ignore_nulls` in the ewm functions).\n- If Polars decides to have a default, non-configurable manner of propagating `null`s, we should also actively promote the expression API in the book to ignore `null`s via it whenever possible (i.e. go the `fill_null` route)."
+  },
+  {
+   "author": "ion-elgreco",
+   "created_at": "2023-07-27T11:38:32Z",
+   "body": "The default behavior of returning nulls in sum_horizontal is odd. You expect this to work similarly to a sum on a column, there it will simply ignore the null values. \r\n\r\nUsing `null_strategy` like @avimallu proposes should work well here, and then setting the default to `ignore_nulls`. If we take a look at Pandas they use skipna for this and it's by default set to True.\r\n\r\n"
+  },
+  {
+   "author": "Sage0614",
+   "created_at": "2023-07-28T15:50:32Z",
+   "body": "In terms of handling Null consistently in aggregation, I think there are a few types of aggregations which people will encounter now or in the future, and people would generally expect you are doing consistent things across them: \r\n\r\ncase 1. aggregation of N by 1 sequence to scaler value, like simple sum([1,2,3,None]) to scaler;\r\ncase 2. aggregation of N by m sequence to scaler value, like weighted sum, or corr, in which each input sequence can have null;\r\ncase 3. aggregation of N by m sequence to N by 1 sequence, like rolling sum or rolling corr, and in each position in the output sequence you need to decide whether to put null or not.\r\n\r\nAlso, we have a corner case where the input sequence is all null\r\n\r\nboth case 1 and case 2 can be seen as special case of case 3:\r\ncase 1 is case 2 when you treat it as 2 sequences of both the original sequence with its bit mask of null;\r\ncase 2 is case 3 when the window length is the whole sequence.\r\n\r\nso, we only need to have a consistent way to deal with case 3 and let case 1 and case 2 to respect the implementation.\r\n\r\nto set the default behavior of null handling to be \"ignore\" is dangerous in my view, if the null is there for some unexpected reason, it almost always delay the issue to be raised much later in the data science pipeline. and you need to go back to find the root cause, or even worse, it is never found until many days later.\r\n\r\nset the default behavior to populate null force the user to think how they should handle null value if it exists, if the downstream process cannot handle null, it fails early and fails fast.\r\n\r\nfor those people who like to save a few key stroke and not like the populate null behavior, I wonder whether there's a per session level option that they can use to alter the default behavior of null handling?\r\n\r\n"
+  },
+  {
+   "author": "Ludecan",
+   "created_at": "2023-07-29T03:13:49Z",
+   "body": "My two cents on the the discussion as a user, coming from [this issue](https://github.com/pola-rs/polars/issues/10155). \r\n\r\nThe way the R language handles missing values in [aggregations](https://www.rdocumentation.org/packages/base/versions/3.6.2/topics/mean) is like [stinodego](https://github.com/pola-rs/polars/issues/10016#issue-1815576648) is proposing. It is by providing an `na.rm` (default `false`, no removing nulls unless explicitly stated) parameter, much like `null_strategy`, indicating whether the nulls should be stripped before calculating the aggregation or not. Then all operations propagate nulls if any.\r\n\r\nThis approach I've found to be very useful, since there's cases when I want to propagate the nulls say, what's the accumulated yearly rainfall if I'm missing half the values in the year, I'd want a null there. What's the average daily rainfall if I'm only missing 3 days? I might want to ignore nulls and calculate the average either way as my sample size is big enough.\r\nI believe case 1 exposed by [Sage0614](https://github.com/pola-rs/polars/issues/10016#issuecomment-1655915295) can be handled by this according to the user's needs.\r\nOddly sum of an empty set is 0 (regardless of na.rm) and prod of an empty set is 1. What is the yearly rainfall accumulation if I have no days in registry? I would expect an NA there, at least if na.rm is true. But I get the sum of an empty set argument.\r\n\r\nFor case 2 R is a bit more involved. It provides the `use` parameter of [cor](https://www.rdocumentation.org/packages/stats/versions/3.6.2/topics/cor). `\"everything\"` means to use all data series complete and propagate Nulls, `\"all.obs\"` raises an error if there's any Null in any of the series, `\"complete.obs\"` deletes rows for which there are Nulls on any series and raises an error if all rows have Nulls, `\"na.or.complete\"` deletes rows for which there are Nulls on any series but returns Null if all rows have Nulls, finally `\"pairwise.complete.obs\"` uses all points across all pairs of series where both values in the pair are not Null (and returns Null if all pairs are Null).\r\n\r\nFor case 3, [rolling aggregations](https://www.rdocumentation.org/packages/base/versions/3.6.2/topics/cumsum), R doesn't provide a way to remove Nulls and they are propagated as soon as they are found, you can't remove nulls before the aggregation because it changes the length of the series/return. [Pandas](https://pandas.pydata.org/pandas-docs/stable/reference/api/pandas.DataFrame.cumsum.html) however does, and it returns null for the location of the missing value, and then resumes accumulation in the next index. I've seen this used in Rainfall data QC, where you calculate the cumsum of two stations with nulls, and find by how much the stations deviated by the end of the year, and in which day the deviations started.\r\n\r\nI wouldn't use the `null_strategy` to do more sophisticated stuff like imputing 0s or imputing the mean. In the above rainfall accumulation example if you're missing only a week of data you might be interested in imputing the missing days as the mean of the remaining days to get an unbiased accumulation (or with 0s if it's a place/time with little rain). If you want to do that, you can manually and explicitly do it (and more complex imputations as well) before calculating your aggregates, so adding more logic in the parameter bloats the API/codebase in my mind and doesn't provide anything extra.\r\n\r\nThanks for all your hard work. Polars is an awesome library."
+  },
+  {
+   "author": "Sage0614",
+   "created_at": "2023-07-29T12:23:53Z",
+   "body": "Thanks @Ludecan 's detail explanation, I've also used R for long time, that's exactly what I am trying to bring about, for the different type of functions in case 1,2 and 3, if you don't propagate null by default, the most \"make sense\" default behavior is going to be very different from group of  function to group function, user cannot remember all the default behavior for different aggregation functions and it will violate the expectation that functions in a library should behave the same way."
+  },
+  {
+   "author": "owenprough-sift",
+   "created_at": "2023-08-23T00:28:45Z",
+   "body": "> Null values are sometimes handled differently by design. A `sum` of an empty set is 0, while a `var` of an empty set doesn't exist and returns None.\r\n> \r\n> The empty set analogy was discussed earlier and that is what we are following now. If we deviate from that somewhere, I think we must open an issue for that on a per case basis.\r\n\r\nThe SQL standard states that `sum()` of zero rows is `null`. If sum of an empty set in polars is intentionally `0`, that should be made clear in the documentation/examples. Polars' sum of an all-`null` series --> `0` tripped me up today and it took me a bit to figure out why I wasn't getting `null`.\r\n"
+  },
+  {
+   "author": "ritchie46",
+   "created_at": "2023-08-23T04:35:53Z",
+   "body": "> > Null values are sometimes handled differently by design. A `sum` of an empty set is 0, while a `var` of an empty set doesn't exist and returns None.\r\n> > The empty set analogy was discussed earlier and that is what we are following now. If we deviate from that somewhere, I think we must open an issue for that on a per case basis.\r\n> \r\n> The SQL standard states that `sum()` of zero rows is `null`. If sum of an empty set in polars is intentionally `0`, that should be made clear in the documentation/examples. Polars' sum of an all-`null` series --> `0` tripped me up today and it took me a bit to figure out why I wasn't getting `null`.\r\n\r\nMaybe open a PR to improve the docs?"
+  },
+  {
+   "author": "stevenlis",
+   "created_at": "2023-10-02T20:23:14Z",
+   "body": "@stinodego I couldn't find any information in the changelog and encountered the issue. My code was in version `0.17.3`, and previously, all `None` would return null. However, in version `0.19.6`, it now returns 0.\r\n\r\n```python\r\nimport polars as pl\r\n\r\ndf = pl.DataFrame({\"a\": [1, 2, None], \"b\": [None, None, None]})\r\nprint(df[\"a\"].sum())\r\nprint(df[\"b\"].sum())\r\n```\r\n```\r\n3\r\n0.0\r\n```\r\n\r\nMy code looks like\r\n```python\r\npl.DataFrame(\r\n    {'id': ['1', '1', '1'],\r\n     'a': [1, 1, 1],\r\n     'b': ['A', 'A', 'B']}\r\n).with_columns(\r\n    pl.col('a').filter(pl.col('b') == 'C').sum().over('id')\r\n)\r\n```\r\nBefore in `0.17.3`\r\n```\r\nshape: (3, 3)\r\n┌─────┬──────┬─────┐\r\n│ id  ┆ a    ┆ b   │\r\n│ --- ┆ ---  ┆ --- │\r\n│ str ┆ i64  ┆ str │\r\n╞═════╪══════╪═════╡\r\n│ 1   ┆ null ┆ A   │\r\n│ 1   ┆ null ┆ A   │\r\n│ 1   ┆ null ┆ B   │\r\n└─────┴──────┴─────┘\r\n```\r\n\r\nNow in `0.19.6`\r\n```\r\nshape: (3, 3)\r\n┌─────┬─────┬─────┐\r\n│ id  ┆ a   ┆ b   │\r\n│ --- ┆ --- ┆ --- │\r\n│ str ┆ i64 ┆ str │\r\n╞═════╪═════╪═════╡\r\n│ 1   ┆ 0   ┆ A   │\r\n│ 1   ┆ 0   ┆ A   │\r\n│ 1   ┆ 0   ┆ B   │\r\n└─────┴─────┴─────┘\r\n```\r\n\r\n\r\n"
+  },
+  {
+   "author": "cmdlineluser",
+   "created_at": "2023-10-02T21:59:54Z",
+   "body": "@stevenlis I think that change was boolean addition https://github.com/pola-rs/polars/pull/8778\r\n\r\nSeems to have been part of `0.17.13` https://github.com/pola-rs/polars/releases/tag/py-0.17.13"
+  },
+  {
+   "author": "ritchie46",
+   "created_at": "2024-02-08T14:14:23Z",
+   "body": "I want to keep the empty set anology.\r\n\r\nFor anyone who wants to deviate from Polars's defaults. Use Polars' strength, its composability. It is very easy to create an aggregation expression that returns `Null` when there are `Nulls` in the `Series`.\r\n\r\n```python\r\nfrom typing import Callable\r\nimport polars as pl\r\n\r\ndef null_agg(col: str, agg: Callable[[pl.Expr], pl.Expr]) -> pl.Expr:\r\n    return pl.when(pl.col(col).null_count() > 0).then(None).otherwise(agg(pl.col(col)))\r\n\r\npl.DataFrame({\r\n    \"a\": [1, 2, None, 3]\r\n}).select(\r\n    null_sum = null_agg(\"a\", lambda c: c.sum()),\r\n    zero_sum = pl.col(\"a\").sum()\r\n)\r\n```"
+  },
+  {
+   "author": "MarkMoulton",
+   "created_at": "2024-02-08T19:11:27Z",
+   "body": "ritchie46 wrote:  \"I want to keep the empty set analogy.\"\r\n\r\nThe problem is that this analogy is not appropriate for dataframes, so it leads to mathematical inconsistencies.  A Polars column is _not a set_.  It is a variable.  Sets have only \"is a member\" (not null) and \"is not a member\" (is null). The null bitmap is the appropriate representation for sets.  The count() method is the appropriate way to perform aggregations on sets.\r\n\r\nVariables have this membership property, but _in addition_ their members are assigned a numerical value and data type that have nothing to do with membership.  They have \"units\" (mass, velocity, dollars, success, days, etc.).  Sums, means, variances, etc. are the appropriate ways to aggregate the values of elements in variables, with this essential rule:  The value resulting from an aggregation operation applied to elements with a given unit should carry the same unit, and be interpretable as such without ambiguity.\r\n\r\nWhen requiring a sum of nulls to return zero, this rule is violated.  In this case, \"0\" does not signify a number with the same units as the elements.  It reflects a different unit -- the \"membership unit\" corresponding to sets.  The consequence is that depending merely on the _accident_ of whether a given column (or row) is populated with data, for instance after a dataframe has been sliced and diced in various ways, its units will switch capriciously between membership units and the proper variable units.  This will yield mathematically unsound results that will in many cases be invisible to the user.\r\n\r\nYes, the alert user can write work-arounds, but why should she have to?  It would be better to have at least a null_strategy option as discussed here.  But the proper and only mathematically sound solution is make a sum of nulls return null as the default behavior, as it was before.\r\n"
+  },
+  {
+   "author": "stinodego",
+   "created_at": "2024-02-08T22:32:32Z",
+   "body": "> In this case, \"0\" does not signify a number with the same units as the elements.\r\n\r\nI don't think that's true. A column indeed represents a certain property, measurement, or whatever. Number of days, dollars, etc. The data type determines the representation of that unit, e.g. an integer representing the number of days. So it would be reasonable to assume the sum of such a column would be an integer representing the number of days, as you point out. Even if some data in the column is missing (or indeed all the data is missing), the result should still be an integer representing the number of days. If I set the result to `null` I would actually be violating this principle. So the way I read it, you are making a case for the status quo, which is returning 0 on a column with missing data."
+  },
+  {
+   "author": "MarkMoulton",
+   "created_at": "2024-02-08T23:11:16Z",
+   "body": "It would certainly _not_ be safe to assume that the sum(all null) is in the same units as the intended variable.  Take the example of temperature readings.  For some reason, sensor 49 isn't working and returns a series of nulls.  The user naively decides to sum up that column, not knowing it is all nulls, and comes to the conclusion:  It must be cold around sensor 49; all its temperatures add up to 0 degrees Celsius.\r\n\r\n(In practice, the user in this case would be saved by using mean() instead of sum(), but that's a matter of luck.)\r\n\r\nConsider a series with only one cell, its value null.  Applying the sum returns 0.  The user concludes the sensor is working and registers 0 degrees, even though the datum itself is clearly non-existent.  You are forced to take the absurd position that 0 = null, that a number is not a number.\r\n\r\nThe only safe way to proceed given sum(all null) = 0 is to check the count of nulls in each column, row, and _group_ during group_by and manually change the sum to null if they are all null.  How efficient is that?  Do you really want to force every user to do that manually for something as simple and important and widely used as summation?\r\n\r\nI just went through that exercise, rewriting my own code to add all these stupid null checks.  It was no picnic."
+  },
+  {
+   "author": "stinodego",
+   "created_at": "2024-02-09T11:16:05Z",
+   "body": "> (In practice, the user in this case would be saved by using mean() instead of sum(), but that's a matter of luck.)\r\n\r\nI don't think it's a matter of luck. Mean has a null identity precisely for the reasons you give in your example.\r\n\r\nHowever, if I have a column with the bank account balance as a float, and I have 0 entries in my data, I can confidently say that the total amount of dollars of people in that table is 0.0.\r\n\r\n> Consider a series with only one cell, its value null. Applying the sum returns 0. The user concludes the sensor is working\r\n\r\nYou shouldn't use the sum aggregation to determine the sensor is working. You should use `null_count`.\r\n\r\nI'm sure there are good reasons for sum/product to have null identities, but I am not finding any good reasons in your arguments.\r\n\r\nThere _is_ definitely a good argument for propagating nulls though. You could argue the sum or the maximum of a column is unknown if some of the values are missing. While you can work around this by writing your own aggregation function as Ritchie showed, I would say this is common enough to warrant its own parameter, e.g. `ignore_nulls`.\r\n\r\nThen again, you could argue that we would also need a `min_count` parameter [like pandas](https://pandas.pydata.org/docs/reference/api/pandas.Series.sum.html) has, and there are probably a number of parameters that would also make sense on possibly every aggregation function. We have to stop somewhere - and maybe we should just not include any parameters at all to emphasize the composability that makes Polars good.\r\n\r\nFinally, I did go back to the examples in the original issue and those have all been standardized to ignore nulls, so at least we're consistent now."
+  },
+  {
+   "author": "bmarcj",
+   "created_at": "2024-02-09T12:18:22Z",
+   "body": "Speaking strictly as a user, the least surprising functionality is probably to match SQL. Having \"What does postgres do?\" line up with polars is very helpful, unless there's really good reasons to deviate (and ideally this is clearly documented, and obviously surmountable in the API)."
+  },
+  {
+   "author": "MarkMoulton",
+   "created_at": "2024-02-09T17:46:03Z",
+   "body": "@bmarcj\r\nI note that postgres SQL seems to return Null when given a sum of Nulls.  Do I have that right?\r\n\r\n@stinodego:\r\nI have shown how the sum(nulls)=0 leads to an unpredictable, and mathematically forbidden, change of units when applied to variables (as opposed to sets).  But you have disregarded that.  \r\n\r\nYou have taken the position that a series of missing temperature readings should sum to 0.0 degrees Celsius, and that a series of missing dollar figures should sum to $0.00.  \r\n\r\nHaving committed to the principle that the sum of two nulls should be 0 and the product of two nulls should be 1, the next logical step is to extend this principle to element-wise addition and multiplication.  Yet Polars has not done this (see below), nor any other numerical package I know of.  If the sum(nulls)=0 principle is sound, why haven't they?  \r\n\r\nThe answer is that the results become dangerously uninterpretable, especially as such sums and products are passed into other functions.  Exactly the same uninterpretability occurs with aggregation expressions, which is how I discovered this change in Polars behavior.  My correlations started returning biased results due to the random appearance of zeros from aggregated variables.  But that is the behavior you have committed yourself (and the rest of us) to.\r\n```\r\ndf = pl.DataFrame({'a': [1, 2, None], 'b': [3, None, None]})\r\nshape: (3, 2)\r\n┌──────┬──────┐\r\n│ a    ┆ b    │\r\n│ ---  ┆ ---  │\r\n│ i64  ┆ i64  │\r\n╞══════╪══════╡\r\n│ 1    ┆ 3    │\r\n│ 2    ┆ null │\r\n│ null ┆ null │\r\n└──────┴──────┘\r\ndf.with_columns([(pl.col('a') + pl.col('b')).alias('sum'), (pl.col('a') * pl.col('b')).alias('product')])\r\nshape: (3, 4)\r\n┌──────┬──────┬──────┬─────────┐\r\n│ a    ┆ b    ┆ sum  ┆ product │\r\n│ ---  ┆ ---  ┆ ---  ┆ ---     │\r\n│ i64  ┆ i64  ┆ i64  ┆ i64     │\r\n╞══════╪══════╪══════╪═════════╡\r\n│ 1    ┆ 3    ┆ 4    ┆ 3       │\r\n│ 2    ┆ null ┆ null ┆ null    │\r\n│ null ┆ null ┆ null ┆ null    │\r\n└──────┴──────┴──────┴─────────┘\r\n# But the sum(nulls)=0 and product(nulls)=1 principle would return this instead:\r\nshape: (3, 4)\r\n┌──────┬──────┬──────┬─────────┐\r\n│ a    ┆ b    ┆ sum  ┆ product │\r\n│ ---  ┆ ---  ┆ ---  ┆ ---     │\r\n│ i64  ┆ i64  ┆ i64  ┆ i64     │\r\n╞══════╪══════╪══════╪═════════╡\r\n│ 1    ┆ 3    ┆ 4    ┆ 3       │\r\n│ 2    ┆ null ┆ null ┆ null    │\r\n│ null ┆ null ┆ 0    ┆ 1       │\r\n└──────┴──────┴──────┴─────────┘\r\n# Is that what you want?\r\n```\r\n\r\n"
+  },
+  {
+   "author": "stinodego",
+   "created_at": "2024-02-09T18:35:45Z",
+   "body": "You are conflating two separate things here: the identity of the aggregation, and the propagation of null values.\r\n\r\nThe identity pertains to the result of `pl.Series([]).sum()`. Polars sets this to 0. So does pandas, for example. PyArrow sets this to null.\r\n\r\nPropagation of null values pertains to the result of `pl.Series([1, None]).sum()`. Polars ignores nulls by default and currently does not offer the option to propagate null values. pandas and pyarrow also ignore null values by default, but offer an option to propagate them.\r\n\r\nIt's clear to me you would like to propagate null values for your use case. We can consider adding a parameter for that like other packages do. Until then, you can define your own aggregation as Ritchie has shown.\r\n\r\nWe are not planning to change the identity of the aggregation. From your responses you seem to want a null identity but are not giving any reasons why."
+  },
+  {
+   "author": "avimallu",
+   "created_at": "2024-02-09T18:36:42Z",
+   "body": "The source of this problem, in my opinion is what `nulls_strategy=\"ignore_nulls\"` means. In R, which is where I came from originally, the equivalent `na.rm` quite literally *removes* null values. See here:\r\n\r\n```R\r\nmean(c(1, NA, NA), na.rm=TRUE) # produces 1, not 0.33333, as one would expect.\r\n```\r\n\r\n> Numpy, nor Pandas\r\n\r\nBringing `numpy` in reference to how to handle `null` values is futile, because it doesn't have `null` values in the first place. Pandas has typically always worked around how `numpy` works in order to handle `null` values, and it obviously hasn't done a good job. Polars is new, and has yet to concretely lay out how to handle them (which is why this issue is there in the first place).\r\n\r\nNow, to the issue at hand:\r\n\r\n1. If Polars decides to follow R's `na.rm` argument, then sum of `null`s producing `0` is perfectly fine, since null values are *ignored* by **removing** them, thereby creating an empty set.\r\n2. What you seem to want, @MarkMoulton, is the ability to **always** propagate `null` values regardless of the above logic.\r\n\r\nThe solution from a complexity perspective, would then be to simply implement what has been proposed in this thread - `ignore_nulls` with perhaps slightly diffferent options:\r\n\r\n1. `remove` - identical to the `na.rm` argument in R, which Polars seems to be following now (from `pl.Series(\"a\", [None, None, 3]).mean()` which returns `3.0`).\r\n2. `propagate` - which is to always say that the presence of `null` values will result in `null` values. \r\n\r\n> Speaking strictly as a user\r\n\r\nFor me, what would be surprising is behavior that differs from *R*, although I admit I'll be a minority in there compared to SQL users ;)"
+  },
+  {
+   "author": "bmarcj",
+   "created_at": "2024-02-09T18:40:56Z",
+   "body": "> For me, what would be surprising is behavior that differs from R\r\n\r\nThat's fair! I think polars has attracted a lot of R refugees unhappy with pandas. (I am also one.)\r\n\r\nWhat does dplyr and data.table do in the three scenarios (all nulls, empty series, mixture)?"
+  },
+  {
+   "author": "avimallu",
+   "created_at": "2024-02-09T18:49:43Z",
+   "body": "They follow base R:\r\n\r\n```R\r\n> library(data.table)\r\n> library(dplyr)\r\n> df = data.frame(\r\n+   a = c(NA, 3, NA),\r\n+   b = c(NA, NA, NA))\r\n> as_tibble(df) |> summarize(across(.cols = c(a, b), \\(x) sum(x)))\r\n# A tibble: 1 × 2\r\n      a     b\r\n  <dbl> <int>\r\n1    NA    NA\r\n> as_tibble(df) |> summarize(across(.cols = c(a, b), \\(x) sum(x, na.rm=TRUE)))\r\n# A tibble: 1 × 2\r\n      a     b\r\n  <dbl> <int>\r\n1     3     0\r\n> as.data.table(df)[, lapply(.SD, \\(x) sum(x))]\r\n       a     b\r\n   <num> <int>\r\n1:    NA    NA\r\n> as.data.table(df)[, lapply(.SD, \\(x) sum(x, na.rm=TRUE))]\r\n       a     b\r\n   <num> <int>\r\n1:     3     0\r\n```"
+  },
+  {
+   "author": "bmarcj",
+   "created_at": "2024-02-09T18:58:42Z",
+   "body": "Thanks. So to be explicit, both R and SQL specification handles this differently (although note that in e.g. `avg(x)`, `null` is ignored and the example matches the R and polars case where the null rows are literally thrown away).\r\n\r\n(For @MarkMoulton: https://www.db-fiddle.com/f/h1cCu17vL8m8dWM8caGJpu/1)\r\n\r\nWell, I have no arguments from set theory or mathematics to make claim that one is superior to the other. \r\n\r\nBeyond obvious consistency from which ever choice is made, I would hope that a third (fourth including pandas?) standard might not be introduced!"
+  },
+  {
+   "author": "MarkMoulton",
+   "created_at": "2024-02-09T19:12:31Z",
+   "body": "@stinodego \r\nI don't intend to conflate the propagation of Nulls with the Null identity problem.\r\n\r\n**Propagation vs Null Identity**\r\nA series that contains some Nulls, but not all, can quite legitimately pass on numerical values by ignoring them, as in R.  It seems okay to allow the user to decide that behavior.\r\n\r\nHowever, aggregation of a series that contains _all_ Nulls should not, in any context other than set theory (e.g., based on the Null bitmap) or when using the count() function, return a number.  The Null Identity is not valid for variables, only for sets.  That is because a Null Identity number, in the context of a variable, has the wrong units and will degrade the validity of any downstream calculations.\r\n\r\nBut I repeat myself."
+  },
+  {
+   "author": "bmarcj",
+   "created_at": "2024-02-09T19:19:14Z",
+   "body": "There's a third case, which is a series containing no rows at all. \r\n\r\nI was going to look at product -  but postgres has no such aggregation (forcing the exponent of the sum of the logs instead!). But this at least gives another consistency check between however the product of an empty/null/mixed series should be defined, as the two should always agree."
+  },
+  {
+   "author": "MarkMoulton",
+   "created_at": "2024-02-09T20:17:34Z",
+   "body": "As a final meditation, does this feel right to you:\r\n\r\nNone + None = 0\r\nNone * None = 1\r\n\r\nIf not, why does this feel right:\r\n\r\nseries.sum([None, None]) = 0\r\nseries.product([None, None]) = 1\r\n\r\n\r\n"
+  },
+  {
+   "author": "stinodego",
+   "created_at": "2024-02-09T20:42:20Z",
+   "body": "You cannot really compare aggregations with arithmetic that way.\r\n\r\nIf I aggregate a billion values, odds are there is at least a bunch of null values in there and with propagating null values the result would then be null. This is quite useless in a lot of use cases.\r\n\r\nIf I sum two columns with a billion values and a few nulls, the resulting column still has a few nulls but also a whole lot of entries with the sum."
+  },
+  {
+   "author": "MarkMoulton",
+   "created_at": "2024-02-09T20:47:27Z",
+   "body": "@stinodego \r\nAggregations _are_ arithmetic!\r\n\r\nBut you miss my intention regarding propagating nulls.  If a column contains a _mix_ of nulls and values, I have no problem at all with ignoring the nulls and returning a number.  That is my preference, in fact, for the reasons you suggest.\r\n\r\nWhat I will not concede is that a column containing **all** nulls, **no** values, should yield any value other than null -- except when the aggregating function is count()."
+  },
+  {
+   "author": "MarkMoulton",
+   "created_at": "2024-02-09T21:08:04Z",
+   "body": "@bmarcj\r\nExactly!"
+  },
+  {
+   "author": "bmarcj",
+   "created_at": "2024-02-09T21:39:07Z",
+   "body": "(For clarity, I above asked if @MarkMoulton was advocating for the SQL standard - and managed to delete my post.)"
+  },
+  {
+   "author": "bmarcj",
+   "created_at": "2024-02-09T21:50:34Z",
+   "body": "Based on my understanding so far:\r\n\r\n| ------------- | R | R (remove nulls) | SQL | Polars |\r\n| ------------- | ------------- |-----------| ----------- | ------- |\r\n|  Sum all nulls           |  null | 0 | null  | 0 |\r\n|  Sum empty series  | 0      | 0 | null  | 0 |\r\n| Sum mixed series   | null | value | value | value |\r\n\r\n"
+  },
+  {
+   "author": "MarkMoulton",
+   "created_at": "2024-02-09T21:56:07Z",
+   "body": "Yes, I'm agreeing with @bmarcj that the SQL standard works for me.  Just to spell out my understanding:\r\n\r\n1. A sum or product of a column, row, or group that contains **only** nulls and no valid values should return null, not 0 or 1.\r\n2. This should continue to be the default behavior for all aggregation functions _except_ for count().\r\n3. count() is special because it is a \"set-related\" function specifically dedicated to enumerating non-null values.\r\n4. Otherwise, if any null values are contained in the column (while still containing non-null values), the value that would be obtained by ignoring the null values should be returned, unless (perhaps) the user explicitly specifies that mixed aggregations should return Null.\r\n\r\nI think this lines up with what @bmarcj has delineated in his helpful table under the SQL column.  It also lines up with what _used_ to be the Polars default behavior."
+  },
+  {
+   "author": "lukemanley",
+   "created_at": "2024-02-10T11:35:48Z",
+   "body": "for completeness, just pointing out how pyarrow (and numpy with nan) let you control this behavior:\r\n\r\n```\r\nimport polars as pl\r\nimport pyarrow as pa\r\nimport pyarrow.compute as pc\r\nimport numpy as np \r\n\r\npc.sum(pa.array([None], type=pa.float64()), min_count=1)  # -> None (default)\r\npc.sum(pa.array([None], type=pa.float64()), min_count=0)  # -> 0.0\r\n\r\nnp.sum(np.array(np.nan))       # -> nan\r\nnp.nansum(np.array([np.nan]))  # -> 0.0\r\n```"
+  },
+  {
+   "author": "ritchie46",
+   "created_at": "2024-02-10T13:31:22Z",
+   "body": "I don't want to change this and am opposed to the SQL analogy here. If in SQL a mixed null/values series sees `NULL` as the identity. All `NULL` should also be seen as the identity.\r\n\r\nAnd most important to me. The sum of an empty `Series` is always 0. \r\n\r\nThe length of the data should NOT change the `NULL` interpretation. We are not going to change this. \r\n\r\nIf you want something different we have given you the building blocks to do so."
+  },
+  {
+   "author": "avimallu",
+   "created_at": "2024-02-10T13:52:55Z",
+   "body": "> (and numpy with nan)\n\nGently pointing out that this is not a measure of completeness. `nan` is not the same as `null`, so this comparison is unwise."
+  },
+  {
+   "author": "Sage0614",
+   "created_at": "2024-02-10T17:20:49Z",
+   "body": "> Based on my understanding so far:\r\n> \r\n> -------------\tR\tR (remove nulls)\tSQL\tPolars\r\n> Sum all nulls\tnull\t0\tnull\t0\r\n> Sum empty series\t0\t0\tnull\t0\r\n> Sum mixed series\tnull\tvalue\tvalue\tvalue\r\n\r\nThat's only for sum in R, R has a family of null handling behavior called na.options (where na is the null equivalent). The behavior documented here is na.rm = True/False where to remove na or not, this is for single value output function, when input is a vector and output is a vector, na can be participated in the window calculation function, where all concequent result have null, or na is skipped in calculation, but output vector put NA on exactly where input is missing, or simply skip and result in a output vector having different length vs input vector, for input have more than 1 vector, e.g. correlation matrix calc, the option is compete.obs or not on so on and so forth\r\n\r\nThe drawback of not populating null in my view, is not some mathematical completeness problem, the problem I see is:\r\n\r\n\r\ncorrectness of calculation:\r\n\r\nnull_option       anticipated_null not_anticipated_null\r\npopulate           null/correct        null/correct\r\nnot_populate    not_null/correct not_null/incorrect\r\n\r\nIn real world, the problem is null is there for all sorts of reasons, and people are not always aware of the existence, for example, if I calculate some aggregation functions for each group of 3000 stocks and 10 years daily data, and a few groups contains null, and as a 'fluent' data scientist, I ran 20 lines of polars of chained operation altogether and get 1 summary value, it will be very hard to find out what you have done wrong, because you get a value after all, and maybe not to far away from the actual correct answer.\r\n\r\nThe value of populating null here is, if you don't anticipate a null in the end, you know something is wrong, and you go back to check. an incorrect anwser is not better than no answer, it's not polars' fault because it is user's ignorance, but the level of pain is the same."
+  },
+  {
+   "author": "MarkMoulton",
+   "created_at": "2024-02-10T21:16:16Z",
+   "body": "@Sage0614 \r\nYour stock market analysis example is a great illustration of the problem.  Nulls can be identified and worked around, and when they are ignored by default they tend not to require any extra work.  The invisible propagation of 0's and 1's through a chained operation is another matter.  That leads to bogus results that may not look bogus at the end of the pipeline.  It was just such an event (my statistical routines starting turning up plausible but bogus results) that brought me to this thread.  That's the kind of thing that, literally, keeps me up nights.  "
+  },
+  {
+   "author": "MarkMoulton",
+   "created_at": "2024-02-10T21:34:21Z",
+   "body": "@ritchie46 wrote:  \"And most important to me. The sum of an empty Series is always 0.\"\r\n\r\nI am genuinely curious to know what changed your mind in this regard.  Was it a paper?  A user complaint?  An insight?  Is there maybe an Issue number you can refer me to?\r\n\r\nAnother question:  In the future, do you plan to adopt the same policy for the addition and multiplication of elements between series, to generate the following result?\r\n\r\n```\r\ndf.with_columns(sum_ = pl.col('a') + pl.col('b'))\r\nshape: (3, 3)\r\n┌──────┬──────┬──────┐\r\n│ a    ┆ b    ┆ sum_ │\r\n│ ---  ┆ ---  ┆ ---  │\r\n│ i64  ┆ i64  ┆ i64  │\r\n╞══════╪══════╪══════╡\r\n│ 1    ┆ 4    ┆ 5    │\r\n│ 2    ┆ null ┆ null │\r\n│ null ┆ null ┆ 0*   │\r\n└──────┴──────┴──────┘\r\n```\r\nJust to be clear, my position is that the third row should (and currently does, inconsistent with the new aggregation policy) return null, instead of 0.\r\n\r\nAsterisk means I changed existing null to zero."
+  },
+  {
+   "author": "bmarcj",
+   "created_at": "2024-02-10T23:12:28Z",
+   "body": "@MarkMoulton If you look at the above table, polars currently matches R when R is configured to throw away nulls. When summing across rows, it currently matches R when nulls are not thrown away.\r\n\r\n I'd like this more explicit (other comments have suggested using R's approach to specifying if nulls should be removed by default or not, with the default set to true), but the two operations are less inconsistent and more *doing different things* - one removes nulls, the other does not."
+  },
+  {
+   "author": "MarkMoulton",
+   "created_at": "2024-02-10T23:25:42Z",
+   "body": "@bmarcj \r\nThanks, that's very helpful to me."
+  },
+  {
+   "author": "ritchie46",
+   "created_at": "2024-02-11T02:42:36Z",
+   "body": "> @ritchie46 wrote: \"And most important to me. The sum of an empty Series is always 0.\"\r\n I am genuinely curious to know what changed your mind in this regard. Was it a paper? A user complaint? An insight? Is there maybe an Issue number you can refer me to?\r\n \r\n The mathematical sense of an empty set. And the same logic in the real world. \"How many apples are in that empty basket?\" would be zero.\r\n \r\n We are not alone in this. Numpy and python have the same behavior:\r\n \r\n ```python\r\n >>> import numpy as np\r\n>>> np.sum([])\r\n0.0\r\n>>> sum([])\r\n0\r\n>>> np.product([])\r\n1.0\r\n ```\r\n\r\nAs I said. You can create an expression that deviates from the defaults. Defaults can (and never will) please everyone. That's why we give you the option to deviate from this.\r\n\r\nI want to close this discussion as I don't think it is useful to repeat everybody's takes over and over. \r\n"
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "pola-rs/polars",
+  "default_branch": "main",
+  "commit_sha": "dfceaeba60dbd36e5bea623305250a4c92f3cb75",
+  "as_of": "2023-07-21T10:34:53Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_pola-rs_polars_10016"
+}

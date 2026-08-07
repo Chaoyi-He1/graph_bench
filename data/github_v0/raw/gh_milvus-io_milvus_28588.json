@@ -1,0 +1,248 @@
+{
+ "repo": "milvus-io/milvus",
+ "number": 28588,
+ "url": "https://github.com/milvus-io/milvus/issues/28588",
+ "title": "[Bug]: Search failed when we insert data into Milvus, both datanode and querynode keep crashing",
+ "state": "closed",
+ "labels": [
+  "kind/bug",
+  "triage/accepted",
+  "stale"
+ ],
+ "reporter": "reporter",
+ "created_at": "2023-11-21T02:18:48Z",
+ "closed_at": "2024-06-28T21:39:56Z",
+ "body": "### Is there an existing issue for this?\n\n- [X] I have searched the existing issues\n\n### Environment\n\n```markdown\n- Milvus version: 2.3.3\r\n- Deployment mode(standalone or cluster): cluster\r\n- MQ type(rocksmq, pulsar or kafka):  kafka  \r\n- SDK version(e.g. pymilvus v2.0.0rc2): pymilvus 2.3.2\r\n- OS(Ubuntu or CentOS): AWS Linux\r\n- CPU/Memory:12 * 8C64G for query node, 1 * 4C8G for data node.\r\n- GPU: No GPU\r\n- Others:\n```\n\n\n### Current Behavior\n\nWe started a 2.2.3 cluster with 12 * 8C64GB query nodes to store a big vector set, but we found the cluster is not stable.\r\n\r\n- The search will fail when writing data into Milvus, the failed message is like `failed to search: leader not available: lastHB=2023-11-21 01:55:07.499389221 +0000 UTC: node=989: node offline: channel=by-dev-rootcoord-dml_9_445714102417550498v0: channel not available`.\r\n- Most of the query nodes keep failing, the data node also crashes frequently, the memory usage of the nodes changed very quickly, see pictures below.\r\n \r\n<img width=\"901\" alt=\"image\" src=\"https://github.com/milvus-io/milvus/assets/3941929/d3960c24-2ede-407b-b8dd-ac50646fbb71\">\r\n\r\n<img width=\"1530\" alt=\"image\" src=\"https://github.com/milvus-io/milvus/assets/3941929/2d0bf55b-8550-49d8-a67c-86eec47a9997\">\r\n\r\n\n\n### Expected Behavior\n\nWe expect the search can work normally when we're inserting data.\n\n### Steps To Reproduce\n\n_No response_\n\n### Milvus Log\n\n[milvus-log.tar.gz](https://github.com/milvus-io/milvus/files/13421047/milvus-log.tar.gz)\r\n\n\n### Anything else?\n\n_No response_",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2023-11-21T02:20:27Z",
+   "body": "/assign @participant4 "
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-11-21T02:21:20Z",
+   "body": "@participant3 \r\ncould you quickly investigate on it? "
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-11-21T03:31:54Z",
+   "body": "@reporter quick questions:\r\n1. how do you insert data,  frequency and batch size? how many concurrent insert requests?\r\n2. what is the dim of your vectors, and if possible, please share the collection schema.\r\n3. what is the datanode and kafka resource request and limit??\r\n\r\n/assign @reporter "
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-11-21T03:53:07Z",
+   "body": "From the pod_describe log, 2 OOMkilled (1 qn and 1dn ), \r\n<img width=\"650\" alt=\"image\" src=\"https://github.com/milvus-io/milvus/assets/21237232/821b54ea-1907-4bca-9736-2e02924bfd46\">\r\n several other 137 code because of probe failed\r\n<img width=\"639\" alt=\"image\" src=\"https://github.com/milvus-io/milvus/assets/21237232/824655c1-e0ed-410c-9cb8-b4dc3d3f5b31\">\r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-11-21T03:55:09Z",
+   "body": "@participant2 Thanks for the reply.\r\n\r\n1. We use Flink job to `upsert` the data because we'd like to keep the identity for the same id, the parallelism is set `5`, batch size is 10000.\r\n2. We have 14 fields, the primary key is `varchar` type, the embedding field is 1536 dim with IVF_FLAT index type (`nlist= 16384`) , the other 12 fields are varchar/int/float as potential filter conditions. I also noticed the scalar fields have Trie or STL_SORT index, not sure if it's related.\r\n3. The resource for data node is 4C8G and 2C13G for Kafka. (Both requests and limits)"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-11-21T03:57:21Z",
+   "body": "@participant3 Do you think adding resource will help?\r\n\r\nFYI:\r\n\r\n- We notice this error at the early stage of the ingestion. At that time the memory usage of query nodes is less than 10G.\r\n- The memory usage of data node seems keep increasing recently (and may be killed due to OOM later). Not sure this is as expected or memory leak happens."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-11-21T04:59:40Z",
+   "body": " I think the insert throughput is too heavy, that causes 1) datanode is not able to flush the data in time; 2) indexnode is not able to build index for all the segments, and the querynodes have to load growing segments(without index); which causes OOM.\r\nMy suggestion is\r\n1. reduce the insert throughput to 20MB/s\r\n2. add 3 more indexnode(the more cpu cores, the faster in building index)\r\n3. if you changed the shard_number in collection schema, add more datanodes to make it equals to the shard_number"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-11-21T06:04:16Z",
+   "body": "> I think the insert throughput is too heavy, that causes 1) datanode is not able to flush the data in time; 2) indexnode is not able to build index for all the segments, and the querynodes have to load growing segments(without index); which causes OOM. My suggestion is\r\n> \r\n> 1. reduce the insert throughput to 20MB/s\r\n> 2. add 3 more indexnode(the more cpu cores, the faster in building index)\r\n> 3. if you changed the shard_number in collection schema, add more datanodes to make it equals to the shard_number\r\n\r\nbut why didn't the flush or quotra triggered?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-11-21T06:24:05Z",
+   "body": "@participant2 I've scaled up the datanode to `2 * 4C16GB`, but it seems they're still crashing? Let me try to add more memory.\r\n```\r\nxxx-datanode-7b488f64cd-ksxtt                           0/1     Running                  1 (98s ago)       11m\r\nxxx-datanode-7b488f64cd-m2n79                           1/1     Running                  3 (4m52s ago)     13m\r\n```"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-11-21T06:35:35Z",
+   "body": "> @participant2 I've scaled up the datanode to `2 * 4C16GB`, but it seems they're still crashing? Let me try to add more memory.\r\n> \r\n> ```\r\n> xxx-datanode-7b488f64cd-ksxtt                           0/1     Running                  1 (98s ago)       11m\r\n> xxx-datanode-7b488f64cd-m2n79                           1/1     Running                  3 (4m52s ago)     13m\r\n> ```\r\n\r\nis it possible to start it over, from milvus re-installing?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-11-21T06:46:16Z",
+   "body": "It's not easy to do that, but we'll consider as a backup plan. Do you have any other suggestion on fixing the issue? Just now I tried 32GB data node, but also got OOM."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-11-21T07:26:22Z",
+   "body": "Scaling to 64GB didn't work either, datanode consumed all the memory and crashed.\r\n\r\n<img width=\"248\" alt=\"image\" src=\"https://github.com/milvus-io/milvus/assets/3941929/5957c9c5-83ba-400d-9b79-e80821e89541\">\r\n\r\nThere're a lot of warning logs like this:\r\n```\r\n[2023/11/21 06:36:57.219 +00:00] [WARN] [datanode/compactor.go:643] [\"compact wrong, all segments' binlogs are empty\"] [planID=445786380543631312]\r\n[2023/11/21 06:36:57.219 +00:00] [WARN] [datanode/compaction_executor.go:98] [\"compaction task failed\"] [planID=445786380543631312] [error=\"compaction plan illegal\"] [errorVerbose=\"compaction plan illegal\\n(1) attached stack trace\\n  -- stack trace:\\n  | github.com/milvus-io/milvus/internal/datanode.init\\n  | \\t/go/src/github.com/milvus-io/milvus/internal/datanode/compactor.go:49\\n  | runtime.doInit\\n  | \\t/usr/local/go/src/runtime/proc.go:6525\\n  | runtime.doInit\\n  | \\t/usr/local/go/src/runtime/proc.go:6502\\n  | runtime.doInit\\n  | \\t/usr/local/go/src/runtime/proc.go:6502\\n  | runtime.doInit\\n  | \\t/usr/local/go/src/runtime/proc.go:6502\\n  | runtime.doInit\\n  | \\t/usr/local/go/src/runtime/proc.go:6502\\n  | runtime.doInit\\n  | \\t/usr/local/go/src/runtime/proc.go:6502\\n  | runtime.main\\n  | \\t/usr/local/go/src/runtime/proc.go:233\\n  | runtime.goexit\\n  | \\t/usr/local/go/src/runtime/asm_amd64.s:1598\\nWraps: (2) compaction plan illegal\\nError types: (1) *withstack.withStack (2) *errutil.leafError\"]\r\n[2023/11/21 06:36:58.598 +00:00] [WARN] [datanode/channel_meta.go:481] [\"sync but no any pk stats\"] [segmentID=445766338245310197]\r\n[2023/11/21 06:37:03.771 +00:00] [WARN] [datanode/channel_meta.go:423] [\"no stats files to load\"] [segmentID=445766338247719233]\r\n[2023/11/21 06:37:05.571 +00:00] [WARN] [datanode/flow_graph_insert_buffer_node.go:474] [\"task pool is full, skip it\"] [segmentID=445766338245710721] [flushed=false] [dropped=false] [auto=false] [position=\"channel_name:\\\"by-dev-rootcoord-dml_9_445714102417550498v0\\\" msgID:\\\"\\\\263&\\\\\\\"\\\\000\\\\000\\\\000\\\\000\\\\000\\\" msgGroup:\\\"datanode-1154-by-dev-rootcoord-dml_9_445714102417550498v0-true\\\" timestamp:445769032512569350 \"] [channel=by-dev-rootcoord-dml_9_445714102417550498v0]\r\n[2023/11/21 06:37:07.353 +00:00] [WARN] [datanode/channel_meta.go:481] [\"sync but no any pk stats\"] [segmentID=445766338273955455]\r\n``` "
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-11-21T08:32:33Z",
+   "body": "Could you please attach the etcd backup for investigation？ Check this: https://github.com/milvus-io/birdwatcher for details about how to backup etcd with birdwatcher"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-11-21T08:39:43Z",
+   "body": "We've decided to rebuild the cluster. If we meet this issue again, we'll add the etcd backup. Thank you for your big help! "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-11-21T09:28:09Z",
+   "body": "@participant2 When I re-install the cluster with `helm uninstall` and then `helm install`, data in etcd and Kafka is still there. Do you know how to make the cluster back to init state without changing the name? "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-11-21T10:36:22Z",
+   "body": "I dropped the collections and restart the ingestion, we reduced the batch size to 10 with 5 parallelisms. But it seems there's still error when the ingestion is in the progress.\r\n```\r\nfailed to search: segment=445791101633495671: segment lacks: channel=by-dev-rootcoord-dml_10_445791101633700507v0: channel not available\r\n```\r\n\r\n<img width=\"1296\" alt=\"image\" src=\"https://github.com/milvus-io/milvus/assets/3941929/5df20a61-b9ca-4f15-b12a-9755780f62a2\">\r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-11-21T11:06:20Z",
+   "body": "The memory usage of query nodes is very small, but some of the nodes keep crashing.\r\n<img width=\"500\" alt=\"image\" src=\"https://github.com/milvus-io/milvus/assets/3941929/1ed5b5cf-a31a-455b-8874-465c5266e84c\">\r\n<img width=\"882\" alt=\"image\" src=\"https://github.com/milvus-io/milvus/assets/3941929/15ae61fd-a0b0-46e8-b192-9e09033b41e3\">\r\n\r\nI exported the latest logs and etcd backup for your further investigation, thanks.\r\n[milvus-log.tar.gz](https://github.com/milvus-io/milvus/files/13425348/milvus-log.tar.gz)\r\n[bw_etcd_ALL.231121-190140.bak.gz](https://github.com/milvus-io/milvus/files/13425381/bw_etcd_ALL.231121-190140.bak.gz)\r\n"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-11-21T11:11:08Z",
+   "body": "@participant4 any ideas?\r\n`[2023/11/21 10:38:11.359 +00:00] [ERROR] [kafka/kafka_consumer.go:103] [\"create kafka consumer failed\"] [topic=by-dev-rootcoord-dml_10] [error=\"Invalid value type int64 for key socket.connection.setup.timeout.ms (expected string,bool,int,ConfigMap)\"]`"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-11-21T12:56:46Z",
+   "body": "> @participant4 any ideas? `[2023/11/21 10:38:11.359 +00:00] [ERROR] [kafka/kafka_consumer.go:103] [\"create kafka consumer failed\"] [topic=by-dev-rootcoord-dml_10] [error=\"Invalid value type int64 for key socket.connection.setup.timeout.ms (expected string,bool,int,ConfigMap)\"]`\r\n\r\ngood catch, this seems to be a config issue"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-11-21T12:59:14Z",
+   "body": "[2023/11/21 10:49:03.217 +00:00] [WARN] [datanode/channel_meta.go:430] [\"failed to load bloom filter files\"] [segmentID=445766338253971023] [error=\"failed to read milvus-sn-rag/stats_log/445714102417550498/445714102417550499/445766338253971023/100/1: NoSuchKey(key=milvus-sn-rag/stats_log/445714102417550498/445714102417550499/445766338253971023/100/1)\"]\r\n[2023/11/21 10:49:03.217 +00:00] [ERROR] [datanode/channel_meta.go:243] [\"failed to init bloom filter\"] [segmentID=445766338253971023] [error=\"failed to read milvus-sn-rag/stats_log/445714102417550498/445714102417550499/445766338253971023/100/1: NoSuchKey(key=milvus-sn-rag/stats_log/445714102417550498/445714102417550499/445766338253971023/100/1)\"] [stack=\"github.com/milvus-io/milvus/internal/datanode.(*ChannelMeta).addSegment\\n\\t/go/src/github.com/milvus-io/milvus/internal/datanode/channel_meta.go:243\\ngithub.com/milvus-io/milvus/internal/datanode.getChannelWithEtcdTickler.func2\\n\\t/go/src/github.com/milvus-io/milvus/internal/datanode/data_sync_service.go:268\\ngithub.com/milvus-io/milvus/pkg/util/conc.(*Pool[...]).Submit.func1\\n\\t/go/src/github.com/milvus-io/milvus/pkg/util/conc/pool.go:79\\ngithub.com/panjf2000/ants/v2.(*goWorker).run.func1\\n\\t/go/pkg/mod/github.com/panjf2000/ants/v2@v2.7.2/worker.go:67\"]"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-11-21T13:00:00Z",
+   "body": "and seems that the stats_log has gone \"NoSuchKey\"\r\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-11-21T13:00:19Z",
+   "body": "did we redeploy the cluster without cleanup the etcd?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-11-21T13:01:32Z",
+   "body": "[2023/11/21 01:47:16.681 +00:00] [WARN] [datanode/compactor.go:643] [\"compact wrong, all segments' binlogs are empty\"] [planID=445766338302186158]\r\n\r\n[2023/11/21 01:47:17.986 +00:00] [WARN] [kafka/kafka_consumer.go:138] [\"consume msg failed\"] [topic=by-dev-rootcoord-dml_2] [groupID=datanode-996-by-dev-rootcoord-dml_2_445766338241826848v1-true] [error=\"Local: Timed out\"]\r\n[2023/11/21 01:47:18.058 +00:00] [WARN] [kafka/kafka_consumer.go:138] [\"consume msg failed\"] [topic=by-dev-rootcoord-dml_0] [groupID=datanode-996-by-dev-rootcoord-dml_0_445766338241826848v0-true] [error=\"Local: Timed out\"]\r\n[2023/11/21 01:47:18.722 +00:00] [INFO] [datanode/segment_sync_policy.go:49] [\"sync segment per"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-11-21T13:03:17Z",
+   "body": "from all the log, this might be something I saw:\r\n1) the insertion batch is huge, each batch is more than 100MB, triggers kafka timeout?\r\n2) you might try to install the cluster or drop the collection, currently some stats log has been deleted by the meta is not cleaned up thus hit the error"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-11-21T13:34:08Z",
+   "body": "> the insertion batch is huge, each batch is more than 100MB, triggers kafka timeout?\r\n\r\nThe batch size was set to 10k before the re-install. Now We've reduced the batch size to 10.\r\n\r\n> you might try to install the cluster or drop the collection, currently some stats log has been deleted by the meta is not cleaned up thus hit the error\r\n\r\nYes, I didn't find the way to clean the etcd/kafka, so I just drop the collections. Now I know how to clean data from [here](https://artifacthub.io/packages/helm/milvus-helm/milvus#uninstall-the-chart), do I need to follow the instruction and re-install the cluster again?\r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-11-21T13:44:39Z",
+   "body": "Rebuilding the cluster with cleaning all the metadata. Will ingest data from the beginning later."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-11-21T14:13:01Z",
+   "body": "Started the ingestion in a clean cluster. I tried to search during ingestion, currently the vector size is only 100k-200k.\r\n\r\n- Sometime the search didn't response and timeout after 60s. \r\n- Sometime the search failed due to `channel not available`\r\n\r\n<img width=\"291\" alt=\"image\" src=\"https://github.com/milvus-io/milvus/assets/3941929/3757dcdd-725c-45a6-93f4-124829df31cc\">\r\n<img width=\"1305\" alt=\"image\" src=\"https://github.com/milvus-io/milvus/assets/3941929/32202aaa-c120-4b86-8e12-679a8d468e96\">\r\n<img width=\"1308\" alt=\"image\" src=\"https://github.com/milvus-io/milvus/assets/3941929/ba65ba07-1913-46d9-b999-625183c21cae\">\r\n\r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-11-21T14:23:27Z",
+   "body": "Logs FYI\r\n\r\n[milvus-log.tar.gz](https://github.com/milvus-io/milvus/files/13427306/milvus-log.tar.gz)\r\n[bw_etcd_ALL.231121-221358.bak.gz](https://github.com/milvus-io/milvus/files/13427234/bw_etcd_ALL.231121-221358.bak.gz)\r\n"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-11-22T00:53:12Z",
+   "body": "it seems that it still fails to create kafka consumer....\r\n`[2023/11/21 14:14:49.711 +00:00] [ERROR] [kafka/kafka_consumer.go:103] [\"create kafka consumer failed\"] [topic=by-dev-rootcoord-dml_2] [error=\"Invalid value type int64 for key socket.connection.setup.timeout.ms (expected string,bool,int,ConfigMap)\"] `"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-11-22T01:55:59Z",
+   "body": "@participant2 @participant1  Have you found the root cause of failing to create kafka consumer? Any quick solution?\r\nBTW I notice upsert causes segment imbalance in query nodes from https://github.com/milvus-io/milvus/issues/28620, we're also impacted by this issue because we're using upsert, right?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-11-22T02:13:21Z",
+   "body": "(Not sure if we can fix this by switching back to v2.2.x, we've never seen this error in 2.2 before)"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2023-11-22T02:16:40Z",
+   "body": "@participant2  @reporter \r\n`socket.connection.setup.timeout.ms` added in this PR\r\nhttps://github.com/milvus-io/milvus/pull/26686/files#diff-708136128f96993332a36f4ae9725c1bd66b50c092c7f5fe39b61be225e5ee24"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2023-11-22T02:17:52Z",
+   "body": "we should fix it which type is wrong "
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-11-23T05:40:06Z",
+   "body": "> (Not sure if we can fix this by switching back to v2.2.x, we've never seen this error in 2.2 before)\r\n\r\n@reporter  which 2.x version you used to use, and did 2.x behave normally with same amount of (all) requests?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-11-23T06:32:54Z",
+   "body": "@participant3 We've switched to v2.2.14, and it behaved normally, we didn't see errors during insertion.\r\nOne difference is that we changed upsert to insert, because we're not sure if upsert works in 2.2"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-12-11T03:46:32Z",
+   "body": "@participant4 Any updates on this issue?"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2023-12-18T08:42:49Z",
+   "body": "\r\n> @participant2 @reporter `socket.connection.setup.timeout.ms` added in this PR https://github.com/milvus-io/milvus/pull/26686/files#diff-708136128f96993332a36f4ae9725c1bd66b50c092c7f5fe39b61be225e5ee24\r\n\r\nThe issue is that we set a value of a config key to int64, here is timeout, however, the kafka client requires the type to be bool, int, or string. We can disable the config now and change the value type to string or int later."
+  },
+  {
+   "author": "participant6",
+   "created_at": "2023-12-21T03:56:18Z",
+   "body": "Do we have a new stable release including the fix above?"
+  },
+  {
+   "author": "participant7",
+   "created_at": "2023-12-21T04:06:39Z",
+   "body": "@participant6  Please wait for the upcoming releases of version 2.2.17 or 2.3.4, which will be available in the near future."
+  },
+  {
+   "author": "participant6",
+   "created_at": "2023-12-21T08:38:31Z",
+   "body": "> @participant2 @reporter socket.connection.setup.timeout.ms added in this PR https://github.com/milvus-io/milvus/pull/26686/files#diff-708136128f96993332a36f4ae9725c1bd66b50c092c7f5fe39b61be225e5ee24\r\n\r\nFYI, I've tried the [latest 2.3 version](https://hub.docker.com/layers/milvusdb/milvus/2.3-latest/images/sha256-b45574fca88b3fde32690ea08bf3e27181990d527cd60460ed36c690887bcbc6?context=explore) released on docker repo. No longer see the message queue related error, but we still cannot query data if the upsert traffic is kept running. I also see below warn log this time but no pod restart anymore. After upsert finished, we can search vectors as normal.\r\n\r\n```\r\n[2023/12/21 07:03:37.707 +00:00] [WARN] [segments/segment.go:865] [\"UpdateSealedSegmentIndex failed, segcore error: UnknownError: Assert \\\"!get_bit(index_ready_bitset_, field_id)\\\" at /go/src/github.com/milvus-io/milvus/internal/core/src/segcore/SegmentSealedImpl.cpp:128\\n => scalar index has been exist at 103\\n\"]\r\n[2023/12/21 07:03:37.707 +00:00] [WARN] [segments/segment_loader.go:1075] [\"failed to load index for segment\"] [traceID=09941e38b4f24f9b9996a2c4395ca1ef] [collection=446423580621407379] [segment=446465718909090142] [error=\"UnknownError: Assert \\\"!get_bit(index_ready_bitset_, field_id)\\\" at /go/src/github.com/milvus-io/milvus/internal/core/src/segcore/SegmentSealedImpl.cpp:128\\n => scalar index has been exist at 103\"] [errorVerbose=\"UnknownError: Assert \\\"!get_bit(index_ready_bitset_, field_id)\\\" at /go/src/github.com/milvus-io/milvus/internal/core/src/segcore/SegmentSealedImpl.cpp:128\\n(1) attached stack trace\\n  -- stack trace:\\n  | github.com/milvus-io/milvus/internal/querynodev2/segments.HandleCStatus\\n  | \\t/go/src/github.com/milvus-io/milvus/internal/querynodev2/segments/cgo_util.go:59\\n  | github.com/milvus-io/milvus/internal/querynodev2/segments.(*LocalSegment).LoadIndexInfo\\n  | \\t/go/src/github.com/milvus-io/milvus/internal/querynodev2/segments/segment.go:865\\n  | github.com/milvus-io/milvus/internal/querynodev2/segments.(*LocalSegment).LoadIndex\\n  | \\t/go/src/github.com/milvus-io/milvus/internal/querynodev2/segments/segment.go:842\\n  | github.com/milvus-io/milvus/internal/querynodev2/segments.(*segmentLoader).loadFieldIndex\\n  | \\t/go/src/github.com/milvus-io/milvus/internal/querynodev2/segments/segment_loader.go:705\\n  | github.com/milvus-io/milvus/internal/querynodev2/segments.(*segmentLoader).LoadIndex\\n  | \\t/go/src/github.com/milvus-io/milvus/internal/querynodev2/segments/segment_loader.go:1073\\n  | github.com/milvus-io/milvus/internal/querynodev2.(*QueryNode).loadIndex\\n  | \\t/go/src/github.com/milvus-io/milvus/internal/querynodev2/handlers.go:126\\n  | github.com/milvus-io/milvus/internal/querynodev2.(*QueryNode).LoadSegments\\n  | \\t/go/src/github.com/milvus-io/milvus/internal/querynodev2/services.go:473\\n  | github.com/milvus-io/milvus/internal/distributed/querynode.(*Server).LoadSegments\\n  | \\t/go/src/github.com/milvus-io/milvus/internal/distributed/querynode/service.go:289\\n  | github.com/milvus-io/milvus/internal/proto/querypb._QueryNode_LoadSegments_Handler.func1\\n  | \\t/go/src/github.com/milvus-io/milvus/internal/proto/querypb/query_coord.pb.go:6346\\n  | github.com/milvus-io/milvus/pkg/util/interceptor.ServerIDValidationUnaryServerInterceptor.func1\\n  | \\t/go/src/github.com/milvus-io/milvus/pkg/util/interceptor/server_id_interceptor.go:54\\n  | github.com/grpc-ecosystem/go-grpc-middleware.ChainUnaryServer.func1.1.1\\n  | \\t/go/pkg/mod/github.com/grpc-ecosystem/go-grpc-middleware@v1.3.0/chain.go:25\\n  | github.com/milvus-io/milvus/pkg/util/interceptor.ClusterValidationUnaryServerInterceptor.func1\\n  | \\t/go/src/github.com/milvus-io/milvus/pkg/util/interceptor/cluster_interceptor.go:48\\n  | github.com/grpc-ecosystem/go-grpc-middleware.ChainUnaryServer.func1.1.1\\n  | \\t/go/pkg/mod/github.com/grpc-ecosystem/go-grpc-middleware@v1.3.0/chain.go:25\\n  | github.com/milvus-io/milvus/pkg/util/logutil.UnaryTraceLoggerInterceptor\\n  | \\t/go/src/github.com/milvus-io/milvus/pkg/util/logutil/grpc_interceptor.go:23\\n  | github.com/grpc-ecosystem/go-grpc-middleware.ChainUnaryServer.func1.1.1\\n  | \\t/go/pkg/mod/github.com/grpc-ecosystem/go-grpc-middleware@v1.3.0/chain.go:25\\n  | <redacted-host>/contrib/instrumentation/google.golang.org/grpc/otelgrpc.UnaryServerInterceptor.func1\\n  | \\t/go/pkg/mod/<redacted-host>/contrib/instrumentation/google.golang.org/grpc/otelgrpc@v0.38.0/interceptor.go:342\\n  | github.com/grpc-ecosystem/go-grpc-middleware.ChainUnaryServer.func1.1.1\\n  | \\t/go/pkg/mod/github.com/grpc-ecosystem/go-grpc-middleware@v1.3.0/chain.go:25\\n  | github.com/grpc-ecosystem/go-grpc-middleware.ChainUnaryServer.func1\\n  | \\t/go/pkg/mod/github.com/grpc-ecosystem/go-grpc-middleware@v1.3.0/chain.go:34\\n  | github.com/milvus-io/milvus/internal/proto/querypb._QueryNode_LoadSegments_Handler\\n  | \\t/go/src/github.com/milvus-io/milvus/internal/proto/querypb/query_coord.pb.go:6348\\n  | google.golang.org/grpc.(*Server).processUnaryRPC\\n  | \\t/go/pkg/mod/google.golang.org/grpc@v1.54.0/server.go:1345\\n  | google.golang.org/grpc.(*Server).handleStream\\n  | \\t/go/pkg/mod/google.golang.org/grpc@v1.54.0/server.go:1722\\n  | google.golang.org/grpc.(*Server).serveStreams.func1.2\\n  | \\t/go/pkg/mod/google.golang.org/grpc@v1.54.0/server.go:966\\n  | runtime.goexit\\n  | \\t/usr/local/go/src/runtime/asm_amd64.s:1598\\nWraps: (2) UnknownError: Assert \\\"!get_bit(index_ready_bitset_, field_id)\\\" at /go/src/github.com/milvus-io/milvus/internal/core/src/segcore/SegmentSealedImpl.cpp:128\\n  |  => scalar index has been exist at 103\\nError types: (1) *withstack.withStack (2) *errutil.leafError\"]\r\n\r\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-12-21T09:56:13Z",
+   "body": "> > @participant2 @reporter socket.connection.setup.timeout.ms added in this PR https://github.com/milvus-io/milvus/pull/26686/files#diff-708136128f96993332a36f4ae9725c1bd66b50c092c7f5fe39b61be225e5ee24\r\n> \r\n> FYI, I've tried the [latest 2.3 version](https://hub.docker.com/layers/milvusdb/milvus/2.3-latest/images/sha256-b45574fca88b3fde32690ea08bf3e27181990d527cd60460ed36c690887bcbc6?context=explore) released on docker repo. No longer see the message queue related error, but we still cannot query data if the upsert traffic is kept running. I also see below warn log this time but no pod restart anymore. After upsert finished, we can search vectors as normal.\r\n> \r\n> ```\r\n> [2023/12/21 07:03:37.707 +00:00] [WARN] [segments/segment.go:865] [\"UpdateSealedSegmentIndex failed, segcore error: UnknownError: Assert \\\"!get_bit(index_ready_bitset_, field_id)\\\" at /go/src/github.com/milvus-io/milvus/internal/core/src/segcore/SegmentSealedImpl.cpp:128\\n => scalar index has been exist at 103\\n\"]\r\n> [2023/12/21 07:03:37.707 +00:00] [WARN] [segments/segment_loader.go:1075] [\"failed to load index for segment\"] [traceID=09941e38b4f24f9b9996a2c4395ca1ef] [collection=446423580621407379] [segment=446465718909090142] [error=\"UnknownError: Assert \\\"!get_bit(index_ready_bitset_, field_id)\\\" at /go/src/github.com/milvus-io/milvus/internal/core/src/segcore/SegmentSealedImpl.cpp:128\\n => scalar index has been exist at 103\"] [errorVerbose=\"UnknownError: Assert \\\"!get_bit(index_ready_bitset_, field_id)\\\" at /go/src/github.com/milvus-io/milvus/internal/core/src/segcore/SegmentSealedImpl.cpp:128\\n(1) attached stack trace\\n  -- stack trace:\\n  | github.com/milvus-io/milvus/internal/querynodev2/segments.HandleCStatus\\n  | \\t/go/src/github.com/milvus-io/milvus/internal/querynodev2/segments/cgo_util.go:59\\n  | github.com/milvus-io/milvus/internal/querynodev2/segments.(*LocalSegment).LoadIndexInfo\\n  | \\t/go/src/github.com/milvus-io/milvus/internal/querynodev2/segments/segment.go:865\\n  | github.com/milvus-io/milvus/internal/querynodev2/segments.(*LocalSegment).LoadIndex\\n  | \\t/go/src/github.com/milvus-io/milvus/internal/querynodev2/segments/segment.go:842\\n  | github.com/milvus-io/milvus/internal/querynodev2/segments.(*segmentLoader).loadFieldIndex\\n  | \\t/go/src/github.com/milvus-io/milvus/internal/querynodev2/segments/segment_loader.go:705\\n  | github.com/milvus-io/milvus/internal/querynodev2/segments.(*segmentLoader).LoadIndex\\n  | \\t/go/src/github.com/milvus-io/milvus/internal/querynodev2/segments/segment_loader.go:1073\\n  | github.com/milvus-io/milvus/internal/querynodev2.(*QueryNode).loadIndex\\n  | \\t/go/src/github.com/milvus-io/milvus/internal/querynodev2/handlers.go:126\\n  | github.com/milvus-io/milvus/internal/querynodev2.(*QueryNode).LoadSegments\\n  | \\t/go/src/github.com/milvus-io/milvus/internal/querynodev2/services.go:473\\n  | github.com/milvus-io/milvus/internal/distributed/querynode.(*Server).LoadSegments\\n  | \\t/go/src/github.com/milvus-io/milvus/internal/distributed/querynode/service.go:289\\n  | github.com/milvus-io/milvus/internal/proto/querypb._QueryNode_LoadSegments_Handler.func1\\n  | \\t/go/src/github.com/milvus-io/milvus/internal/proto/querypb/query_coord.pb.go:6346\\n  | github.com/milvus-io/milvus/pkg/util/interceptor.ServerIDValidationUnaryServerInterceptor.func1\\n  | \\t/go/src/github.com/milvus-io/milvus/pkg/util/interceptor/server_id_interceptor.go:54\\n  | github.com/grpc-ecosystem/go-grpc-middleware.ChainUnaryServer.func1.1.1\\n  | \\t/go/pkg/mod/github.com/grpc-ecosystem/go-grpc-middleware@v1.3.0/chain.go:25\\n  | github.com/milvus-io/milvus/pkg/util/interceptor.ClusterValidationUnaryServerInterceptor.func1\\n  | \\t/go/src/github.com/milvus-io/milvus/pkg/util/interceptor/cluster_interceptor.go:48\\n  | github.com/grpc-ecosystem/go-grpc-middleware.ChainUnaryServer.func1.1.1\\n  | \\t/go/pkg/mod/github.com/grpc-ecosystem/go-grpc-middleware@v1.3.0/chain.go:25\\n  | github.com/milvus-io/milvus/pkg/util/logutil.UnaryTraceLoggerInterceptor\\n  | \\t/go/src/github.com/milvus-io/milvus/pkg/util/logutil/grpc_interceptor.go:23\\n  | github.com/grpc-ecosystem/go-grpc-middleware.ChainUnaryServer.func1.1.1\\n  | \\t/go/pkg/mod/github.com/grpc-ecosystem/go-grpc-middleware@v1.3.0/chain.go:25\\n  | <redacted-host>/contrib/instrumentation/google.golang.org/grpc/otelgrpc.UnaryServerInterceptor.func1\\n  | \\t/go/pkg/mod/<redacted-host>/contrib/instrumentation/google.golang.org/grpc/otelgrpc@v0.38.0/interceptor.go:342\\n  | github.com/grpc-ecosystem/go-grpc-middleware.ChainUnaryServer.func1.1.1\\n  | \\t/go/pkg/mod/github.com/grpc-ecosystem/go-grpc-middleware@v1.3.0/chain.go:25\\n  | github.com/grpc-ecosystem/go-grpc-middleware.ChainUnaryServer.func1\\n  | \\t/go/pkg/mod/github.com/grpc-ecosystem/go-grpc-middleware@v1.3.0/chain.go:34\\n  | github.com/milvus-io/milvus/internal/proto/querypb._QueryNode_LoadSegments_Handler\\n  | \\t/go/src/github.com/milvus-io/milvus/internal/proto/querypb/query_coord.pb.go:6348\\n  | google.golang.org/grpc.(*Server).processUnaryRPC\\n  | \\t/go/pkg/mod/google.golang.org/grpc@v1.54.0/server.go:1345\\n  | google.golang.org/grpc.(*Server).handleStream\\n  | \\t/go/pkg/mod/google.golang.org/grpc@v1.54.0/server.go:1722\\n  | google.golang.org/grpc.(*Server).serveStreams.func1.2\\n  | \\t/go/pkg/mod/google.golang.org/grpc@v1.54.0/server.go:966\\n  | runtime.goexit\\n  | \\t/usr/local/go/src/runtime/asm_amd64.s:1598\\nWraps: (2) UnknownError: Assert \\\"!get_bit(index_ready_bitset_, field_id)\\\" at /go/src/github.com/milvus-io/milvus/internal/core/src/segcore/SegmentSealedImpl.cpp:128\\n  |  => scalar index has been exist at 103\\nError types: (1) *withstack.withStack (2) *errutil.leafError\"]\r\n> ```\r\n \r\nThis  seems to be a different issue. please open another issue on it "
+  },
+  {
+   "author": "participant6",
+   "created_at": "2023-12-21T10:06:56Z",
+   "body": "Got, here is the link https://github.com/milvus-io/milvus/issues/29401 for the issue."
+  },
+  {
+   "author": "participant8",
+   "created_at": "2024-01-19T04:55:14Z",
+   "body": "It appears the primary issue with Milvus stems from high insert throughput causing data node crashes and query node instability. The recent fix related to `socket.connection.setup.timeout.ms` in Kafka should address the Kafka consumer creation problem. However, the upsert process causing segment imbalance and subsequent query failures is a different issue.\r\n\r\nRecommendations:\r\n1. Update to the latest version that includes the Kafka fix.\r\n2. Consider reducing the batch size and parallelism in your upserts to manage load more effectively.\r\n3. Monitor the system for any new errors post-update and adjust configurations accordingly.\r\n4. Open a new issue for the upsert causing segment imbalance for focused troubleshooting.\r\n\r\nHope this helps!"
+  },
+  {
+   "author": "stale[bot]",
+   "created_at": "2024-06-15T16:18:50Z",
+   "body": "This issue has been automatically marked as stale because it has not had recent activity. It will be closed if no further activity occurs. Thank you for your contributions.\nRotten issues close after 30d of inactivity. Reopen the issue with `/reopen`.\n"
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "milvus-io/milvus",
+  "default_branch": "master",
+  "commit_sha": "d7145e2c066556c2dd753bde5467a7f5198ca112",
+  "as_of": "2023-11-21T02:18:48Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_milvus-io_milvus_28588"
+}

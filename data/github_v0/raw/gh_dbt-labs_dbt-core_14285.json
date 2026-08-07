@@ -1,0 +1,162 @@
+{
+ "repo": "dbt-labs/dbt-core",
+ "number": 14285,
+ "url": "https://github.com/dbt-labs/dbt-core/issues/14285",
+ "title": "New Fusion connection management on Snowflake and BigQuery produces timeouts (threads config is ignored)",
+ "state": "closed",
+ "labels": [
+  "type:bug",
+  "status:triage",
+  "status:needs-repro",
+  "release/awaiting-release",
+  "engine:v2",
+  "source:customer"
+ ],
+ "reporter": "schwericke",
+ "created_at": "2026-02-20T13:29:17Z",
+ "closed_at": "2026-05-21T13:45:03Z",
+ "body": "**Describe the bug**\n`dbtf run --help` shows --threads defaults to `max_cpu`, not the profile value:\n```\n--threads <THREADS>    The number of threads to use [Run with --threads 0 to use max_cpu [default: max_cpu]]\n```\n\nprofiles.yml sets threads: 4, but dbtf run ignores that, causing severe warehouse contention. Core correctly reads the profile and uses 4 threads.\n\n**What version of dbt Fusion is this bug in? (find out by running `dbt --version`)**\n2.0.0-preview.120\n\n**Is this a discrepancy between the dbt Fusion Engine and dbt Core? Check one.**\n- [x] YES\n- [ ] NO\n\n**Expected behavior**\nFusions should read threads from profiles.yml\n\n**Operating System and CPU Type:**\nLinux 6.6.87.2 (WSL2), x86_64, 22 CPUs\n",
+ "comments": [
+  {
+   "author": "dataders",
+   "created_at": "2026-02-20T17:18:19Z",
+   "body": "hey @schwericke what data platform are you on?\n\nhave you seen the recent Fusion-specific addition to the [Using threads docs page](https://docs.getdbt.com/docs/running-a-dbt-project/using-threads#fusion-engine-thread-optimization)?\n\nwe _could_ respect user threads, but our current philosophy is that users shouldn't have to think about it and dbt should handle warehouse concurrency well.\n\nAdmittedly, we have improvements to handle it better. For example, if you're on Snowflake, we did ship a change in preview.120 that we know opens too many connections. I'd be curious if you were to update to a newer version, if you see any improvement.\n\n\n\n\n"
+  },
+  {
+   "author": "botana-te",
+   "created_at": "2026-02-20T17:47:38Z",
+   "body": "hi @dataders! I'm on `preview.120`. I can confirm dbtf makes at least 80 connections to Redshift on parallel although my `profiles.yml` sets it for 16 threads. It would be great if it used the threads the user set."
+  },
+  {
+   "author": "dataders",
+   "created_at": "2026-02-20T17:55:23Z",
+   "body": "@botana-te thanks for flagging! we're looking into this specific Redshift issue as we speak. stay tuned."
+  },
+  {
+   "author": "schwericke",
+   "created_at": "2026-02-23T15:34:04Z",
+   "body": "@dataders Thank you for your answer. Good to know that you are aware of the congestions issues with Snowflake. I share your vision that it would be nice if the user does not need to mind the thread settings anymore.\n\nIn my current situation working on Snowflake with an extra small warehouse, my 17 base models run into a severe traffic jam. \nMy build with Fusion needs 120s versus 20s with Core. If this is a feature it requires some refinement for small warehouses.\n\nWith the newest preview.126 I do sadly _not_ experience any improvements."
+  },
+  {
+   "author": "radian21",
+   "created_at": "2026-03-12T01:05:45Z",
+   "body": "Reporting in that on dbt-fusion 2.0.0-preview.149 in Snowflake, I'm getting numerous dbt1308 timeouts. My project is large-ish at 1,400+ models. Lots of queuing and timeouts due to the warehouse not being able to process the queue fast enough to keep up with Fusion pushing onto the queue - at least that's my theory."
+  },
+  {
+   "author": "eliasdefaria",
+   "created_at": "2026-03-12T07:38:41Z",
+   "body": "@radian21 Thanks for flagging! Wanted to make sure @felipecrv saw this as he the engineer on our end working on this issue. We'll keep you updated once that's resolved. I'm going to update the title of this issue to reflect the timeout scenario"
+  },
+  {
+   "author": "sitegroove",
+   "created_at": "2026-03-12T19:46:03Z",
+   "body": "Having same issue on Bigquery. Opens to many connections and getting timeout errors, so basically for any production runs it completely useless on large number of models with data tests. For some reason setting `--threads 1` works, but if i set `--threads 2` then it ignores it and opens to many connections causing timeouts. This looks like a critical issue with fusion. cc @eliasdefaria "
+  },
+  {
+   "author": "radian21",
+   "created_at": "2026-03-13T13:38:59Z",
+   "body": "Thanks @eliasdefaria and @felipecrv. Adding some more context. My understanding from the [dbt docs](https://docs.getdbt.com/docs/running-a-dbt-project/using-threads?version=1.12#fusion-engine-thread-optimization) is that, by design, fusion seeks to abstract away the need for the engineer to worry about setting the thread count unlike dbt-core and tries to optimize this internally. \n\nThe docs state for Snowflake:\n\n> Fusion ignores user-set threads and automatically optimizes parallelism for maximum performance.\nThe only supported override is threads: 1, which can also help resolve timeout issues if set.\n\nThis statement is not quite clear. What is the intended behavior when the supported override of `threads: 1` is used in the profile? Does fusion try to truly single-thread the processing to control timeouts in this case? If so, I've seen this fail when running many models even on a 2XL warehouse (much larger than I normally use). I've witnessed continued dbt1308 timeouts even with 1 thread configured.\n\nOr is the design intent of `threads: 1` something else - more an an *override flag*? Does this setting trigger fusion to attempt a different strategy that remains multi-threaded to \"help resolve timeout issues\"?\n\nThanks for your insights and help to resolve this issue."
+  },
+  {
+   "author": "felipecrv",
+   "created_at": "2026-03-13T14:43:05Z",
+   "body": "First of all, Fusion needs improvement here. There is *an issue* and I'm working on a fix right now. I don't think the docs would be able to explain all the details.\n\n## The issue\n\n`threads` is a setting from dbt Core that leaks implementation details. It assumes that limiting threads is possible and by doing so can limit the number of connections which really is the goal of the setting.\n\nFusion uses `tokio`. Tokio uses thread-pools for everything. When you dispatch work (async/await) it can go anywhere (any thread).\n\nThere's an async pool with a fixed size proportional to number of CPUs. These threads are supposed to run non-blocking operations. They are supposed to quickly consume short duration tasks and schedule short duration tasks.\n\nWhen you need to run jinja, open a file (`tokio::fs`), do something on the database, you must wrap the work in a `tokio::task::spawn_blocking`. This turns blocking work into a quick async task that simply sends the work to the second thread-pool. This thread pool can have up to 512 threads. The number must be high because every blocking operation uses it.\n\nLimiting these threads would reduce the number of connections used by Fusion but would also slow down everything in a bad way.\n\n## The fix\n\nInterpret `threads` to mean the \"maximum number of connections\". The difficulty here is now enforcing the limit.\n\nBlocking when a new connection is requested would slow down operations indefinitely (minutes), pushing tokio to create more threads in the blocking pool. The more threads you have, the harder it is for the threads to reuse an existing connection.\n\nWe need to track the number of connections (easy) then, at the dbt tasks level, signal backpressure to `tokio` instead scheduling more work when connections are the limit.\n\nConnections should jump between threads now, but we need to be careful to not interleave multiple nodes on the same connection.\n\nA challenge here is that nodes are black boxes containing arbitrary jinja code. We might have to overestimate backpressure, but still better than limiting threads at a global level."
+  },
+  {
+   "author": "felipecrv",
+   "created_at": "2026-03-13T15:39:55Z",
+   "body": "A *step towards* the fix: https://github.com/dbt-labs/dbt-fusion/commit/a479e37c2dccd56813a0eba987c6a250b243d353"
+  },
+  {
+   "author": "jeremyyeo",
+   "created_at": "2026-04-30T20:52:01Z",
+   "body": "@akbog @eliasdefaria @felipecrv \n\n<img width=\"1912\" height=\"1237\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/01957f7d-c0c5-4f7e-a30d-e05443935957\" />\n\nFwiw - this appear to be closed as of `175` but I can see that it still isn't working as we expect.\n\n100 models (that take 120 seconds each) are being built simultaneously even though the command specifies to run only 2 models at a time (threads 2):\n\n```sql\n-- models/foo_1.sql\n-- models/foo_2.sql\n-- models/foo_...sql\n-- models/foo_100.sql\nselect system$wait(120) as c\n```\n\n```sh\n$ dbtf run --threads 2\n...\nFinished 'run' successfully for target 'ci' [2m 4s]\nProcessed: 100 models\nSummary: 100 total | 100 success\n```\n\n^ The total run time for the 100 models is 2 minutes even though it should be way longer (since only 2 models should be submitted to snowflake at any one time - 50 * 120 seconds = 1.66666667 hours).\n\nFusion is doing this:\n\n<img width=\"2106\" height=\"1280\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/7ef6a119-d8ef-44e5-bfdc-b6475526ce30\" />\n\n<img width=\"1912\" height=\"1237\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/dbfd922b-259a-4912-a1c3-587c896d0e22\" />\n\n<img width=\"1635\" height=\"1607\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/9e4c071e-87ea-433c-9bdb-4b2b1fecabbf\" />\n\n### Core behaviour\n\nWhere as we need it to be as core does - which is:\n\n<img width=\"2433\" height=\"1285\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/57b92ee8-b741-4b72-9323-4eccff75c43d\" />\n\n<img width=\"2117\" height=\"1362\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/9d0c1fa8-5939-4deb-9e10-da138f0d69d0\" />\n\n<img width=\"2805\" height=\"1619\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/c1f3e8eb-f523-4e1a-952c-2be3647fc2f4\" />\n\n\n"
+  },
+  {
+   "author": "github-actions[bot]",
+   "created_at": "2026-05-04T05:59:24Z",
+   "body": "## Fix Merged — Awaiting Release\n\nThis issue has been resolved and the fix is merged, but it has not yet shipped in a release.\n\nReleases typically go out within **~1 week**. We'll update this issue with the exact version once it's live.\n\nSubscribe to this issue to get notified when the fix is available."
+  },
+  {
+   "author": "radian21",
+   "created_at": "2026-05-08T11:36:19Z",
+   "body": "Excellent writeup @jeremyyeo "
+  },
+  {
+   "author": "radian21",
+   "created_at": "2026-05-11T14:22:18Z",
+   "body": "@jeremyyeo I saw you reopened this bug after it was Closed with `fix merged-awaiting release`. It still has the `release/awaiting-release` label.\n\nWhat did you find that caused you to reopen it? Do you have an estimate on the release timing?  Thanks."
+  },
+  {
+   "author": "patkearns10",
+   "created_at": "2026-05-15T00:45:30Z",
+   "body": "Seeing this with an Enterprise customer as well. Seems like it is not fixed. "
+  },
+  {
+   "author": "jeremyyeo",
+   "created_at": "2026-05-15T00:55:38Z",
+   "body": "As of `dbt-fusion 2.0.0-preview.176` - we're still running without respecting `--threads`. As per my example above - fusion is still running all 100 models simultaneously even with `--threads 2`. \n\n<img width=\"1177\" height=\"949\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/0670eecf-2c9d-4989-887a-6c7b477704a9\" />\n\n^ Observe basically same start time for all models - it should be spaced out 2 at a time.\n\n@akbog @eliasdefaria "
+  },
+  {
+   "author": "robinsaa",
+   "created_at": "2026-05-17T11:34:16Z",
+   "body": "Running into the same issue on Snowflake — adding detail here as it may differ slightly from the Redshift case above.\n\n**Environment**\n- dbt Fusion (latest) - Cloud\n- Snowflake\n- ~3,000+ models and tests\n\n**Symptoms**\n\nAfter upgrading from dbt Core to Fusion, runs that previously completed reliably now intermittently fail with:\n\n```\ntimeout after MMmSs and 8 attempts. HTTP Status: 503. Hanging?\n```\n\nChecking Snowflake query history, I can see 20+ queries being submitted simultaneously at peak, which eventually causes Snowflake to start rejecting requests — leading to the 503s above.\n\n**Root cause (suspected)**\n\nThe [Fusion docs](https://docs.getdbt.com/docs/fusion/about-fusion#thread-management) explicitly state that for Snowflake, the `threads` setting is ignored and Fusion instead automatically optimises parallelism for maximum performance. On a large project like ours, this uncapped parallelism appears to be overloading the warehouse.\n\nWith dbt Core, `threads` in `profiles.yml` acted as a hard cap and we never saw this. Fusion's approach works well on smaller projects, but at 3,000+ models it seems to saturate Snowflake's connection limits.\n\n**Request**\n\nWould it be possible to expose a way to cap concurrency for Snowflake, even if Fusion's default is to auto-optimise? Something like a `max_threads` or `fusion_max_parallelism` override in `profiles.yml / dbt cloud` would be a safe escape hatch for large projects hitting warehouse limits."
+  },
+  {
+   "author": "mishamsk",
+   "created_at": "2026-05-21T18:00:02Z",
+   "body": "I've merged a change that should properly honor `--threads` as effective cap on connections. It should land in the next release soon.\n\nthe changelog line will read:\n> Honor the configured threads limit when applying connection backpressure, so runs saturate but do not overshoot connection concurrency"
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "dbt-labs/dbt-core",
+  "default_branch": "main",
+  "commit_sha": "1411f9f26d1681890eead3499ad575c3dc879fa6",
+  "as_of": "2026-02-20T13:29:17Z",
+  "method": "github_commits_until"
+ },
+ "images": [
+  {
+   "where": "c10",
+   "source_url": "https://github.com/user-attachments/assets/01957f7d-c0c5-4f7e-a30d-e05443935957",
+   "file": "gh_dbt-labs_dbt-core_14285_img0.png"
+  },
+  {
+   "where": "c10",
+   "source_url": "https://github.com/user-attachments/assets/7ef6a119-d8ef-44e5-bfdc-b6475526ce30",
+   "file": "gh_dbt-labs_dbt-core_14285_img1.png"
+  },
+  {
+   "where": "c10",
+   "source_url": "https://github.com/user-attachments/assets/dbfd922b-259a-4912-a1c3-587c896d0e22",
+   "file": "gh_dbt-labs_dbt-core_14285_img2.png"
+  },
+  {
+   "where": "c10",
+   "source_url": "https://github.com/user-attachments/assets/9e4c071e-87ea-433c-9bdb-4b2b1fecabbf",
+   "file": "gh_dbt-labs_dbt-core_14285_img3.png"
+  },
+  {
+   "where": "c10",
+   "source_url": "https://github.com/user-attachments/assets/57b92ee8-b741-4b72-9323-4eccff75c43d",
+   "file": "gh_dbt-labs_dbt-core_14285_img4.png"
+  },
+  {
+   "where": "c10",
+   "source_url": "https://github.com/user-attachments/assets/9d0c1fa8-5939-4deb-9e10-da138f0d69d0",
+   "file": "gh_dbt-labs_dbt-core_14285_img5.png"
+  },
+  {
+   "where": "c10",
+   "source_url": "https://github.com/user-attachments/assets/c1f3e8eb-f523-4e1a-952c-2be3647fc2f4",
+   "file": "gh_dbt-labs_dbt-core_14285_img6.png"
+  },
+  {
+   "where": "c15",
+   "source_url": "https://github.com/user-attachments/assets/0670eecf-2c9d-4989-887a-6c7b477704a9",
+   "file": "gh_dbt-labs_dbt-core_14285_img7.png"
+  }
+ ],
+ "slug": "gh_dbt-labs_dbt-core_14285"
+}

@@ -1,0 +1,189 @@
+{
+ "repo": "langchain-ai/langchain",
+ "number": 2133,
+ "url": "https://github.com/langchain-ai/langchain/issues/2133",
+ "title": "RetrievalQAWithSourcesChain causing openai.error.InvalidRequestError: This model's maximum context length is 4097 tokens",
+ "state": "closed",
+ "labels": [],
+ "reporter": "reporter",
+ "created_at": "2023-03-29T03:56:43Z",
+ "closed_at": "2023-05-12T03:02:00Z",
+ "body": "I want to migrate from `VectorDBQAWithSourcesChain` to `RetrievalQAWithSourcesChain`. The sample code use Qdrant vector store, it work fine with VectorDBQAWithSourcesChain.\r\n\r\nWhen I run the code with RetrievalQAWithSourcesChain changes, it prompt me the following error:\r\n```\r\nopenai.error.InvalidRequestError: This model's maximum context length is 4097 tokens, however you requested 4411 tokens (4155 in your prompt; 256 for the completion). Please reduce your prompt; or completion length.\r\n```\r\n\r\nThe following is the `git diff` of the code:\r\n```diff\r\ndiff --git a/ask_question.py b/ask_question.py\r\nindex eac37ce..e76e7c5 100644\r\n--- a/ask_question.py\r\n+++ b/ask_question.py\r\n@@ -2,7 +2,7 @@ import argparse\r\n import os\r\n \r\n from langchain import OpenAI\r\n-from langchain.chains import VectorDBQAWithSourcesChain\r\n+from langchain.chains import RetrievalQAWithSourcesChain\r\n from langchain.vectorstores import Qdrant\r\n from langchain.embeddings import OpenAIEmbeddings\r\n from qdrant_client import QdrantClient\r\n@@ -14,8 +14,7 @@ args = parser.parse_args()\r\n url = os.environ.get(\"QDRANT_URL\")\r\n api_key = os.environ.get(\"QDRANT_API_KEY\")\r\n qdrant = Qdrant(QdrantClient(url=url, api_key=api_key), \"docs_flutter_dev\", embedding_function=OpenAIEmbeddings().embed_query)\r\n-chain = VectorDBQAWithSourcesChain.from_llm(\r\n-        llm=OpenAI(temperature=0, verbose=True), vectorstore=qdrant, verbose=True)\r\n+chain = RetrievalQAWithSourcesChain.from_chain_type(OpenAI(temperature=0), chain_type=\"stuff\", retriever=qdrant.as_retriever())\r\n result = chain({\"question\": args.question})\r\n \r\n print(f\"Answer: {result['answer']}\")\r\n```\r\nIf you need the code of data ingestion (create embeddings), please check it out:\r\nhttps://github.com/reporter/flutter-gpt/blob/openai-qdrant/create_embeddings.py\r\n\r\nAny idea how to fix it?\r\n\r\nThank you.",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2023-03-30T08:19:41Z",
+   "body": "same issue here\r\n"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-03-30T08:21:27Z",
+   "body": "I am also looking for a way to limit the amount of data being sent to an external source. Ideally, I would prefer to not make any changes to the existing code. \r\n\r\nHowever, I believe the best solution would be to implement a `limiter` to the classes that interact with OpenAI's API. This is because we are aware of the limits and can truncate text before sending it. We could also display a warning message in the console.\r\n\r\nhttps://github.com/hwchase17/langchain/issues/2140"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-03-30T10:54:25Z",
+   "body": "I met the same problem when I want to query in some chinese documents which I put them into chromadb\r\n\r\n```\r\nembeddings = OpenAIEmbeddings(openai_api_key=os.environ['OPENAI_API_KEY'])\r\ndocsearch = Chroma.from_documents(texts, embeddings)\r\nretriever = docsearch.as_retriever()\r\nqa = RetrievalQA.from_llm(llm=OpenAI(), retriever=retriever)\r\n\r\nquery = \"what\"\r\nqa.run(query)\r\n```\r\n\r\nYou can see my prompt is very short, but it says:\r\nInvalidRequestError: This model's maximum context length is 4097 tokens, however you requested 6990 tokens (6734 in your prompt; 256 for the completion). Please reduce your prompt; or completion length.\r\n"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2023-03-31T08:27:34Z",
+   "body": "You can try setting `reduce_k_below_max_tokens=True`, it is supposed to limit the number of results to return from store based on tokens limit. But for some reason, it seems that it only works on chat models (GPT-3.5/GPT-4), at least from my testing."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-04-03T04:19:15Z",
+   "body": "> You can try setting `reduce_k_below_max_tokens=True`, it is supposed to limit the number of results to return from store based on tokens limit. But for some reason, it seems that it only works on chat models (GPT-3.5/GPT-4), at least from my testing.\r\n\r\nThat's works! Please review the latest code at https://github.com/reporter/flutter-gpt/blob/openai/ask_question.py, appreciate if you spot any improvement.\r\n\r\nThanks."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2023-04-03T10:28:34Z",
+   "body": "> You can try setting `reduce_k_below_max_tokens=True`, it is supposed to limit the number of results to return from store based on tokens limit. But for some reason, it seems that it only works on chat models (GPT-3.5/GPT-4), at least from my testing.\r\n\r\nthis a good job，but i dont know how to set reduce_k_below_max_tokens=True？Can you give me some examples"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-04-03T11:33:47Z",
+   "body": "Please see my code example at https://github.com/reporter/flutter-gpt/blob/openai/ask_question.py#L42\r\n\r\nLet's see if it works for you. "
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-04-04T03:54:41Z",
+   "body": "Thanks, @reporter , I saw your code, but in your code you use RetrievalQAWithSourcesChain, which has reduce_k_below_max_tokens field, as following reference said.\r\nhttps://<redacted-host>/en/latest/reference/modules/chains.html#langchain.chains.RetrievalQAWithSourcesChain\r\n\r\nBut I use RetrievalQA, it did not has reduce_k_below_max_tokens field, please check this reference\r\nhttps://<redacted-host>/en/latest/reference/modules/chains.html#langchain.chains.RetrievalQA\r\n\r\nshould I change to RetrievalQAWithSourcesChain? what's the different between them?\r\n\r\nThanks!\r\n"
+  },
+  {
+   "author": "participant6",
+   "created_at": "2023-04-05T14:49:28Z",
+   "body": "There is a more fundamental fix for this issue:\r\nretriever=VectorStoreRetriever(vectorstore=vectorstore, search_kwargs={\"filter\":{\"type\":\"filter\"},\"k\":3},),\r\n\r\nI guess it will work for qdrant as well"
+  },
+  {
+   "author": "participant7",
+   "created_at": "2023-04-11T09:42:32Z",
+   "body": "> Thanks, @reporter , I saw your code, but in your code you use RetrievalQAWithSourcesChain, which has reduce_k_below_max_tokens field, as following reference said. https://<redacted-host>/en/latest/reference/modules/chains.html#langchain.chains.RetrievalQAWithSourcesChain\r\n> \r\n> But I use RetrievalQA, it did not has reduce_k_below_max_tokens field, please check this reference https://<redacted-host>/en/latest/reference/modules/chains.html#langchain.chains.RetrievalQA\r\n> \r\n> should I change to RetrievalQAWithSourcesChain? what's the different between them?\r\n> \r\n> Thanks!\r\n\r\n我也有这个问题，我用的是openai.ChatCompletion"
+  },
+  {
+   "author": "participant8",
+   "created_at": "2023-04-12T09:55:10Z",
+   "body": "@participant5 \r\n\r\nThere seems to be `max_tokens_limit` parameter, but that is not reflected in the documentation.\r\n\r\nThis fixed my issue:\r\n\r\n`ConversationalRetrievalChain.from_llm(OpenAI(temperature=0), vectorstore.as_retriever(search_kwargs={\"k\": 1}), max_tokens_limit=4097)`"
+  },
+  {
+   "author": "participant9",
+   "created_at": "2023-04-13T08:12:44Z",
+   "body": "\r\nsame issue here \r\n\r\n"
+  },
+  {
+   "author": "participant10",
+   "created_at": "2023-04-17T18:28:17Z",
+   "body": "This does not work with RetrievalQA, it only works with RetrievalQAWithSourcesChain"
+  },
+  {
+   "author": "participant11",
+   "created_at": "2023-04-20T07:28:31Z",
+   "body": "@participant8 The solution works only for one type of chain ConversationalRetrievalChain, for others its not working"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-04-24T02:39:35Z",
+   "body": "First of all, on data preparation, how you split the text into chunks is important, please look into the following video and notebook to understand more:\r\nhttps://<redacted-host>/watch?v=eqOfr4AGLk8\r\nhttps://github.com/pinecone-io/examples/blob/master/generation/langchain/handbook/xx-langchain-chunking.ipynb\r\n\r\nAlso, the recent blog post from LangChain official blog:\r\nhttps://<redacted-host>/improving-document-retrieval-with-contextual-compression/\r\n\r\nThese two solutions should solve the issue, I will close the issue if it is quiet for a week.\r\n\r\nThanks."
+  },
+  {
+   "author": "participant12",
+   "created_at": "2023-05-02T01:14:14Z",
+   "body": "Hi, trying to implement the suggested solutions myself right now; where would one add these parameters? \r\nThanks!"
+  },
+  {
+   "author": "participant13",
+   "created_at": "2023-05-12T01:47:38Z",
+   "body": "Still have that same issue with RetrievalQA.from_chain_type"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-05-12T03:02:00Z",
+   "body": "Please read the issue from start to finish, there are few solutions being mentioned. Try it out one by one, it should fix the issue. Otherwise, please open a new issue for the problem you have and share the Github repo so that it is ease for other to re-produce the problem and help you. \r\n\r\nThe issue is dated. I think most people here got their solution or workaround for the issue, I will close the issue for now. "
+  },
+  {
+   "author": "participant13",
+   "created_at": "2023-05-12T17:24:18Z",
+   "body": "I am not sure :)\r\n\r\nI switched to this which seemed to work:\r\n\r\nchain = VectorDBQAWithSourcesChain.from_llm(\r\n        llm=OpenAI(temperature=0, verbose=True), vectorstore=store, verbose=True)\r\nresult = chain({\"question\": args.question})\r\n\r\nWhich got me:\r\n\r\n UserWarning: `VectorDBQAWithSourcesChain` is deprecated - please use `from langchain.chains import RetrievalQAWithSourcesChain`\r\n  warnings.warn(\r\n\r\n\r\nAnd I modified to this:\r\n qa= RetrievalQAWithSourcesChain.from_chain_type(\r\n    llm=OpenAI(),\r\n    chain_type=\"stuff\",\r\n    retriever=retriever,\r\n    return_source_documents=True\r\n    \r\n    )\r\n\r\nAnd I am back at the same error ...\r\n\r\nopenai.error.InvalidRequestError: This model's maximum context length is 4097 tokens, however you requested 5541 tokens (5285 in your prompt; 256 for the completion). Please reduce your prompt; or completion length."
+  },
+  {
+   "author": "participant14",
+   "created_at": "2023-05-15T13:02:27Z",
+   "body": "> > You can try setting `reduce_k_below_max_tokens=True`, it is supposed to limit the number of results to return from store based on tokens limit. But for some reason, it seems that it only works on chat models (GPT-3.5/GPT-4), at least from my testing.\r\n> \r\n> That's works! Please review the latest code at https://github.com/reporter/flutter-gpt/blob/openai/ask_question.py, appreciate if you spot any improvement.\r\n> \r\n> Thanks.\r\n\r\nI'm new to this, where should I add this code?\r\n\r\nThanks"
+  },
+  {
+   "author": "participant15",
+   "created_at": "2023-05-21T11:22:54Z",
+   "body": "> \r\n\r\nsame question"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-05-22T08:20:25Z",
+   "body": "The following notebook should be helpful:\r\nhttps://github.com/openai/openai-cookbook/blob/main/examples/Embedding_long_inputs.ipynb\r\n\r\nIf none of the solutions above fixed your problem, most likely that the issue is caused by the data, so make sure you understand your data preparation process."
+  },
+  {
+   "author": "participant16",
+   "created_at": "2023-05-26T15:36:18Z",
+   "body": "if you are using an agent without chains but have a vector store(pinecone in my case) as a retrieval tool, where would you limit either max_tokens or top_k?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-05-26T23:38:28Z",
+   "body": "The following answer is come from above:\r\n```\r\nvectorstore.as_retriever(search_kwargs={\"k\": 1})\r\n```"
+  },
+  {
+   "author": "participant17",
+   "created_at": "2023-06-30T06:15:17Z",
+   "body": "> I met the same problem when I want to query in some chinese documents which I put them into chromadb\r\n> \r\n> ```\r\n> embeddings = OpenAIEmbeddings(openai_api_key=os.environ['OPENAI_API_KEY'])\r\n> docsearch = Chroma.from_documents(texts, embeddings)\r\n> retriever = docsearch.as_retriever()\r\n> qa = RetrievalQA.from_llm(llm=OpenAI(), retriever=retriever)\r\n> \r\n> query = \"what\"\r\n> qa.run(query)\r\n> ```\r\n> \r\n> You can see my prompt is very short, but it says: InvalidRequestError: This model's maximum context length is 4097 tokens, however you requested 6990 tokens (6734 in your prompt; 256 for the completion). Please reduce your prompt; or completion length.\r\n\r\nSame error, Any updates here?"
+  },
+  {
+   "author": "participant18",
+   "created_at": "2023-08-02T13:30:38Z",
+   "body": "same error for me, since it is the limit of openAI, if it the output length is too large, I think we can set max_tokens to limit the output length, but if it is the input context length is too large, I don't know how to do by using some parameters, what  I can think of is: reduce the context input, or use compression (I still didn't try it), I will try to reduce my input context size. "
+  },
+  {
+   "author": "participant19",
+   "created_at": "2023-08-08T08:45:37Z",
+   "body": "> 第2140章\r\n\r\n\r\n\r\n> 当我想查询一些中文文档并将其放入 chromadb 时，我遇到了同样的问题\r\n> \r\n> ```\r\n> embeddings = OpenAIEmbeddings(openai_api_key=os.environ['OPENAI_API_KEY'])\r\n> docsearch = Chroma.from_documents(texts, embeddings)\r\n> retriever = docsearch.as_retriever()\r\n> qa = RetrievalQA.from_llm(llm=OpenAI(), retriever=retriever)\r\n> \r\n> query = \"what\"\r\n> qa.run(query)\r\n> ```\r\n> \r\n> 您可以看到我的提示非常短，但它显示： InvalidRequestError: This model's max context length is 4097 tokens, but you requests 6990 tokens (提示中为 6734；完成时为 256)。请减少提示；或完成长度。\r\n\r\nHow did you solve it？？"
+  },
+  {
+   "author": "participant18",
+   "created_at": "2023-08-08T09:51:24Z",
+   "body": "@participant20 , I think the error is saying: your context is too long, the context is from the chromadb, so it is the document in the chromadb is too long, I think. You can set verbose=true, to see the complete question and response to OpenAI. "
+  },
+  {
+   "author": "participant19",
+   "created_at": "2023-08-09T02:33:26Z",
+   "body": "@participant18 ,\r\n```python\r\nllm=ChatOpenAI(max_tokens=4096, model_name='gpt-3.5-turbo',temperature=0, verbose=True)\r\nqa = RetrievalQA.from_chain_type(llm, chain_type=\"map_rerank\", retriever=docsearch.as_retriever(), verbose=True)\r\nresult = qa.run('1+1')\r\n```\r\nI added parameters, but I still haven't seen the complete question and reply, what should I do?"
+  },
+  {
+   "author": "participant18",
+   "created_at": "2023-08-09T14:25:36Z",
+   "body": "@participant20 ,  try to add this:  _langchain.debug = True_  in your python file ? for me, by doing this, I can see the full call parameters and response."
+  },
+  {
+   "author": "participant19",
+   "created_at": "2023-08-10T02:14:53Z",
+   "body": "@participant18 \r\nI added langchain.debug = True, I saw the requested information, but did not see the returned information, probably because the token limit was exceeded. But there are two strange phenomena, the first one is why there are so many input information? The second is why the prefix of the output prompt has a lot of information that I don’t need. Is it input by langchain itself?\r\n```python\r\n[chain/start] [1:chain:RetrievalQA] Entering Chain run with input:\r\n{\r\n  \"query\": \"1+1\"\r\n}\r\n[chain/start] [1:chain:RetrievalQA > 3:chain:MapRerankDocumentsChain] Entering Chain run with input:\r\n[inputs]\r\n[chain/start] [1:chain:RetrievalQA > 3:chain:MapRerankDocumentsChain > 4:chain:LLMChain] Entering Chain run with input:\r\n{\r\n  \"input_list\": [\r\n    {\r\n      \"context\": \"14.如果只有夫妻其中一人透过协助在美国华美银行开户（以下假设为「夫」）\",\r\n      \"question\": \"1+1\"\r\n    },\r\n    {\r\n      \"context\": \"一、过户办理： 1.办理产权过户一定要在美国本地才可以进行吗？\",\r\n      \"question\": \"1+1\"\r\n    },\r\n    {\r\n      \"context\": \"13.客户夫妻两人均没有美国身分和绿卡，考量若按原合约写一个人单独持有房产，万一过世时，恐有大笔遗产税要缴交，造成资产损失。若改为夫妻共同持有，其中任一方过世，另一方变成100%单独拥有房产，是否会\",\r\n      \"question\": \"1+1\"\r\n    },\r\n    {\r\n      \"context\": \"property制度下，夫妻共同持有房产的时候，每个人所持有的财产基础成本被视为相等的。\",\r\n      \"question\": \"1+1\"\r\n    }\r\n  ]\r\n}\r\n[llm/start] [1:chain:RetrievalQA > 3:chain:MapRerankDocumentsChain > 4:chain:LLMChain > 5:llm:ChatOpenAI] Entering LLM run with input:\r\n{\r\n  \"prompts\": [\r\n    \"Human: Use the following pieces of context to answer the question at the end. If you don't know the answer, just say that you don't know, don't try to make up an answer.\\n\\nIn addition to giving an answer, also return a score of how fully it answered the user's question. This should be in the following format:\\n\\nQuestion: [question here]\\nHelpful Answer: [answer here]\\nScore: [score between 0 and 100]\\n\\nHow to determine the score:\\n- Higher is a better answer\\n- Better responds fully to the asked question, with sufficient level of detail\\n- If you do not know the answer based on the context, that should be a score of 0\\n- Don't be overconfident!\\n\\nExample #1\\n\\nContext:\\n---------\\nApples are red\\n---------\\nQuestion: what color are apples?\\nHelpful Answer: red\\nScore: 100\\n\\nExample #2\\n\\nContext:\\n---------\\nit was night and the witness forgot his glasses. he was not sure if it was a sports car or an suv\\n---------\\nQuestion: what type was the car?\\nHelpful Answer: a sports car or an suv\\nScore: 60\\n\\nExample #3\\n\\nContext:\\n---------\\nPears are either red or orange\\n---------\\nQuestion: what color are apples?\\nHelpful Answer: This document does not answer the question\\nScore: 0\\n\\nBegin!\\n\\nContext:\\n---------\\n14.如果只有夫妻其中一人透过协助在美国华美银行开户（以下假设为「夫」）\\n---------\\nQuestion: 1+1\\nHelpful Answer:\"\r\n  ]\r\n}\r\n[llm/start] [1:chain:RetrievalQA > 3:chain:MapRerankDocumentsChain > 4:chain:LLMChain > 5:llm:ChatOpenAI] Entering LLM run with input:\r\n{\r\n  \"prompts\": [\r\n    \"Human: Use the following pieces of context to answer the question at the end. If you don't know the answer, just say that you don't know, don't try to make up an answer.\\n\\nIn addition to giving an answer, also return a score of how fully it answered the user's question. This should be in the following format:\\n\\nQuestion: [question here]\\nHelpful Answer: [answer here]\\nScore: [score between 0 and 100]\\n\\nHow to determine the score:\\n- Higher is a better answer\\n- Better responds fully to the asked question, with sufficient level of detail\\n- If you do not know the answer based on the context, that should be a score of 0\\n- Don't be overconfident!\\n\\nExample #1\\n\\nContext:\\n---------\\nApples are red\\n---------\\nQuestion: what color are apples?\\nHelpful Answer: red\\nScore: 100\\n\\nExample #2\\n\\nContext:\\n---------\\nit was night and the witness forgot his glasses. he was not sure if it was a sports car or an suv\\n---------\\nQuestion: what type was the car?\\nHelpful Answer: a sports car or an suv\\nScore: 60\\n\\nExample #3\\n\\nContext:\\n---------\\nPears are either red or orange\\n---------\\nQuestion: what color are apples?\\nHelpful Answer: This document does not answer the question\\nScore: 0\\n\\nBegin!\\n\\nContext:\\n---------\\n一、过户办理： 1.办理产权过户一定要在美国本地才可以进行吗？\\n---------\\nQuestion: 1+1\\nHelpful Answer:\"\r\n  ]\r\n}\r\n[llm/start] [1:chain:RetrievalQA > 3:chain:MapRerankDocumentsChain > 4:chain:LLMChain > 5:llm:ChatOpenAI] Entering LLM run with input:\r\n{\r\n  \"prompts\": [\r\n    \"Human: Use the following pieces of context to answer the question at the end. If you don't know the answer, just say that you don't know, don't try to make up an answer.\\n\\nIn addition to giving an answer, also return a score of how fully it answered the user's question. This should be in the following format:\\n\\nQuestion: [question here]\\nHelpful Answer: [answer here]\\nScore: [score between 0 and 100]\\n\\nHow to determine the score:\\n- Higher is a better answer\\n- Better responds fully to the asked question, with sufficient level of detail\\n- If you do not know the answer based on the context, that should be a score of 0\\n- Don't be overconfident!\\n\\nExample #1\\n\\nContext:\\n---------\\nApples are red\\n---------\\nQuestion: what color are apples?\\nHelpful Answer: red\\nScore: 100\\n\\nExample #2\\n\\nContext:\\n---------\\nit was night and the witness forgot his glasses. he was not sure if it was a sports car or an suv\\n---------\\nQuestion: what type was the car?\\nHelpful Answer: a sports car or an suv\\nScore: 60\\n\\nExample #3\\n\\nContext:\\n---------\\nPears are either red or orange\\n---------\\nQuestion: what color are apples?\\nHelpful Answer: This document does not answer the question\\nScore: 0\\n\\nBegin!\\n\\nContext:\\n---------\\n13.客户夫妻两人均没有美国身分和绿卡，考量若按原合约写一个人单独持有房产，万一过世时，恐有大笔遗产税要缴交，造成资产损失。若改为夫妻共同持有，其中任一方过世，另一方变成100%单独拥有房产，是否会\\n---------\\nQuestion: 1+1\\nHelpful Answer:\"\r\n  ]\r\n}\r\n[llm/start] [1:chain:RetrievalQA > 3:chain:MapRerankDocumentsChain > 4:chain:LLMChain > 5:llm:ChatOpenAI] Entering LLM run with input:\r\n{\r\n  \"prompts\": [\r\n    \"Human: Use the following pieces of context to answer the question at the end. If you don't know the answer, just say that you don't know, don't try to make up an answer.\\n\\nIn addition to giving an answer, also return a score of how fully it answered the user's question. This should be in the following format:\\n\\nQuestion: [question here]\\nHelpful Answer: [answer here]\\nScore: [score between 0 and 100]\\n\\nHow to determine the score:\\n- Higher is a better answer\\n- Better responds fully to the asked question, with sufficient level of detail\\n- If you do not know the answer based on the context, that should be a score of 0\\n- Don't be overconfident!\\n\\nExample #1\\n\\nContext:\\n---------\\nApples are red\\n---------\\nQuestion: what color are apples?\\nHelpful Answer: red\\nScore: 100\\n\\nExample #2\\n\\nContext:\\n---------\\nit was night and the witness forgot his glasses. he was not sure if it was a sports car or an suv\\n---------\\nQuestion: what type was the car?\\nHelpful Answer: a sports car or an suv\\nScore: 60\\n\\nExample #3\\n\\nContext:\\n---------\\nPears are either red or orange\\n---------\\nQuestion: what color are apples?\\nHelpful Answer: This document does not answer the question\\nScore: 0\\n\\nBegin!\\n\\nContext:\\n---------\\nproperty制度下，夫妻共同持有房产的时候，每个人所持有的财产基础成本被视为相等的。\\n---------\\nQuestion: 1+1\\nHelpful Answer:\"\r\n  ]\r\n}\r\n[chain/error] [1:chain:RetrievalQA > 3:chain:MapRerankDocumentsChain > 4:chain:LLMChain > 5:llm:ChatOpenAI] [133.883ms] Chain run errored with error:\r\n\"InvalidRequestError(message=\\\"This model's maximum context length is 4097 tokens. However, you requested 4443 tokens (347 in the messages, 4096 in the completion). Please reduce the length of the messages or completion.\\\", param='messages', code='context_length_exceeded', http_status=400, request_id=None)\"\r\n[chain/error] [1:chain:RetrievalQA > 3:chain:MapRerankDocumentsChain > 4:chain:LLMChain] [135.041ms] Chain run errored with error:\r\n\"InvalidRequestError(message=\\\"This model's maximum context length is 4097 tokens. However, you requested 4443 tokens (347 in the messages, 4096 in the completion). Please reduce the length of the messages or completion.\\\", param='messages', code='context_length_exceeded', http_status=400, request_id=None)\"\r\n[chain/error] [1:chain:RetrievalQA > 3:chain:MapRerankDocumentsChain] [135.9ms] Chain run errored with error:\r\n\"InvalidRequestError(message=\\\"This model's maximum context length is 4097 tokens. However, you requested 4443 tokens (347 in the messages, 4096 in the completion). Please reduce the length of the messages or completion.\\\", param='messages', code='context_length_exceeded', http_status=400, request_id=None)\"\r\n[chain/error] [1:chain:RetrievalQA] [275.25699999999995ms] Chain run errored with error:\r\n\"InvalidRequestError(message=\\\"This model's maximum context length is 4097 tokens. However, you requested 4443 tokens (347 in the messages, 4096 in the completion). Please reduce the length of the messages or completion.\\\", param='messages', code='context_length_exceeded', http_status=400, request_id=None)\"\r\n```"
+  },
+  {
+   "author": "participant18",
+   "created_at": "2023-08-10T14:23:34Z",
+   "body": "@participant20 ,  the context is from the vectorDB, it is the retriver to do the search in vectorDB.  for the prompt, it is the chain default prompt, you can define yours, just click the source code and track it, you can see it."
+  },
+  {
+   "author": "participant19",
+   "created_at": "2023-08-11T08:38:24Z",
+   "body": "@participant18  Thank you, I tracked it down, but the token is still beyond the limit, which is very strange, because my content is very short and not much, but this error is still there"
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "langchain-ai/langchain",
+  "default_branch": "master",
+  "commit_sha": "ccee1aedd2c846e8c181e00befbcc004c8df405e",
+  "as_of": "2023-03-29T03:56:43Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_langchain-ai_langchain_2133"
+}

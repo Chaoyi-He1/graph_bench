@@ -1,0 +1,106 @@
+{
+ "repo": "dask/dask",
+ "number": 11026,
+ "url": "https://github.com/dask/dask/issues/11026",
+ "title": "Poor scheduling with `flox`, leading to high memory usage and eventual failure",
+ "state": "closed",
+ "labels": [
+  "needs triage"
+ ],
+ "reporter": "reporter",
+ "created_at": "2024-03-26T20:26:49Z",
+ "closed_at": "2024-11-04T23:37:23Z",
+ "body": "<!-- Please include a self-contained copy-pastable example that generates the issue if possible.\r\n\r\nPlease be concise with code posted. See guidelines below on how to provide a good bug report:\r\n\r\n- Craft Minimal Bug Reports http://matthewrocklin.com/blog/work/2018/02/28/minimal-bug-reports\r\n- Minimal Complete Verifiable Examples https://stackoverflow.com/help/mcve\r\n\r\nBug reports that follow these guidelines are easier to diagnose, and so are often handled much more quickly.\r\n-->\r\n\r\n**Describe the issue**:\r\n\r\nWhen performing aggregation with flox, I quickly run out of memory, regardless of the size of a chunk.\r\n\r\nIt appears that lower nodes (loading data) keep getting run while higher nodes (reduction) sit un-computed.\r\n\r\nOpening here as requested in:\r\n\r\n* https://github.com/xarray-contrib/flox/issues/346\r\n\r\ncc: @participant2 \r\n\r\n**Minimal Complete Verifiable Example**:\r\n\r\n```python\r\nimport dask.distributed as dd\r\nimport dask.array as da\r\nimport numpy as np\r\nimport flox\r\n\r\ncluster = dd.LocalCluster(n_workers=3)\r\nclient = dd.Client(cluster)\r\n\r\nM, N = 1_000_000, 20_000\r\n\r\n# Note that it doesn't seem to matter where X comes from.\r\n# In my real-world use case, it is either generated from `map_blocks` or \r\n# read directly from a zarr store\r\nX = da.random.normal(size=(M, N), chunks=(5_000, N))\r\nby = np.random.choice(2_000, size=M)\r\n\r\nres, codes = flox.groupby_reduce(\r\n    X.T,\r\n    by,\r\n    func=\"sum\",\r\n    fill_value=0,\r\n    method=\"map-reduce\",\r\n    reindex=True,\r\n)\r\n\r\nres_comp = res.compute()\r\n```\r\n\r\n**Anything else we need to know?**:\r\n\r\n\r\n<details>\r\n<summary> As an example, here's how my task graph completes if I run `X.sum(axis=0).compute()` </summary>\r\n\r\n<img width=\"500\" alt=\"image\" src=\"https://github.com/dask/dask/assets/8238804/e79e698e-ee21-4732-a856-19c3918492b6\">\r\n\r\n</details>\r\n\r\n\r\n\r\n<details>\r\n<summary> Whereas `res.compute()` ends up with something more like: </summary>\r\n\r\n\r\n<img width=\"500\" alt=\"image\" src=\"https://github.com/dask/dask/assets/8238804/2ba8f855-52db-42d5-81a0-df294161ae1d\">\r\n\r\n<img width=\"500\" alt=\"image\" src=\"https://github.com/dask/dask/assets/8238804/cc2d6aec-f134-4c75-a752-e93f5480d576\">\r\n\r\n\r\n\r\n</details>\r\n\r\n\r\n**Environment**:\r\n\r\n- Dask version: '2024.3.1'\r\n- Python version: Python 3.11.7 | packaged by conda-forge | (main, Dec 23 2023, 14:43:09) [GCC 12.3.0]\r\n- Operating System: ubuntu (but can replicate on mac)\r\n- Install method (conda, pip, source): pip (in conda env)\r\n\r\n\r\n",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2024-03-28T15:21:23Z",
+   "body": "I only very briefly looked into this so far but it looks like the very first groupby tasks generate very large partitions, pretty much regardless of how the initial input partitions look like\r\n\r\n<img width=\"613\" alt=\"image\" src=\"https://github.com/dask/dask/assets/8629629/4d35a820-d2f4-42ce-98ef-0896ecbfd520\">\r\n\r\nI get many, many of those 600MiB chunks and this is clogging the cluster. From what I can tell, scheduling is working as intended. The reason why this isn't moving along is because some of those chunks end up on different workers and have to be moved around using network, i.e. the final reducer tasks are delayed since the workers have to fetch that data. While that is being fetched, the worker is attempting to run other tasks.\r\n\r\nI'm a little surprised to see these large intermediate results on a map-reduce workflow but I don't have sufficient knowledge about flox to judge this properly."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-03-28T15:24:20Z",
+   "body": "The input chunk sizes are large here, so that's fixable in theory. I did notice that no root tasks were identified in the dashboard. @reporter's comment suggest that this is happening with Zarr inputs as well, not just `random`. Do you see this too?\r\n\r\nEDIT: Those `chunk` tasks are `blockwise` reduction tasks fused with the `random` data generation task."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-03-28T21:06:32Z",
+   "body": "@participant2, adding an intermediate (computed) zarr store like this:\r\n\r\n```python\r\nM, N = 500_000, 20_000\r\nN_CATEGORIES = 2_000\r\nSCRATCH = Path(\"/scratch/tmp\")\r\nX_pth = SCRATCH / \"X.zarr\"\r\n\r\nX_orig = da.random.normal(size=(M, N), chunks=(5_000, N))\r\n\r\nX_orig.to_zarr(X_pth, overwrite=True, compute=True)\r\nX = da.from_zarr(X_pth)\r\nby = np.random.choice(N_CATEGORIES, size=M)\r\n```\r\n\r\nHas the same behaviour for me.\r\n\r\n----\r\n\r\n@participant1, what is that task representation?\r\n\r\nI'm not familiar enough with dask to know what my expectations should be of the high level graph representations, but some stuff there does seem a little off.\r\n\r\n<img width=\"856\" alt=\"image\" src=\"https://github.com/dask/dask/assets/8238804/792bb341-508d-447b-8a5b-48c663b6db70\">\r\n\r\nMy expectation would be that each groupby-sum chunk would be `(N, N_CATEGORIES)` with a total shape of `(N, N_CATEGORIES * len(X.chunks[1])`. Each partial aggregation layer after that reports chunk sizes to be `(20000, 1)` which also seems wrong. Not sure if this is related though."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-03-28T23:01:03Z",
+   "body": "> Each partial aggregation layer after that reports chunk sizes to be (20000, 1) which also seems wrong.\r\n\r\nYes this is (intentionally) wrong. \r\n\r\nNumber of outputs is more indicative of the reduction tree. You start with 200 chunks -> 50 -> 13 -> 4 -> 1 (The default \"split-size\" for the tree reduction is 4, so at each stage 4 outputs get combined to 1).\r\n\r\nI think Florian's image is a result of large initial chunk sizes. It's certaily matches the input chunk size.\r\n\r\n<img width=\"569\" alt=\"image\" src=\"https://github.com/dask/dask/assets/2448579/15f81c9a-fb46-40dd-ae5c-c188c1251481\">\r\n\r\nI'll also note that number of categories ~ chunksize of input along the reduction dimension, so the blockwise reduction isn't too effective at reducing memory. It is doing a factor of 2 reduction in your latest example (5000->2000). \r\n\r\nNote: You could try passing `reindex=False`, this would control memory at the expense of slower stages during the tree reduction. But make sure to do this for your actual data, it shouldn't show too much difference (on average) with purely random groups, but will definitely be slower.\r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-03-29T16:19:23Z",
+   "body": "> Number of outputs is more indicative of the reduction tree. You start with 200 chunks -> 50 -> 13 -> 4 -> 1 (The default \"split-size\" for the tree reduction is 4, so at each stage 4 outputs get combined to 1).\r\n\r\nThat makes sense, but I guess I would have expected to have arrays that look like: \r\n\r\n* `shape=(N_FEATURES, N_CATEGORIES, N_REDUCTIONS), chunks=(FEATURE_CHUNKS, N_CATEGORIES, 1)`\r\n\r\nInstead of:\r\n\r\n* `shape=(N_FEATURES, N_REDUCTIONS), chunks=(FEATURE_CHUNKS, 1)`\r\n\r\nWhy does the `groupby_sum-chunk` task output an array the same size as the input?\r\n\r\n----\r\n\r\nFWIW, I tried this with the threading scheduler and it seemed to work great with no memory issues. So definitely speeks to high cost of transfer.\r\n\r\n-----\r\n\r\nI was under the impression that the scheduler would try to reduce the number of data transfers necessary. Is this explicitly done, or is this just expected to happen due to last-in-first-out task distribution? "
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-03-29T17:06:03Z",
+   "body": "> Why does the groupby_sum-chunk task output an array the same size as the input?\r\n\r\nThis is interesting, I don't actually update the sizes. \r\n\r\n@participant1 would the scheduling algorithm work better if the size/shapes were more accurate at the blockwise step?"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-03-29T18:36:41Z",
+   "body": "As a heads-up, Florian is travelling today and may not be very responsive.\r\n\r\nOn Fri, Mar 29, 2024 at 12:06 PM Deepak Cherian ***@***.***>\r\nwrote:\r\n\r\n> Why does the groupby_sum-chunk task output an array the same size as the\r\n> input?\r\n>\r\n> This is interesting, I don't actually update the sizes.\r\n>\r\n> @participant1 <https://github.com/participant1> would the scheduling algorithm work\r\n> better if the size/shapes were more accurate at the blockwise step?\r\n>\r\n> —\r\n> Reply to this email directly, view it on GitHub\r\n> <https://github.com/dask/dask/issues/11026#issuecomment-2027500770>, or\r\n> unsubscribe\r\n> <https://github.com/notifications/unsubscribe-auth/AACKZTF5N6XZKBT2D24AE2DY2WNRFAVCNFSM6AAAAABFJUPHQCVHI2DSMVQWIX3LMV43OSLTON2WKQ3PNVWWK3TUHMZDAMRXGUYDANZXGA>\r\n> .\r\n> You are receiving this because you are subscribed to this thread.Message\r\n> ID: ***@***.***>\r\n>\r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-06-05T17:15:50Z",
+   "body": "@participant1, did you ever get a chance to look at this? I'm starting to look into it again and would appreciate any guidance!"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-06-05T19:01:49Z",
+   "body": "Is there a real dataset, preferably on public cloud, that we can use as an example?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-06-05T20:22:42Z",
+   "body": "It would require a little bit of manipulation. Most of the \"real data\" cases easily available I can think go off the top of my head are in a sparse format in either hdf5 or tiledb. I could share a link with some code to construct the Dask arrays?"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-06-05T20:27:22Z",
+   "body": "> I could share a link with some code to construct the Dask arrays?\r\n\r\nI think that would help."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-06-05T23:58:08Z",
+   "body": "Here is a gist with examples using both hdf5 and tiledb: https://gist.github.com/reporter/eb4f5beb1bb33724b8c11bd0eacf03a6\r\n\r\nI was able to get a little further today, and was able to get a few use-cases to actually run, but I am on a larger machine than I was using previously."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-06-06T14:59:24Z",
+   "body": "**TLDR** This isn't a dask problem. The core \"array\"/read tasks are treated as root-ish.\r\n\r\n-----\r\n\r\nThis works on my laptop with 32GB RAM with some spilling\r\n\r\n```python\r\nres, codes = flox.groupby_reduce(\r\n    X_dense.T,\r\n    by,\r\n    func=\"sum\",\r\n    fill_value=0,\r\n)\r\n```\r\n\r\nEDIT: I've moved discussion to https://github.com/xarray-contrib/flox/issues/346\r\n\r\nEDIT3: Memory issues can be controlled by using `numbagg` and `nansum`. It's also 5X faster (approx). I guess we should look in to how to make `flox` just handle sparse matrices directly.\r\n\r\n```python\r\nres, codes = flox.groupby_reduce(\r\n    X_dense.T,\r\n    by,\r\n    func=\"nansum\",\r\n    fill_value=0,\r\n    engine=\"numbagg\",\r\n)\r\n```\r\n"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-11-04T22:59:48Z",
+   "body": "Is there anything that we can help with @participant2 ?"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-11-04T23:27:53Z",
+   "body": "Don't  think so! but see https://github.com/xarray-contrib/flox/issues/396 :)\r\n\r\nI think this can be closed."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-11-04T23:37:23Z",
+   "body": "Ah yikes, I missed that ping. This sounds like a shuffle - map_blocks problem now that we have a shuffle. I'll take a closer look though"
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "dask/dask",
+  "default_branch": "main",
+  "commit_sha": "63de4c753a83622a4fd5d6249a478a28d7502886",
+  "as_of": "2024-03-26T20:26:49Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_dask_dask_11026"
+}

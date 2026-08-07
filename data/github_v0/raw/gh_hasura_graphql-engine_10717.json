@@ -1,0 +1,114 @@
+{
+ "repo": "hasura/graphql-engine",
+ "number": 10717,
+ "url": "https://github.com/hasura/graphql-engine/issues/10717",
+ "title": "Remote Schema Merging/Routing Issue with Unique Namespaces in Hasura 2.44",
+ "state": "closed",
+ "labels": [
+  "k/bug",
+  "c/remote-schemas",
+  "c/v2-engine"
+ ],
+ "reporter": "doudian719",
+ "created_at": "2025-04-12T13:54:40Z",
+ "closed_at": "2025-10-21T15:03:07Z",
+ "body": "### Description\nI'm encountering an unexpected behavior with Hasura version 2.44 when registering multiple remote schemas originating from different Kubernetes namespaces. I have two remote schemas configured:\n\nNamespace A: Contains a remote API registered with a unique root field namespace and a unique prefix.\n\nNamespace B: An exact copy of Namespace A's API, but deployed under a different Kubernetes namespace with its own unique root field namespace and prefix.\n\n### Steps to Reproduce\n1. Configure Remote Schemas:\n\nRegister both remote schemas in Hasura with their respective GraphQL server URLs.\n\nFor each schema, set a unique prefix and root field namespace that includes the respective Kubernetes namespace information.\n\nEnable the “Forward client headers” option.\n\n2. Test the APIs:\n\nUse Postman (or another GraphQL client) to send queries to the Hasura endpoint.\n\nQuery a field that exists only in the Namespace B API (an extra field added specifically in Namespace B to help identify the routing).\n\nObserve that the query intended for Namespace B returns an error indicating the field is missing—signifying that the request is actually routed to Namespace A's API.\n\n3. Observations:\n\nAn introspection query against Hasura’s merged schema shows that Namespace B's definitions are mixed with those from Namespace A.\n\nWhen the Namespace A remote schema is removed from the Hasura console, the Namespace B API works as expected without any routing issues.\n\n### Expected Behavior\nEach remote schema should be isolated using its root field namespace and unique type prefixes. This isolation should ensure that:\n\nQueries intended for Namespace B are routed to its corresponding backend service.\n\nThere is no overlapping or merging of the GraphQL type definitions from Namespace A into Namespace B’s schema.\n\n### Actual Behavior\nWhen both remote schemas are registered:\n\nThe introspection result shows that Namespace B's schema includes definitions from Namespace A.\n\nQueries targeting Namespace B are being routed to Namespace A’s backend service, resulting in errors (e.g., missing fields unique to Namespace B).\n\n### Additional Context\nBoth remote schemas have their GraphQL Server URLs correctly configured.\n\nThe schemas are almost identical, with the only difference being an extra field in Namespace B’s schema for testing.\n\nIt appears that when remote schemas have similar type definitions, Hasura's stitching logic might be merging them—even with unique prefixes and namespaces set.\n\nThe “Forward client headers” option is enabled, although this should not impact routing decisions.\n\n### Questions\nIs this behavior (i.e., merging definitions or misrouting between remote schemas with similar structures) intended, or is it a known bug in Hasura 2.44?\n\nIf it is a bug, are there any recommended workarounds or configuration changes (beyond using unique prefixes/namespaces) to properly isolate remote schema definitions?\n\nAny insights or suggestions on how to avoid this schema merging/routing conflict would be greatly appreciated.\n\nThanks in advance for your assistance!",
+ "comments": [
+  {
+   "author": "robertjdominguez",
+   "created_at": "2025-04-15T02:22:50Z",
+   "body": "Hey, thanks for the detailed report—this is super helpful, @doudian719 🙏 \n\nWhat you’re seeing isn’t expected behavior. With unique root field namespaces and type prefixes in place, Hasura should be isolating those remote schemas completely. If the merged schema is showing overlapping types or routing queries incorrectly, especially when those fields are only present in one of the backends, that sounds like a bug in the schema stitching logic.\n\nA couple things to try or confirm for us:\n\n1. Double-check that both type prefixes and root field namespaces are unique and consistently applied across all types and root fields in each remote schema.\n\n2. If the schemas are truly identical (outside of one extra field), you might try customizing the type names further (e.g. `UserA` vs `UserB`) to see if that helps force separation.\n\nBut even with that, Hasura shouldn’t be merging types across two remote schemas with different prefixes. The fact that removing Namespace A resolves the issue for Namespace B confirms it’s likely an internal conflict during stitching.\n\nI’ll flag this internally to get eyes on it, but in the meantime, can you share your remote_schemas config block (with sensitive stuff redacted) and maybe the result of the merged introspection query? That’ll help us reproduce it more directly.\n\nAppreciate you surfacing this."
+  },
+  {
+   "author": "doudian719",
+   "created_at": "2025-04-16T03:10:57Z",
+   "body": "Hi @robertjdominguez, thank you so much for your prompt reply and for taking the time to look into this issue.\n\nRegarding your suggestion to double-check that both type prefixes and root field namespaces are unique and consistently applied across all types and root fields in each remote schema—I can confirm that they are indeed unique. We have been running Hasura in our environment for over a year without any issues, and our instance is currently hosting over 80 APIs. This schema merging problem has only started occurring recently.\n\nTo provide a bit more context:\n\n1. Our remote_schemas configurations are all created via API calls to Hasura. This automated process ensures that each registration has a unique Root Field Namespace, as well as unique type prefixes and suffixes that combine the API’s own name with its Kubernetes namespace. We specifically designed it this way to avoid any potential conflicts.\n\n2. When we use Postman to send an introspection query (IntrospectionQuery) to the Hasura server, the response clearly shows that the Namespace B API is referencing an INPUT_OBJECT from Namespace A.\n\n3. Additionally, the fact that removing the remote schema for Namespace A causes Namespace B to function correctly further suggests that the stitching logic might be mistakenly merging types between these two schemas.\n\nThank you again for your support and assistance. I truly appreciate your help and look forward to any further insights you might have."
+  },
+  {
+   "author": "robertjdominguez",
+   "created_at": "2025-04-22T19:43:51Z",
+   "body": "Thanks for confirming all of that, @doudian719  — really appreciate the thorough follow-up.\n\nBased on what you’ve shared (especially the `INPUT_OBJECT` from Namespace A showing up in Namespace B’s schema), this definitely points to something going wrong with the type isolation during remote schema stitching. Even with unique type prefixes, root field namespaces, and a clean automated registration flow, Hasura should not be merging types across remotes like this — so this isn’t expected behavior.\n\nInternally, I believe the stitching logic is meant to treat prefixed types as separate, even if the underlying structure is identical. But what you’re running into suggests a deeper bug that kicks in when types have identical structures and share a common ancestry.\n\nAs a temporary workaround, can you experiment with renaming key input object types in the source schema (even with prefixing already in place) just to help Hasura treat them more distinctly — not ideal, but potentially unblocks you while we dig in.\n\nI’ll escalate this internally. Thanks again for surfacing such a clear report — this helps a lot."
+  },
+  {
+   "author": "greglboxer",
+   "created_at": "2025-04-24T22:34:23Z",
+   "body": "I think we are also coming across this issue in our usage of remote schemas (v2.44, although we have seen it in an earlier version).\n\nWe have an \"okrs\" and \"roadmaps\" Hasura server each sitting on top of Postgres databases.\n\nWe reference both of these in another Hasura instance with the remote schema feature.  Remote schema types are prefixed with 'okrs_' and 'roadmaps_' to avoid conflicts.\n\n<img width=\"1036\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/d97019f6-f8dc-4824-8478-1bbfd73aed58\" />\n<img width=\"1035\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/bf33fb9a-2d1e-416a-b2ce-2580284eafa1\" />\n\nUnfortunately the stitching seems to be getting confused when trying to use them as query variables.  objectives is a tracked table in the okrs server.\n\n<img width=\"1311\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/bfbfff4b-4702-4eef-92ab-64ef317c73ad\" />"
+  },
+  {
+   "author": "alex4506",
+   "created_at": "2025-06-12T13:29:27Z",
+   "body": "We also encountered a similar problem. When registering the same type with multiple remote schemas, the type name of the remote schema that registers first appears in the returns of subsequent other remote schemas, and methods such as renaming cannot solve it."
+  },
+  {
+   "author": "nishchhal-shrestha",
+   "created_at": "2025-06-20T01:10:18Z",
+   "body": "We are also experiencing exact same problem as https://github.com/hasura/graphql-engine/issues/10717#issuecomment-2808113639\n\nWe have been using hasura for past 2 years and this issue suddenly came. I'm using version 2.35.0. We have not upgraded hasura version. This was working properly previously. "
+  },
+  {
+   "author": "manuelbernhardt",
+   "created_at": "2025-07-22T08:39:09Z",
+   "body": "We experienced the same issue, seemingly out of nowhere. Without any changes on our end, the production, staging and local deployments started failing. We solved this for now by aliasing some types but have still absolutely no idea why this suddenly started happening. @robertjdominguez is there any caching / cache eviction in place for remote schema stitching which could explain why this happens at runtime without change in the deployments?"
+  },
+  {
+   "author": "robertjdominguez",
+   "created_at": "2025-07-22T14:33:15Z",
+   "body": "Thanks for adding instances of this, folks. I've re-raised it internally and hope to get back to you soon!"
+  },
+  {
+   "author": "jberryman",
+   "created_at": "2025-08-20T20:17:45Z",
+   "body": "@manuelbernhardt can you give a little more detail: \n- the version of hasura was consistent throughout (working and nonworking)?\n- did the problem happen after a restart or fresh instance was launched?\n- did it start after a metadata change of any kind?"
+  },
+  {
+   "author": "manuelbernhardt",
+   "created_at": "2025-08-25T06:43:06Z",
+   "body": "@jberryman \n\n- the Hasura version deployed in both production and staging environments was / is v2.37.1. we also tried locally in development with the latest version at that time (2.48.x, I'm unsure about which one of the minor versions, @timoransky maybe you know?)\n- the problem appeared seemingly out of nowhere. there was no restart / container redeployment. Asset resolution just stopped working\n- metadata wasn't changed on the running instance. in our setup, we also redeploy the Hasura container after a metadata update so I'm confident this wasn't the case\n\nThe behavior really baffled us because it started happening on running instances without external changes of any kind. Once the behavior started, none of the deployments worked (staging, production, locally), independently of the Hasura version used."
+  },
+  {
+   "author": "nishchhal-shrestha",
+   "created_at": "2025-09-26T10:26:49Z",
+   "body": "Do we have any ETA on this issue? We are depending on the Hasura for our various reporting modules"
+  },
+  {
+   "author": "jberryman",
+   "created_at": "2025-09-26T16:25:32Z",
+   "body": "A fix was just merged and should make it into the next 2.48 release"
+  },
+  {
+   "author": "nishchhal-shrestha",
+   "created_at": "2025-10-17T10:31:45Z",
+   "body": "@jberryman does this https://github.com/hasura/graphql-engine/releases/tag/v2.48.6 release fix this issue?"
+  },
+  {
+   "author": "jberryman",
+   "created_at": "2025-10-20T22:23:03Z",
+   "body": "@nishchhal-shrestha yes, that's the second changelog entry. Let us know if you still experience any issues"
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "hasura/graphql-engine",
+  "default_branch": "master",
+  "commit_sha": "0173a413bf669a4a669d2308f48cf5419f02cd2d",
+  "as_of": "2025-04-12T13:54:40Z",
+  "method": "github_commits_until"
+ },
+ "images": [
+  {
+   "where": "c3",
+   "source_url": "https://github.com/user-attachments/assets/d97019f6-f8dc-4824-8478-1bbfd73aed58",
+   "file": "gh_hasura_graphql-engine_10717_img0.png"
+  },
+  {
+   "where": "c3",
+   "source_url": "https://github.com/user-attachments/assets/bf33fb9a-2d1e-416a-b2ce-2580284eafa1",
+   "file": "gh_hasura_graphql-engine_10717_img1.png"
+  },
+  {
+   "where": "c3",
+   "source_url": "https://github.com/user-attachments/assets/bfbfff4b-4702-4eef-92ab-64ef317c73ad",
+   "file": "gh_hasura_graphql-engine_10717_img2.png"
+  }
+ ],
+ "slug": "gh_hasura_graphql-engine_10717"
+}

@@ -1,0 +1,101 @@
+{
+ "repo": "coredns/coredns",
+ "number": 6151,
+ "url": "https://github.com/coredns/coredns/issues/6151",
+ "title": "major CPU performance regression",
+ "state": "closed",
+ "labels": [
+  "bug"
+ ],
+ "reporter": "reporter",
+ "created_at": "2023-06-08T18:19:53Z",
+ "closed_at": "2023-08-16T13:56:07Z",
+ "body": "Running coredns from master we've observed a major CPU usage regression\r\n\r\n```\r\n      flat  flat%   sum%        cum   cum%\r\n     7.32s 23.42% 23.42%      7.78s 24.90%  runtime.(*itabTableType).find\r\n     3.06s  9.79% 33.22%      5.05s 16.16%  runtime.mallocgc\r\n     2.70s  8.64% 41.86%     10.48s 33.54%  runtime.getitab\r\n     1.89s  6.05% 47.90%      1.89s  6.05%  sync.(*Mutex).Unlock\r\n     1.62s  5.18% 53.09%      7.35s 23.52%  crypto/tls.(*Conn).Read\r\n     1.53s  4.90% 57.98%      1.53s  4.90%  sync.(*Mutex).Lock (inline)\r\n     1.46s  4.67% 62.66%      8.81s 28.19%  io.ReadAtLeast\r\n     1.27s  4.06% 66.72%     25.70s 82.24%  github.com/miekg/dns.(*Conn).ReadMsgHeader\r\n     1.26s  4.03% 70.75%      1.72s  5.50%  crypto/tls.(*Conn).handshakeContext\r\n     1.23s  3.94% 74.69%      6.47s 20.70%  runtime.assertI2I2\r\n     0.65s  2.08% 76.77%     12.82s 41.02%  encoding/binary.Read\r\n     0.56s  1.79% 78.56%      0.56s  1.79%  runtime.getMCache (inline)\r\n     0.49s  1.57% 80.13%      2.87s  9.18%  runtime.makeslice\r\n     0.46s  1.47% 81.60%      0.46s  1.47%  runtime.itabHashFunc (inline)\r\n     0.45s  1.44% 83.04%      0.45s  1.44%  sync/atomic.(*Bool).Load (inline)\r\n     0.44s  1.41% 84.45%      0.44s  1.41%  runtime/internal/atomic.(*Uint8).Load\r\n     0.41s  1.31% 85.76%      5.65s 18.08%  runtime.convI2I\r\n     0.38s  1.22% 86.98%     29.88s 95.62%  github.com/coredns/coredns/plugin/pkg/proxy.(*Proxy).Connect\r\n     0.38s  1.22% 88.19%      0.38s  1.22%  runtime.deductAssistCredit\r\n     0.34s  1.09% 89.28%      0.34s  1.09%  encoding/binary.intDataSize\r\n     0.29s  0.93% 90.21%      0.29s  0.93%  runtime.acquirem (inline)\r\n     0.27s  0.86% 91.07%      0.30s  0.96%  runtime.nextFreeFast (inline)\r\n     0.24s  0.77% 91.84%     25.94s 83.01%  github.com/miekg/dns.(*Conn).ReadMsg\r\n     0.23s  0.74% 92.58%      0.23s  0.74%  crypto/tls.(*Conn).readRecordOrCCS\r\n     0.23s  0.74% 93.31%      0.23s  0.74%  runtime.releasem (inline)\r\n```\r\n\r\nperhaps this is related to the proxy refactor\r\n\r\nhttps://github.com/coredns/coredns/pull/5951\r\n\r\n",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2023-06-08T18:48:18Z",
+   "body": "> perhaps this is related to the proxy refactor https://github.com/coredns/coredns/pull/5951\r\n\r\nCan you verify?  If its the case we can revert the change."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-06-08T18:57:14Z",
+   "body": "I have not been able to verify the cause yet. the issue does not reproduce quickly or immediately from load. it happens during real world usage, and i don't know if its something in particular. i am testing with cloudflare as my upstream dns forward destination with dns over https."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-06-08T19:56:28Z",
+   "body": "what's frustrating is it's unclear what creates the state where so much cpu time is spent in github.com/miekg/dns.(*Conn).ReadMsgHeader. even while not a lot of queries are being actively sent in.\r\n\r\nIt may also be related to recent changes in https://github.com/miekg/dns/blame/master/client.go\r\n\r\neither\r\nhttps://github.com/miekg/dns/pull/1454\r\nor\r\nhttps://github.com/miekg/dns/pull/1430\r\n\r\n\r\n\r\ngoing back to v1.10.0 the issue hasnt happened yet\r\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-06-08T20:21:28Z",
+   "body": "I just looked at https://github.com/coredns/coredns/pull/5951 again, and it seems fairly innocuous."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-06-08T20:54:33Z",
+   "body": "So it's worth pointing out that the regression is not accompanied with a corresponding memory leak or consumption issue once coredns reaches a bad state. I am still trying to find a reliable trigger and I haven't identified one yet. \r\n\r\nIn the golang tracker threres an issue related to getitab and friends where the main hit is happening:\r\n```\r\nA conversion that involves runtime.getitab (convI2I, assertI2I, assertE2I) is generally much slower than an ordinary\r\ninterface value construction from a statically known concrete type.\r\n```\r\nhttps://github.com/golang/go/issues/51133\r\n\r\n```\r\n(pprof) peek runtime.convI2I\r\nShowing nodes accounting for 31.25s, 100% of 31.25s total\r\n----------------------------------------------------------+-------------\r\n      flat  flat%   sum%        cum   cum%   calls calls% + context              \r\n----------------------------------------------------------+-------------\r\n                                             5.65s   100% |   github.com/miekg/dns.(*Conn).ReadMsgHeader\r\n     0.41s  1.31%  1.31%      5.65s 18.08%                | runtime.convI2I\r\n                                             5.24s 92.74% |   runtime.getitab\r\n----------------------------------------------------------+-------------\r\n(pprof) peek runtime.assertI2I2\r\nShowing nodes accounting for 31.25s, 100% of 31.25s total\r\n----------------------------------------------------------+-------------\r\n      flat  flat%   sum%        cum   cum%   calls calls% + context              \r\n----------------------------------------------------------+-------------\r\n                                             3.55s 54.87% |   github.com/coredns/coredns/plugin/pkg/proxy.(*Proxy).Connect\r\n                                             2.92s 45.13% |   github.com/miekg/dns.isPacketConn\r\n     1.23s  3.94%  3.94%      6.47s 20.70%                | runtime.assertI2I2\r\n                                             5.24s 80.99% |   runtime.getitab\r\n```"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-07-13T09:59:49Z",
+   "body": "Is there any way to reproduce the issue locally(running for several hours is acceptable)? It does sound like some kind of resource leak if `it happens during real world usage`."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-08-10T03:15:58Z",
+   "body": "same here. after few hours of normal usage, coredns **v1.11.0** consumes all the cpu cores, and `cpu idle` becomes 0%, temperature goes to 75c, fan spinning crazy."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2023-08-10T18:35:08Z",
+   "body": "Have you tried rebuilding in an older version of go?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-08-10T19:11:32Z",
+   "body": "A possible culprit is https://github.com/coredns/coredns/pull/6014\r\n\r\nIt keeps requests open for longer when we get a non-network error reading the response to protect against malformed response dos cache poisoning attacks.  But it could be that this is triggering in some common case, keeping connections open longer, resulting in swamping CoreDNS with too many concurrent connections."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-08-10T19:18:10Z",
+   "body": "If the issue is not reproducible with `force_tcp` added to the _forward_ plugin, then #6014 is probably the cause."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-08-10T19:21:51Z",
+   "body": "Nevermind - it looks like #6255 sees the issue with tls forwarding, which would exclude https://github.com/coredns/coredns/pull/6014 from being the cause."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-08-10T19:41:56Z",
+   "body": "> Have you tried rebuilding in an older version of go?\r\n\r\nit was built with go 1.20.7\r\n\r\n#6255 is almost the same as the issue i had with v1.11.0, i use tls forwarding as well."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-08-10T20:40:55Z",
+   "body": "Looks like the OP deployed with tls too, given the tls handshake in the profiling data.\r\nAlthough, using dot forwarding is fairly common, so it could be a red herring.\r\n\r\nhttps://github.com/miekg/dns/pull/1430 did change how tls is dialed though."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2023-08-14T21:56:30Z",
+   "body": "I have provided more information about a potential reproducer and root cause in https://github.com/coredns/coredns/issues/6255#issuecomment-1678126800"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-08-14T23:54:31Z",
+   "body": "nice one @participant5 , this certainly matches what we ran into. "
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "coredns/coredns",
+  "default_branch": "master",
+  "commit_sha": "6d3db023fe60caf68e1132e65c09f8cf49007a24",
+  "as_of": "2023-06-08T18:19:53Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_coredns_coredns_6151"
+}

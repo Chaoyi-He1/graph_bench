@@ -1,0 +1,129 @@
+{
+ "repo": "keras-team/keras",
+ "number": 18449,
+ "url": "https://github.com/keras-team/keras/issues/18449",
+ "title": "Invalid behavior for `ops.take` with torch",
+ "state": "closed",
+ "labels": [
+  "stat:awaiting response from contributor",
+  "stale",
+  "type:Bug",
+  "backend:torch"
+ ],
+ "reporter": "reporter",
+ "created_at": "2023-07-02T22:53:47Z",
+ "closed_at": "2024-05-28T01:49:51Z",
+ "body": "It appears that `ops.take(embed_matrix, ids)` has a different behavior in torch compared to the other 2 backends.",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2023-07-12T14:06:37Z",
+   "body": "@reporter if this issue is still valid can I pick this up ? also if possible to share a sample code to reproduce the unexpected behaviour ?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-07-12T16:52:39Z",
+   "body": "Yes, it's still valid -- you're welcome to take on it!\r\n\r\nYou can start by writing a unit test for it -- if I recall correctly the issue has to do with using `take()` with multi-dimensional IDs. So like, a 2D embed_matrix and 2D or 3D (batched) IDs?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-07-12T16:58:29Z",
+   "body": "@reporter got it."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-07-13T14:06:10Z",
+   "body": "@reporter are we open to write test cases in pytest or only using unittest ? also we will be writing test cases [here](https://github.com/keras-team/keras-core/tree/main/keras_core/testing) only right ?"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-07-13T14:18:27Z",
+   "body": "> @reporter are we open to write test cases in pytest or only using unittest ? also we will be writing test cases [here](https://github.com/keras-team/keras-core/tree/main/keras_core/testing) only right ?\r\n\r\nHey @participant1 [this](https://github.com/keras-team/keras-core/blob/main/keras_core/ops/numpy.py) is where the `ops.take` comes from. You would need to make the necessary changes here! And as per the tests, you would need to make changes to [this file](https://github.com/keras-team/keras-core/blob/main/keras_core/ops/numpy_test.py).\r\n\r\nHope that helps 🤗 "
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-07-13T14:29:55Z",
+   "body": "@participant2 I think [this](https://github.com/keras-team/keras-core/blob/main/keras_core/ops/numpy.py) is just a wrapper since it will be running `backend.take` and the problem is occurring in torch.take I think [this](https://github.com/keras-team/keras-core/blob/main/keras_core/backend/torch/numpy.py) will be correct place to make changes correct me if I am wrong 🤔 also thanks for pointing out exact test file."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-07-13T14:31:47Z",
+   "body": "Yes! You are correct, sorry for pointing to the wrapper and not the actual backend file!"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-07-13T14:43:23Z",
+   "body": "@participant2 I think test-case has already been written from line 191 to 204, so what remains is fixing bug with `backend == 'torch'` \r\n```\r\n def test_take(self):\r\n        x = KerasTensor([None, 3])\r\n        self.assertEqual(knp.take(x, 1).shape, ())\r\n        self.assertEqual(knp.take(x, [1, 2]).shape, (2,))\r\n        self.assertEqual(\r\n            knp.take(x, [[1, 2], [1, 2]], axis=1).shape, (None, 2, 2)\r\n        )\r\n\r\n        x = KerasTensor([None, 3, 3])\r\n        self.assertEqual(knp.take(x, 1, axis=1).shape, (None, 3))\r\n        self.assertEqual(knp.take(x, [1, 2]).shape, (2,))\r\n        self.assertEqual(\r\n            knp.take(x, [[1, 2], [1, 2]], axis=1).shape, (None, 2, 2, 3)\r\n        )\r\n```"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-07-13T15:25:25Z",
+   "body": "> You can start by writing a unit test for it -- if I recall correctly the issue has to do with using take() with multi-dimensional IDs. So like, a 2D embed_matrix and 2D or 3D (batched) IDs?\r\n\r\nI think you would also need to add this test as @reporter has advised. This would help make the `take()` ops more robust across the backends. After you see that failing for `torch` (hopefully) you could move to resolving the issue.\r\n\r\nDoes that help?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-07-13T15:28:27Z",
+   "body": "@participant2 yes this is what I am planning thanks. "
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-07-13T18:18:29Z",
+   "body": "As per my understanding invalid behaviour of `take` in `torch` backend comes from following logic which is defined [here](https://github.com/keras-team/keras-core/blob/main/keras_core/backend/torch/numpy.py) from line 749 which is\r\n\r\n```\r\nif x.ndim == 2 and (axis is None or axis == 0):\r\n        \r\n        # This case is equivalent to embedding lookup.\r\n        return torch.nn.functional.embedding(indices, x)\r\n    \r\n```\r\nThe core issue with this logic as this is primarily searching for 1-d values `embeddings` in a 2-d matrix `embedding matrix` for index specified in indices which makes it impossible to run lets say following logic\r\n\r\n```\r\ntensor = [[4, 3, 5],[6, 7, 8]]\r\nindices = [0, 2, 5]\r\naxis = None\r\n\r\n```\r\n\r\nwhich ideally should output `[4, 5, 8]` when comparing it to `torch.take()` but as the logic states this get's treated as embedding lookup and it fails.\r\n\r\nPossible solution 1:\r\nHave a `lookup` flag as parameter in function call but since this implementation will only be applicable in `torch` setting. This might not be optimal.\r\n\r\nPossible solution 2:\r\nmaking lookup as a separate operation rather than part of take, but I believe this will require rewrite of many other component, so not sure how feasible is this.\r\n\r\n@reporter  @participant2 let me know your thoughts on this 🙂.\r\n\r\n "
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-07-14T15:53:06Z",
+   "body": "@reporter Can I proceed to make change and raise a PR ?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-07-16T06:38:40Z",
+   "body": "@reporter  I think if would like the behaviour of `ops.take()` with backend `torch` to be equivalent to `numpy.take()` then I think we are still doing fine as for all the 2-d or 3-d indices or any multidimensional indices but if we want for it to replicate behaviour of only `torch.take()` + `torch.indices_select()` then a added lookup variable would be required as mentioned above. \r\n\r\n@participant2 If there is any specific case you encountered where `ops.take()` behaviour is not similar to `numpy.take(`) then please share as I am not able to reproduce any specific set of inputs where its behaviour is not as expected as `numpy.take()`"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-07-17T22:58:38Z",
+   "body": "@participant1 absolutely, please open a PR! Numpy behavior should indeed be our reference."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-04-12T21:19:15Z",
+   "body": "I tried the below code with Torch, it is now giving same result as TensorFlow and Jax.\r\n\r\n```python\r\nimport os\r\nos.environ[\"KERAS_BACKEND\"] = \"torch\"\r\nimport numpy as np\r\nimport keras\r\n\r\na = np.array([[0, 1.0, 2.0],\r\n              [10.0, 11.0, 12.0],\r\n              [20.0, 21.0, 22.0],\r\n              [30.0, 31.0, 32.0]])\r\nprint(keras.ops.take(a,[3,1],axis=0))\r\n\r\ntensor([[30., 31., 32.],\r\n        [10., 11., 12.]], dtype=torch.float64)\r\n```\r\n\r\nOnly in out of range index, torch throws `IndexError`, `JAX` handles with `nan` values and `TensorFlow` provides the last axis values."
+  },
+  {
+   "author": "github-actions[bot]",
+   "created_at": "2024-04-27T01:48:18Z",
+   "body": "This issue is stale because it has been open for 14 days with no activity. It will be closed if no further activity occurs. Thank you."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-04-27T07:16:26Z",
+   "body": "@reporter \r\nFYI, https://github.com/keras-team/keras/issues/19238#issuecomment-2008046857"
+  },
+  {
+   "author": "github-actions[bot]",
+   "created_at": "2024-05-14T01:49:03Z",
+   "body": "This issue is stale because it has been open for 14 days with no activity. It will be closed if no further activity occurs. Thank you."
+  },
+  {
+   "author": "github-actions[bot]",
+   "created_at": "2024-05-28T01:49:50Z",
+   "body": "This issue was closed because it has been inactive for 28 days. Please reopen if you'd like to work on this further."
+  },
+  {
+   "author": "google-ml-butler[bot]",
+   "created_at": "2024-05-28T01:49:52Z",
+   "body": "Are you satisfied with the resolution of your issue?\n<a href=\"https://docs.google.com/forms/d/e/1FAIpQLSdHag0RVFS7UXzZkKcsFCKOcX8raCupKK9RHSlYxp5U8lSJbQ/viewform?entry.492125872=Yes&entry.243948740=https://github.com/keras-team/keras/issues/18449\">Yes</a>\n<a href=\"https://docs.google.com/forms/d/e/1FAIpQLSdHag0RVFS7UXzZkKcsFCKOcX8raCupKK9RHSlYxp5U8lSJbQ/viewform?entry.492125872=No&entry.243948740=https://github.com/keras-team/keras/issues/18449\">No</a>\n"
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "keras-team/keras",
+  "default_branch": "master",
+  "commit_sha": "0b76b9144aa736735cb2e460de0d591335a88409",
+  "as_of": "2023-07-02T22:53:47Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_keras-team_keras_18449"
+}

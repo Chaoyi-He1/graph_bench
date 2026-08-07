@@ -1,0 +1,162 @@
+{
+ "repo": "airbytehq/airbyte",
+ "number": 46097,
+ "url": "https://github.com/airbytehq/airbyte/issues/46097",
+ "title": "When using AWS Secrets Manager for persisting secrets, updating a connector deletes its secret",
+ "state": "closed",
+ "labels": [
+  "type/bug",
+  "area/platform",
+  "community",
+  "team/compose",
+  "team/platform-move",
+  "autoteam"
+ ],
+ "reporter": "cjwooo",
+ "created_at": "2024-09-27T22:18:16Z",
+ "closed_at": "2025-02-25T15:34:05Z",
+ "body": "### Helm Chart Version\r\n\r\n0.64.388\r\n\r\n### What step the error happened?\r\n\r\nOther\r\n\r\n### Relevant information\r\n\r\nObserved behavior:\r\n1. Create an Airbyte Source that has at least one secret param. Check Database for id of airbyte secret and confirm that it exists in AWS Secrets Manager.\r\n2. Update the Airbyte Source config. Regardless of whether a new value was provided for the secret param, the secret in Secrets Manager gets deleted.\r\n3. Any subsequent Source config update fails due to the secret being deleted. If a new value was provided in step 2, all subsequent syncs with that Source fail. If a new value was not provided, syncs still pass -- is Airbyte caching the secret value?\r\n\r\nI believe I have tracked the cause to [this commit](https://github.com/airbytehq/airbyte-platform/commit/c787b2f2240c07e123b99091c3d5b6afb10d7680#diff-252583f3f07645bebdba3f6e08eca5a3faa23683d1629c2d43e80e4f7d28c667). The related deletion behavior was behind a feature flag that was defaulted to false, but the commit removed the flag and enabled the deletion behavior permanently.\r\n\r\nAFAICT, the problem with the Secrets Manager integration is that the version suffix that Airbyte adds to the ids -- e.g. `<secret-id-base>_v1/v2/etc` is [not respected](https://github.com/airbytehq/airbyte-platform/blob/main/airbyte-config/config-secrets/src/main/kotlin/secrets/persistence/AwsSecretManagerPersistence.kt#L46) when writing to AWS Secrets Manager, so none of the secrets are versioned properly. As a result, when Airbyte thinks it's deleting an old secret after a connector config update, it's actually deleting the required secret, as there is only one.\r\n\r\nWhile we are using an older chart version, and I am not familiar enough with the platform codebase to say anything about it concretely, I don't think this behavior has changed between our version and 1.0.\r\n\r\n### Relevant log output\r\n\r\n_No response_",
+ "comments": [
+  {
+   "author": "tovbinm",
+   "created_at": "2024-10-01T16:31:43Z",
+   "body": "@natikgadzhi @nataliekwong can you please prioritize the fix?"
+  },
+  {
+   "author": "natikgadzhi",
+   "created_at": "2024-10-01T16:33:29Z",
+   "body": "That's @bgroff area. "
+  },
+  {
+   "author": "tovbinm",
+   "created_at": "2024-10-07T16:47:51Z",
+   "body": "@bgroff, are there any updates on this? Is there someone else who can handle the fix for the issue?"
+  },
+  {
+   "author": "malikdiarra",
+   "created_at": "2024-10-14T18:30:07Z",
+   "body": "@cjwooo Thanks for reporting this. Are you performing the creation and update of the source through the public API?"
+  },
+  {
+   "author": "tovbinm",
+   "created_at": "2024-10-14T20:52:04Z",
+   "body": "We are using update source API from OpenAPI spec: `POST /v1/sources/update` (body `SourceUpdate`)"
+  },
+  {
+   "author": "GregMisfitsMarket",
+   "created_at": "2024-10-17T14:51:07Z",
+   "body": "I'm also experiencing issues with AWS Secrets Manager and `_v2` related errors, e.g. \r\n```\r\n2024-10-17 14:04:23 INFO i.a.w.l.c.WorkloadApiClient(updateStatusToLaunched):60 - Attempting to update workload: b6fec24d-5870-410a-afa8-902ee252bf20_776_4_check to LAUNCHED.\r\n2024-10-17 14:04:23 INFO i.a.w.l.p.h.SuccessHandler(accept):60 - Pipeline completed for workload: b6fec24d-5870-410a-afa8-902ee252bf20_776_4_check.\r\n2024-10-17 14:04:24 INFO i.a.w.l.c.WorkloadApiClient(claim):75 - Claimed: true for 2c4f2192-796d-4c56-b0a7-daf93c96c507_776_4_check via API for local\r\n2024-10-17 14:04:24 INFO i.a.w.l.p.s.m.Stage(apply):39 - APPLY Stage: CHECK_STATUS — (workloadId = 2c4f2192-796d-4c56-b0a7-daf93c96c507_776_4_check) — (dataplaneId = local)\r\n2024-10-17 14:04:24 INFO i.a.w.l.p.s.CheckStatusStage(applyStage):59 - No pod found running for workload 2c4f2192-796d-4c56-b0a7-daf93c96c507_776_4_check\r\n2024-10-17 14:04:24 INFO i.a.w.l.p.s.m.Stage(apply):39 - APPLY Stage: BUILD — (workloadId = 2c4f2192-796d-4c56-b0a7-daf93c96c507_776_4_check) — (dataplaneId = local)\r\n2024-10-17 14:04:24 WARN i.a.c.s.p.AwsSecretManagerPersistence(read):48 - Secret airbyte_workspace_f15641e6-2335-4684-932d-fcedd458c084_secret_d119d09b-b779-4fa6-8aff-c22d8494b7c7 not found\r\n2024-10-17 14:04:24 ERROR i.a.w.l.p.h.FailureHandler(apply):39 - Pipeline Error\r\nio.airbyte.workload.launcher.pipeline.stages.model.StageError: java.lang.RuntimeException: That secret was not found in the store! Coordinate: airbyte_workspace_f15641e6-2335-4684-932d-fcedd458c084_secret_d119d09b-b779-4fa6-8aff-c22d8494b7c7_v2\r\n\tat io.airbyte.workload.launcher.pipeline.stages.model.Stage.apply(Stage.kt:46) ~[io.airbyte-airbyte-workload-launcher-1.1.0.jar:?]\r\n\tat io.airbyte.workload.launcher.pipeline.stages.BuildInputStage.apply(BuildInputStage.kt:58) ~[io.airbyte-airbyte-workload-launcher-1.1.0.jar:?]\r\n\tat io.airbyte.workload.launcher.pipeline.stages.$BuildInputStage$Definition$Intercepted.$$access$$apply(Unknown Source) ~[io.airbyte-airbyte-workload-launcher-1.1.0.jar:?]\r\n\tat io.airbyte.workload.launcher.pipeline.stages.$BuildInputStage$Definition$Exec.dispatch(Unknown Source) ~[io.airbyte-airbyte-workload-launcher-1.1.0.jar:?]\r\n\tat io.micronaut.context.AbstractExecutableMethodsDefinition$DispatchedExecutableMethod.invoke(AbstractExecutableMethodsDefinition.java:456) ~[micronaut-inject-4.6.5.jar:4.6.5]\r\n\tat io.micronaut.aop.chain.MethodInterceptorChain.proceed(MethodInterceptorChain.java:134) ~[micronaut-aop-4.6.5.jar:4.6.5]\r\n\tat io.airbyte.metrics.interceptors.InstrumentInterceptorBase.doIntercept(InstrumentInterceptorBase.kt:61) ~[io.airbyte.airbyte-metrics-metrics-lib-1.1.0.jar:?]\r\n\tat io.airbyte.metrics.interceptors.InstrumentInterceptorBase.intercept(InstrumentInterceptorBase.kt:44) ~[io.airbyte.airbyte-metrics-metrics-lib-1.1.0.jar:?]\r\n\tat io.micronaut.aop.chain.MethodInterceptorChain.proceed(MethodInterceptorChain.java:143) ~[micronaut-aop-4.6.5.jar:4.6.5]\r\n\tat io.airbyte.workload.launcher.pipeline.stages.$BuildInputStage$Definition$Intercepted.apply(Unknown Source) ~[io.airbyte-airbyte-workload-launcher-1.1.0.jar:?]\r\n\tat io.airbyte.workload.launcher.pipeline.stages.BuildInputStage.apply(BuildInputStage.kt:39) ~[io.airbyte-airbyte-workload-launcher-1.1.0.jar:?]\r\n\tat reactor.core.publisher.MonoFlatMap$FlatMapMain.onNext(MonoFlatMap.java:132) ~[reactor-core-3.6.9.jar:3.6.9]\r\n\tat reactor.core.publisher.MonoFlatMap$FlatMapMain.onNext(MonoFlatMap.java:158) ~[reactor-core-3.6.9.jar:3.6.9]\r\n\tat reactor.core.publisher.Operators$ScalarSubscription.request(Operators.java:2571) ~[reactor-core-3.6.9.jar:3.6.9]\r\n\tat reactor.core.publisher.MonoFlatMap$FlatMapMain.request(MonoFlatMap.java:194) ~[reactor-core-3.6.9.jar:3.6.9]\r\n\tat reactor.core.publisher.MonoFlatMap$FlatMapMain.request(MonoFlatMap.java:194) ~[reactor-core-3.6.9.jar:3.6.9]\r\n\tat reactor.core.publisher.MonoFlatMap$FlatMapMain.request(MonoFlatMap.java:194) ~[reactor-core-3.6.9.jar:3.6.9]\r\n\tat reactor.core.publisher.MonoFlatMap$FlatMapMain.request(MonoFlatMap.java:194) ~[reactor-core-3.6.9.jar:3.6.9]\r\n\tat reactor.core.publisher.Operators$MultiSubscriptionSubscriber.set(Operators.java:2367) ~[reactor-core-3.6.9.jar:3.6.9]\r\n\tat reactor.core.publisher.FluxOnErrorResume$ResumeSubscriber.onSubscribe(FluxOnErrorResume.java:74) ~[reactor-core-3.6.9.jar:3.6.9]\r\n\tat reactor.core.publisher.MonoFlatMap$FlatMapMain.onSubscribe(MonoFlatMap.java:117) ~[reactor-core-3.6.9.jar:3.6.9]\r\n\tat reactor.core.publisher.MonoFlatMap$FlatMapMain.onSubscribe(MonoFlatMap.java:117) ~[reactor-core-3.6.9.jar:3.6.9]\r\n\tat reactor.core.publisher.MonoFlatMap$FlatMapMain.onSubscribe(MonoFlatMap.java:117) ~[reactor-core-3.6.9.jar:3.6.9]\r\n\tat reactor.core.publisher.MonoFlatMap$FlatMapMain.onSubscribe(MonoFlatMap.java:117) ~[reactor-core-3.6.9.jar:3.6.9]\r\n\tat reactor.core.publisher.FluxFlatMap.trySubscribeScalarMap(FluxFlatMap.java:193) ~[reactor-core-3.6.9.jar:3.6.9]\r\n\tat reactor.core.publisher.MonoFlatMap.subscribeOrReturn(MonoFlatMap.java:53) ~[reactor-core-3.6.9.jar:3.6.9]\r\n\tat reactor.core.publisher.Mono.subscribe(Mono.java:4560) ~[reactor-core-3.6.9.jar:3.6.9]\r\n\tat reactor.core.publisher.MonoSubscribeOn$SubscribeOnSubscriber.run(MonoSubscribeOn.java:126) ~[reactor-core-3.6.9.jar:3.6.9]\r\n\tat reactor.core.scheduler.ImmediateScheduler$ImmediateSchedulerWorker.schedule(ImmediateScheduler.java:84) ~[reactor-core-3.6.9.jar:3.6.9]\r\n\tat reactor.core.publisher.MonoSubscribeOn.subscribeOrReturn(MonoSubscribeOn.java:55) ~[reactor-core-3.6.9.jar:3.6.9]\r\n\tat reactor.core.publisher.Mono.subscribe(Mono.java:4560) ~[reactor-core-3.6.9.jar:3.6.9]\r\n\tat reactor.core.publisher.Mono.subscribeWith(Mono.java:4642) ~[reactor-core-3.6.9.jar:3.6.9]\r\n\tat reactor.core.publisher.Mono.subscribe(Mono.java:4403) ~[reactor-core-3.6.9.jar:3.6.9]\r\n\tat io.airbyte.workload.launcher.pipeline.LaunchPipeline.accept(LaunchPipeline.kt:50) ~[io.airbyte-airbyte-workload-launcher-1.1.0.jar:?]\r\n\tat io.airbyte.workload.launcher.pipeline.consumer.LauncherMessageConsumer.consume(LauncherMessageConsumer.kt:28) ~[io.airbyte-airbyte-workload-launcher-1.1.0.jar:?]\r\n\tat io.airbyte.workload.launcher.pipeline.consumer.LauncherMessageConsumer.consume(LauncherMessageConsumer.kt:12) ~[io.airbyte-airbyte-workload-launcher-1.1.0.jar:?]\r\n\tat io.airbyte.commons.temporal.queue.QueueActivityImpl.consume(Internal.kt:87) ~[io.airbyte-airbyte-commons-temporal-core-1.1.0.jar:?]\r\n\tat java.base/jdk.internal.reflect.DirectMethodHandleAccessor.invoke(DirectMethodHandleAccessor.java:103) ~[?:?]\r\n\tat java.base/java.lang.reflect.Method.invoke(Method.java:580) ~[?:?]\r\n\tat io.temporal.internal.activity.RootActivityInboundCallsInterceptor$POJOActivityInboundCallsInterceptor.executeActivity(RootActivityInboundCallsInterceptor.java:64) ~[temporal-sdk-1.22.3.jar:?]\r\n\tat io.temporal.internal.activity.RootActivityInboundCallsInterceptor.execute(RootActivityInboundCallsInterceptor.java:43) ~[temporal-sdk-1.22.3.jar:?]\r\n\tat io.temporal.common.interceptors.ActivityInboundCallsInterceptorBase.execute(ActivityInboundCallsInterceptorBase.java:39) ~[temporal-sdk-1.22.3.jar:?]\r\n\tat io.temporal.opentracing.internal.OpenTracingActivityInboundCallsInterceptor.execute(OpenTracingActivityInboundCallsInterceptor.java:78) ~[temporal-opentracing-1.22.3.jar:?]\r\n\tat io.temporal.internal.activity.ActivityTaskExecutors$BaseActivityTaskExecutor.execute(ActivityTaskExecutors.java:107) ~[temporal-sdk-1.22.3.jar:?]\r\n\tat io.temporal.internal.activity.ActivityTaskHandlerImpl.handle(ActivityTaskHandlerImpl.java:124) ~[temporal-sdk-1.22.3.jar:?]\r\n\tat io.temporal.internal.worker.ActivityWorker$TaskHandlerImpl.handleActivity(ActivityWorker.java:278) ~[temporal-sdk-1.22.3.jar:?]\r\n\tat io.temporal.internal.worker.ActivityWorker$TaskHandlerImpl.handle(ActivityWorker.java:243) ~[temporal-sdk-1.22.3.jar:?]\r\n\tat io.temporal.internal.worker.ActivityWorker$TaskHandlerImpl.handle(ActivityWorker.java:216) ~[temporal-sdk-1.22.3.jar:?]\r\n\tat io.temporal.internal.worker.PollTaskExecutor.lambda$process$0(PollTaskExecutor.java:105) ~[temporal-sdk-1.22.3.jar:?]\r\n\tat java.base/java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1144) ~[?:?]\r\n\tat java.base/java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:642) ~[?:?]\r\n\tat java.base/java.lang.Thread.run(Thread.java:1583) [?:?]\r\nCaused by: java.lang.RuntimeException: That secret was not found in the store! Coordinate: airbyte_workspace_f15641e6-2335-4684-932d-fcedd458c084_secret_d119d09b-b779-4fa6-8aff-c22d8494b7c7_v2\r\n\tat io.airbyte.config.secrets.SecretsHelpers.getOrThrowSecretValue(SecretsHelpers.kt:288) ~[io.airbyte.airbyte-config-config-secrets-1.1.0.jar:?]\r\n\tat io.airbyte.config.secrets.SecretsHelpers.combineConfig(SecretsHelpers.kt:173) ~[io.airbyte.airbyte-config-config-secrets-1.1.0.jar:?]\r\n\tat io.airbyte.config.secrets.SecretsHelpers$combineConfig$1.invoke(SecretsHelpers.kt:183) ~[io.airbyte.airbyte-config-config-secrets-1.1.0.jar:?]\r\n\tat io.airbyte.config.secrets.SecretsHelpers$combineConfig$1.invoke(SecretsHelpers.kt:177) ~[io.airbyte.airbyte-config-config-secrets-1.1.0.jar:?]\r\n\tat io.airbyte.config.secrets.SecretsHelpers.combineConfig$lambda$2(SecretsHelpers.kt:177) ~[io.airbyte.airbyte-config-config-secrets-1.1.0.jar:?]\r\n\tat java.base/java.util.Iterator.forEachRemaining(Iterator.java:133) ~[?:?]\r\n\tat io.airbyte.config.secrets.SecretsHelpers.combineConfig(SecretsHelpers.kt:177) ~[io.airbyte.airbyte-config-config-secrets-1.1.0.jar:?]\r\n\tat io.airbyte.config.secrets.hydration.RealSecretsHydrator.hydrateFromDefaultSecretPersistence(RealSecretsHydrator.kt:21) ~[io.airbyte.airbyte-config-config-secrets-1.1.0.jar:?]\r\n\tat io.airbyte.config.secrets.SecretsRepositoryReader.hydrateConfigFromDefaultSecretPersistence(SecretsRepositoryReader.kt:60) ~[io.airbyte.airbyte-config-config-secrets-1.1.0.jar:?]\r\n\tat io.airbyte.workers.ConnectorSecretsHydrator.hydrateConfig(ConnectorSecretsHydrator.kt:33) ~[io.airbyte-airbyte-commons-worker-1.1.0.jar:?]\r\n\tat io.airbyte.workers.CheckConnectionInputHydrator.getHydratedStandardCheckInput(CheckConnectionInputHydrator.kt:13) ~[io.airbyte-airbyte-commons-worker-1.1.0.jar:?]\r\n\tat io.airbyte.workload.launcher.pipeline.stages.BuildInputStage.buildPayload(BuildInputStage.kt:90) ~[io.airbyte-airbyte-workload-launcher-1.1.0.jar:?]\r\n\tat io.airbyte.workload.launcher.pipeline.stages.BuildInputStage.applyStage(BuildInputStage.kt:62) ~[io.airbyte-airbyte-workload-launcher-1.1.0.jar:?]\r\n\tat io.airbyte.workload.launcher.pipeline.stages.BuildInputStage.applyStage(BuildInputStage.kt:39) ~[io.airbyte-airbyte-workload-launcher-1.1.0.jar:?]\r\n\tat io.airbyte.workload.launcher.pipeline.stages.model.Stage.apply(Stage.kt:42) ~[io.airbyte-airbyte-workload-launcher-1.1.0.jar:?]\r\n\t... 51 more\r\n2024-10-17 14:04:24 INFO i.a.w.l.c.WorkloadApiClient(updateStatusToFailed):54 - Attempting to update workload: 2c4f2192-796d-4c56-b0a7-daf93c96c507_776_4_check to FAILED.\r\n2024-10-17 14:04:24 INFO i.a.w.l.p.h.FailureHandler(apply):62 - Pipeline aborted after error for workload: 2c4f2192-796d-4c56-b0a7-daf93c96c507_776_4_check.\r\n2024-10-17 14:04:25 platform > Failing job: 776, reason: Job failed after too many retries for connection 239938ef-49a4-4d48-ba6d-9d50553eb962\r\n```"
+  },
+  {
+   "author": "GregMisfitsMarket",
+   "created_at": "2024-12-13T16:21:21Z",
+   "body": "FWIW - still seeing this behavior after upgrading to v1.3.0"
+  },
+  {
+   "author": "giacomochiarella",
+   "created_at": "2025-01-08T15:33:43Z",
+   "body": "I'm having this issue too on Airbyte 1.3.0.\nAssuming each ingestion is executed at least once a day, what if we remove `secretsmanager:DeleteSecret` permission from the IAM role set in the value.yml and a script deletes all the secrets which are\n(not accessed by more than 2 days and not changed by more than 2 days)\nor\nthe secret id starts with `airbyte_workspace_00000000`\nit is easily extendable in cases where there are ingestions triggered with lower frequency, just increasing the number of days instead of 2 days.\nCould this be a good workaround?"
+  },
+  {
+   "author": "marcosmarxm",
+   "created_at": "2025-01-08T18:25:37Z",
+   "body": "Hello, team is investigating the issue and trying to reproduce it to implement a fix. Any update I'll let you know."
+  },
+  {
+   "author": "SkinnyPigeon",
+   "created_at": "2025-01-22T14:57:28Z",
+   "body": "Hey, we've got this exact issue as well. If anyone makes a change to a Source, it will break any connections. We are on 1.2.0. More users are starting to be onboarded so this is likely going to become critical"
+  },
+  {
+   "author": "bHacklv",
+   "created_at": "2025-02-04T09:08:17Z",
+   "body": "@marcosmarxm  any update on this? \nWe are using Airbyte 1.4.0 and we've observed the same behaviour where the sync jobs stop working when a change is done to a source.\n\n![Image](https://github.com/user-attachments/assets/3c6e2553-0e58-4ea2-90b7-a4f1e16a529f)"
+  },
+  {
+   "author": "JonsSpaghetti",
+   "created_at": "2025-02-12T07:20:47Z",
+   "body": "Hey folks, we have a PR up internally with a fix for this. It should get merged this week and should go out in the 1.5.0 release which should happen next week. Stay tuned."
+  },
+  {
+   "author": "JonsSpaghetti",
+   "created_at": "2025-02-12T18:28:09Z",
+   "body": "Fix has been merged, expect it to go out with 1.5.0 next week. Thanks for reporting this and for the patience here everyone.\n\nNote that this will take effect for new connections, since the old secrets were saved incorrectly it's difficult for us to remediate them. We're trying to find a way to mitigate for existing connections but it isn't straightforward.\n\nEdit: We've got a way to mitigate for existing connections.\n\nSummary: For sources/destinations that haven't been touched, there should be no issues either continuing to run connections or updating secrets/config post upgrading to 1.5.0\nFor any failure states (secrets were deleted because of the bug), just update your source/destination's secrets after upgrading to 1.5.0 and secrets should persist correctly."
+  },
+  {
+   "author": "giacomochiarella",
+   "created_at": "2025-02-24T14:21:12Z",
+   "body": "@JonsSpaghetti I'm testing Airbyte 1.5.0. I've notice that if you change a secret (e.g. a destination password) Airbyte deletes the current one but for some reason it creates always a new secret with the new password and another secret with the old password.\nExample:\nfirst time: it creates secret0\nchange the password: it deletes secret0 and it creates secret1 with current password and secret2 with new password\nchange again the password: it deletes secret2 and creates secret3 with current password and secret4 with new password\nI ended up in having 4 secrets with 2 password changes and if keep going it continues recreating 2 secrets per change\nis that a bug?"
+  },
+  {
+   "author": "SkinnyPigeon",
+   "created_at": "2025-02-24T14:38:31Z",
+   "body": "[It costs $0.40 per secret per month in AWS Secret Manager](https://aws.amazon.com/secrets-manager/pricing/). It would be nice to keep these to a minimum if at all possible 🙏 "
+  },
+  {
+   "author": "JonsSpaghetti",
+   "created_at": "2025-02-24T16:42:49Z",
+   "body": "Unfortunately yes the extra secrets you see getting created are from our check_connection. We have updates to make to ensure that those are expired and cleaned up correctly which we will do in a follow-up. "
+  },
+  {
+   "author": "giacomochiarella",
+   "created_at": "2025-02-24T16:50:17Z",
+   "body": "@JonsSpaghetti meanwhile this is fixed, can we assume Airbyte will never use the secrets containing the old password and delete them by just filtering by last accessed date? Assuming that all the ingestions are scheduled to be triggered at least once per day, can we safely delete all the secrets with last accessed date < now - 2 or 3 days?"
+  },
+  {
+   "author": "JonsSpaghetti",
+   "created_at": "2025-02-24T19:45:19Z",
+   "body": "@giacomochiarella I'd recommend looking @ the naming scheme of the secret instead.\n\nThe secrets with a name like airbyte_workspace_00000000-0000-0000-0000-000000000000_secret_* should be ones which are ephemeral - once they've been accessed (usually only once) they should be safe to clean up.\n\nWriting secrets with expiry is supported in our existing SecretPersistence interface, but it's only implemented for some of our supported secret managers. I'll add an item to our backlog to make sure we support it for AWS as well so that these secrets will be cleaned up automatically. I'll link the new ticket here."
+  },
+  {
+   "author": "giacomochiarella",
+   "created_at": "2025-02-25T08:02:14Z",
+   "body": "@JonsSpaghetti can you be more precise please? I ended up in this situation. All the secrets are there. Even if the one with 0s would be removed (and looks to me it is not removed) there are many others to delete.\nThis showed is the situation after I just setup salesforce source without never change the secret once. Just the very first creation.\n\n<img width=\"494\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/719974e0-6b1a-4017-bcaa-c22695068f95\" />\n\nThis would cause uncontrolled extra costs."
+  },
+  {
+   "author": "isaac-perez-nexthink",
+   "created_at": "2025-02-25T13:13:20Z",
+   "body": "Thanks you all. Is fixed now on v1.5.0"
+  },
+  {
+   "author": "JonsSpaghetti",
+   "created_at": "2025-02-25T15:33:53Z",
+   "body": "@giacomochiarella that looks correct to me. The salesforce source has multiple secrets in its config and each one creates a single secret. The temp secrets are the ones that should be cleaned up and I created a related ticket to track that. I'm going to close this ticket as last comment states this specific issue is resolved in 1.5.0. "
+  },
+  {
+   "author": "giacomochiarella",
+   "created_at": "2025-02-25T15:52:49Z",
+   "body": "@JonsSpaghetti could you mention the ticket for the other issue for me to be posted on it?"
+  },
+  {
+   "author": "JonsSpaghetti",
+   "created_at": "2025-02-25T18:00:30Z",
+   "body": "@giacomochiarella https://github.com/airbytehq/airbyte-internal-issues/issues/11889"
+  },
+  {
+   "author": "omreego",
+   "created_at": "2025-03-07T23:33:47Z",
+   "body": "Does this change support the previous AWS Secrets Manager secrets which don't have the _vX extension?\nWe updated to 1.5.0 and are noticing that updating old secrets is not possible.\nUpdate: We have the condition that airbyte can only update or create secrets with tag \"airbyte\" set to \"true\".\nWhen we remove the condition it doesn't fail to update\n"
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "airbytehq/airbyte",
+  "default_branch": "master",
+  "commit_sha": "08e7ca60724f693dfed6c006d00aa5dac73a2ae6",
+  "as_of": "2024-09-27T22:18:16Z",
+  "method": "github_commits_until"
+ },
+ "images": [
+  {
+   "where": "c10",
+   "source_url": "https://github.com/user-attachments/assets/3c6e2553-0e58-4ea2-90b7-a4f1e16a529f",
+   "file": "gh_airbytehq_airbyte_46097_img0.png"
+  },
+  {
+   "where": "c18",
+   "source_url": "https://github.com/user-attachments/assets/719974e0-6b1a-4017-bcaa-c22695068f95",
+   "file": "gh_airbytehq_airbyte_46097_img1.png"
+  }
+ ],
+ "slug": "gh_airbytehq_airbyte_46097"
+}

@@ -1,0 +1,171 @@
+{
+ "repo": "fluent/fluent-bit",
+ "number": 7439,
+ "url": "https://github.com/fluent/fluent-bit/issues/7439",
+ "title": "TCP listener input plugin creating log spam filling up disk in few (2 - 3 hours)",
+ "state": "closed",
+ "labels": [
+  "Stale"
+ ],
+ "reporter": "reporter",
+ "created_at": "2023-05-19T06:16:50Z",
+ "closed_at": "2023-12-21T01:50:05Z",
+ "body": "We encountered a problem where the file descriptor (FD) limit of Fluent Bit was reached, and as a result, we started observing a massive influx of error logs, particularly from the TCP input plugin. We suspect that Fluent Bit began generating an increasing number of file descriptors because the component responsible for accepting the data(at port 5001, which what we have configured in output plugin) was either not functioning or stuck in some way.\r\n\r\n\r\nWe first saw these below logs started coming when FD limit was reached. **During this time TCP input plugin was not used.**\r\n\r\nApr 14 06:25:22 vm4 td-agent-bit[16481]: [2023/04/14 06:25:22] [error] [output:forward:forward.1] no upstream connections available\r\nApr 14 06:25:22 vm4 td-agent-bit[16481]: [2023/04/14 06:25:22] [error] [net] coult not create client socket, retrying\r\nApr 14 06:25:22 vm4 td-agent-bit[16481]: [2023/04/14 06:25:22] [error] [output:forward:forward.1] no upstream connections available\r\nApr 14 06:25:22 vm4 td-agent-bit[16481]: [2023/04/14 06:25:22] [error] [net] coult not create client socket, retrying\r\nApr 14 06:25:22 vm4 td-agent-bit[16481]: [2023/04/14 06:25:22] [error] [output:forward:forward.1] no upstream connections available\r\nApr 14 06:25:22 vm4 td-agent-bit[16481]: [2023/04/14 06:25:22] [error] [net] coult not create client socket, retrying\r\nApr 14 06:25:22 vm4 td-agent-bit[16481]: [2023/04/14 06:25:22] [error] [output:forward:forward.1] no upstream connections available\r\nApr 14 06:25:22 vm4 td-agent-bit[16481]: [2023/04/14 06:25:22] [  Error] timerfd: Too many open files, errno=24 at /tmp/fluent-bit/lib/monkey/mk_core/mk_event_epoll.c:208\r\nApr 14 06:25:22 vm4 td-agent-bit[16481]: [2023/04/14 06:25:22] [error] [sched]  'retry request' could not be created. the system might be running out of memory or file descriptors.\r\nApr 14 06:25:22 vm4 td-agent-bit[16481]: [2023/04/14 06:25:22] [ warn] [engine] retry for chunk '16481-1681453518.322193481.flb' could not be scheduled: input=tail.1 > output=forward.1\r\n\r\n**These logs were coming regularly but rate of these logs was acceptable.**\r\nLater when FD limit was already breached and someone tried to connect to TCP input plugin we saw millions of logs error coming because of TCP input plugin. \r\nApr 13 17:46:17 vm4 td-agent-bit[4856]: accept4: Too many open files\r\n Apr 13 17:46:17 vm4 td-agent-bit[4856]: [2023/04/13 17:46:17] [error] [input:tcp:listener] could not accept new connection\r\n Apr 13 17:46:17 vm4 td-agent-bit[4856]: accept4: Too many open files\r\n Apr 13 17:46:17 vm4 td-agent-bit[4856]: [2023/04/13 17:46:17] [error] [input:tcp:listener] could not accept new connection\r\n\r\nAnybody aware why tcp input plugin is emitting millions of logs of same type? is there any way to limit these logs...its causing OS disk full issue.\r\n\r\nIncreasing the limit of FD might not work here as ideally our service dont use that many FD....we only reach FD limit when the component accepting the data is not working or stuck. So may be that's the reason fluent bit tries to open more and more socket inorder to preserve data in TCP buffers and hence increasing file descriptors.\r\n\r\nMy main ask here is how do I limit these error logs from TCP input plugin as these are coming very frequently and keep on coming and filling up whole disk space within 2 - 3 hours.\r\n\r\nWe should see how we can minimize the millions of logs to a way more less error logging when this scenario hits.\r\n\r\nWe should also see why the TCP input plugin is attempting to reconnect(trying to make socket FD in this case) in a very tight loop? Is there a parameter available to configure the retry interval for the TCP input plugin? Currently, it appears to retry immediately and continue trying, resulting in high CPU usage.\r\n\r\nOS:\"Ubuntu 18.04.6 LTS\r\n\r\nVersion used: I tried both 1.9.10 and 2.2\r\n\r\nConfig used:\r\n\r\n[SERVICE]\r\n    Flush         5\r\n    Daemon        Off\r\n    Log_Level     info\r\n    Parsers_File  labs.conf\r\n    HTTP_Server   On\r\n    HTTP_Listen   127.0.0.1\r\n    HTTP_PORT     2020\r\n\r\n[INPUT]\r\n    Name         tail\r\n    Path         /var/opt/labs/log/*.log\r\n    Exclude_Path PARSED_FILES\r\n    Path_Key     On\r\n    Tag          tag1\r\n\r\n[INPUT]\r\n    Name       tail\r\n    Path_Key   On\r\n    Path       /var/opt/agent/agent*.log\r\n    Tag        tag3\r\n    Parser     agent\r\n\r\n[INPUT]\r\n    Name       tail\r\n    Path_Key   On\r\n    Path       /var/opt/agent/telemetry*.log\r\n    Tag        tag4\r\n    Parser     agent\r\n\r\n[INPUT]\r\n    Name            tail\r\n    Path_Key        On\r\n    Path            /var/log/*.log, /var/log/apt/*.log, /var/log/cloud/*/*.log, /var/log/clamav/*.log\r\n    Exclude_Path    PARSED_VARLOG_FILES\r\n    Tag             tag1\r\n\r\n [INPUT]\r\n     Name        tcp\r\n     Listen      127.0.0.1\r\n     Port        1234\r\n     Chunk_Size  32\r\n     Buffer_Size 64\r\n     Format      json\r\n     Tag         tag2\r\n     Alias       listener\r\n\r\n[FILTER]\r\n    Name       modify\r\n    Match      cloud*\r\n    Rename     @m message\r\n    Rename     @l level\r\n    Rename     @x exception\r\n    Remove     @i\r\n\r\n [FILTER]\r\n     Name       grep\r\n     Match      tag2\r\n     Exclude    $new_int['trgp'] 3333\r\n     Exclude    $close['trgp'] 3333\r\n     Alias      internal_log_filter\r\n\r\n [FILTER]\r\n     Name       modify\r\n     Match      tag2\r\n     Set Region LOG_REGION\r\n     Alias      set_region\r\n\r\n [FILTER]\r\n     Name       modify\r\n     Match      tag2\r\n     Condition  Key_Exists new\r\n     Set action new\r\n     Alias      set_new_action\r\n\r\n [FILTER]\r\n     Name       modify\r\n     Match      tag2\r\n     Condition  Key_Exists close\r\n     Set action close\r\n     Alias      set_close_action\r\n\r\n [FILTER]\r\n     Name           nest\r\n     Match          tag2\r\n     Operation      lift\r\n     Nested_under   new_conn\r\n     Alias          convert_event_new_to_flat_schema\r\n\r\n [FILTER]\r\n     Name           nest\r\n     Match          tag2\r\n     Operation      lift\r\n     Nested_under   close_conn\r\n     Alias          convert_event_close_to_flat_schema\r\n\r\n[OUTPUT]\r\n    Name       forward\r\n    Host       127.0.0.1\r\n    Port       5001\r\n    Match      cloud*\r\n\r\n[OUTPUT]\r\n    Name       forward\r\n    Host       127.0.0.1\r\n    Port       5001\r\n    match      tag1\r\n\r\n [OUTPUT]\r\n     Name       forward\r\n     Host       127.0.0.1\r\n     Port       5001\r\n     match      tag2\r\n     Alias      output\r\n    \r\n   \r\n   \r\n  \r\n![Screenshot_2](https://github.com/fluent/fluent-bit/assets/14851241/8b3b6db7-b229-4f01-b8db-2657e457e734)\r\n\r\n  During issue time we saw many open TCP connection between td-agent-bit and port 5001 which is the port we have configured in output plugin.\r\n  Note that during this time no data was coming from TCP input plugin. The data was coming mostly from other input plugins. \r\n![MicrosoftTeams-image (5)](https://github.com/fluent/fluent-bit/assets/14851241/80f9d3a2-f8eb-4034-af75-b16bfd32a050)\r\n\r\n** To reproduce high rate of error logs from TCP input plugin follow below step:**\r\n\r\nChecking the current soft and hard limit of FDs for td-agent-bit:\r\ncmd:\r\nprlimit -p <PID> --nofile\r\n\r\nNow check the current FDs used by td-agent-bit:\r\ncmd:\r\nfor x in `ps -eF| awk '{ print $2 }'`;do echo `ls /proc/$x/fd 2> /dev/null | wc -l` $x `cat /proc/$x/cmdline 2> /dev/null`;done | sort -n -r | head -n 20 | grep td-agent-bit\r\nNow set the softlimit and hardlimit of td-agent-bit to “current FD usage” + 3\r\n\r\nNow run: “sudo systemctl daemon-reload” and then run “sudo systemctl restart td-agent-bit.service”\r\n\r\nAgain check the soft and hard limit using cmd “prlimit -p <PID> --nofile” …it should be equal to what you have set.\r\n\r\nOpen another terminal for same VM and run a script which try to send logs to tail input plugin at high rate.\r\n\r\nNow you can check the FD usage of td-agent-bit, it should have reached the limit you have set.\r\nIf that’s so, now you will start seeing logs like below in syslog file or you can use this cmd to check them for a particular time period:\r\nsudo journalctl -u td-agent-bit.service --since \"1 minutes ago\"\r\n\r\nLogs:\r\nApr 15 15:06:28 vm4 td-agent-bit[16481]: [2023/04/15 15:06:28] [  Error] timerfd: Too many open files, errno=24 at /tmp/fluent-bit/lib/monkey/mk_core/mk_event_epoll.c:208\r\nApr 15 15:06:28 vm4 td-agent-bit[16481]: [2023/04/15 15:06:28] [error] [sched] a 'retry request' could not be scheduled. the system might be running out of memory or file descriptors. The scheduler will do a retry later.\r\nApr 15 15:06:28 vm4 td-agent-bit[16481]: [2023/04/15 15:06:28] [  Error] timerfd: Too many open files, errno=24 at /tmp/fluent-bit/lib/monkey/mk_core/mk_event_epoll.c:208\r\nApr 15 15:06:28 vm4 td-agent-bit[16481]: [2023/04/15 15:06:28] [error] [sched] a 'retry request' could not be scheduled. the system might be running out of memory or file descriptors. The scheduler will do a retry later.\r\nApr 15 15:06:28 vm4 td-agent-bit[16481]: [2023/04/15 15:06:28] [  Error] timerfd: Too many open files, errno=24 at /tmp/fluent-bit/lib/monkey/mk_core/mk_event_epoll.c:208\r\n\r\nNote that you will not see TCP input plugin related log spam unless you try to connect to it:\r\ncmd:\r\necho \"Hello, server!\" | nc 127.0.0.1 1234\r\nAfter running and canceling above cmd you should also see below kind of logs using this cmd:\r\nsudo journalctl -u td-agent-bit.service --since \"1 minutes ago\"| grep audit\r\n\r\nApr 15 17:43:16 vm4 td-agent-bit[16481]: [2023/04/15 17:43:16] [error] [input:tcp:listener] could not accept new connection\r\nApr 15 17:43:16 vm4 td-agent-bit[16481]: accept4: Too many open files\r\nApr 15 17:43:16 vm4 td-agent-bit[16481]: [2023/04/15 17:43:16] [error] [input:tcp:listener] could not accept new connection\r\nApr 15 17:43:16 vm4 td-agent-bit[16481]: accept4: Too many open files\r\nApr 15 17:43:16 vm4 td-agent-bit[16481]: [2023/04/15 17:43:16] [error] [input:tcp:listener] could not accept new connection\r\n\r\n[Slack Message](https://<redacted-host>/archives/C0CTQGHKJ/p1683701639201519?thread_ts=1683701639.201519&cid=C0CTQGHKJ)",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2023-05-19T08:57:09Z",
+   "body": "You have an error here and you potentially will lose data so reporting that is vital I think.\r\nUltimately resolving the underlying error should be the priority, I think anything else is just hiding failures. You need to tune your buffering and retries to cope with what you want to do during your outage.\r\n\r\nLogs should always be rotating and [using a separate partition](https://<redacted-host>/examples/guide-checklist.html#xccdf_org.ssgproject.content_group_configure_auditd_data_retention) as well for best practice to prevent this kind of issue with any tool.\r\n\r\nSaying that, a state-based error report limited to \"we're now in an error state\" and indicated that via metrics too would be nice. There is the recent log suppression functionality too although that's only recently introduced and will reduce rather than remove logs entirely.\r\n\r\nI think something was asked on Slack too around this: https://<redacted-host>/archives/C0CTQGHKJ/p1683701639201519\r\nIn that I indicated how to potentially resolve the logging issue via the [systemd unit approach](https://serverfault.com/a/858845). However, I'll say again: there is an error that will cause you problems potentially and just hiding it is not the best idea.\r\n\r\nThere are also ways to not log things, e.g. use `log_level off` in the output plugin, but then you lose all information.\r\n\r\nAnd finally, please follow the issue template - there's a lot of missing information here, e.g. config, version used, OS, etc. that should all be captured to help diagnose issues."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-05-19T08:57:53Z",
+   "body": "I think the request here is a state/event based logging approach as a feature request, potentially log suppress can help already but that is not documented yet."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-05-19T09:05:27Z",
+   "body": "Fluent-bit doesn't deliberately keep connections open to hold data in the connection buffer. It does however not forcefully close inactive connections so the clients sending that data might be just not properly closing the connections (which is a common error) which means those will only be closed when the kernel decides to according to the systems configuration.\r\n\r\nThere is a setting named `net.io_timeout` which you could set to a reasonable value in order to terminate those dangling connections.\r\n\r\nThere's also `net.accept_timeout_log_error` which you can set to `off` which will silence those `[2023/04/13 17:46:17] [error] [input:tcp:listener] could not accept new connection` but not the `accept4: Too many open files` because the later is not emitted through the fluent-bit logging pipeline but rather directly printed to `stderr` using `perror`.\r\n\r\nSo you  can either set [log_file](https://<redacted-host>/manual/administration/configuring-fluent-bit/classic-mode/configuration-file) in fluent-bit to save those logs directly to a file or do something to ignore `stderr` in your host but that's not something I can make any comments on."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-05-19T10:41:48Z",
+   "body": "@participant1 \r\n>>Ultimately resolving the underlying error should be the priority, I think anything else is just hiding failures. You need to tune your buffering and retries to cope with what you want to do during your outage.\r\n\r\nYes. \r\nBut finding that issue and resolving it will take time. And also, it does not guarantee that resolving that issue will not result in having similar issue in future which can again trigger this log spam from fluent bit.\r\n\r\n>>You need to tune your buffering and retries to cope with what you want to do during your outage.\r\n\r\nCan you explain more on this.\r\n\r\n>>Logs should always be rotating\r\n\r\nWe are using logrotation. But the log spam is massive and filling up the disk so quickly even before our logrotate job can handle it.\r\n\r\n**Also, these massive log spamming result in high CPU usage from fluent bit as millions of duplicate logs are written so quickly in a tight loop.**\r\n\r\n>>There is the recent log suppression functionality too although that's only recently introduced and will reduce rather than remove logs entirely.\r\n\r\nAs I mentioned and @participant2 also mentioned:\r\nTurning off logs from plugin or suppressing logs from plugin will only be applicable to this log:\r\nApr 13 17:46:17 vm4 td-agent-bit[4856]: [2023/04/13 17:46:17] [error] [input:tcp:listener] could not accept new connection\r\n\r\nNot this log (which does not seems to be coming from any plugin):\r\nApr 13 17:46:17 vm4 td-agent-bit[4856]: accept4: Too many open files\r\n\r\nI have tried with latest fluent bit version, log spam continues to be issue there aswell."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-05-19T10:50:39Z",
+   "body": "@participant2 : \r\n\r\n>>There is a setting named net.io_timeout which you could set to a reasonable value in order to terminate those dangling connections.\r\n\r\nthis is for output plugin ?"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-05-19T10:53:42Z",
+   "body": "Those are for the input plugin."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-05-19T10:54:42Z",
+   "body": "Did you try redirecting stderr (and stdout) to prevent the log from filling up?\r\nAs you're using systemd in your Slack message then use the link I provided above to show you, that's a standard feature of systemd: `StandardError=null` / `StandardOutput=null`\r\n\r\n`accept4: Too many open files` is an error reported by system libraries so redirecting stderr will hide it - Leo indicated this above in that it does not come from Fluent Bit but directly via `perror`.\r\n\r\nI'm not going to say this is a good idea or recommend it.\r\n\r\nThe logs are legitimately reporting errors but I appreciate it may be at a high rate and there is no good solution currently that will reduce that rate other than resolving the error. "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-05-19T11:39:09Z",
+   "body": "@participant1  : As per internal discussion we are not opting for totally removing logging for fluent bit. So this option:\r\nStandardError=null / StandardOutput=null is not something we will opt for.\r\n\r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-05-19T11:43:04Z",
+   "body": ">>accept4: Too many open files is an error reported by system libraries so redirecting stderr will hide it - Leo indicated this above in that it does not come from Fluent Bit but directly via perror.\r\n\r\nAlthough this log does not come from fluent bit, but it triggered by fluent bit.\r\n\r\n>>The logs are legitimately reporting errors but I appreciate it may be at a high rate and there is no good solution currently that will reduce that rate other than resolving the error.\r\n\r\nYes the rate is super high, which is not expected. This github issue is raised inorder to control that log spam.\r\nThere were error logs from other plugin also during this the time of issue like tail plugin was also throwing similar error logs but their rate was acceptable. But TCP input plugin error log rate is not acceptable and we should look how we can control it.\r\n"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-05-19T11:48:13Z",
+   "body": "@reporter, we understand that this is causing issues to you and that's why as a compromise we suggested a series of changes you could make to your deployment to minimize the impact.\r\n\r\nThe next logical step here would be for you to submit a pull request removing [these](https://github.com/fluent/fluent-bit/blob/master/src/flb_network.c#L1704-L1706) lines.\r\n\r\nPlease provide a detailed explanation in your PR of why these are redundant and tag me so I can review it.\r\n\r\nIf you have any questions about the PR process let me know, I'd be glad to help."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-05-19T12:55:14Z",
+   "body": "@participant2  : I am not aware how to contribute to fluent bit repo.\r\nPls tell me all the info.\r\n\r\nI though fluent bit developer will look into it and try to make changes accordingly as they are more aware of codebase and all."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-05-19T17:05:21Z",
+   "body": "You can get started with this entry from the documentation : https://<redacted-host>/manual/development/developer-guide#development-environment\r\n\r\nBasically, all you have to do is fork fluent-bit, create a new branch, delete those three lines, make a commit following the style and then create a pull request also following the style (which will be shown to you once you start the process but you can also check other open PRs for reference).\r\n\r\nAnd if you have questions about the process while you do it you can ask and we will guide you.\r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-05-20T12:35:46Z",
+   "body": "thanks @participant2.\r\n\r\nShould we also seek someone who is more familiar with code to investigate why the TCP input plugin is attempting to reconnect(trying to make socket FD in this case) in a very tight loop? Is there a parameter available to configure the retry interval for the TCP input plugin? Currently, it appears to retry immediately and continue trying, resulting in high CPU usage."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-05-20T16:07:45Z",
+   "body": "No, if your clients are leaving dangling connections the answer is to fix the client code or set `net.io_timeout` as I instructed you to."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-05-22T05:34:36Z",
+   "body": "@participant2 :  There seems to be some missing context. Most of the file descriptors were being consumed by another output plugin because the destination was not reading the data. This particular output plugin was receiving data from other Tail input plugins we have. I believe this led to the fluent bit output plugin creating more and more sockets (file descriptors), eventually reaching the file descriptor limit for fluent bit. It's important to note that during this time, the TCP input plugin was not even being used.\r\n\r\nOnce the file descriptor limit is reached, if a client tries to connect to the TCP input plugin, it starts generating these log messages indefinitely, even when the client has stopped attempting to connect to the TCP input plugin.\r\n\r\nThe configuration setting you provided is for the TCP input plugin. However, it is not relevant to the issue until the file descriptor limit is reached.\r\n\r\nOutput plugin:\r\n[OUTPUT]\r\n    Name       forward\r\n    Host       127.0.0.1\r\n    Port       5001\r\n    Match      azure*\r\n\r\nAdditionally, I couldn't find the \"net.io_timeout\" setting in the official documentation ?\r\n\r\nAlso could you pls reopen the issue, as it is not resolved yet."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-05-22T06:52:44Z",
+   "body": "Well, this paints a very different image than the one your original report does so please update that report with a more in depth explanation of the case and a proper copy of your configuration file so we know what we are working with, otherwise we won't be able to effectively look into it."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-05-22T09:31:37Z",
+   "body": "@participant2 : I have tried to add more details. I have also asked my team colleague to add more information incase I have missed something."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-05-22T11:48:02Z",
+   "body": "@participant2 : Forget to mention I have added details in at top in issue description."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-05-22T16:15:03Z",
+   "body": "Given that the log message is \"no upstream connections available\" with no further suffix, and your config file using the forward plugin I imagine that all those log errors are coming from cb_forward_flush in forward.c while it tries to forward to tcp port 5001.\r\n\r\n``\r\n[OUTPUT]\r\nName forward\r\n```"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-05-23T09:16:53Z",
+   "body": "@participant2 : Any comments based on updated information?"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-05-23T10:08:36Z",
+   "body": "Not yet, I haven't been able to dedicate time to this issue.\r\nI'm somewhat surprised that your forward connections are not being closed (is there an issue on the other side?) .\r\nJust as a test could you set `net.io_timeout` to `10` in your output plugin?\r\nI think I'll be able to put some time on this later this week since I'm starting with a batch of windows related issues.\r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-05-23T11:23:46Z",
+   "body": ">>Just as a test could you set net.io_timeout to 10 in your output plugin?\r\n\r\nWe can not repro. this issue as it pops up in an adhoc manner.\r\nSo not sure we can set net.io_timeout to 10 and retry.\r\nFor now we can only repro the log spam by TCP input plugin for which I have already shared information.\r\n\r\n>>I think I'll be able to put some time on this later this week since I'm starting with a batch of windows related issues.\r\n\r\nSure. Lets get back to this whenever you get time later this week."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-05-31T09:02:12Z",
+   "body": "@participant2  : Any update ?\r\n"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-05-31T10:42:19Z",
+   "body": "No updates so far."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-06-04T15:39:30Z",
+   "body": "@participant2  : Is there any timeline by which you would be able to look into  it ?\r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-06-16T06:25:37Z",
+   "body": "@participant2 : Is there any update we can have now ? Atleast a date by which you would be able to help with this issue ?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-09-11T09:23:57Z",
+   "body": "@participant2 : any updates ?"
+  },
+  {
+   "author": "github-actions[bot]",
+   "created_at": "2023-12-14T01:50:18Z",
+   "body": "This issue is stale because it has been open 90 days with no activity. Remove stale label or comment or this will be closed in 5 days. Maintainers can add the `exempt-stale` label."
+  },
+  {
+   "author": "github-actions[bot]",
+   "created_at": "2023-12-21T01:50:04Z",
+   "body": "This issue was closed because it has been stalled for 5 days with no activity."
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "fluent/fluent-bit",
+  "default_branch": "master",
+  "commit_sha": "f21e68db91c9abe17ba7f33a1ba683b45aaafe3b",
+  "as_of": "2023-05-19T06:16:50Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_fluent_fluent-bit_7439"
+}

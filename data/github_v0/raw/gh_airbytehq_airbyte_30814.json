@@ -1,0 +1,145 @@
+{
+ "repo": "airbytehq/airbyte",
+ "number": 30814,
+ "url": "https://github.com/airbytehq/airbyte/issues/30814",
+ "title": "Airbyte is ignoring `JOB_MAIN_CONTAINER_MEMORY_REQUEST` in .env",
+ "state": "closed",
+ "labels": [
+  "area/platform",
+  "community",
+  "team/platform-move",
+  "autoteam",
+  "team/use"
+ ],
+ "reporter": "honggyu-rr",
+ "created_at": "2023-09-28T03:03:29Z",
+ "closed_at": "2023-12-14T18:05:52Z",
+ "body": "### Topic\r\n\r\nCan't increase memory of jobs. Ignores all settings made as suggested on [this page](https://docs.airbyte.com/operator-guides/configuring-connector-resources)\r\n\r\nEDIT: works at the connection-level, but not at the instance-level or connector-level\r\n\r\n### Revelant information\r\n\r\nI upgraded from an instance with 8gb of ram to an instance with 32gb of ram, and I just ran into a `Terminating due to java.lang.OutOfMemoryError: Java heap space` during a sync. I modified the .env file with `JOB_MAIN_CONTAINER_MEMORY_REQUEST=4g` and `JOB_MAIN_CONTAINER_MEMORY_LIMIT=6g` but I'm still seeing this in the sync logs:\r\n```\r\n2023-09-28 02:24:23 INFO i.a.w.p.DockerProcessFactory(create):143 - Creating docker container = destination-redshift-write-39-0-dhrtb with resources io.airbyte.config.ResourceRequirements@2256de7d[cpuRequest=1,cpuLimit=2,memoryRequest=1Gi,memoryLimit=2Gi,additionalProperties={}] and allowedHosts null\r\n```\r\nI've even updated the actor definition with the following sql:\r\n`update actor_definition set resource_requirements = '{\"jobSpecific\": [{\"jobType\": \"sync\", \"resourceRequirements\": {\"memory_limit\": \"4Gi\", \"memory_request\": \"6Gi\"}}]}' where name = 'Redshift' and actor_type = 'destination';`\r\n\r\nAfter each step, I've restarted my Airbyte instance and my settings are being ignored.",
+ "comments": [
+  {
+   "author": "DDynamic",
+   "created_at": "2023-09-29T23:08:06Z",
+   "body": "I am having the same issue with Airbyte ignoring the instance-level and connector-level overrides outlined [here](https://docs.airbyte.com/operator-guides/configuring-connector-resources/). However, defining a [connection-specific](https://docs.airbyte.com/operator-guides/configuring-connector-resources/) requirement works."
+  },
+  {
+   "author": "honggyu-rr",
+   "created_at": "2023-10-02T14:37:32Z",
+   "body": "> I am having the same issue with Airbyte ignoring the instance-level and connector-level overrides outlined [here](https://docs.airbyte.com/operator-guides/configuring-connector-resources/). However, defining a [connection-specific](https://docs.airbyte.com/operator-guides/configuring-connector-resources/) requirement works.\r\n\r\nCan you share what you updated the `resource_requirements` with in the `connection` table? I updated everything, but no luck.\r\n\r\nEDIT: nvm, got it working. I was trying to use the same value as the **connector** level settings. Setting `{\"memory_limit\": \"4Gi\", \"memory_request\": \"6Gi\"}` at the **connection** level did it"
+  },
+  {
+   "author": "honggyu-rr",
+   "created_at": "2023-10-02T14:48:07Z",
+   "body": "To summarize to potential contributors, the hardware settings are not working as env variables and at the connector level, but works at the connection level"
+  },
+  {
+   "author": "ro8inmorgan",
+   "created_at": "2023-10-03T14:34:59Z",
+   "body": "We are observing the same here.\r\n\r\nIt does not work for Global Enviroment variables in the configmap and also does not on connector level. It only works when applying to connection level. But only for the main containers, we got no way to adjust the stdin, stdout container limits and requests anyways. "
+  },
+  {
+   "author": "hawkesn",
+   "created_at": "2023-10-03T19:14:21Z",
+   "body": "Also observing the same here, modifying the \"JOB_MAIN_CONTAINER_MEMORY_REQUEST\" set of environment variables are not being respected by the job pods.\r\nStrangely, this is only occurring on `*-read` and `*-write` pods, but the `*-check` pods are fine.\r\n\r\nThe workaround is by setting the [Configuring Connection-Specific Requirements](https://docs.airbyte.com/operator-guides/configuring-connector-resources#configuring-connection-specific-requirements) - this works for all pods of that Connection"
+  },
+  {
+   "author": "honggyu-rr",
+   "created_at": "2023-10-03T20:32:11Z",
+   "body": "> Also observing the same here, modifying the \"JOB_MAIN_CONTAINER_MEMORY_REQUEST\" set of environment variables are not being respected by the job pods. Strangely, this is only occurring on `*-read` and `*-write` pods, but the `*-check` pods are fine.\r\n> \r\n> The workaround is by setting the [Configuring Connection-Specific Requirements](https://docs.airbyte.com/operator-guides/configuring-connector-resources#configuring-connection-specific-requirements) - this works for all pods of that Connection\r\n\r\nthe exact behavior I observed as well, on our docker compose deployment"
+  },
+  {
+   "author": "gosusnp",
+   "created_at": "2023-10-16T23:31:38Z",
+   "body": "Very sorry about this regression.\r\n\r\nYes, there has been a regression regarding the instance wide resource requirements. The connection level resource requirements should still work as expected.\r\nWe will prioritize a fix regarding the instance wide resource requirements."
+  },
+  {
+   "author": "mrhallak",
+   "created_at": "2023-10-26T09:14:06Z",
+   "body": "This is also happening on the Snowflake connector v3.2.3"
+  },
+  {
+   "author": "ro8inmorgan",
+   "created_at": "2023-10-31T14:05:31Z",
+   "body": "Why was this closed? The issue is still there. Also the other containers in a job pod specifically stdout requests 500m and 2000m limit of cpu. This seems very excessive? There's no way  to control those containers either. "
+  },
+  {
+   "author": "cnogradi",
+   "created_at": "2023-11-07T23:50:33Z",
+   "body": "@davinchia is there a PR for this or branch with a fix?  I can use the SIDECAR variables to fix the large amount of memory now used by all the side cars but I can't figure out how to fix the MAIN write/read workers to give them more memory than the default which causes workers to run out of memory (java heap)"
+  },
+  {
+   "author": "davinchia",
+   "created_at": "2023-11-08T05:05:28Z",
+   "body": "Hi, we are going to release a new version in the next few days that should have this fix. I will post here when it is done."
+  },
+  {
+   "author": "davinchia",
+   "created_at": "2023-11-09T00:57:06Z",
+   "body": "Hi all, I've just released 0.50.34 that should restore the previous behaviour.\r\n\r\nPlease upgrade to this version and let me know if that fixes things. \r\n\r\nThank you for your patience!\r\n\r\n"
+  },
+  {
+   "author": "cnogradi",
+   "created_at": "2023-11-27T23:10:45Z",
+   "body": "> Hi all, I've just released 0.50.34 that should restore the previous behaviour.\r\n> \r\n> Please upgrade to this version and let me know if that fixes things.\r\n> \r\n> Thank you for your patience!\r\n\r\nI am struggling trying to confirm this is actually fixed.  Can you point me at the fix so I can make sure I have it?  I am using the latest containers but maybe I need the charts also?"
+  },
+  {
+   "author": "gosusnp",
+   "created_at": "2023-11-27T23:23:39Z",
+   "body": "@cnogradi, the fix is https://github.com/airbytehq/airbyte-platform/commit/7eedfc75faa0ad8fb90f928adc285314b4a4cef8."
+  },
+  {
+   "author": "cnogradi",
+   "created_at": "2023-11-28T15:04:21Z",
+   "body": "> @cnogradi, the fix is [airbytehq/airbyte-platform@7eedfc7](https://github.com/airbytehq/airbyte-platform/commit/7eedfc75faa0ad8fb90f928adc285314b4a4cef8).\r\n\r\n@gosusnp Thanks! However, I am still seeing strange behavior.  The check and normalization pods are taking on the value of the overrides but not the actual source and destination pods:\r\n\r\ncheck pods working:\r\n\r\nsource-mssql-check-3700-4-bjhne for airbyte/source-mssql:2.0.1 with resources ConnectorResourceRequirements[main=io.airbyte.config.ResourceRequirements@44dee7b3[cpuRequest=1,cpuLimit=2,memoryRequest=1G,memoryLimit=5G,\r\n\r\n Attempting to start pod = destination-iceberg-check-3700-4-eebgo for airbyte/destination-iceberg:0.1.4 with resources ConnectorResourceRequirements[main=io.airbyte.config.ResourceRequirements@5d1ff68d[cpuRequest=1,cpuLimit=2,memoryRequest=1G,memoryLimit=5G\r\n\r\nRead and write not working:\r\n\r\nsource-mssql-read-3700-4-lgpjs for airbyte/source-mssql:2.0.1 with resources ConnectorResourceRequirements[main=io.airbyte.config.ResourceRequirements@69464142[cpuRequest=500m,cpuLimit=1.5,memoryRequest=1Gi,memoryLimit=1.5Gi\r\n\r\ndestination-iceberg-write-3700-4-spbwz for airbyte/destination-iceberg:0.1.4 with resources ConnectorResourceRequirements[main=io.airbyte.config.ResourceRequirements@7b3f7526[cpuRequest=500m,cpuLimit=1.5,memoryRequest=1Gi,memoryLimit=1.5Gi\r\n\r\nNormalization working:\r\n\r\n airbyte/normalization:0.4.3 with resources ConnectorResourceRequirements[main=io.airbyte.config.ResourceRequirements@2deac206[cpuRequest=1,cpuLimit=2,memoryRequest=1G,memoryLimit=5G,additionalProperties={}],\r\n\r\nRead and write not working:\r\n\r\nairbyte/source-mssql:2.0.1 with resources ConnectorResourceRequirements[main=io.airbyte.config.ResourceRequirements@4e8ad67c[cpuRequest=500m,cpuLimit=1.5,memoryRequest=1Gi,memoryLimit=1.5Gi,additionalProperties={}],\r\n\r\ndestination-postgres-write-3704-0-wvnny for airbyte/destination-postgres:0.4.0 with resources ConnectorResourceRequirements[main=io.airbyte.config.ResourceRequirements@607b417d[cpuRequest=500m,cpuLimit=1.5,memoryRequest=1Gi,memoryLimit=1.5Gi,additionalProperties={}],"
+  },
+  {
+   "author": "gosusnp",
+   "created_at": "2023-11-28T18:47:17Z",
+   "body": "@cnogradi, I think check and normalization pod resources are configured through different environment variables:\r\n```\r\nCHECK_JOB_MAIN_CONTAINER_CPU_LIMIT\r\nCHECK_JOB_MAIN_CONTAINER_CPU_REQUEST\r\nCHECK_JOB_MAIN_CONTAINER_MEMORY_LIMIT\r\nCHECK_JOB_MAIN_CONTAINER_MEMORY_REQUEST\r\n\r\nNORMALIZATION_JOB_MAIN_CONTAINER_CPU_LIMIT\r\nNORMALIZATION_JOB_MAIN_CONTAINER_CPU_REQUEST\r\nNORMALIZATION_JOB_MAIN_CONTAINER_MEMORY_LIMIT\r\nNORMALIZATION_JOB_MAIN_CONTAINER_MEMORY_REQUEST\r\n```\r\nDo you still have those configured?\r\n\r\n"
+  },
+  {
+   "author": "cnogradi",
+   "created_at": "2023-11-28T20:01:07Z",
+   "body": "> @cnogradi, I think check and normalization pod resources are configured through different environment variables:\r\n> \r\n> ```\r\n> CHECK_JOB_MAIN_CONTAINER_CPU_LIMIT\r\n> CHECK_JOB_MAIN_CONTAINER_CPU_REQUEST\r\n> CHECK_JOB_MAIN_CONTAINER_MEMORY_LIMIT\r\n> CHECK_JOB_MAIN_CONTAINER_MEMORY_REQUEST\r\n> \r\n> NORMALIZATION_JOB_MAIN_CONTAINER_CPU_LIMIT\r\n> NORMALIZATION_JOB_MAIN_CONTAINER_CPU_REQUEST\r\n> NORMALIZATION_JOB_MAIN_CONTAINER_MEMORY_LIMIT\r\n> NORMALIZATION_JOB_MAIN_CONTAINER_MEMORY_REQUEST\r\n> ```\r\n> \r\n> Do you still have those configured?\r\n\r\nThis is what I have in the worker pod:\r\n\r\nbash-4.2$ set | grep JOB\r\n\r\nJOB_MAIN_CONTAINER_CPU_LIMIT=2\r\nJOB_MAIN_CONTAINER_CPU_REQUEST=1\r\nJOB_MAIN_CONTAINER_MEMORY_LIMIT=5G\r\nJOB_MAIN_CONTAINER_MEMORY_REQUEST=1G\r\n\r\nI am not sure where the other values are even coming from such as the 1.5Gi memory limit - maybe somewhere in the code for worker?"
+  },
+  {
+   "author": "gosusnp",
+   "created_at": "2023-12-05T20:59:27Z",
+   "body": "@cnogradi, defaults can come a from a few places. Some connectors may have some defaults.\nHowever, if you want to override values for check and normalization, you need to define the variables I highlighted. Those should be defined the same was as `JOB_MAIN_CONTAINER_CPU_LIMIT` for example."
+  },
+  {
+   "author": "cnogradi",
+   "created_at": "2023-12-05T21:42:24Z",
+   "body": "> @cnogradi, defaults can come a from a few places. Some connectors may have some defaults. However, if you want to override values for check and normalization, you need to define the variables I highlighted. Those should be defined the same was as `JOB_MAIN_CONTAINER_CPU_LIMIT` for example.\r\n\r\nHello @gosusnp I don't have an issue with Check and Normalization pods.  Those actually properly honor the JOB_MAIN_CONTAINER_* settings (per my logs above).  The problem is that Read and Write pods do not. What variables should I use for those since JOB_MAIN_CONTAINER_* does not work?\r\n "
+  },
+  {
+   "author": "gosusnp",
+   "created_at": "2023-12-05T23:24:43Z",
+   "body": "@cnogradi, could you clarify which pod you're looking at for the environment variables when you say \"worker pod\"?\nThe `JOB_MAIN_CONTAINER_*` variables are read from the `airbyte-server`."
+  },
+  {
+   "author": "davinchia",
+   "created_at": "2023-12-13T18:05:43Z",
+   "body": "@cnogradi let us know. Otherwise we are going to close this issue by end of the week, thanks!"
+  },
+  {
+   "author": "cnogradi",
+   "created_at": "2023-12-14T00:42:28Z",
+   "body": "> @cnogradi, could you clarify which pod you're looking at for the environment variables when you say \"worker pod\"? The `JOB_MAIN_CONTAINER_*` variables are read from the `airbyte-server`.\r\n\r\nSo I did confirm today that the proper values for the limits for the checks/source/dest pods are shown in the log for one of the syncs.  I did look back at the others logs and it seems that when I update the values in the configmap that something is not picking them up for all pods created since I have evidence in the log that some pods use the new values and others do not (per log above).  Must be an issue with not restarting one of the services (server or worker maybe?).\r\n\r\nAnyways, I saw it work once so I am good!  Sorry for not getting back to you until now.  \r\n\r\n@davinchia this issue can indeed be closed."
+  },
+  {
+   "author": "jomach",
+   "created_at": "2024-12-04T20:47:14Z",
+   "body": "same issue now on 1.2.0 oss azure deployment. \n\n```\n  # Jobs resource requests and limits, see http://kubernetes.io/docs/user-guide/compute-resources/\n  # We usually recommend not to specify default resources and to leave this as a conscious\n  # choice for the user. This also increases chances charts run on environments with little\n  # resources, such as Minikube.\n  jobs:\n    resources:\n      ## Example:\n      ## requests:\n      ##    memory: 256Mi\n      ##    cpu: 250m\n      requests:\n          memory: 4096Mi\n          cpu: 500m\n      # -- The requested resources for the airbyte bootloader image\n      #requests: {}\n      ## Example:\n      ## limits:\n      ##    cpu: 200m\n      ##    memory: 1Gi\n      # -- The resources limits for the airbyte bootloader image\n      limits: \n          memory: 4096Mi\n          cpu: 500m\n```"
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "airbytehq/airbyte",
+  "default_branch": "master",
+  "commit_sha": "0537dde7d2d03192d1e3a507c28c34b8ba695942",
+  "as_of": "2023-09-28T03:03:29Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_airbytehq_airbyte_30814"
+}

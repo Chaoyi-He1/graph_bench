@@ -1,0 +1,112 @@
+{
+ "repo": "streamlit/streamlit",
+ "number": 6199,
+ "url": "https://github.com/streamlit/streamlit/issues/6199",
+ "title": "New cache methods cannot hash functions passed as arguments",
+ "state": "closed",
+ "labels": [
+  "feature:cache",
+  "status:unlikely"
+ ],
+ "reporter": "reporter",
+ "created_at": "2023-02-28T16:57:03Z",
+ "closed_at": "2023-03-07T17:24:32Z",
+ "body": "### Summary\r\n\r\nI used to have an helper function, which was functioning as a wrapper whenerver I wanted to call a function from a library and cache it in streamlit:\r\n\r\n``` python\r\n@st.cache_resource\r\ndef from_cache(func, *args, **kwargs):\r\n    return func(*args, **kwargs)\r\n```\r\nwhich was called as:\r\n\r\n``` python\r\nfrom some library import some_library_function\r\n\r\nfrom_cache(some_library_function, an_arg, some_other_arg=arg_value)\r\n```\r\n\r\nSince st.cache is now deprecated, I tried the new caching methods `st.cache_data` and `st.cache_resource`, but it seems that none of them is able to cache functions, raising a:\r\n\r\n```streamlit.runtime.caching.cache_errors.UnhashableParamError: Cannot hash argument 'func' (of type `builtins.function`) in 'from_cache'.```\r\n\r\nIs there any way to get the desired behaviour in the new version?\r\n\r\n### Is this a regression?\r\n\r\n- [X] Yes, this used to work in a previous version.\r\n\r\n### Debug info\r\n\r\n- Streamlit version: 1.19.0\r\n- Python version: 3.9\r\n",
+ "comments": [
+  {
+   "author": "reporter",
+   "created_at": "2023-03-01T08:22:20Z",
+   "body": "As a side note, for this specific use case it is easy to solve it adding another layer like:\r\n\r\n``` python\r\n@st.cache_data\r\ndef _from_cache(_func, func_name, *args, **kwargs):\r\n    return _func(*args, **kwargs)\r\n\r\n\r\ndef from_cache(func, *args, **kwargs):\r\n    return _from_cache(func, func.__name__, *args, **kwargs)\r\n```\r\n\r\nbut in more complex use cases it could be harder to migrate the code base to the new cache methods, and I think it could be useful to have at least a way to keep using st.cache or an equivalent implementation."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-03-01T22:01:53Z",
+   "body": "Hey @reporter,\r\n~~We actually wouldn't recommend using caching for this specific use case, because it won't have any performance benefits. In other words, caching the wrapper for the imported function unfortunately won't be any faster than importing the function.~~ Looks like I misunderstood the use case!"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-03-02T10:29:44Z",
+   "body": "I think you missed the point. By caching the wrapper function one can avoid rerunning the function which is passed in the `func `argument of `from_cache` (it works fine using st.cache). I changed the title to clarify the problem.\r\n\r\nAnyway, maybe my second comment is confusing you:  it was just meant to show others with the same problem a quick and dirty fix to continue caching functions that accept another function in their arguments, by using the function name as argument for the cached function and using a wrapper to keep the same signature.\r\n\r\nDo you confirm that with the deprecation of `st.cache` there is a breaking change, not having the possibility anymore to cache functions accepting other functions as argument? Is this intended?\r\n\r\nThis applies to any other function accepting an argument of type `builtins.function`.\r\nI'll try to provide another simpler example:\r\n\r\n``` python\r\nimport numpy as np\r\nimport streamlit as st\r\n\r\n@st.cache\r\ndef cache_processing_done_by_another_function(data, func):\r\n return func(data)\r\n\r\ndata = pd.Series([2,3,4])\r\nmax = cache_processing_done_by_another_function(data, np.max)\r\nmin = cache_processing_done_by_another_function(data, np.min)\r\nmean = cache_processing_done_by_another_function(data, np.mean)\r\n\r\n# in the next run max, min, and mean will be read from cache and not recomputed\r\n```\r\n\r\n\r\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-03-02T17:10:57Z",
+   "body": "@reporter Thank you for clarifying! Let me check with the team and get back to you"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-03-02T21:21:21Z",
+   "body": "Hi @reporter \r\n\r\nI believe you can do it like this. You will still need to make a determination about whether cache_data or cache_resource is the better pattern - but once that is done, it should be a much better and faster experience overall.\r\n\r\nDoes it meet your use case?\r\n\r\n```python\r\nimport numpy as np\r\nimport streamlit as st\r\nimport pandas as pd\r\n\r\ndata = pd.Series([2,3,4])\r\nmax = st.cache_data(func=np.max)(data)\r\nmin = st.cache_data(func=np.min)(data)\r\nmean = st.cache_data(func=np.mean)(data)\r\n```\r\n\r\nThanks!"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-03-07T09:48:18Z",
+   "body": "Hi @participant2 , thanks for your reply, this definitely would serve that use case in a cleaner way and i'll definitely implement this pattern when applicabile. From my understanding, this is only if the passed function is directly applied to data.\r\n\r\nI can still think of use cases in which a function (or more than one!) passed as argument would still be needed (e.g. when the function is not called directly). A simple example would be something like:\r\n\r\n``` python\r\nimport numpy as np\r\nimport streamlit as st\r\nimport pandas as pd\r\nfrom typing import Callable\r\n\r\n\r\n@st.cache \r\ndef cached_apply(data: pd.DataFrame, apply_func: Callable):\r\n    return data.apply(apply_func)\r\n\r\ndef custom_function_to_be_applied(series: pd.Series):\r\n    value = np.mean(series*2+1) # any custom pd.series elaboration\r\n    return value\r\n\r\ndata = pd.DataFrame([[1,2,3],[4,5,6]])\r\n\r\nmax = cached_apply(data, apply_func=np.max)\r\nmin = cached_apply(data, apply_func=np.min)\r\nmean = cached_apply(data, apply_func=np.mean)\r\ncustom = cached_apply(data, apply_func=custom_function_to_be_applied)\r\n```\r\n\r\nWhat would you suggest in a use case like this one? Is there a clean way to replace st.cache with one of the new caching function?"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-03-07T17:23:03Z",
+   "body": "~Sure, you can do it like this.~ ETA: Nevermind, it doesn't work! See comments below.\r\n\r\n```python\r\nimport numpy as np\r\nimport streamlit as st\r\nimport pandas as pd\r\nimport time\r\nfrom typing import Callable\r\n\r\ndef cached_apply(data: pd.DataFrame, apply_func: Callable):\r\n    @st.cache_data\r\n    def _cache_apply(data: pd.DataFrame):\r\n        return data.apply(apply_func)\r\n    return _cache_apply(data)\r\n\r\ndef custom_function_to_be_applied(series: pd.Series):\r\n    time.sleep(1)\r\n    value = np.mean(series*2+1) # any custom pd.series elaboration\r\n    return value\r\n\r\ndata = pd.DataFrame([[1,2,3],[4,5,6]])\r\ncustom = cached_apply(data, apply_func=custom_function_to_be_applied)\r\n\r\ndata\r\ncustom\r\n```"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-03-07T17:24:32Z",
+   "body": "I'm going to close this issue since I think we can find working examples for all these cases with the new cache primitives. If there are other specific tricky cases, happy to discuss them.\r\n\r\ncc @participant4 @participant5 ^ in case these come up for other forum questions or useful to document somewhere :)"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-03-09T13:41:01Z",
+   "body": "> Sure, you can do it like this.\r\n> \r\n> ```python\r\n> import numpy as np\r\n> import streamlit as st\r\n> import pandas as pd\r\n> import time\r\n> from typing import Callable\r\n> \r\n> def cached_apply(data: pd.DataFrame, apply_func: Callable):\r\n>     @st.cache_data\r\n>     def _cache_apply(data: pd.DataFrame):\r\n>         return data.apply(apply_func)\r\n>     return _cache_apply(data)\r\n> \r\n> def custom_function_to_be_applied(series: pd.Series):\r\n>     time.sleep(1)\r\n>     value = np.mean(series*2+1) # any custom pd.series elaboration\r\n>     return value\r\n> \r\n> data = pd.DataFrame([[1,2,3],[4,5,6]])\r\n> custom = cached_apply(data, apply_func=custom_function_to_be_applied)\r\n> \r\n> data\r\n> custom\r\n> ```\r\n\r\nHi @participant2 . I don't agree this solves that use case.\r\nWouldn't this just cache any processing done to `data`, without considering the requested function?\r\n\r\nIn other words:\r\n\r\n``` python\r\nfirst_return = cached_apply(data, apply_func=custom_function_to_be_applied)\r\nsecond_return = cached_apply(data, apply_func=another_custom_function_to_be_applied)\r\n```\r\n\r\nI think the second call would just return the `first_return` value, without considering the different function passed to `cached apply`. Am I wrong?"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-03-09T19:38:19Z",
+   "body": "Ah, you're right! Sorry for that.\r\n\r\nSo I think yeah, you have basically two options:\r\n\r\n1) write a small function for each case you need, something like\r\n\r\n```python\r\n@st.cache_data\r\ndef apply_min(data: pd.DataFrame):\r\n    return data.apply(np.min)\r\n```\r\n\r\n2) do something like the hacky method you shared near the top. Here's a slightly fuller example that also includes the source code of the function in the hash. This is just one example, depending on the use case there might be more edges you have to solve.\r\n\r\n```python\r\nimport numpy as np\r\nimport streamlit as st\r\nimport pandas as pd\r\nimport time\r\nimport inspect\r\nfrom typing import Callable\r\n\r\n@st.cache_data\r\ndef apply_min(data: pd.DataFrame):\r\n    return data.apply(np.min)\r\n\r\ndef cached_apply(data: pd.DataFrame, apply_func: Callable):\r\n    @st.cache_data\r\n    def _cache_apply(data, func_name, func_code):\r\n        return data.apply(apply_func)\r\n    return _cache_apply(data, apply_func.__name__, inspect.getsource(apply_func))\r\n\r\ndef custom_function_to_be_applied(series: pd.Series):\r\n    time.sleep(1)\r\n    value = np.mean(series*2+1) # any custom pd.series elaboration\r\n    return value\r\n\r\ndata = pd.DataFrame([[1,2,3],[4,5,6]])\r\n\r\n\"Data\"\r\ndata\r\n\r\n\"Custom\"\r\ncustom = cached_apply(data, apply_func=custom_function_to_be_applied)\r\ncustom\r\n\r\n\"Min\"\r\nmin = cached_apply(data, apply_func=np.min)\r\nmin\r\n\r\n\"Max\"\r\nmax = cached_apply(data, apply_func=np.max)\r\nmax\r\n```"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-03-09T19:42:12Z",
+   "body": "I see your point that this could be an inconvenience if you need to do this for 50 functions and somehow it was more complex to write this `cache_apply()` or wasn't safe somehow.\r\n\r\nHowever I believe either of these cases (certainly the first case) is likely to execute faster than the old code with `@participant6`.\r\n\r\nI think candidly it's not super likely that we will provide a feature to support this with the new caching primitives, unless there's an idea for a really elegant way to do it that doesn't hurt performance or complexity for the 99% case. Added the status label to reflect that.\r\n\r\nIf we get a lot of feedback, ideas, or if there's a real use case where this is effectively blocking and not just an inconvenience, totally happy to revisit that!"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-03-09T19:43:35Z",
+   "body": "cc @participant3 for visibility or in case he has other ideas on this"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-03-09T20:34:34Z",
+   "body": "We could consider doing something like hashing the callable's bytecode, but I don't love the idea for a few reasons: \r\n\r\n- that will miss any external state that the function relies on to do its job. (Say you have a closure that reads a closed-over variable, or a function that reads a global or something - hashing the function's bytecode wouldn't catch the fact that the function may return different outputs for the same input.)\r\n- Not all Callables have hashable bytecode, I think? A function has a `__code__` property we can hash, but not all Callables are functions. (This isn't necessarily fatal: we could consider just supporting proper functions, and error when trying to hash non-function callables - but that may not entirely solve your use case, @reporter?)\r\n\r\nOur old caching code did try to hash everything under the sun, but it many ugly edge cases and weird failure states that could introduce subtle, surprising bugs if used incorrectly. The new caching code attempts to have fewer footguns; sometimes this means it omits unsafe functionality we had before. \r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-03-10T09:45:29Z",
+   "body": "Hi @participant3, @participant2, thanks for the analysis. \r\n\r\nI understand the reasoning about external state having side effects on hashed functions.\r\nThis is equally true, though, for **any function being cached** (when the arguments being hashed are non-callables), where external state may be accessed/manipulated in the cached function body. The user should already reason on external state and caching interactions, from my point of view. \r\nA user wanting to participant6 a function which uses a callable with external state access, will keep doing that, by just putting the callable call in the body  instead of having it in the arguments.\r\n\r\nThis being said, for tech savy users a kinda hacky solution like the one with the wrapper previously discussed is fine, and I'll probably stick with it.\r\n \r\nI still think that a \"cleaner, built-in solution\", like keeping the possibility to specify a fallback custom hashing function for unsupported types (e.g. Callables) would be useful in the long run, but I understand if that kind of configurability is not the direction streamlit is going.\r\n"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-03-10T19:36:16Z",
+   "body": "I can see the use case. If other folks are reading and have a need for this, please upvote / share your use case / let us know! Thanks!"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-03-11T00:57:17Z",
+   "body": "We saw this in a few other issues already so I wrote up a central issue to track discussion - feel free to upvote there! https://github.com/streamlit/streamlit/issues/6295"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-06-08T16:24:52Z",
+   "body": "I believe this will be fixed with https://github.com/streamlit/streamlit/pull/6502 in the next release. Let us know if it doesn't seem to solve the issue."
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "streamlit/streamlit",
+  "default_branch": "develop",
+  "commit_sha": "c9de62cee4b7a578aa10cc54cd94a652634ee586",
+  "as_of": "2023-02-28T16:57:03Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_streamlit_streamlit_6199"
+}

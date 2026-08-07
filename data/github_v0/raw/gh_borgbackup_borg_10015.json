@@ -1,0 +1,172 @@
+{
+ "repo": "borgbackup/borg",
+ "number": 10015,
+ "url": "https://github.com/borgbackup/borg/issues/10015",
+ "title": "Repairing catastrophic repository damage",
+ "state": "closed",
+ "labels": [
+  "question",
+  "documentation"
+ ],
+ "reporter": "reporter",
+ "created_at": "2026-08-02T18:28:52Z",
+ "closed_at": "2026-08-05T17:45:16Z",
+ "body": "Let's hypothetically I ran an errant `dd` command on the disk holding my repo, in such a way that after salvaging what was possible, a `borg check --repair` can't even complete:\n\n```\nData integrity error: Invalid segment entry size 0 - too small [segment 56971, offset 110112635]\n```\n\nDeleting the index file and running `--repair --repository-only` gives the following:\n\n```\nData integrity error: Invalid segment magic [segment 51735, offset 0]\n```\n\nWhat options do I have?\n\nIf the repo has to be written off, is it possible to repair it using a second repo that has largely been back up to with the same settings (I use `borgmatic` pointing to two repos). Is the most straightforward way just to copy the good repo over?",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2026-08-02T19:40:33Z",
+   "body": "dd is rather bad, because it could have damaged the filesystem.\n\nWhat you can do is:\n- transfer all repository files (`repo_dir/`) that are still readable somehow to a new disk (with a non-corrupt filesystem). `repo_dir/data/...` is the most important part (these are the segment files that have your data). this is also that the situation does not get worse than it already is. Only work on the copy, do not modify the original.\n- also transfer the other files from `repo_dir/*` if that still works. if not, you maybe can also take them from a freshly initialized repository.\n- if you used encryption, you will also need key and passphrase\n- `borg check --repair` should rescue everything that is still valid. If a segment has an invalid magic, it should skip that segment and continue with the remaining ones. If it doesn't, look into the file with that number and check what's inside. If it does not start with \"BORG...\", it might be a completely different content from a damaged fs - in that case you can just delete that file.\n\nThere is no tooling to repair one borg 1.x repo using the data from another borg 1.x repo. Even if you used the same settings, the crypto key, the id key and the chunker secret will be different, so the chunks are not \"compatible\" (this has crypto security reasons). borg2 (and also borg 1.4.5+) offers \"related repositories\" that use the same id key and same chunker secret to enable that in future).\n\nBut if you have another backup repo, then you didn't lose data just because you lost the first one, right?\n\nIf you just want to have a working backup repo on the first disk:\n- format the disk (erases all data, creates a valid filesystem)\n- initialize a new borg repo on the first disk\n- start from scratch on the first disk\n- DO NOT \"copy over\" the disk2 repo to disk1 and update them both independently, you would break crypto security and confuse borg's caching if you do so."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-08-02T22:04:35Z",
+   "body": "Useful info! This repo uses `borg 1.4.0`, so the shared repo magic is out of scope.\n\nI was wondering if there was a way to salvage some of the archives, so I guess I'll have to keep deleting segments until `--repair` succeeds.\n\nUltimately yes, the actual data that is being backed up is fine (and is still being backed up to the good repo), so starting again is always available as a fallback option."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-08-03T10:00:04Z",
+   "body": ">borg check --repair should rescue everything that is still valid. If a segment has an invalid magic, it should skip that segment and continue with the remaining ones. If it doesn't, look into the file with that number and check what's inside. If it does not start with \"BORG...\", it might be a completely different content from a damaged fs - in that case you can just delete that file.\n\nWhen I delete such files I see the following:\n\n```\nFileNotFoundError: [Errno 2] No such file or directory: '/xxx/data/53/53463'\n```\n\ncreating an (empty) file takes me back to the previous error."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2026-08-03T10:23:45Z",
+   "body": "can you try the repair with borg 1.4.5?\n\n1.4.0 is rather old meanwhile and maybe we have fixed a related bug."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2026-08-03T10:37:27Z",
+   "body": "BTW, did you look at / into these corrupt files? size? what's inside?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-08-03T13:40:35Z",
+   "body": ">can you try the repair with borg 1.4.5?\n\nDone - no change in behavior\n\n>BTW, did you look at / into these corrupt files? size? what's inside?\n\nI did, but I didn't take note other than a repeating bunch of chars. I suspect it was zero'd out? If I can get past this particular file then I'll find the next problematic segment.\n\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-08-03T14:49:28Z",
+   "body": "I managed to make some progress by removing the index/hints/integrity files.\n\nFound a bad file. I see these characters repeated:\n\n```\n^@^@^@^@^@^@^@^@^@^@^@^@^@^@^@^@^@^@^@^@^\n```\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-08-03T15:34:32Z",
+   "body": "So each `repair` command takes a while (while replaying?) before erroring out on a bad file. I then delete that file and restart. I suspect this will take a while. Any tips on making the process more efficient? I suspect I need to scan and delete the respective files outside of borg?\n\nEDIT: The following (AI) was used to search for files starting with NUL:\n\n```\nfind data -type f -exec sh -c '\n  [ \"$(head -c 2 \"$1\" | od -An -tx1 | tr -d \" \")\" = \"0000\" ] && echo \"$1\"\n' _ {} \\;\n```\n\nThe files listed were deleted."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-08-03T16:22:18Z",
+   "body": "New failure!\n\n```\nborg.helpers.errors.IntegrityError: Data integrity error: Segment entry checksum mismatch [segment 55263, offset 132018493]\n```\n\nUnlike before, this file is not full of NULs. It starts with `BORG_SEGX`. Of course the file could be corrupt, but I'd have hoped the repair would handle that situation? I'll hold off deleting the film in case you'd like a closer look."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2026-08-03T17:02:59Z",
+   "body": "A segment entry is just one part of the segment file (one file stores multiple objects inside it).\n\n`borg check --repair` should try to recover such a segment, copying all valid entries to a new segment file, skipping the defect entry."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-08-03T17:06:48Z",
+   "body": "And if it doesn't as in this case? Would that be a bug?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2026-08-03T17:08:10Z",
+   "body": "Maybe.\n\nA reproducer script would be good."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-08-03T17:12:08Z",
+   "body": "Please let me know how to create such a script? Is the datafile itself useless without a key?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-08-03T17:13:31Z",
+   "body": "```\nData integrity error: Segment entry checksum mismatch [segment 57365, offset 22963596]\nTraceback (most recent call last):\n  File \"borg/archiver.py\", line 5917, in main\n  File \"borg/archiver.py\", line 5835, in run\n  File \"borg/archiver.py\", line 192, in wrapper\n  File \"borg/helpers/manifest.py\", line 186, in load\n  File \"borg/repository.py\", line 1241, in get\n  File \"borg/repository.py\", line 445, in get_transaction_id\n  File \"borg/repository.py\", line 442, in check_transaction\n  File \"borg/repository.py\", line 940, in replay_segments\n  File \"borg/repository.py\", line 950, in _update_index\n  File \"borg/repository.py\", line 1587, in iter_objects\n  File \"borg/repository.py\", line 1686, in _read\nborg.helpers.errors.IntegrityError: Data integrity error: Segment entry checksum mismatch [segment 57365, offset 22963596]\n```"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2026-08-03T17:15:51Z",
+   "body": "Ah, it stumbles over that in a replay, not in the core routine of borg check --repair."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2026-08-03T17:17:03Z",
+   "body": "A reproducer script is a script that does all what is needed to demonstrate/reproduce an issue."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2026-08-03T17:19:32Z",
+   "body": "```\n^@^@^@^@^@^@^@^@^@^@^@^@^@^@^@^@^@^@^@^@^\n```\nThat are just all-zeros."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-08-03T18:12:14Z",
+   "body": "> A reproducer script is a script that does all what is needed to demonstrate/reproduce an issue.\n\nAh, from an initial vacuous state? Might be a little difficult given the `dd` on a raw disk that was used! I'm not sure how else to reproduce the precise corruption, but once its there the command is the one liner `repair`."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-08-05T06:58:51Z",
+   "body": "A new error! One that I can't work around by removing a file:\n\n```\nTraceback (most recent call last):\n  File \"borg/archiver.py\", line 5917, in main\n  File \"borg/archiver.py\", line 5835, in run\n  File \"borg/archiver.py\", line 203, in wrapper\n  File \"borg/archiver.py\", line 1583, in do_info\n  File \"borg/archiver.py\", line 1638, in _info_repository\n  File \"borg/helpers/parseformat.py\", line 1064, in json_print\n  File \"borg/helpers/parseformat.py\", line 1060, in json_dump\n  File \"json/__init__.py\", line 238, in dumps\n  File \"json/encoder.py\", line 202, in encode\n  File \"json/encoder.py\", line 432, in _iterencode\n  File \"json/encoder.py\", line 406, in _iterencode_dict\n  File \"json/encoder.py\", line 439, in _iterencode\n  File \"borg/helpers/parseformat.py\", line 1014, in default\n  File \"borg/cache.py\", line 439, in stats\n  File \"borg/archive.py\", line 492, in __init__\n  File \"borg/archive.py\", line 505, in load\n  File \"borg/archive.py\", line 495, in _load_meta\n  File \"borg/repository.py\", line 1246, in get\nborg.repository.Repository.ObjectNotFound: Object with key xxx not found in repository [repo].\n```"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2026-08-05T07:30:39Z",
+   "body": "You need to first repair the repo or, maybe easier, just create a fresh filesystem and a fresh repo on that disk."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-08-05T08:08:33Z",
+   "body": "All the above errors have occurred during `repair` commands.\n\nThis is mainly an academic exercise (born out of a mistake!) to learn what options are available if something bad happens. I'm happy to accept that the repo is beyond repair if it is, but then it would be nice if `check` would be able to explicitly say that (even if `repair` would reduce to deleting everything to make that point!).\n\nIs that how these exceptions should be read?\n\nEither way, if there is nothing left to try I'll move on."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2026-08-05T08:41:13Z",
+   "body": "`do_info` is from `borg info` command, not `borg check [--repair]`.\n\nImproving check/repair would need the issues being reproducible, so that this can be done while developing an improvement."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-08-05T15:06:17Z",
+   "body": "Unfortunately I've been \"got\" by borgmatic's `check --repair` behaviour differing from borg's. Running the borg command directly does indeed make (automatic) progress in the repair. This renders most of this issue invalid, although I'll confirm once the genuine repair has finished."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-08-05T17:45:16Z",
+   "body": "The direct `check --repair` repaired the repo as expected and the repo is functional again. "
+  },
+  {
+   "author": "participant1",
+   "created_at": "2026-08-06T07:23:34Z",
+   "body": "Can you tell what the problem was with borgmatic? Sounded a bit like unexpected behaviour?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-08-06T15:24:25Z",
+   "body": "Put simply: `borgmatic`'s `check` does not simply \"passthrough\" to `borg`. It can do other things, like trying to verify backups (eg using a sample of files) on a periodic basis. Some of this extra functionality requires `info`, even if the user (naively) just wants to run a straightforward `borg check`.\n\nIronically this isn't the first time this assumption has bit me: https://<redacted-host>/borgmatic-collective/borgmatic/issues/920#issuecomment-8712\n\nThe lesson of course is to always use `borg` directly when trying to diagnose a `borg` issue. I doubt `check` is the only command that does more than the `borg` equivalent."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2026-08-06T16:02:26Z",
+   "body": "Requiring a successful `info` to run `check` doesn't seem like ideal design. Assuming borgmatic uses `info` only to obtain the repo ID, it could implement a fallback that still proceeds with `check` if `info` fails. Working with repos that might be damaged is the whole point of `check` after all. You might want to open an issue on their burg tracker about that."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-08-06T16:36:07Z",
+   "body": "It's definitely worth a discussion, but without speaking for it too much `borgmatic` seems mainly designed to run a regular backup regime, so it may be out of scope to use it to diagnose and repair an exceptional case. In that sense I'd say the best improvement would be to rename its `check` command."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-08-06T17:31:05Z",
+   "body": "Filed here: https://<redacted-host>/borgmatic-collective/borgmatic/issues/1340"
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "borgbackup/borg",
+  "default_branch": "master",
+  "commit_sha": "4d2e068c8b199f8d7d3dfcfe44c36bc222529608",
+  "as_of": "2026-08-02T18:28:52Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_borgbackup_borg_10015"
+}

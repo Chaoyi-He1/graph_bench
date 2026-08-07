@@ -1,0 +1,178 @@
+{
+ "repo": "pola-rs/polars",
+ "number": 13157,
+ "url": "https://github.com/pola-rs/polars/issues/13157",
+ "title": "dt.truncate is slow",
+ "state": "closed",
+ "labels": [
+  "python",
+  "performance",
+  "A-temporal"
+ ],
+ "reporter": "stas-sl",
+ "created_at": "2023-12-20T16:31:49Z",
+ "closed_at": "2023-12-22T18:06:09Z",
+ "body": "### Checks\r\n\r\n- [X] I have checked that this issue has not already been reported.\r\n\r\n- [X] I have confirmed this bug exists on the [latest version](https://pypi.org/project/polars/) of Polars.\r\n\r\n\r\n### Reproducible example\r\n\r\n```python\r\nimport duckdb\r\nimport polars as pl\r\nimport numpy as np\r\n\r\nstart = np.datetime64('2015-01-01', 's').astype('int')\r\nend = np.datetime64('2020-01-01', 's').astype('int')\r\nn = 100_000_000\r\n\r\ndf = pl.DataFrame({'date': np.random.randint(start, end, n).astype('datetime64[s]').astype('datetime64[ms]')})\r\n\r\n# looks like only one CPU core is utilised, same for `1y`\r\n%time df.group_by(pl.col.date.dt.truncate('1mo')).agg(pl.count())\r\n# CPU times: user 37 s, sys: 1.15 s, total: 38.1 s\r\n# Wall time: 34.7 s\r\n\r\n# though for '1d' it is significantly faster\r\n%time df.group_by(pl.col.date.dt.truncate('1d')).agg(pl.count())\r\n# CPU times: user 7.16 s, sys: 634 ms, total: 7.79 s\r\n# Wall time: 4.38 s\r\n\r\n# but duckdb is much faster\r\n%time duckdb.sql(\"select date_trunc('month', date) as month, count() from df group by month\").pl()\r\n# CPU times: user 7.02 s, sys: 93.1 ms, total: 7.12 s\r\n# Wall time: 1.27 s\r\n\r\n# even if using time_bucket function which is probably a closer alternative to polars dt.truncate\r\n%time duckdb.sql(\"select time_bucket(interval '1 month', date) as month, count() from df group by month\").pl()\r\n# CPU times: user 11.9 s, sys: 108 ms, total: 12 s\r\n# Wall time: 1.88 s\r\n```\r\n\r\n\r\n### Log output\r\n\r\n_No response_\r\n\r\n### Issue description\r\n\r\n`dt.truncate` is slow when used with intervals >= '1mo', for smaller intervals it seems to be faster, though still it falls behind duckdb. Also seems like it doesn't utilise all CPU cores.\r\n\r\n### Expected behavior\r\n\r\nAt least `dt.truncate` for month intervals to work as fast as for smaller intervals, or even better if it could match duckdb performance.\r\n\r\n### Installed versions\r\n\r\n<details>\r\n\r\n```\r\n--------Version info---------\r\nPolars:               0.20.1\r\nIndex type:           UInt32\r\nPlatform:             macOS-10.16-x86_64-i386-64bit\r\nPython:               3.10.13 (main, Sep 11 2023, 08:39:02) [Clang 14.0.6 ]\r\n\r\n----Optional dependencies----\r\nadbc_driver_manager:  <not installed>\r\ncloudpickle:          <not installed>\r\nconnectorx:           <not installed>\r\ndeltalake:            <not installed>\r\nfsspec:               2023.12.1\r\ngevent:               <not installed>\r\nmatplotlib:           3.7.1\r\nnumpy:                1.24.2\r\nopenpyxl:             <not installed>\r\npandas:               2.1.4\r\npyarrow:              14.0.1\r\npydantic:             2.1.1\r\npyiceberg:            <not installed>\r\npyxlsb:               <not installed>\r\nsqlalchemy:           <not installed>\r\nxlsx2csv:             <not installed>\r\nxlsxwriter:           <not installed>\r\n\r\nduckdb:               0.9.2\r\n```\r\n\r\n</details>\r\n",
+ "comments": [
+  {
+   "author": "MarcoGorelli",
+   "created_at": "2023-12-20T16:57:20Z",
+   "body": "thanks @stas-sl for the report\r\n\r\nthis part is all done in Chrono\r\n\r\nwondering if there's a way to do it by operating on the underlying integers directly..."
+  },
+  {
+   "author": "mcrumiller",
+   "created_at": "2023-12-20T17:54:00Z",
+   "body": "@MarcoGorelli I think we can. Let's think about this a bit.\r\n\r\nIn a non-leap-year month, first of every month corresponds to the following integers:\r\n\r\n Jan | Feb | Mar | Apr | May | Jun | Jul | Aug | Sep | Oct | Nov | Dec\r\n----:|----:|----:|----:|----:|----:|----:|----:|----:|----:|----:|----:\r\n 0   |  31 | 59  | 90  | 120 | 151 | 181 | 212 | 243 | 273 | 304 | 334\r\n\r\nIn a normal year, there are 365 days, and +1 in leap years. 1972 was a leap year, and our dates start with `t=0` as 1970-01-01. So given any random date `t` (as an int), what we need to do is:\r\n\r\n1. Let `y` be the number of years prior\r\n2. Let `p` be the number of leap years\r\n3. Compute the start of the current year as `s = y * 365 + p`\r\n4. Compute day of year `d = t - s`.\r\n5. Find the difference with the nearest offset above less than the current value, with a +1 if it's a leap year and the number is greater than 58.\r\n6. Add year start minus 1.\r\n\r\nLet's pick a random date and truncate it to the nearest month, say `2023-12-20` (hey that's today), or `19711`:\r\n\r\n```\r\n>>> pl.Series([date.today()]).cast(pl.Int32)\r\nshape: (1,)\r\nSeries: '' [i32]\r\n[\r\n        19711\r\n]\r\n```\r\n\r\n1. `y = (2023  - 1970) = 53`\r\n2. `p = (53 + 2) // 4 = 13` (verify: 1972, 1976, 1980, 1984, 1988, 1992, 1996, 2000, 2004, 2008, 2012,\r\n       2016, 2020)\r\n3. `s = 53 * 365 + 13 = 19358`.\r\n5. `d = 19711 - 19358 - 1 = 352`.\r\n6. Nearest offset less than or equal: 335 (+0 for leap  year)\r\n7. Final date = 19358 + 335 - 1 = 19692.\r\n\r\nCheck:\r\n\r\n```python\r\n>>> pl.Series([19692]).cast(pl.Date)\r\nshape: (1,)\r\nSeries: '' [date]\r\n[\r\n        2023-12-01\r\n]\r\n```\r\n\r\nNext question is, would this be faster than using chrono, and are there any exceptions?\r\n"
+  },
+  {
+   "author": "MarcoGorelli",
+   "created_at": "2023-12-20T17:58:33Z",
+   "body": "> Next question is, would this be faster than using chrono, and are there any exceptions?\r\n\r\nif it's correct then yes, almost certainly 😄 if you want to give this a go, the function to search for is `fn truncate_monthly`\r\n\r\nwould need to hypothesis-test the hell out of this, but would be awesome if it could work"
+  },
+  {
+   "author": "mcrumiller",
+   "created_at": "2023-12-20T18:12:21Z",
+   "body": "@MarcoGorelli I'm working on expression-ifying it for now in order to validate as a proof-of-concept. If it holds we can move it into rust."
+  },
+  {
+   "author": "mcrumiller",
+   "created_at": "2023-12-20T18:28:15Z",
+   "body": "@MarcoGorelli for `1mo` we could actually do the much much simpler:\r\n\r\n```python\r\n# truncate by 1mo\r\ndf.select(col(\"date\") - pl.duration(days=col(\"date\").dt.day()-1))\r\n```\r\n\r\nIt's less flexible though.\r\n\r\nEdit: slower than `.dt.truncate`."
+  },
+  {
+   "author": "stas-sl",
+   "created_at": "2023-12-20T18:33:05Z",
+   "body": "Seems like the issue is more general than just truncation, I found another issue which has similar symptoms and also uses dates https://github.com/pola-rs/polars/issues/12895. \r\n\r\nAnd I did a few more tests converting datetime to string:\r\n```python\r\n# converting to string works a bit faster than truncate('1mo'), though still it utilises only single CPU core\r\n%time df.group_by(pl.col.date.dt.strftime('%Y-%m')).agg(pl.count())\r\n# CPU times: user 30.2 s, sys: 2.67 s, total: 32.9 s\r\n# Wall time: 23 s\r\n\r\n# CPU time for duckdb is comparable with polars, but due to utilising all cores, Wall time is much smaller\r\n%time duckdb.sql(\"select strftime('%Y-%m', date) as month, count() from df group by month\").pl()\r\n# CPU times: user 26.6 s, sys: 162 ms, total: 26.7 s\r\n# Wall time: 3.83 s\r\n```\r\n\r\nSo, maybe there are 2 separate problems:\r\n1. Lack of parallelism, which I'm not sure if that's polars' or chrono's issue\r\n2. Slow truncation implementation inside chrono\r\n\r\nIf 1st point could be related to polars, then just fixing it could improve things."
+  },
+  {
+   "author": "stas-sl",
+   "created_at": "2023-12-20T18:49:45Z",
+   "body": "Another alternative, inspired by [duckdb date_trunc implementation](https://github.com/duckdb/duckdb/blob/3720d1e2cd95e99af2eac9197d3e25a496ce5793/src/core_functions/scalar/date/date_trunc.cpp#L69)\r\n\r\n```python\r\n%time df.group_by(pl.datetime(year=pl.col.date.dt.year(), month=pl.col.date.dt.month(), day=1)).agg(pl.count())\r\n# CPU times: user 12.9 s, sys: 11 s, total: 23.8 s\r\n# Wall time: 18.6 s\r\n```\r\nA bit faster, though still not very impressive"
+  },
+  {
+   "author": "mcrumiller",
+   "created_at": "2023-12-20T18:53:16Z",
+   "body": "Ok, expression implementation is actually slower:\r\n\r\n```python\r\nimport numpy as np\r\nimport polars as pl\r\nfrom polars import col, when\r\n\r\nstart = np.datetime64(\"2015-01-01\", \"s\").astype(\"int\")\r\nend = np.datetime64(\"2020-01-01\", \"s\").astype(\"int\")\r\nn = 1_000_000\r\n\r\ndf = pl.DataFrame({\"date\": np.random.randint(start, end, n).astype(\"datetime64[s]\").astype(\"datetime64[ms]\")})\r\ndf = df.with_columns(col(\"date\").cast(pl.Date))\r\n\r\nt = col(\"date\")\r\ny = t.dt.year() - 1970\r\np = (y + 1) // 4\r\ns = y * 365 + p\r\nd = t - s\r\ndays = pl.Series([31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31])\r\nnearest_offset = sum((day * (d >= cum_day) for day, cum_day in zip(days, days.cum_sum())))\r\nis_leap_year = (y + 2) % 4 == 0\r\noffset = is_leap_year & (d > 58)\r\ntruncated = (s + nearest_offset + offset).cast(pl.Date)\r\n\r\n# 324 ms ± 15.5 ms per loop (mean ± std. dev. of 7 runs, 1 loop each)\r\ndf.with_columns(col(\"date\").dt.truncate(\"1mo\"))\r\n\r\n# 584 ms ± 10.8 ms per loop (mean ± std. dev. of 7 runs, 1 loop each)\r\ndf.with_columns(truncated)\r\n```\r\n\r\nMost of the time is taken up by the `when/then` chain, so if there's a way to simplify that we could make some improvements.\r\n\r\n@stas-sl I know you've moved beyond truncate but I'm just having fun here.\r\n\r\n---\r\n\r\nEdit: faster implementation now with logical sums, still slower than `.dt.truncate()`."
+  },
+  {
+   "author": "gab23r",
+   "created_at": "2023-12-20T19:59:39Z",
+   "body": "It is slower with expressions but it doesn't mean it will be slower if it's coded in rust directly "
+  },
+  {
+   "author": "cmdlineluser",
+   "created_at": "2023-12-20T20:12:16Z",
+   "body": "@mcrumiller Just experimenting with your example, it seems coalesce + separate when/thens is faster than a single when/then chain\r\n\r\n```python\r\nnearest_offset = pl.coalesce(\r\n    when(d < 31).then(0),\r\n    when(d < 59).then(31),\r\n    ...,\r\n    334\r\n)\r\n```\r\n\r\n`pl.cut` seems to be a much faster operation, but getting the value back involves casting the labels to strings and back again which slows it down. (although still seems to be faster than the when/then approaches)"
+  },
+  {
+   "author": "mcrumiller",
+   "created_at": "2023-12-20T20:14:22Z",
+   "body": "@cmdlineluser did you compare those to my edit in the above where I replaced the when/then with sums?"
+  },
+  {
+   "author": "stas-sl",
+   "created_at": "2023-12-20T20:33:55Z",
+   "body": "Can someone explain >10x time difference between creating date using `pl.date` and casting integer to `pl.Date`? \r\n\r\n```python\r\nn = 100_000_000\r\n\r\n%time pl.select(pl.date(year=pl.zeros(n) + 1970, month=1, day=1))\r\n# CPU times: user 8.78 s, sys: 4.07 s, total: 12.9 s\r\n# Wall time: 13.3 s\r\n\r\n%time pl.select((pl.zeros(n)).cast(pl.Date))\r\n# CPU times: user 602 ms, sys: 468 ms, total: 1.07 s\r\n# Wall time: 1.1 s\r\n```"
+  },
+  {
+   "author": "mcrumiller",
+   "created_at": "2023-12-20T20:39:55Z",
+   "body": "@stas-sl, a `pl.Date` is simply a 32-bit integer representing the number of days since January 1st, 1970. To create a polars `Date` series from integers requires that we just make an `i32` series which is very fast.\r\n\r\nA python `datetime.date` object is a python class with a lot of stuff in it, but most importantly it stores the year/month/day as separate integers. These must be extracted and processed into the corresponding integer. I admit I'm not sure where or how this happens in the polars code so there may be room for improvement."
+  },
+  {
+   "author": "stas-sl",
+   "created_at": "2023-12-20T21:04:06Z",
+   "body": "@mcrumiller hmm, are you sure it creates python datetime.date objects? I thought it return Expr which is then handled by Rust directly without any python objects. There is corresponding Rust [datetime function]( https://docs.rs/polars/latest/polars/prelude/fn.datetime.html), which I guess called from pl.date.\r\n\r\n<img width=\"916\" alt=\"image\" src=\"https://github.com/pola-rs/polars/assets/4602302/61b20c6e-fc55-481b-951c-4bd7ee0ca138\">\r\n\r\n<img width=\"479\" alt=\"image\" src=\"https://github.com/pola-rs/polars/assets/4602302/9a5c4f20-6dc9-4448-b972-02a8813d9a97\">\r\n\r\n<img width=\"614\" alt=\"image\" src=\"https://github.com/pola-rs/polars/assets/4602302/4f27c7f3-46e2-496a-8d73-23efebd72d85\">\r\n\r\n<img width=\"999\" alt=\"image\" src=\"https://github.com/pola-rs/polars/assets/4602302/fff26f99-662c-45d1-9caa-3430a958231b\">\r\n\r\n"
+  },
+  {
+   "author": "mcrumiller",
+   "created_at": "2023-12-20T21:10:35Z",
+   "body": "Oh, sorry! I misread your comment and thought you were saying that construction from a list of `datetime.date` values was much slower than `int64`."
+  },
+  {
+   "author": "MarcoGorelli",
+   "created_at": "2023-12-21T09:11:08Z",
+   "body": "> Can someone explain >10x time difference between creating date using pl.date and casting integer to pl.Date?\r\n\r\nI think this is a completely different issue than `truncate`, could you open a new issue about this one so that this issue stays focused on `truncate`?"
+  },
+  {
+   "author": "nameexhaustion",
+   "created_at": "2023-12-21T09:43:07Z",
+   "body": "Unexpectedly, `1mo` executes faster with `streaming=True`:\r\n\r\n```python\r\nfor trunc in ('1mo', '1d'):\r\n    for streaming in (True, False):\r\n        print(f\"{trunc=} {streaming=}\")\r\n        %time df.lazy().select(pl.col.date.dt.truncate(trunc)).collect(streaming=streaming)\r\n```\r\n```python\r\ntrunc='1mo' streaming=True\r\nCPU times: user 1min 9s, sys: 1.33 s, total: 1min 11s\r\nWall time: 9.09 s\r\ntrunc='1mo' streaming=False\r\nCPU times: user 16.7 s, sys: 1.35 s, total: 18.1 s\r\nWall time: 18.1 s\r\ntrunc='1d' streaming=True\r\nCPU times: user 3.35 s, sys: 338 ms, total: 3.69 s\r\nWall time: 812 ms\r\ntrunc='1d' streaming=False\r\nCPU times: user 2.03 s, sys: 561 ms, total: 2.59 s\r\nWall time: 2.6 s\r\n```\r\n\r\n*It is due to the streaming engine evaluating the expression in parallel across batches\r\n\r\nDuckDB has the advantage here in part due to their execution being pipelined by default"
+  },
+  {
+   "author": "deanm0000",
+   "created_at": "2023-12-21T12:32:52Z",
+   "body": "There are two issues.\r\n\r\nThe first is that truncate by month is inefficient and the second is that polars, by default, parallelizes across columns rather than within them.\r\n\r\nFor the first issue, it can be mitigated by constructing a date from the parts of the input (ie. `pl.date(input.dt.year(), input.dt.month(), 1)`. That method is faster than `dt.truncate('1mo')` but it still lags behind duckdb.\r\n\r\nUsing @nameexhaustion's tip to use the streaming engine to force parallelization within the column along with using the data constructor methodology gets polars in line with duckdb.\r\n\r\nI imagine that it'd be pretty straight forward to change how truncate('1mo') works but to get polars to automatically parallelize within columns would be more of a challenge. Maybe the optimizer could have something like if n_rows>threadhold and n_columns<other_threshold then switch to streaming engine. \r\n\r\nHere's a graph and table of results\r\n\r\n![image](https://github.com/pola-rs/polars/assets/37878412/c2e892bc-b2c3-4fb8-be1e-0c283f0a9307)\r\n\r\n![image](https://github.com/pola-rs/polars/assets/37878412/6a76e7bb-6abe-4b61-8b82-d5e8910a528f)\r\n\r\nand the code to generate the above\r\n\r\n<details>\r\n\r\n```\r\nimport polars as pl\r\nimport numpy as np\r\nimport plotly.express as px\r\nimport duckdb\r\nimport time\r\ntimes={}\r\nstart = np.datetime64(\"2015-01-01\", \"s\").astype(\"int\")\r\nend = np.datetime64(\"2020-01-01\", \"s\").astype(\"int\")\r\nfor n_iter in range(1,11):\r\n    n=10_000_000*n_iter\r\n    print(f\"{n:_}\")\r\n    df = pl.DataFrame({'date': np.random.randint(start, end, n).astype('datetime64[s]').astype('datetime64[ms]')})\r\n    times[str(n)]={}\r\n    \r\n    strt=time.time()\r\n    df.group_by(pl.col.date.dt.truncate('1mo')).agg(pl.count())\r\n    times[str(n)]['pl_trunc_group']=time.time()-strt\r\n    \r\n    strt=time.time()\r\n    df.with_columns(pl.col.date.dt.truncate('1mo'))\r\n    times[str(n)]['pl_trunc']=time.time()-strt\r\n    \r\n    strt=time.time()\r\n    df.lazy().group_by(pl.col.date.dt.truncate('1mo')).agg(pl.count()).collect(streaming=True)\r\n    times[str(n)]['pl_trunc_streaming_group']=time.time()-strt\r\n    \r\n    strt=time.time()\r\n    df.lazy().with_columns(pl.col.date.dt.truncate('1mo')).collect(streaming=True)\r\n    times[str(n)]['pl_trunc_streaming']=time.time()-strt\r\n    \r\n    strt=time.time()\r\n    df.group_by(pl.date(pl.col.date.dt.year(), pl.col.date.dt.month(), 1)).agg(pl.count())\r\n    times[str(n)]['pl_date_group']=time.time()-strt\r\n    \r\n    strt=time.time()\r\n    df.with_columns(pl.date(pl.col.date.dt.year(), pl.col.date.dt.month(), 1))\r\n    times[str(n)]['pl_date']=time.time()-strt\r\n    \r\n    strt=time.time()\r\n    df.lazy().group_by(pl.date(pl.col.date.dt.year(), pl.col.date.dt.month(), 1)).agg(pl.count()).collect(streaming=True)\r\n    times[str(n)]['pl_date_streaming_group']=time.time()-strt\r\n    \r\n    strt=time.time()\r\n    df.lazy().with_columns(pl.date(pl.col.date.dt.year(), pl.col.date.dt.month(), 1)).collect(streaming=True)\r\n    times[str(n)]['pl_date_streaming']=time.time()-strt\r\n    \r\n    strt=time.time()\r\n    duckdb.sql(\"select date_trunc('month', date) as month, count() from df group by month\").pl()\r\n    times[str(n)]['duckdb_trunc_group']=time.time()-strt\r\n   \r\n    strt=time.time()\r\n    duckdb.sql(\"select date_trunc('month', date) as month from df\").pl()\r\n    times[str(n)]['duckdb_trunc']=time.time()-strt\r\n   \r\n    strt=time.time()\r\n    duckdb.sql(\"select time_bucket(interval '1 month', date) as month, count() from df group by month\").pl()\r\n    times[str(n)]['duckdb_bucket_group']=time.time()-strt\r\n    \r\n    strt=time.time()\r\n    duckdb.sql(\"select time_bucket(interval '1 month', date) as month from df\").pl()\r\n    times[str(n)]['duckdb_bucket']=time.time()-strt\r\npx.line(\r\n    pl\r\n        .from_dict(times)\r\n        .melt(variable_name='n')\r\n        .unnest('value')\r\n        .melt('n',variable_name='method', value_name='seconds')\r\n        .with_columns(pl.col.n.cast(pl.Int64))\r\n        .filter(~pl.col('method').str.contains('group')),\r\n    x='n',\r\n    y='seconds',\r\n    color='method',\r\n    markers=True\r\n)\r\n```\r\n\r\n</details>"
+  },
+  {
+   "author": "MarcoGorelli",
+   "created_at": "2023-12-21T14:24:22Z",
+   "body": "> Lack of parallelism, which I'm not sure if that's polars' or chrono's issue\r\n\r\nFor a single expression, this is expected: https://discord.com/channels/908022250106667068/1014967651656814694/1187398134997975111\r\n\r\nAnyway, thanks for having brought attention to this - I think @mcrumiller 's formula is on the right track (though the leap years part needs adjusting - years divisible by 100 but not by 400 are not leap years) and, if done in Rust, I'd expect it to noticeably speed things up\r\n\r\n@mcrumiller do you plan to implement this? I can do it if not"
+  },
+  {
+   "author": "stas-sl",
+   "created_at": "2023-12-21T15:35:01Z",
+   "body": "Thanks for clarification, I wasn't aware that by default polars parallelizes horizontally over columns and not vertically. And I had impression that streaming=True is mainly to be able to process data larger than RAM, rather than to parallelize. \r\n\r\n> trunc='1mo' streaming=True\r\nCPU times: user 1min 9s, sys: 1.33 s, total: 1min 11s\r\nWall time: 9.09 s\r\ntrunc='1mo' streaming=False\r\nCPU times: user 16.7 s, sys: 1.35 s, total: 18.1 s\r\nWall time: 18.1 s\r\n\r\nCPU times, though... it uses 4x more CPU resources than without streaming - 16 seconds vs 1min 9 seconds\r\n\r\n```python\r\n%time df.lazy().select(pl.col.date.dt.truncate('1mo')).collect(streaming=False)\r\n# CPU times: user 31.9 s, sys: 510 ms, total: 32.4 s\r\n# Wall time: 32.7 s\r\n\r\n# POLARS_MAX_THREADS=4\r\n%time df.lazy().select(pl.col.date.dt.truncate('1mo')).collect(streaming=True)\r\n# CPU times: user 1min 55s, sys: 1min 12s, total: 3min 8s\r\n# Wall time: 49.9 s\r\n```\r\nOn my quite dated Intel MacBook streaming=True is actually slower, though I was able to reproduce speed up on my Linux server. But that's probably another story, I will experiment more with different settings.\r\n\r\nAnyway, regardless of parallelization, there seems to be something fishy with current date truncation implementation. I am a bit skeptical about @mcrumiller's solution, it seems quite overcomplicated to me, and not even faster as of now. I don't know Rust, but maybe try to look what's the difference between `truncate_monthly` and `truncate_subweekly` (I guess it is used for '1d' truncation) - shouldn't they perform more or less similarly? Just from common sense I don't know why one of them should be significantly slower than the other."
+  },
+  {
+   "author": "MarcoGorelli",
+   "created_at": "2023-12-21T15:53:16Z",
+   "body": "> and not even faster as of now\r\n\r\nit's not a fair comparison though, only way to know is to implement it in rust - integer arithmetic should be very fast\r\n\r\n>  what's the difference between truncate_monthly and truncate_subweekly\r\n\r\ntruncate_subweeky doesn't do anything with chrono (unless we're in the tz-aware case), and it just deals with fixed durations, so the integer arithmetic there is very simple - that's why it's a lot faster"
+  },
+  {
+   "author": "deanm0000",
+   "created_at": "2023-12-21T16:25:11Z",
+   "body": "With respect, if @mcrumiller's method is going to utilize the year extractor then is it really going to be any better than just `pl.date(input.dt.year(), input.dt.month(), 1)` or `pl.datetime(input.dt.year(), input.dt.month(),1)`? Keep in mind that the starting point in this example is a datetime so there's already an implicit cast of number of nanoseconds since 1970-01-01 to days since 1970-01-01."
+  },
+  {
+   "author": "stas-sl",
+   "created_at": "2023-12-21T16:49:32Z",
+   "body": "@deanm0000, year and month extractors seems to be relatively fast compared to construction new date from them using `pl.date`\r\n\r\n```python\r\n%time df.select(pl.col.date.dt.year())\r\n# CPU times: user 1.33 s, sys: 152 ms, total: 1.48 s\r\n# Wall time: 1.52 s\r\n\r\n%time df.select(pl.col.date.dt.month())\r\n# CPU times: user 1.32 s, sys: 53.9 ms, total: 1.37 s\r\n# Wall time: 1.51 s\r\n\r\n%time df.select(pl.date(pl.col.date.dt.year(), pl.col.date.dt.month(), 1))\r\n# CPU times: user 10.9 s, sys: 2.83 s, total: 13.8 s\r\n# Wall time: 12.7 s\r\n\r\n# just constants\r\n%time pl.select(pl.date(year=pl.zeros(n) + 2020, month=1, day=1))\r\n# CPU times: user 8.63 s, sys: 2.96 s, total: 11.6 s\r\n# Wall time: 11.8 s\r\n\r\n# comparing to duckdb\r\n%time duckdb.sql('select make_date(2020, 1, 1) from range(100000000)').pl()\r\n# CPU times: user 1.54 s, sys: 516 ms, total: 2.06 s\r\n# Wall time: 1.6 s\r\n\r\n# datetime contsruction\r\n%time duckdb.sql('select make_timestamp(2020, 1, 1, 0, 0, 0) from range(100000000)').pl()\r\nCPU times: user 2.14 s, sys: 973 ms, total: 3.11 s\r\nWall time: 2.57 s\r\n```\r\n\r\nI checked pl.datetime implementation https://github.com/pola-rs/polars/blob/5e3ffd25b2dd7bc53c13d95ec90d53d3312f5fc8/crates/polars-plan/src/dsl/function_expr/temporal.rs#L132-L155 \r\n\r\nAnd it looks quite involved and it uses chrono as well I guess. So it is understandable why it is slow. I can create a separate issue for it as @MarcoGorelli suggested, though I'm not sure if it possible to do something with it. Or maybe it should be much broader task to replace chrono with something more performant, if you ever decide."
+  },
+  {
+   "author": "MarcoGorelli",
+   "created_at": "2023-12-21T17:00:31Z",
+   "body": "the currently solution does:\r\n1. timestamp to datetime\r\n2. some arithmetic\r\n3. construct new datetime\r\n4. new datetime to integer, and return\r\n\r\nas far as I can tell, @mcrumiller 's soln would be:\r\n1. timestamp to datetime\r\n2. some arithmetic\r\n3. return integer\r\n\r\nthat's why I think it's got legs, even though it needs adjusting a bit - let's see"
+  },
+  {
+   "author": "stas-sl",
+   "created_at": "2023-12-21T17:29:53Z",
+   "body": "Actually duckdb's date/time implementation https://github.com/duckdb/duckdb/blob/main/src/common/types/date.cpp is not that scary, only 622 LOC including a hundred lines with lookup arrays 🙂 Maybe one day you'll manage to reimplement date/time logic inside polars as well 🤔\r\n\r\nUpd:\r\nThough, that only 622 LOC for date functionality, then you need to add datetime, time, duration.... Maybe not so simple..."
+  },
+  {
+   "author": "MarcoGorelli",
+   "created_at": "2023-12-21T20:44:20Z",
+   "body": "_might_ have something...gonna time it and found out\r\n\r\nupdate: https://github.com/pola-rs/polars/pull/13192"
+  },
+  {
+   "author": "Orventro",
+   "created_at": "2024-06-07T21:43:14Z",
+   "body": "Not sure if I'm supposed to create a separate issue for that, haven't done that before. Anyways there's another performance problem when using dt.truncate, specifically when it's in non-UTC timezone. Here's an example\r\n````python\r\ntime_zone = 'America/New_York'\r\ndf = pl.DataFrame(\r\n    {'time' : pl.datetime_range(pl.date(2024, 6, 7), pl.date(2024, 6, 8), \r\n                                '1ms', eager=True, time_unit='ns', time_zone=time_zone)}\r\n)\r\n\r\n%timeit df.select(pl.col('time').dt.truncate('1h'))\r\n# 10.6 s ± 16.7 ms per loop (mean ± std. dev. of 7 runs, 1 loop each)\r\n\r\nfast_trunc = lambda x: pl.col('time').dt.convert_time_zone('UTC').dt.truncate(x).dt.convert_time_zone(time_zone)\r\n%timeit df.select(fast_trunc('1h'))\r\n# 398 ms ± 1.47 ms per loop (mean ± std. dev. of 7 runs, 1 loop each)\r\n\r\ndf.select(fast_trunc('1h')).equals(df.select(pl.col('time').dt.truncate('1h')))\r\n# True\r\n````\r\n\r\nThe fast method that I showed doesn't match regular truncate for odd intervals though, like\r\n````python\r\ndf.select(fast_trunc('7s'))\r\n# ┌────────────────────────────────┐\r\n# │ time                           │\r\n# │ ---                            │\r\n# │ datetime[ns, America/New_York] │\r\n# ╞════════════════════════════════╡\r\n# │ 2024-06-07 00:00:00 EDT        │\r\n# │ 2024-06-07 00:00:00 EDT        │\r\n# │ …                              │\r\n# │ 2024-06-07 23:59:54 EDT        │\r\n# │ 2024-06-07 23:59:54 EDT        │\r\n# └────────────────────────────────┘\r\n\r\ndf.select(pl.col('time').dt.truncate('7s'))\r\n# ┌────────────────────────────────┐\r\n# │ time                           │\r\n# │ ---                            │\r\n# │ datetime[ns, America/New_York] │\r\n# ╞════════════════════════════════╡\r\n# │ 2024-06-06 23:59:54 EDT        │\r\n# │ 2024-06-06 23:59:54 EDT        │\r\n# │ …                              │\r\n# │ 2024-06-07 23:59:55 EDT        │\r\n# │ 2024-06-07 23:59:55 EDT        │\r\n# └────────────────────────────────┘\r\n````\r\n\r\nAs far as I understand, if the interval divides 1 hour evenly than we can use the fast method. It wouldn't be much of a stretch to assume that usually truncate is used with \"nice\" intervals, so checking for that and applying this optimization seems worth it. That's just a simple improvement, I'm sure this method can be made just as fast for any interval, but it's probably a bit more complicated. \r\n\r\nFinally, it seems operating on the physical gives further performance improvement, but it's marginal\r\n\r\n````python\r\ndelta_phys = (pl.col('time').to_physical() - pl.col('time').to_physical() % int(3600e9))\r\nvery_fast_trunc = delta_phys.cast(pl.Datetime('ns', time_zone))\r\n%timeit df.select(very_fast_trunc)\r\n# 381 ms ± 1.37 ms per loop (mean ± std. dev. of 7 runs, 1 loop each)\r\n````"
+  },
+  {
+   "author": "cmdlineluser",
+   "created_at": "2024-06-07T22:05:15Z",
+   "body": "@Orventro As an example, https://github.com/pola-rs/polars/issues/16531 was recently opened about `dt.truncate` which led to multiple improvements:\r\n\r\n- https://github.com/pola-rs/polars/pull/16615\r\n- https://github.com/pola-rs/polars/pull/16666\r\n\r\n@MarcoGorelli has been doing all the (great!) work, if they don't notice your update and respond here - I think opening a new issue is OK."
+  },
+  {
+   "author": "MarcoGorelli",
+   "created_at": "2024-06-08T08:57:33Z",
+   "body": "thanks for the comment / ping\r\n\r\n> fast_trunc = lambda x: pl.col('time').dt.convert_time_zone('UTC').dt.truncate(x).dt.convert_time_zone(time_zone)\r\n\r\nthis won't work for certain time zones, e.g. `Asia/Kathmandu` / `Asia/Kalkutta`\r\n\r\n"
+  },
+  {
+   "author": "Orventro",
+   "created_at": "2024-06-08T19:11:20Z",
+   "body": "@MarcoGorelli I see. I checked the timezones and daylight savings and it seems that all of them offset UTC by multiples of 15 minutes. So if `every` divides 15 minutes w/o remainder we can apply that formula, unless I'm still missing something. For me personally that optimization would be very useful. I can try to code that myself, shouldn't be that difficult, I just need to know where to add that logic."
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "pola-rs/polars",
+  "default_branch": "main",
+  "commit_sha": "b443e3196d5bd3c177c8740d89711478afdd4c82",
+  "as_of": "2023-12-20T16:31:49Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_pola-rs_polars_13157"
+}

@@ -1,0 +1,138 @@
+{
+ "repo": "questdb/questdb",
+ "number": 5202,
+ "url": "https://github.com/questdb/questdb/issues/5202",
+ "title": "PostgreSQL client interface errors",
+ "state": "closed",
+ "labels": [
+  "Bug",
+  "Postgres Wire"
+ ],
+ "reporter": "reporter",
+ "created_at": "2024-11-27T11:38:17Z",
+ "closed_at": "2024-12-16T14:26:32Z",
+ "body": "### To reproduce\n\nTo create and init a sample table:\r\n```sql\r\nCREATE TABLE bugtest(\r\n  timestamp TIMESTAMP,\r\n  symbol SYMBOL,\r\n  price DOUBLE,\r\n  amount DOUBLE\r\n  ) TIMESTAMP(timestamp)\r\nPARTITION BY DAY;\r\n\r\nINSERT INTO bugtest\r\nVALUES\r\n    ('2021-10-05T11:31:35.878Z', 'AAPL', 245, 123.4),\r\n    ('2021-10-05T12:31:35.878Z', 'AAPL', 245, 123.3),\r\n    ('2021-10-05T13:31:35.878Z', 'AAPL', 250, 123.1),\r\n    ('2021-10-05T14:31:35.878Z', 'AAPL', 250, 123.0);\r\n```\r\n\r\nThe problem appears sometime, randomly, when query from a client using PostgreSQL driver (exposed at port 8812 in the docker image). Sometimes I get no data or seemingly corrupted data (at least with more elaborate queries), the other times I get the correct answer.\r\n\r\nI tried CLI tool \"psql\" from an ubuntu machine many times:\r\n```bash\r\nwhile :\r\ndo\r\n    psql -d \"$ConnectionString\" -c \"SELECT 1 FROM bugtest\"\r\ndone\r\n```\r\nI also tried python driver from a windows machine (conda installation) with the following script:\r\n```python\r\n# script.py\r\nimport os\r\nimport psycopg2\r\n\r\nquest_connection_string = os.environ.get(\"ConnectionString\")\r\nquery = \"SELECT 1 FROM bugtest\"\r\n\r\nwith psycopg2.connect(quest_connection_string) as conn:\r\n    with conn.cursor() as cursor:\r\n        cursor.execute(query)\r\n        response = cursor.fetchall()\r\n        print(response)\r\n```\r\nagain, the effect is visible only sometimes, therefore I do:\r\n```bash\r\nwhile :\r\ndo\r\n    python script.py\r\ndone\r\n```\r\n\r\n### Additional info\r\n\r\n- The query `SELECT 1 FROM bugtest` seems the simplest I could get to fail. Strangely, if I query `SELECT 'x' FROM bugtest` I never found any weirdness.\r\n- The web interface, the one exposed at port 9000 in the docker image, never seems to give any weirdness.\r\n- The log of the server does not register any error. It even cache the query regularly without anything strange.\r\n- I think I got this error with the latest questDB version, although I am not able to prove it did not existed before.\r\n\r\nCould this be a bug of the questDB server?\r\n\r\n\n\n### QuestDB version:\n\n8.2.0\n\n### OS, in case of Docker specify Docker and the Host OS:\n\nUbuntu 24.04 (docker)\n\n### File System, in case of Docker specify Host File System:\n\nzfs\n\n### Full Name:\n\nMarco Trevisiol\n\n### Affiliation:\n\nDeimos\n\n### Have you followed Linux, MacOs kernel configuration steps to increase Maximum open files and Maximum virtual memory areas limit?\n\n- [X] Yes, I have\n\n### Additional context\n\n_No response_",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2024-11-27T16:39:55Z",
+   "body": "@participant2, resuming from Slack, we tried with a cleaned instance without using ZFS and we aren't able to reproduce it. \r\nSystem wasn't in idle but it was with low load. Configuration is the default one. But our production instance have been updated more times since the installation."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-11-27T16:45:25Z",
+   "body": "We solved a number of bugs related to PGWire since the release of 8.2.0. I suggest you upgrade to that new version once it's out, and see if it occurs again. If it does, the fast remedy to try is the configuration option `pg.legacy.mode.enabled=true`. It would be of immense value to know if this config change removed the problem, since it would narrow down its origin to the new PGWire code."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-11-27T17:28:55Z",
+   "body": "i can repro the issue, will keep you posted"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-11-27T17:50:41Z",
+   "body": "@participant2 did you mean something different from `8.2.0`? Because that's exactly the one we were using with the bug. Downgrading it fixed with no issue. Are there incoming new releases?\n\n@participant3 it would be perfect"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-11-27T20:35:43Z",
+   "body": "sorry guys, i jumped ahead of myself here. I used a tool that tampers with network packets, which produced corrupt message. I mistakenly thought that we produced corrupt package, but instead it was a tamper tool.\r\n\r\nMay I ask you to send us questdb logs, around the event this error was occurring? The link with zfs is hard to reconcile looking into network protocol alone. I am hoping for a clue in your log really.\r\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-11-28T07:09:39Z",
+   "body": "Unfortunately we lost them once removed and restarted with the old version."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-11-28T07:22:53Z",
+   "body": "But this morning we update another time to `8.2.0` and we are able to reproduce it.\r\n\r\nThe log since start of new `8.2.0` container: [questdb_error.log](https://github.com/user-attachments/files/17944215/questdb_error.log)\r\n\r\nBy us there aren't logs that show something wrong but the problem exists.\r\n"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-11-28T07:24:46Z",
+   "body": "@participant1 Yes, I meant the upcoming release that includes several bugfixes related to PGWire.\r\n\r\n>  this morning we update another time to 8.2.0 and we are able to reproduce it.\r\n\r\nCan you please apply the config option `pg.legacy.mode.enabled=true` to see if it goes away? Thank you for the logs!"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-11-28T08:03:38Z",
+   "body": "This is a screenshot of what I am experiencing today\r\n![image](https://github.com/user-attachments/assets/4be81f3b-e603-443f-85ea-1be33eca2725)\r\n\r\nStrangely, it seems like the frequency of this weird behaviour has decrease since yesterday, so that I took me several attempts to record one incident.\r\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-11-28T08:16:27Z",
+   "body": "@participant2 we applied that. Now we need some testing time."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-11-28T09:22:49Z",
+   "body": "@participant2 After turning on that config option and some test, we experienced nothing strange."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-11-28T09:45:14Z",
+   "body": "Great, on our side we think we zeroed in on the problem. The issue we found requires different kinds of client using the Postgres protocol concurrently -- each using a different protocol mode (text vs binary). The upcoming 8.2.1 release will have a fix for this."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-11-28T11:08:15Z",
+   "body": "Hey @reporter we think the problem is fixed in https://github.com/questdb/questdb/pull/5189. \r\n\r\nCan you please try running your test on the nightly docker build\r\nhttps://registry.hub.docker.com/layers/questdb/questdb/nightly/images/sha256-a67d47479213f1c38614a0279adcfb49db89be6b1252fa9fdce6f69cc0f315c4?context=explore\r\n?\r\n\r\nWe appreciate your help.\r\n\r\n "
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-11-28T11:09:51Z",
+   "body": "I'd add one potential gotcha when testing: be sure to reset the config to `pg.legacy.mode.enabled=false`"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-11-29T09:07:51Z",
+   "body": "Hello @participant4, we are working with only one **production** instance. We don't know if it is a good idea to try a nightly build."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-11-29T09:52:26Z",
+   "body": "@participant1 I understand, thanks.\r\nThe given nightly build does not have any forward / backward incompatibilites to 8.2 version and it's a base of the our enterprise release, so it's rather stable."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-11-29T15:07:30Z",
+   "body": "We managed to reproduce this on 8.2.0, using a combination of JDBC and `psql`. It did not reproduce on our current master."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2024-12-02T07:26:35Z",
+   "body": "When I was using version 8.2, the following error message would appear during the query. I have confirmed that there is no problem with the query statement, but the problem is accidental, and the error message is as follows:\r\n\r\njava.util.concurrent.atomic.AtomicBoolean.get()\" because \"this.cancelledFlag\" is null"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-12-02T07:29:43Z",
+   "body": "Hi @participant5, this sounds like an unrelated issue. Can you please create a new one and add as much detail as you have?"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2024-12-02T07:31:56Z",
+   "body": "> 嗨，这听起来像是一个无关的问题。您能否创建一个新的并添加尽可能多的细节？\r\n\r\nI have submitted a new question. The problem I have appeared also appeared in the inquiry, which has appeared three times today"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-12-16T14:26:32Z",
+   "body": "> We managed to reproduce this on 8.2.0, using a combination of JDBC and `psql`. It did not reproduce on our current master.\r\n\r\nIndeed we found no more issues since that fix (version 8.2.1)."
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "questdb/questdb",
+  "default_branch": "master",
+  "commit_sha": "550f1362790c0502d54193573c8a0dc1a85c6670",
+  "as_of": "2024-11-27T11:38:17Z",
+  "method": "github_commits_until"
+ },
+ "images": [
+  {
+   "where": "c8",
+   "source_url": "https://github.com/user-attachments/assets/4be81f3b-e603-443f-85ea-1be33eca2725",
+   "file": "gh_questdb_questdb_5202_img0.png"
+  }
+ ],
+ "slug": "gh_questdb_questdb_5202"
+}

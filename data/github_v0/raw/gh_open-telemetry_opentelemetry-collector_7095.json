@@ -1,0 +1,148 @@
+{
+ "repo": "open-telemetry/opentelemetry-collector",
+ "number": 7095,
+ "url": "https://github.com/open-telemetry/opentelemetry-collector/issues/7095",
+ "title": "[pdata] Find replacement for now deprecated gogo/protobuf",
+ "state": "closed",
+ "labels": [
+  "dependencies",
+  "priority:p1",
+  "area:pdata"
+ ],
+ "reporter": "reporter",
+ "created_at": "2023-02-02T02:19:44Z",
+ "closed_at": "2025-10-27T16:37:37Z",
+ "body": "I don't know the full background of using [gogo/protobuf](https://github.com/gogo/protobuf), I suspect it was similar to Jaeger's use of gogoproto for serialization efficiency (in particular, the ability to embed structs by value, as in `[]KeyValue` instead of `[]*KeyValue`, which significantly reduces memory allocations).\r\n\r\nWell, the bad news, which was long coming, is that GoGo is officially deprecated since Oct'22. Continue to depend on it going forward presents security and compatibility risks.\r\n\r\nThis ticket is to kick off a discussion for a viable path forward, since I don't have a solution in mind right now.\r\n\r\nSome past related tickets:\r\n  * https://github.com/open-telemetry/opentelemetry-collector/issues/4258",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2023-02-02T03:01:27Z",
+   "body": "Yes, Collector uses Gogoproto instead of Google's implementation for performance reasons.\r\n\r\nHere are a few replacement options that I can think of:\r\n\r\n- Move to Google Protobuf library. This will most likely result in worse performance for the the Collector (about 1.3x worse in our past benchmarks IIRC). The newer version of Google Protobuf (v2?) is even slower than the older version.\r\n- Otel to take responsibility of entire Gogoproto. This is a big undertaking, I don't think we want to subscribe to that.\r\n- Fork Gogoproto and maintain an Otel fork just for ourselves. It is still a pretty large codebase to maintain and my cursory assessment of it was that it was not a codebase that I would want to take responsibility to maintain myself.\r\n- Create our own Protobuf library. This may sound crazy but may be tractable if we limit it to only support what OTLP needs. I managed to write an [experimental compiler/generator](https://github.com/splunk/exp-lazyproto) in just a few days that works on OTLP Logs and may be faster than Gogoproto (and with optional fields support, BTW). Obviously a production quality library requires much bigger investment and I definitely won't claim that I alone want to be a sole author and maintainer of such a library.\r\n\r\nUnfortunately I do not see great options here, all have some downsides. We will need to decide how much effort we are willing to invest into this.\r\n\r\nThere is probably also an option to find some other alternate Protobuf library but I have not explored this.\r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-02-02T06:15:37Z",
+   "body": "As far as replacements, there are other projects that seem to provide similar capabilities to what Gogo had:\r\n  * https://github.com/planetscale/vtprotobuf\r\n  * https://github.com/CrowdStrike/csproto\r\n\r\nAt minimum, they seem to be maintained at the moment, and hopefully are more narrow in scope than gogo.\r\n"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-02-02T18:57:59Z",
+   "body": "What is Jaeger using nowadays? Any experience you can share with us?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-02-02T19:27:13Z",
+   "body": "Jaeger hasn't changed from gogo/proto"
+  },
+  {
+   "author": "codeboten",
+   "created_at": "2023-02-02T23:56:43Z",
+   "body": "I've not tried using `csproto`, but there were a few investigations I'd done in the past including trying to use `vtproto` with the standard google protobuf library here: https://github.com/open-telemetry/opentelemetry-collector/pull/4658\r\n\r\nIt's probably worth another go at it now that it's been over a year."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-02-03T00:40:19Z",
+   "body": "@codeboten I saw that PR, but can you share some findings / conclusions? It was closed without any explanation, so not clear if you ran into a dead end with something."
+  },
+  {
+   "author": "codeboten",
+   "created_at": "2023-02-07T16:29:32Z",
+   "body": "The scope of the work then was to add support in the collector for `optional` fields which was achieved through a workaround (https://github.com/open-telemetry/opentelemetry-collector/issues/4258#issuecomment-1049379599). That was the reason this PR was closed.\r\n\r\nFrom what I recall the performance numbers were not encouraging at first. Additionally I ran into issues w/ lack of support for`oneof` fields in pools.\r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-08-29T05:22:27Z",
+   "body": "This may be time to revisit this issue. I was dealing with [grpc upgrade to v1.66.0 in Jaeger](https://github.com/jaegertracing/jaeger/pull/5900) where gRPC introduced `CodecV2` and memory buffers that broke out integration with gogoproto. I was able to fix it by forcing the new buffers back to `[]byte`, which is probably going to degrate the efficiency of marshaling, thus partially negating the benefits of gogoproto. And I also noticed new dependency on https://github.com/planetscale/vtprotobuf coming from grpc via `envoyproxy/go-control-plane`, which led me to this issue https://github.com/envoyproxy/go-control-plane/issues/824 showing large perf improvements by switching to `vtprotobuf` (which it calls \"it is gogo protobuf, but built on top of protobuf v2, instead of replacing it.\")"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-12-18T03:33:17Z",
+   "body": "https://go.dev/blog/protobuf-opaque looks very promising as a path towards removing gogo/protobuf"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-12-18T14:34:42Z",
+   "body": "> https://go.dev/blog/protobuf-opaque looks very promising as a path towards removing gogo/protobuf\r\n\r\nYes, let's see if performance is on par.\r\n\r\nAlso, yay for lazy decoding."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-01-16T13:08:01Z",
+   "body": "We are very interested in this initiative, as we've observed the following in our OTel deployment:\n\n- CPU is the defining cost-driver in the OTel deployment (~15 TB / day shipped)\n- Profiles show that the hot path / allocation-heavy path is jsonpb.go from the gogo proto library\n\nWould you be interested in our contribution to switch to `google.golang.org/protobuf`?"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-01-16T16:48:49Z",
+   "body": "@participant3 Thanks for offering to contribute this! \n\nI would definitely be interested in seeing how the performance compares and making the switch if we can do so :) Based on prior experience, this will take time and some back and forth, but the blog post shared by Yuri and your comments makes it feel like this is a very promising option.\n\nIf it is possible to start small in some way (e.g. the simplest/smallest PoC you can think of), I think the first step should be to do this and bring it up on one of our [Collector SIG virtual meetings](https://github.com/open-telemetry/opentelemetry-collector?tab=readme-ov-file#community), to get some early feedback."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2025-01-16T20:07:43Z",
+   "body": "@participant3 \n\n> Profiles show that the hot path / allocation-heavy path is jsonpb.go from the gogo proto library\n\nWhy do you use JSON encoding?"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-01-17T07:41:25Z",
+   "body": "Thanks for the quick responses. We'll explore the option on a fork to get a sense of the complexity / the _back and forth_.\n\nWe use json encoding when writing telemetry (mainly logs) onto a Kafka queue towards external parties.  It's the OTLP -> JSON conversion step where we currently see the most CPU time spent."
+  },
+  {
+   "author": "participant6",
+   "created_at": "2025-01-24T11:19:52Z",
+   "body": "After a bit of experimentation (see https://github.com/participant6/opentelemetry-collector/tree/feature/use-protobuf-opaque-api) I was able to partially migrate to `protobuf-go` to test the performance improvement it would have.\n\nBefore entering into the details of the feature, here are some results:\n\n# Results\n\n> [!NOTE]  \n> I bet the results would be even faster as soon as https://github.com/golang/protobuf/issues/1673 is implemented. The current implementation is still a bit inefficient, but already shows some nice improvements.\n\n## Upstream implementation (6757cc74)\n\nOnly addition: [`json_test.go`](https://github.com/participant6/opentelemetry-collector/blob/feature/use-protobuf-opaque-api/pdata/internal/json/json_test.go) (and the fix `logRecord.SetSpanID([8]byte{0, 1, 2, 3, 4, 5, 6, 7})`)\n\n```\ngoos: darwin\ngoarch: arm64\npkg: <redacted-host>/collector/pdata/internal/json\ncpu: Apple M3 Pro\nBenchmarkEncoding-12    \t     133\t   8909393 ns/op\t 5652242 B/op\t  126244 allocs/op\nBenchmarkEncoding-12    \t     132\t   9045715 ns/op\t 5652374 B/op\t  126244 allocs/op\nBenchmarkEncoding-12    \t     130\t   8997149 ns/op\t 5652260 B/op\t  126243 allocs/op\nBenchmarkEncoding-12    \t     129\t   9038421 ns/op\t 5652305 B/op\t  126244 allocs/op\nBenchmarkEncoding-12    \t     129\t   8960452 ns/op\t 5652328 B/op\t  126244 allocs/op\nBenchmarkEncoding-12    \t     133\t   8933958 ns/op\t 5652268 B/op\t  126244 allocs/op\nBenchmarkEncoding-12    \t     132\t   9031978 ns/op\t 5652378 B/op\t  126245 allocs/op\nBenchmarkEncoding-12    \t     132\t   8986970 ns/op\t 5652293 B/op\t  126243 allocs/op\nBenchmarkEncoding-12    \t     133\t   8983367 ns/op\t 5652272 B/op\t  126243 allocs/op\nBenchmarkEncoding-12    \t     132\t   8985762 ns/op\t 5652313 B/op\t  126244 allocs/op\nPASS\nok  \t<redacted-host>/collector/pdata/internal/json\t21.541s\n```\n\n## Fork ([bba99f7](https://github.com/participant6/opentelemetry-collector/commit/bba99f7239fed1fb9379487383efb928b36507ab))\n\n> [!NOTE]  \n> This implementation doesn't generate _the exact same JSON_ - but for the relevant parts (log lines) it does.\n> This is due to the fact that the whole refactoring was taking too long due to the generated code - I'll explain in details down below why this is the case.\n\n```plain\ngoos: darwin\ngoarch: arm64\npkg: <redacted-host>/collector/pdata/internal/json\ncpu: Apple M3 Pro\nBenchmarkEncoding-12    \t    1198\t   1014819 ns/op\t 1342051 B/op\t   17065 allocs/op\nBenchmarkEncoding-12    \t    1183\t   1016699 ns/op\t 1342074 B/op\t   17065 allocs/op\nBenchmarkEncoding-12    \t    1130\t   1006196 ns/op\t 1342030 B/op\t   17065 allocs/op\nBenchmarkEncoding-12    \t    1204\t   1015811 ns/op\t 1342045 B/op\t   17065 allocs/op\nBenchmarkEncoding-12    \t    1172\t   1013799 ns/op\t 1342047 B/op\t   17065 allocs/op\nBenchmarkEncoding-12    \t    1197\t   1029485 ns/op\t 1342032 B/op\t   17065 allocs/op\nBenchmarkEncoding-12    \t    1202\t   1005060 ns/op\t 1342055 B/op\t   17065 allocs/op\nBenchmarkEncoding-12    \t    1231\t    999719 ns/op\t 1342044 B/op\t   17065 allocs/op\nBenchmarkEncoding-12    \t    1195\t    989382 ns/op\t 1342058 B/op\t   17065 allocs/op\nBenchmarkEncoding-12    \t    1206\t    995486 ns/op\t 1342062 B/op\t   17065 allocs/op\nPASS\nok  \t<redacted-host>/collector/pdata/internal/json\t13.318s\n```\n\n## Comparison\n\n```plain\ngoos: darwin\ngoarch: arm64\npkg: <redacted-host>/collector/pdata/internal/json\ncpu: Apple M3 Pro\n            │ /tmp/old.txt │            /tmp/new.txt             │\n            │    sec/op    │   sec/op     vs base                │\nEncoding-12    8.986m ± 1%   1.010m ± 1%  -88.76% (p=0.000 n=10)\n\n            │ /tmp/old.txt │             /tmp/new.txt             │\n            │     B/op     │     B/op      vs base                │\nEncoding-12   5.390Mi ± 0%   1.280Mi ± 0%  -76.26% (p=0.000 n=10)\n\n            │ /tmp/old.txt │            /tmp/new.txt             │\n            │  allocs/op   │  allocs/op   vs base                │\nEncoding-12   126.24k ± 0%   17.07k ± 0%  -86.48% (p=0.000 n=10)\n```\n\nThis shows that the new implementation is 88% faster (CPU) and decreases the memory usage by 76%.\nThe amount of allocations per operation also decrease of a good 86%.\n\n\n# Implementation\n\nMy implementation is far from complete, and probably very buggy. My goal was to understand how much of a performance improvement this change would bring - so I focused entirely on that and didn't care too much about external users of the `pdata` module or the correctness outside of the main benchmark part (log lines).\n\n## Adding `protojson` to the encoding part\n\nInitially I thought it was enough to just call `protojson` in the `json.go` file to already get a better performance:\n\nhttps://github.com/participant6/opentelemetry-collector/blob/bba99f7239fed1fb9379487383efb928b36507ab/pdata/internal/json/json.go#L20\n\nUnfortunately I was _very_ wrong: since the GoGo generated protobuf files aren't compatible with `google.golang.org/protobuf` (duh!), we can't use them like this.\n\n## Recompiling the protos with `proto-gen-go` + `API_OPAQUE`\n\nFor this reason, I've recompiled the protos using `protoc-gen-go` and added the GRPC definitions via `protoc-gen-go-grpc`.\nIn this case, I had to create a `Dockerfile` since the upstream [build-tools](https://github.com/open-telemetry/build-tools) don't support this (yet).\nAdditionally, I had to use `nix-unstable` because the latest version of `protoc-gen-go` on Nix doesn't yet support the Opaque API (1.6.x+ is needed).\n\nI then built the Docker image `docker build -f Dockerfile.build -t opentelemetry-collector/build .`.\nI then modified the way we compile the protos to use `protoc-gen-go` and `protoc-gen-go-grpc` and to add the Opaque API switch: https://github.com/participant6/opentelemetry-collector/blob/bba99f7239fed1fb9379487383efb928b36507ab/Makefile#L235\n\nFinally, I removed [most of the original `sed` hacks](https://github.com/open-telemetry/opentelemetry-collector/blob/e8807bfe942388afb2f8b9fd240c894d3d729e2c/proto_patch.sed) (that part is horrible, sorry, but thankfully with the new protobuf library it would not be needed) and replaced the fixed-size SpanIDs and TraceIDs to a slice - so that they match the proto type.\n\n## \"Fixing\" the code generation\n\nIn the Opaque API, most of the fields are pointers and they should be accessed using the getters and setters `Get{{ .fieldName }}` and `Set{{ .fieldName }}`. On top of that, the way proto structs are filled changed and thus the `_builder` struct should be used in those cases. For `oneof`s, the case matching changed slightly too.\n\nOf course `pdata` contains a lot of generated code, and this code needs to be fixed in order to test the encoding performance. In my branch, I've tried to do that without breaking the `pdata` types (too much).  \n  \nAfter spending a lot of time refactoring, I managed to get the code to compile and fixed enough of the generated code to get to the point where I was able to test the json encoding performance.  \n  \nMy implementation is mostly patched together just for the sake of trying to get the encoder benchmark to work and give us an idea of how good of an improvement it would be.\n\n# Next Steps\n\nI intend to work on https://github.com/golang/protobuf/issues/1673 if it's trivial and no-one picks it up before me, so that we can see an hopefully further increase in performance and decrease in memory consumption.\n\n# Conclusion\n\nI will not make a PR to switch away from gogo/protobuf as I don't think I have the right amount of pdata's code generation knowledge to properly fix the module - but I hope my little experimentation shows you that this part is feasible albeit complex in the code-generation part.\n\nYou're free to reuse [my feature branch](https://github.com/participant6/opentelemetry-collector/tree/feature/use-protobuf-opaque-api/) - but I would not recommend to use my code generation part there as it's pretty messy."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-01-30T15:10:30Z",
+   "body": "@participant6 Thanks for sharing the results! The results are definitely promising for OTLP/HTTP JSON. \n\nI expect most of our users use OTLP/gRPC which uses a protobuf binary encoding, so it's very important for us to benchmark those as well, to ensure there are no regressions on this case."
+  },
+  {
+   "author": "participant6",
+   "created_at": "2025-01-30T16:43:16Z",
+   "body": "Yes, that would be also interesting. I can try to benchmark that too if I find the time in the following days."
+  },
+  {
+   "author": "participant7",
+   "created_at": "2025-01-30T16:56:49Z",
+   "body": "Can you run those two benchmarks with [benchstat](https://<redacted-host>/golang.org/x/perf/cmd/benchstat) for an easier comparison?"
+  },
+  {
+   "author": "participant8",
+   "created_at": "2025-02-21T10:27:02Z",
+   "body": ":<nick>:  Just some datapoints from the Prometheus ecosystem (SDKs, Prometheus, Thanos, Cortex etc).:\n\nWe still use gogo/protobuf in general and we are (very) slowly progressing on the migration. I [tried OpaqueAPI a bit](https://github.com/participant8/benchmarks/blob/opaque/benchmarks/metrics-streaming/buf.gen.yaml#L6) and it feels similar to @participant1 https://github.com/splunk/exp-lazyproto indeed.\n\nHowever, I’m not sure OpaqueAPI+lazy decoding addresses all challenges we have with data-intensive proto use. The non-nullability of fields (e.g. []Elem instead of []*Elem ) is still beneficial in practice (less allocs, less GC, less need for pooling, trivial to benchmark) and lazy decoding makes already too big structs [even bigger (what was the last time our code needed information about unknown fields?) ](https://github.com/participant8/benchmarks/blob/db942ed12cc1b0ab160fbfb882fc3c1b81c0bd98/benchmarks/metrics-streaming/io/prometheus/write/v2/types.pb.go#L509).\n\nI wonder if there’s an opportunity to maintain together some simpler efficient Go generator for both Otel and Prometheus for simpler use case cases e.g.\n\n* empty value == not specified, so non-nullability\n* lack of unknown fields (or optionality in generator for this) \n* streaming (alternative or different form of lazy decoding)\n* ways to extend generation to decod/encode directly to native types.\n\nLast two features [were extremely beneficial for the tailored Prometheus use for scraping](https://github.com/prometheus/prometheus/pull/15731).\n\nSome recent discussion: https://groups.google.com/g/prometheus-developers/c/uFWRyqZaQis/m/IvnEjVkHAQAJ\n\ncc @participant10"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-02-21T16:52:31Z",
+   "body": "> I wonder if there’s an opportunity to maintain together some simpler efficient Go generator for both Otel and Prometheus for simpler use case cases\n\n@participant8 I offered to work on this a while ago (when working on lazy-proto) but there were no takers. Unfortunately I no longer have time to work on this at the moment, but as a data point: doing lazy-proto didn't feel like an insurmountable amount of work to write your own Protobuf generator.\n\nWhen working on lazy-proto I also thought about doing a streaming Protobuf deserializer and eventually decided to spend my time on a better streaming format ([STEF](https://github.com/splunk/stef/) handily [beats](https://splunk.github.io/stef/benchmarks/results/benchmarks.html) OTLP Protobuf both on size and speed dimensions. When it matures, I would love to discuss this with Prometheus folks)."
+  },
+  {
+   "author": "participant9",
+   "created_at": "2025-07-22T16:44:37Z",
+   "body": "https://mcyoung.xyz/2025/07/16/hyperpb/ maybe relevant."
+  },
+  {
+   "author": "participant10",
+   "created_at": "2025-07-23T07:59:50Z",
+   "body": "I discovered recently that Otel for Java has hand-optimised protobuf code. \nhttps://github.com/open-telemetry/opentelemetry-java/blob/main/exporters/otlp/common/src/main/java/io/opentelemetry/exporter/internal/otlp/traces/SpanMarshaler.java\n\nSo does .Net: \nhttps://github.com/open-telemetry/opentelemetry-dotnet/blob/main/src/OpenTelemetry.Exporter.OpenTelemetryProtocol/Implementation/Serializer/ProtobufSerializer.cs\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-10-15T16:53:43Z",
+   "body": "Update: there seems to be custom marshaling now enabled by default (#13883), but `pdata/` still has direct dependency on `gogo/protobuf`."
+  },
+  {
+   "author": "participant11",
+   "created_at": "2025-10-15T19:47:18Z",
+   "body": "We are only depending on the generated structs, which will remove soon as well."
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "open-telemetry/opentelemetry-collector",
+  "default_branch": "main",
+  "commit_sha": "c0a08e3068c1ca5a45a61d6641d36cbaf2474fab",
+  "as_of": "2023-02-02T02:19:44Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_open-telemetry_opentelemetry-collector_7095"
+}

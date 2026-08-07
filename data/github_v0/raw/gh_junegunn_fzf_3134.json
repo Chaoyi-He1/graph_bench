@@ -1,0 +1,161 @@
+{
+ "repo": "participant1/fzf",
+ "number": 3134,
+ "url": "https://github.com/participant1/fzf/issues/3134",
+ "title": "FZF should update preview on the new item selection immediately",
+ "state": "closed",
+ "labels": [
+  "windows"
+ ],
+ "reporter": "reporter",
+ "created_at": "2023-01-19T01:44:42Z",
+ "closed_at": "2026-03-29T03:40:25Z",
+ "body": "- [x] I have read through the manual page (`man fzf`)\r\n- [x] I have the latest version of fzf (tested that on 0.35.1 last available through choco on windows)\r\n- [x] I have searched through the existing issues\r\n\r\n## Info\r\n\r\n- OS\r\n    - [x] Windows\r\n- Shell\r\n    - [x] pwsh\r\n\r\n## Problem / Steps to reproduce\r\n\r\n- `--preview` is running a script that can finish fast or slow depending on the selected item (e.g. fzf selects folders and preview shows the total folder size)\r\n- you select a `slow` item, preview starts rendering\r\n- you change selection to a `fast` item, but you still see in the preview that fzf waits for the the render of the `slow` item to finish\r\n\r\nFzf should not wait for the preview render of the item that is not selected anymore. It should kill the uncompleted preview render and show preview for the currently selected item.",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2023-01-23T09:20:04Z",
+   "body": "> * you change selection to a `fast` item, but you still see in the preview that fzf waits for the the render of the `slow` item to finish\r\n\r\nMaybe this is an issue only on Windows? I don't have the problem on my MacBook.\r\n\r\n```sh\r\n# Move the cursor up, and you will see 0 before 10 seconds pass\r\n(echo 10; echo 0) | fzf --preview 'sleep {}; echo {}'\r\n```\r\n\r\nThere's a slight delay before fzf kills the running preview process but that's for a better user experience. If fzf immediately kills each preview process, you will end up seeing an empty preview window when you hold down the up or down key scrolling through the list.\r\n\r\n```sh\r\n# Simulating a preview program that takes 200ms to render the output\r\n# - Hold down up or down key, and fzf can keep updating the preview window with new content\r\n# - That's because fzf keeps the process running for `previewCancelWait` (500ms) and can get the output\r\n# - If you remove the delay, fzf never gets any output and the preview window will be empty\r\nfzf --preview 'sleep 0.2; cat {}'\r\n```"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-01-24T07:27:39Z",
+   "body": "It doesn't seem like a Windows issue. I can repro the problem with the `(echo 10; echo 0) | fzf --preview 'sleep {}; echo {}'` on a Linux Mint in a bash terminal. When I switch several times back and forth between 0 and 10 the preview window lags behind the selection.\r\n\r\nFor the repro completeness here are my default fzf options that I have applied:\r\n\r\n```bash\r\nfallengamer@participant4:~$ echo $FZF_DEFAULT_OPTS\r\n--layout=reverse --tabstop=4 --multi --bind alt-t:toggle-all --cycle --ansi --no-mouse --tiebreak='length,index' --color=bg:#0C0C0C --color=bg+:#0C0C0C --color=fg+:#F2F2F2 --color=hl+:#13A10E --color=pointer:#3A96DD --color=preview-bg:#0C0C0C --color=prompt:#CCCCCC\r\n```\r\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-01-24T08:44:30Z",
+   "body": "> lags behind the selection\r\n\r\nFor full 10 seconds?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-01-24T17:36:37Z",
+   "body": "Yesterday when I tried it out on Mint it seemed to stuck in the 'loading' state for 10 seconds when the selection switched to 0. But today on the same Mint I can't repro that anymore - there is the less than a second previewCancelWait delay but then the preview changes to reflect the selection. Will try out more to get the repro."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-01-24T18:26:28Z",
+   "body": "For now I can show repro only for Windows: https://1drv.ms/v/s!AofupOwTJgR3wbhtE_kwqXQa421v_A?e=YjFA87\r\nMy expectation is that the current selection should be reflected in the preview with <1 second delay. But as seen at the end of the video \"0\" is not printed out for about 10 seconds."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-04-07T15:47:16Z",
+   "body": "Hey, experiencing the same *on MacOS* (M3 2024 if it matters). \r\nWith a `0.7` delay the preview updates itself, `0.6` seems to be the threshold, below I'm seeing and old input."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2026-03-14T00:53:30Z",
+   "body": "Same problem, also on Windows.  docker logs with --follow especially have this problem, because the log never actually *finishes*, so the preview never updates.  "
+  },
+  {
+   "author": "participant3",
+   "created_at": "2026-03-14T08:36:12Z",
+   "body": "So...  after a ton of googling and a fair amount of testing, here's what I've figured out.\n\nOn Windows, there isn't really a *good* way to handle process termination.  You can hard-kill things with taskkill (or the equivalent TerminateProcess APIs), or you can send a process group a `CTRL_C_EVENT` or `CTRL_BREAK_EVENT` in order to ask nicely.  There's not really a way to do anything in-between, and SIGINT/Process.Kill don't do *any* of that: they just ask the parent process to stop and *wait for I/O to finish*, which in practice means that something reading a big file (or a shell subprocess like `sleep`) will just keep right on doing so.\n\nAnd every attempt to change Go to do something better than this as a default has been stalled or killed in committee, largely because it would require either deciding for every app how to handle certain cases, or too many options. ☹️ \n\nI've gotten my own use case to work by changing `util_windows.go`'s `ExecCommand` to give the child process its own process group, and then having `KillCommand` send a `CTRL_BREAK_EVENT` (`CTRL_C_EVENT` wasn't working to kill `glow`, at least.)  I was also able to get it to work with either running taskkill.exe to force-terminate the command's entire process tree, or with Go code calling the Windows API to do basically the same thing.\n\nI can provide a PR if you like, for any of three variants; each is only a few lines, but some have dependencies.\n\n- The ctrl-break version is only a few lines of changes, self-contained, and is at least an improvement over the current situation: IIUC, both cygwin programs and Golang programs on Windows should recognize CTRL_BREAK_EVENT as a sigint equivalent.\n- The taskkill.exe version is even less code (but runs an external program, expecting it to be on the path, and is a hard-kill with no chance to gracefully exit)\n- The windows API version depends on https://github.com/kirill-scherba/subprocess, and is also a hard-kill, no graceful exit possible.\n\nThoughts?\n\n\n\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2026-03-19T00:40:14Z",
+   "body": "Hey, Windows users, please test https://github.com/participant1/fzf/pull/4723 when you have a chance."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-03-20T05:57:05Z",
+   "body": "If there is a release I can retest the original issue."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2026-03-20T07:26:15Z",
+   "body": "You can download a copy of my Windows x64 build for it here: https://github.com/participant3/fzf/releases/tag/fix-3134-snapshot-1"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-03-20T17:12:45Z",
+   "body": "Honestly there is not much noticeable difference at least for my scenario. In preview I'm using a script that renders git log and diff on a huge repo - both the 0.7 dev version and 0.62 I had seem to wait till a lengthy git command completes. I guess it may be related to the fact that not a single process needs to be killed but rather a tree."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2026-03-20T17:37:44Z",
+   "body": "Have you confirmed your guess in the Task Manager?  That's how I tested mine.  (Which is working to kill docker logs, glow, and bash processes.) Also, try this with each version:\n\n`(echo 10; echo 0) | fzf --preview 'sleep {}; echo {}'`\n\nWhen you arrow from 10 to 0 it should take only a second or so for the 0 to show up."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2026-03-20T18:13:10Z",
+   "body": "Ah, never mind, I see you're using Powershell, not bash.  The Windows Powershell equivalent test command is:\n\n```pwsh\necho \"10\n0\" | fzf --preview \"pwsh -NonInteractive -Command Start-Sleep {}; echo {}\"\n```\n\nIs your script running in `-NonInteractive` mode?  If it isn't, the ctrl-break that fzf sends will drop it into debug mode rather than killing it and its process group.  (You can also disable the break->debugger behavior using `$host.DebuggerEnabled = $False`.)"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-03-25T21:00:31Z",
+   "body": "@participant3, please see the behavior recorded in these 2 clips - the dev 0.7 and my current 0.62 fzf versions.\n\nBoth lag upon git branch switch, process explorer shows what happens process wise. It looks like fzf would not call new exe waiting on something - I don't see aggressive process spanning. \n\nBut what's also interesting - dev 0.7 version shows errors while executing the preview scripts. If cursor stays in the same position the error gets away. But there is no such error on the old stable version. Plus the error can be different every time. It's as if environment is not quite ready.\n\nhttps://1drv.ms/v/c/77042613eca4ee87/IQClt7dN2fgXSpj-PHy9iQzqAdpkvrtr4vK3O5LoeOO-KBU?e=BeGMRQ - 0.62\nhttps://1drv.ms/v/c/77042613eca4ee87/IQC-8cN29dRdT4CNZaGDsvxOARQIFWlzul6DM7qjyYBzlvo?e=yrpNHB - 0.70\n\nBy default OneDrive may show a bad quality version of the clip, there is a settings icon below the clip to bump it to 1080p."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2026-03-25T23:17:40Z",
+   "body": "So, I don't see anything in the video that answers my question(s) from before.  Could you maybe comment on what happens with the Start-Sleep example I gave above, and whether you disabled the debugger in your scripts?  Because at the moment the *expected* behavior would be for the scripts to *not* work correctly if you haven't made that change.  That is, you *should* see hanging followed by extraneous content in your powershell scripts if debugging is still enabled.  Thanks."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-03-26T20:32:30Z",
+   "body": ">The Windows Powershell equivalent test command is ...\n\nAlas, that syntax didn't work, I didn't have time to figure it out yesterday, but I had some time today. pwsh -Command is tricky to use cross shells. After some trial and error the command is:\n\n```ps1\n0, 1, 5, 10 | fzf --preview \"pwsh -nop -NonInteractive -Command \"\"& { `$t = \"\"{}\"\"; \"\"\"\"Sleeping `$t\"\"\"\"; Start-Sleep -Seconds `$t; \"\"\"\"Done\"\"\"\"  }\"\"\"\n```\n\n>Is your script running in -NonInteractive mode? If it isn't, the ctrl-break that fzf sends will drop it into debug mode rather than killing it and its process group.\n\nYou are absolutely right. Turned out the preview script did not use the -NonInteractive. If this flag is applied the preview switches are faster and the random debugger errors do not pop up. Overall the preview responsiveness is significantly better. But still the switch between the entries is not instantaneous, it takes a second or two. Here is the video:\n\nhttps://1drv.ms/v/c/77042613eca4ee87/IQBVfrflS4iRRqcgeaae6grQAZ7t_E1Vf7wY8TxfYFNkLs8?e=YNuICC\n\n\n\n\n"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2026-03-27T03:19:34Z",
+   "body": "Yeah, fzf does that delay on all platforms, there's like a 1/2 second extra when the process has done some output.  If you don't echo anything until after the sleep you'll see a faster switch.  I didn't change that delay logic, only the logic of how kills are done.\n\nSo it looks like the new way of doing things is an improvement in the sense that bash stuff will be fine, and Powershell can get benefits if it's properly noninteractive or debug disabled.\n\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2026-03-27T05:30:25Z",
+   "body": "@participant3 Do you think it's safe to merge your PR as is? I'm a bit concerned that exposing new errors to users could be seen as a regression, even if they stem from a configuration issue. Is there a way we could suppress or handle those errors more gracefully?"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2026-03-27T07:21:42Z",
+   "body": "There are no good answers here; every choice has a potential issue:\n\n- Leave as-is (known bug)\n- Merge the PR (looks like it's doing worse when there's no change)\n- Do hard killing instead (somebody gets mad when their DB or something gets corrupted because their preview has side effects)\n- Add `-NonInteractive` when running a Powershell command (Only helps with pwsh.exe, not PowerShell.exe)\n- Conversely, check for bash or other Unixish shell, and *enable* the new feature only for them (doesn't fix the problem for Powershell)\n\nThere are probably others I've not listed, and they all trade off *somewhere*.  It's basically a \"what's the least bad option?\" type of question.  I lean towards merge, but that's because it works great for me and if I ever need to run it with Powershell I know what to do.  It's also something that can be put in release notes.\n\nAdding `-NonInteractive` along with `-NoProfile -Command` works on PowerShell core/7+ (pwsh.exe), but not on \"Windows Powershell\" 5.1 or earlier.  On 5.1, it still flashes the \"entering debug mode\" output, and disabling debug mode in the script seems to make it just *not die* instead.\n\nAs far as I've been able to determine, the only way to make this work with Powershell 5.1 is to hard-kill the process tree.  `cmd` works fine(-ish) but adds a `^C` to its output.  (I haven't tried with a subprocess though.)\n\nAnyway, there's a range of options here.  The most conservative would be to only use my new code with non-cmd, non-powershell shells, as that works great, no problem.  Adding `-NonInteractive` to powershell commands that are actually non-interactive (i.e. have `setpgid`) is also good, and using my new code if it's specifically `pwsh` will work there as well.\n\nFor cmd and Powershell 5.1, the new code makes them add extra (temporary) output and they (still) don't *exit*.  We could fall back to the old code for those cases, or switch to hard-killing them.  Hard-killing is *absolutely* less safe, but also there don't seem to be any better options for those besides leaving the bug as-is.  I would personally worry more about possibly messing w/someone's data than glitching their screen, so would be inclined to put hard-kill behind a command line option or recommend users switch to Powershell 7+.\n\nI'm personally most inclined to just only use my new kill code for Unixish shells since that scratches my itch and doesn't disturb anything else.  But then it also doesn't close this bug, either!  Second best would be also adding -NonInteractive and allowing pwsh to use the new kill.  Beyond that, I'm worried I'm not really able to test/implement/support it properly.  (And since OP is using pwsh, that would at least close this particular iteration of the bug. :<nick>:)"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-03-27T19:16:24Z",
+   "body": "I'd like to step back a bit - this bug doesn't say there is a problem with how fast a preview process tree is killed. The problem is latency on the preview switch. The process killing is a complex thing, there is a tree of processes, they acquired some resources and naturally want to close them in a safe way - that takes time. As you say the worst thing to encounter here would be to corrupt user data caused by a preview side effect. That is a nasty thing to debug and hard to justify to a user who encountered it.\n\nSafety-wise fzf should kill the preview processes in a safe slow way. But it doesn't prevent it from spawning a new preview process when a user changes the active selection. Yes, that would mean lots of child processes laying around, but inactive ones would get cleaned up eventually. Plus fzf could have a grace period for the preview processes killing. There would be a pool of spawned but recently inactive preview processes. So if a user switches from one entry to another one in a short period of time a new preview would not be created, but rather taken from the pool. That would reduce the perceived latency even further. \n\nIn the case of the git show / git diff previews on a huge repos a user would switch between two branches. User would get to see first part of the output, switch branch, see first part of the output for the second one, then switch back to the first branch and in addition to the start of the output at this point second part of the output would be available.\n\nThis kind of a preview workflow would not be OS specific either.\n\n\n"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2026-03-27T20:09:49Z",
+   "body": "Another complication: I've just noticed that fzf uses the `SHELL` environment variable on Windows to detect what kind of shell it's running under, but this only works with Posix emulators such as Cygwin or Git Bash.  Normal windows shells don't set the `SHELL` environment variable, so it's not possible in the general case to detect what needs doing!  So my bright idea to use that to detect Powershell and change the killing methods won't work if someone hasn't manually set their `SHELL`.\n\nIdentifying the actual invoking shell on Windows seems to require inspecting parent processes, like in this [Rust code snippet for identifying the Windows calling shell](https://gist.github.com/pfmoore/505e045e2dc072da38136692559c8b33), which IIUC is a Rust port of [the Python \"shellingham\" module's Windows code](https://github.com/sarugaku/shellingham/blob/master/src/shellingham/nt.py).\n\nIt's starting to look like, \"Powershell includes a debug notice and cmd includes a `^C` in the output\" is actually the lesser of all the evils here!  There's not a way to get rid of the `^C` that I've been able to figure out.  Changing to *actually* use `^C` (`CTRL_C_EVENT`) works great for subprocesses if you *don't* create a new process group, except that then fzf receives the ctrl-c and exits!  (It's not clear to me if it might also affect fzf's *parent* processes, though IIUC most parent shells should respond by dropping back to a command prompt.)\n\nfzf *could* disable its interrupt handling, though?  But it's tricky, and seems prone to race conditions.  (Also, my naive attempt at hacking the `os.Interrupt` checks didn't work.)\n\nSo in summary:\n\n- Patch as-is only makes things *look* worse\n- But it can potentially be narrowed to only be used if `SHELL` is set\n- ...And maybe to add `-NonInteractive` if the shell is `pwsh`, since that makes it work there too\n- *Actually* detecting the shell without using the normally-nonexistent `SHELL` is a whole new can of worms\n- Windows without a Posix emulation layer (msys/cygwin) really, *really* sucks.\n\n"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2026-03-27T20:26:11Z",
+   "body": "@reporter While what you're saying is true, it's well beyond the scope of anything I'm willing to try as a volunteer, as it's a pretty significant redesign of some of fzf's core logic, and introduces a whole *new* set of problems, besides.  (e.g. \"lots of child processes hanging around\" can easily equal \"you crash your computer by holding down an arrow key\".)\n\nMeanwhile, for your specific example, there's nothing stopping you from implementing that by introducing a control script that checks for an output file and pipes it to stdout, or if the file doesn't exist or is too stale, runs a daemonized background process to generate its output into that file, before copying the file contents to stdout.\n\nIf you did that, the result would be exactly what you're asking for, and it would work with the patch as it sits.  (And of course it'll be on your head if you end up running hundreds of these unkillable background processes. :<nick>:)"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2026-03-28T06:08:49Z",
+   "body": "It's not clear if I have the full picture here (not a Windows user myself), but two separate issues are being conflated here.\n\n1. Intentional delay between selections (500ms)\n2. Preview process not actually killed on Windows (indefinitely)\n\nLet's just focus on the second one.\n\n> Normal windows shells don't set the `SHELL` environment variable, so it's not possible in the general case to detect what needs doing!\n\nIn that case, fzf chooses `cmd`, right? (FWIW, you can alternatively pass `--with-shell` option)\nAnd it looks like we can take different actions depending on `Executor.shell/shellType`."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2026-03-28T07:43:54Z",
+   "body": "Yes, that can definitely be done.  That's why I said we could detect `pwsh` (Powershell 7+) and unknown shell types and enable the new approach for those.  The questions outstanding are what to do about `cmd` and `powershell` (aka Windows Powershell 5.1).  Enabling the new behavior for Windows Powershell is pointless, it's definitely not going to work.  But for `cmd` it adds `^C` to the output from the terminated command.\n\n(In my more recent post, I got a bit confused between what shell is *invoking* fzf and what shell is being invoked *by* fzf.  `SHELL` is exported from Posixish shells on Windows, and I missed the bit where `withShell` is a command line argument.)\n\nWould you like me to update the PR to only target Powershell 7 and non-standard shells for the new kill approach?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2026-03-28T07:57:14Z",
+   "body": "> But for cmd it adds ^C to the output from the terminated command.\n\nSo the new approach only works for `pwsh`? Or are you saying that it also works for `cmd` but has a side-effect of leaving `^C` to the output?\n\n> Would you like me to update the PR to only target Powershell 7 and non-standard shells for the new kill approach?\n\nAh, so this implies the new method doesn't work for `cmd`. Please correct me if I'm wrong. Then yes, that sounds like the right thing to do:\n- For cmd and powershell: Use the previous method (even if it doesn't actually work)\n- pwsh / other non-standard shells: Use the new method\n\nWhat do you think?"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2026-03-28T10:50:40Z",
+   "body": "cmd works but has the side effect, yes -- up to a point.  The Ctrl-break kills whatever subprocess cmd is running, so it exits right away if that's the only command being run, but if cmd is running a script, the script may still continue.  So it'll kill some things, but not others, and all will get the `^C` added to the output.\n\nSo I agree that the simple thing for now is to restrict the new method to shells where it does something (and add `-NonInteractive` to the default args for `pwsh`, so it won't drop into the debugger)."
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "participant1/fzf",
+  "default_branch": "master",
+  "commit_sha": "20230117636c9dfa3ed6f6428c5bc4c51b02f60a",
+  "as_of": "2023-01-19T01:44:42Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_participant1_fzf_3134"
+}

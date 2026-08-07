@@ -1,0 +1,113 @@
+{
+ "repo": "hasura/graphql-engine",
+ "number": 9994,
+ "url": "https://github.com/hasura/graphql-engine/issues/9994",
+ "title": "[Perf Improvement] Skip returning rows on streaming subscription queries when there is no data",
+ "state": "closed",
+ "labels": [
+  "k/bug",
+  "c/server",
+  "c/subscriptions ✋",
+  "c/v3-engine",
+  "engine",
+  "support/escalation",
+  "singlewire"
+ ],
+ "reporter": "vincentjames501",
+ "created_at": "2023-11-16T17:41:57Z",
+ "closed_at": "2025-07-21T14:20:05Z",
+ "body": "### Is your proposal related to a problem?\r\n\r\nYes. We have ~10k active streaming subscriptions in our system at any given time. The vast majority of the polling requests do not have any new data past the current cursor. New events arrive maybe once every 10 mins or so on average. Because Hasura returns 1 row no matter what per unique stream, Postgres is essentially sending back ~10k rows of empty data per second which eats CPU/Network IO.\r\n\r\n### Describe the solution you'd like\r\n\r\nRather than returning \"empty\" rows like this in the streaming subscription query:\r\n\r\n```\r\n\"result_id\",\"result\",\"cursor\"\r\n\"893640e9-2088-4d30-a8ec-5eaf1aee6105\",\"{\"\"hasura_demo_events_stream\"\" : []}\",\"{\"\"id\"\" : null}\"\r\n```\r\n\r\nIf these were simply filtered out in the DB query and Hasura treated the missing row as effectively no data/cursor update which could save TONS of IO/CPU. In our case we'd go from sending back ~10k rows/s to likely only 1-5 rows/s max. I suspect many streaming subscriptions may have a similar access pattern.\r\n\r\n### Describe alternatives you've considered\r\n\r\nNot aware of any alternatives.\r\n",
+ "comments": [
+  {
+   "author": "ecthiender",
+   "created_at": "2024-04-18T06:30:15Z",
+   "body": "Hi @vincentjames501 , apologies for the late response.\r\n\r\nThe streaming subscriptions system is definitely not designed to send empty rows. If there is no data change, nothing is sent back.\r\n\r\nWe tried reproducing the issue on our end with a minimal setup, but we're unable to reproduce it.\r\n\r\n![stream_no_bug](https://github.com/hasura/graphql-engine/assets/616387/394c79db-2dc3-4d89-b9df-b64ed47828b3)\r\n\r\nHere, we have a single table with two rows. And only two data payloads were sent by the server. After that no data is sent.\r\n\r\n\r\nCan you help us with a minimal setup where this can be reproduced? \r\n\r\n1. A minimal DB schema and sample data\r\n2. Hasura metadata\r\n3. The streaming subscription queries \r\n\r\nLet me know if you have more questions.\r\n"
+  },
+  {
+   "author": "vincentjames501",
+   "created_at": "2024-04-18T15:44:47Z",
+   "body": "@ecthiender , the issue isn't data sent to the client over the websocket. The issue is the DB query from Hasura to Postgres (or underlying DB engine).\r\n\r\n\r\n```\r\n-- SCHEMA\r\n\r\nCREATE SCHEMA hasura_demo;\r\n\r\nCREATE TABLE hasura_demo.customer (\r\n  id SERIAL PRIMARY KEY,\r\n  name TEXT NOT NULL\r\n);\r\n\r\nCREATE TABLE hasura_demo.events (\r\n  id SERIAL PRIMARY KEY,\r\n  customer_id SERIAL NOT NULL REFERENCES hasura_demo.customer(id) ON DELETE CASCADE,\r\n  event TEXT NOT NULL\r\n);\r\n\r\nCREATE INDEX hasura_demo_events_c_id ON hasura_demo.events(customer_id, id);\r\n\r\n-- SETUP\r\n\r\nINSERT INTO hasura_demo.customer (id, name)\r\nSELECT i id, ('customer_' || i) name\r\nFROM generate_series(0, 999) as t(i);\r\n\r\nINSERT INTO hasura_demo.events (customer_id, event)\r\nSELECT MOD(i, 1000) customer_id, ('event_' || i) name\r\nFROM generate_series(0, 999999) as t(i);\r\n```\r\n\r\nTrack these tables, add a new role with select permissions like the following:\r\n\r\n![image](https://github.com/hasura/graphql-engine/assets/396866/37282650-c8d4-4fe3-9109-b4b1d37a6d47)\r\n\r\nAnd then issue a GQL subscription request like the following:\r\n\r\n```\r\nsubscription Events {\r\n  hasura_demo_events_stream(batch_size:100, cursor:{initial_value:{id:123}}) {\r\n    event\r\n  }\r\n}\r\n```\r\n\r\nIt issues a query like this:\r\n\r\n```\r\nSELECT\r\n\t\"__subs\".\"result_id\",\r\n\t\"__fld_resp\".\"root\" AS \"result\",\r\n\t\"__fld_resp\".\"cursor\" AS \"cursor\"\r\nFROM\r\n\tunnest(('{81fa7c1f-a9b7-4cd8-9264-48dc1cb258a1,893640e9-2088-4d30-a8ec-5eaf1aee6105}')::uuid[], ('{\"{\\\"query\\\": {}, \\\"cursor\\\": {\\\"id\\\": \\\"999125\\\"}, \\\"session\\\": {\\\"x-hasura-customer-id\\\": \\\"124\\\"}, \\\"synthetic\\\": []}\",\"{\\\"query\\\": {}, \\\"cursor\\\": {\\\"id\\\": \\\"999124\\\"}, \\\"session\\\": {\\\"x-hasura-customer-id\\\": \\\"123\\\"}, \\\"synthetic\\\": []}\"}')::json[]) AS \"__subs\" (\"result_id\",\r\n\t\t\"result_vars\")\r\n\tLEFT OUTER JOIN LATERAL (\r\n\tSELECT\r\n\t\tjson_build_object('hasura_demo_events_stream', \"_hasura_demo_events_stream\".\"root\") AS \"root\",\r\n\t\tto_json(\"_hasura_demo_events_stream\".\"cursor\") AS \"cursor\"\r\n\tFROM (\r\n\t\tSELECT\r\n\t\t\tcoalesce(json_agg(\"root\" ORDER BY \"root.pg.id\" ASC), '[]') AS \"root\",\r\n\t\t\tjson_build_object('id', (max(\"root.pg.id\"))::text) AS \"cursor\"\r\n\t\tFROM (\r\n\t\t\tSELECT\r\n\t\t\t\trow_to_json((\r\n\t\t\t\t\tSELECT\r\n\t\t\t\t\t\t\"_e\"\r\n\t\t\t\t\tFROM (\r\n\t\t\t\t\t\tSELECT\r\n\t\t\t\t\t\t\t\"_root.base\".\"event\" AS \"event\") AS \"_e\")) AS \"root\",\r\n\t\t\t\t\"_root.base\".\"id\" AS \"root.pg.id\"\r\n\t\t\tFROM (\r\n\t\t\t\tSELECT\r\n\t\t\t\t\t*\r\n\t\t\t\tFROM\r\n\t\t\t\t\t\"hasura_demo\".\"events\"\r\n\t\t\t\tWHERE (((\"hasura_demo\".\"events\".\"customer_id\") = (((\"__subs\".\"result_vars\" #>> ARRAY['session', 'x-hasura-customer-id']))::integer))\r\n\t\t\t\t\tAND ((\"hasura_demo\".\"events\".\"id\") > (((\"__subs\".\"result_vars\" #>> ARRAY['cursor', 'id']))::integer)))\r\n\t\t\tORDER BY\r\n\t\t\t\t\"id\" ASC\r\n\t\t\tLIMIT 100) AS \"_root.base\"\r\n\tORDER BY\r\n\t\t\"root.pg.id\" ASC) AS \"_root\") AS \"_hasura_demo_events_stream\") AS \"__fld_resp\" ON ('true');\r\n```\r\n\r\nWhich returns something like this:\r\n\r\n```\r\n\"81fa7c1f-a9b7-4cd8-9264-48dc1cb258a1\",\"{\"\"hasura_demo_events_stream\"\" : []}\",\"{\"\"id\"\" : null}\"\r\n\"893640e9-2088-4d30-a8ec-5eaf1aee6105\",\"{\"\"hasura_demo_events_stream\"\" : []}\",\"{\"\"id\"\" : null}\"\r\n```\r\n\r\nWhat I'm trying to get at in the original ticket is that for every multiplexed subscription we are returning rows from the DB even though they are \"empty\" as you can see by the empty array. These are indeed not send down over the websocket, but it creates a ton of IO between Hasura and the DB and is currently sending nearly 6k+ \"empty\" rows per second to Hasura.\r\n\r\nIf these were simply filtered out in the DB query and Hasura treated the missing row as effectively no data/cursor update which could save TONS of IO/CPU. In our case we'd go from sending back ~10k rows/s to likely only 1-5 rows/s max. I suspect many streaming subscriptions may have a similar access pattern."
+  },
+  {
+   "author": "vincentjames501",
+   "created_at": "2024-04-22T15:30:32Z",
+   "body": "@ecthiender , does what I posted above make sense?"
+  },
+  {
+   "author": "vincentjames501",
+   "created_at": "2024-06-13T23:44:53Z",
+   "body": "Bump @ecthiender . Any thoughts?"
+  },
+  {
+   "author": "ecthiender",
+   "created_at": "2024-06-25T07:11:25Z",
+   "body": "Hi @vincentjames501 , sorry for the delay. We are tracking this internally now. Will keep you updated."
+  },
+  {
+   "author": "i-am-tom",
+   "created_at": "2024-07-26T10:18:00Z",
+   "body": "Hi @vincentjames501, https://github.com/hasura/graphql-engine/commit/0080e32e3c2b5cf67df8dfd032e4283912e77dfd should help you here - with the `remove_empty_subscription_responses`, we strip out all empty responses from database to server and from server to client. Please reopen the issue if you have further problems, and feel free to tag me directly!"
+  },
+  {
+   "author": "vincentjames501",
+   "created_at": "2025-02-07T20:41:16Z",
+   "body": "@i-am-tom I apologize for the super long delay here. But I'm not sure this is working as intended. If I rerun my example from this comment:\n\nhttps://github.com/hasura/graphql-engine/issues/9994#issuecomment-2064301672\n\nUsing docker image: `hasura/graphql-engine:v2.45.1.cli-migrations-v3` on PG17 with:\n\n```\n      HASURA_GRAPHQL_EXPERIMENTAL_FEATURES: streaming_subscriptions, remove_empty_subscription_responses\n```\n\nI can confirm that Hasura sees the flag during startup:\n\n```\n...\nenabled_apis\":[\"metadata\",\"config\",\"pgdump\",\"graphql\"],\"enabled_log_types\":[\"startup\",\"http-log\",\"query-log\",\"webhook-log\",\"websocket-log\"],\"events_fetch_batch_size\":100,\"experimental_features\":[\"streaming_subscriptions\",\"remove_empty_subscription_responses\"],\"graceful_shutdown_timeout\":60,\"http_log_query_only_on_error\":false,\"infer_function_permissions\":false,\"jwt_secret\":[],\"live_query_options\":{\"batch_size\":100,\"refetch_delay\":1},\n...\n```\n\nBut I don't see any difference in the query being sent to postgres. It's still returning:\n\n```\n\"result_id\",\"result\",\"cursor\"\n\"81fa7c1f-a9b7-4cd8-9264-48dc1cb258a1\",\"{\"\"hasura_demo_events_stream\"\" : []}\",\"{\"\"id\"\" : null}\"\n\"893640e9-2088-4d30-a8ec-5eaf1aee6105\",\"{\"\"hasura_demo_events_stream\"\" : []}\",\"{\"\"id\"\" : null}\"\n```\n\nwhere I would expect these rows to be removed from the response via the executed sql.\n"
+  },
+  {
+   "author": "vincentjames501",
+   "created_at": "2025-02-07T20:54:21Z",
+   "body": "To clarify, it seems like in this example if both hasura_demo_events_stream is empty and the cursor id isn't changed (NULL) then there is no point returning the row. Our prod db is doing ~20k+ rows/s essentially returning nothing useful and paying the network transfer cost and extra db cpu cost for the json serialization."
+  },
+  {
+   "author": "vincentjames501",
+   "created_at": "2025-02-07T21:04:49Z",
+   "body": "Ahhh. @i-am-tom , I think I see the issue. The fix was made for live query subscriptions -- not streaming query subscriptions which is what we're using. Using live queries I see this:\n\n```\nSELECT\n\t*\nFROM (\n\tSELECT\n\t\t\"__subs\".\"result_id\",\n\t\t\"__fld_resp\".\"root\" AS \"result\"\n\tFROM\n\t\tunnest(('{3bedada0-c7be-4d52-9c0e-bdd2835c28f4}')::uuid[], ('{\"{\\\"query\\\": {}, \\\"cursor\\\": {}, \\\"session\\\": {\\\"x-hasura-customer-id\\\": \\\"124\\\"}, \\\"synthetic\\\": [\\\"999125\\\"]}\"}')::json[]) AS \"__subs\" (\"result_id\",\n\t\t\t\"result_vars\")\n\t\tLEFT OUTER JOIN LATERAL (\n\t\tSELECT\n\t\t\tjson_build_object('hasura_demo_events', \"_hasura_demo_events\".\"root\") AS \"root\"\n\t\tFROM (\n\t\t\tSELECT\n\t\t\t\tcoalesce(json_agg(\"root\"), '[]') AS \"root\"\n\t\t\tFROM (\n\t\t\t\tSELECT\n\t\t\t\t\trow_to_json((\n\t\t\t\t\t\tSELECT\n\t\t\t\t\t\t\t\"_e\"\n\t\t\t\t\t\tFROM (\n\t\t\t\t\t\t\tSELECT\n\t\t\t\t\t\t\t\t\"_root.base\".\"event\" AS \"event\", \"_root.base\".\"customer_id\" AS \"customer_id\", \"_root.base\".\"id\" AS \"id\") AS \"_e\")) AS \"root\"\n\t\t\t\tFROM (\n\t\t\t\t\tSELECT\n\t\t\t\t\t\t*\n\t\t\t\t\tFROM\n\t\t\t\t\t\t\"hasura_demo\".\"events\"\n\t\t\t\t\tWHERE (((\"hasura_demo\".\"events\".\"customer_id\") = (((\"__subs\".\"result_vars\" #>> ARRAY['session', 'x-hasura-customer-id']))::integer))\n\t\t\t\t\t\tAND ((\"hasura_demo\".\"events\".\"id\") > (((\"__subs\".\"result_vars\" #>> ARRAY['synthetic', '0']))::integer)))) AS \"_root.base\") AS \"_root\") AS \"_hasura_demo_events\") AS \"__fld_resp\" ON ('true')) AS \"__multiplex\"\nWHERE (EXISTS (\n\t\tSELECT\n\t\t\t1\n\t\tFROM\n\t\t\t\"json_each\" (\"result\")\n\t\tWHERE ((json_array_length(\"value\")) > ('0'))));\n```\n\nWhich looks correct. Any chance this could get added to streaming subscriptions? "
+  },
+  {
+   "author": "rakeshkky",
+   "created_at": "2025-05-13T11:42:35Z",
+   "body": "@vincentjames501 Thanks for letting us know the optimization isn't applicable to streaming subscriptions. \n\nAfter a careful look into the code, we could confirm the optimization is applicable to only live queries but not streaming subscriptions. "
+  },
+  {
+   "author": "vincentjames501",
+   "created_at": "2025-05-13T16:03:59Z",
+   "body": "@rakeshkky , thanks for the update. Should we reopen this ticket to have it addressed for streaming subscriptions? Or were you implying it was not possible to do? I'd be surprised if it isn't possible..."
+  },
+  {
+   "author": "jberryman",
+   "created_at": "2025-05-14T00:19:10Z",
+   "body": "@vincentjames501 just to be sure, in your subscription workload are you generally seeing responses from the database with 100 rows (the default batch size), or something much smaller? Just wanted to make sure since if the batches were only one or two rows, the savings relative to a \"no rows\" response wouldn't be very significant."
+  },
+  {
+   "author": "vincentjames501",
+   "created_at": "2025-05-14T00:36:54Z",
+   "body": "@jberryman , we are using the default batch size. Most of the cohorts are fairly full (50-100). The polling interval is 1/s.\n\n<img width=\"1348\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/9d531600-22c1-4a38-9012-dba616aff8a5\" />\n\nThis is an example from AWS RDS Performance insights. This Hasura subscription query is our number 1 largest load in the system and is returning thousands and thousands of \"empty\" rows per second. I'm not sure if this number will actually go down by not returning the empty rows, but what I can say is that it would drop DB IO substantially and would eliminate a ton of CPU on Hasura spent just parsing empty json payloads."
+  },
+  {
+   "author": "jberryman",
+   "created_at": "2025-07-17T13:51:34Z",
+   "body": "@vincentjames501 a fix was just merged so that `--experimental-features=remove_empty_subscription_responses` now correctly applies to streaming subscriptions, so that should go out in the next release"
+  },
+  {
+   "author": "vincentjames501",
+   "created_at": "2025-07-17T17:30:07Z",
+   "body": "@jberryman thank you! We'll try this out with the next release version and report back!"
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "hasura/graphql-engine",
+  "default_branch": "master",
+  "commit_sha": "f420297c49ed496cb18deb4fbb399cf1373c0eba",
+  "as_of": "2023-11-16T17:41:57Z",
+  "method": "github_commits_until"
+ },
+ "images": [
+  {
+   "where": "c12",
+   "source_url": "https://github.com/user-attachments/assets/9d531600-22c1-4a38-9012-dba616aff8a5",
+   "file": "gh_hasura_graphql-engine_9994_img0.png"
+  }
+ ],
+ "slug": "gh_hasura_graphql-engine_9994"
+}

@@ -1,0 +1,89 @@
+{
+ "repo": "zellij-org/zellij",
+ "number": 4054,
+ "url": "https://github.com/zellij-org/zellij/issues/4054",
+ "title": "Copy command leaves a lot of zombie processes",
+ "state": "closed",
+ "labels": [],
+ "reporter": "reporter",
+ "created_at": "2025-03-10T16:40:52Z",
+ "closed_at": "2025-07-17T14:40:34Z",
+ "body": "**Basic information**\n`Debug log`: [zellij-22.log](https://github.com/user-attachments/files/19166555/zellij-22.log)\n\n`zellij --version`: zellij 0.41.2\n\n`stty size`: 33 140\n\n`uname -av`: \n`Linux user 6.1.0-31-amd64 #1 SMP PREEMPT_DYNAMIC Debian 6.1.128-1 (2025-02-07) x86_64 GNU/Linux`\n\n## Reproduction steps\n\n1. Run zellij session using config with `copy_command` set  and `copy_on_select` enabled \n2. Select some text to make it into clipboard\n3. Paste it somewhere to make sure it works\n4. Copy again couple times\n5. run command `ps ax|grep wl-copy`  and see something like\n```\n 581867 ?        Z      0:00 [wl-copy] <defunct>\n 614145 ?        Z      0:00 [wl-copy] <defunct>\n 649179 ?        S      0:00 wl-copy\n```\nwhere <defunct> is a zombie.\n\n\n## Issue description\nOn every copy on select new child process with copy command is spawned and previous command process (if any) turns into zombie process. My current copy command is `wl-copy`, but had similar issues with `xclip`, so likely it has issues with other copy commands. \n",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2025-03-12T22:50:27Z",
+   "body": "I am also having this same issue. I tried with both `xclip` and `xsel` and both appear to leave zombie processes"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-03-29T23:20:49Z",
+   "body": "Hi, I wasn't able to reproduce the error, but can you check parent of zombie process ? (use ps xawwwf to find one)   . Zombie shall have deadly stall  parent (the reason why zombie can't die) , so it will be useful to look on it too ."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-03-31T15:52:11Z",
+   "body": "@participant2 I can share my output:\n\n```\n 14311 ?        Sl     0:06  \\_ /projects/sergioc/conda/envs/zillej/bin/zellij --server /run/user/32229/zellij/0.41.2/delighted-lemur\n 14368 pts/7    Ss     0:00      \\_ /bin/bash\n 15853 pts/7    R+     0:00      |   \\_ ps axwwwf\n 15854 pts/7    S+     0:00      |   \\_ less\n 14541 ?        Z      0:00      \\_ [xsel] <defunct>\n 14569 ?        Z      0:00      \\_ [xsel] <defunct>\n 14576 ?        Z      0:00      \\_ [xsel] <defunct>\n```"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-03-31T15:58:05Z",
+   "body": "```\n$ ps xawww|rg zellij\n   6760 ?        Sl     5:26 /home/<user>/.cargo/bin/zellij --server /run/user/1000/zellij/0.41.2/profound-apricot\n  92532 pts/14   Sl+    0:00 zellij\n  92539 ?        Sl     0:05 /home/<user>/.cargo/bin/zellij --server /run/user/1000/zellij/0.41.2/unflappable-mouse\n  93653 pts/13   S+     0:00 rg zellij\n```\n6760 - old server session of detached session which had zombie childs\n92532 - fresh active client session `unflappable-mouse` where command were ran\n92539 - fresh server session `unflappable-mouse` which also have new zombie childs.\nIn tree view the latter one looks like this\n```\n2216   92539   92538   92538 ?             -1 Sl    1000   0:08  \\_ /home/<user>/.cargo/bin/zellij --server /run/user/1000/zellij/0.41.2/unflappable-mouse\n92539   92568   92568   92568 pts/13     93927 Ss    1000   0:00      \\_ /bin/bash\n92568   93927   93927   92568 pts/13     93927 R+    1000   0:00      |   \\_ ps xawwwjf\n92539   92874   92538   92538 ?             -1 Z     1000   0:00      \\_ [wl-copy] <defunct>\n92539   92902   92538   92538 ?             -1 Z     1000   0:00      \\_ [wl-copy] <defunct>\n92539   93239   92538   92538 ?             -1 Z     1000   0:00      \\_ [wl-copy] <defunct>\n92539   93274   92538   92538 ?             -1 Z     1000   0:00      \\_ [wl-copy] <defunct>\n92539   93677   92538   92538 ?             -1 Z     1000   0:00      \\_ [wl-copy] <defunct>\n92539   93757   92538   92538 ?             -1 Z     1000   0:00      \\_ [wl-copy] <defunct>\n```"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-04-01T14:15:48Z",
+   "body": "Methinks I understand what causes that. [Here](https://github.com/zellij-org/zellij/blob/f3351f4f75dd1dc43f8808235553593bf87e68a0/zellij-server/src/tab/copy_command.rs#L21) command spawned unconditionally and never waits for process exit via `.wait()` or `.wait_with_output()`. Exiting scope leaves child process in zombie state. Checked on minimal example to confirm that.\nIf we write to child process stdio and attempt to wait for it in the same thread it's gonna hang.  It looks like [the correct way](https://doc.rust-lang.org/std/process/index.html#handling-io) to write to child's stdio via `write`/`write_all` is to take child's stdio and write to it in separate thread. Roughly new shape of the [function](https://github.com/zellij-org/zellij/blob/f3351f4f75dd1dc43f8808235553593bf87e68a0/zellij-server/src/tab/copy_command.rs#L20):\n```rust\npub fn set(&self, value: String) -> Result<()> {\n    let mut process = Command::new(self.command.clone())\n        .args(self.args.clone())\n        .stdin(Stdio::piped())\n        .spawn()\n        .with_context(|| format!(\"couldn't spawn {}\", self.command))?;\n    // extract child's stdin\n    let mut stdin = process\n        .stdin\n        .take()\n        .context(\"could not get stdin\")?;\n    // important to pass it to the thread for some reason\n    std::thread::spawn(move ||{\n        stdin\n        .write_all(value.as_bytes())\n        .expect(\"couldn't write to  stdin\");\n    });\n    // don't leave child in zombie state by forgetting it\n    process\n        .wait()\n        .with_context(format!(\"failed to wait child process for {}\", self.command)?;\n\n    Ok(())\n}\n```\nThe other way around this is pass value as `.args` and remove buffer writing part completely. Of course call any wait function in either case. \n\nAlso reference to [Child](https://doc.rust-lang.org/std/process/struct.Child.html#warning) warns about handling child state. "
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-06-24T16:29:13Z",
+   "body": "I have also been running into this issue for quite some time... A colleague recently brought it up to me, so I thought I'd address it. That said, I'm not too Rust-savvy.\n\nHow would I go about incorporating the suggested function to address the ongoing zombification?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-06-25T09:19:20Z",
+   "body": "> How would I go about incorporating the suggested function to address the ongoing zombification?\n\nAren't sure what you asking. Code above should work, so you might take it, fix some compile errors if any, put better comments with references to the docs and make PR out of it. "
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-07-17T09:41:36Z",
+   "body": "Fixed in https://github.com/zellij-org/zellij/pull/4298 - thanks for the report!"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-07-17T10:19:01Z",
+   "body": "Force kill after 1 sec aren't really correct solution, though looks like it works and copy commands usually do not take that long. \n@participant1 @participant3 can you check if it fixed issue for you as well? \n0.43.0 at 4ee376e2d75a67ad works for me. "
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-07-17T11:06:10Z",
+   "body": "The force kill only happens if we try to reap the process and it has not been reaped for more than 1 second. I'm not sure what else you'd expect?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-07-17T14:04:53Z",
+   "body": ">  if we try to reap the process \n\nIf it returns `Some(None)` means child didn't finished execution yet. \nif we craft custom script, for example: \n\n```shell\necho -e  \"#!/bin/sh \\n sleep 1.5 \\n wl-copy\" > /tmp/copy_delay.sh && chmod +x /tmp/copy_delay.sh\n```\nand setup it as our copy command in config:\n```\ncopy_command \"/tmp/copy_delay.sh\"\n```\nit will fail to copy because of 1s timeout, though it should work just fine.\nif you change sleep time from 1.5 to 0.5 it will work as intended with half second delay, because it will fit the timings. \n\nthough, its a rare case to have copy command work for such a long time, it still a legit possibility - weak hardware/embed, work over some pigeon network etc."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-07-17T14:22:06Z",
+   "body": "While I understand where you're coming from - I think the vast majority of cases in which this command will take more than 1 second are when the user misconfigured it or there's some sort of issue. I'd rather optimize for those cases rather than have the potential for a misconfiguration to cause a thread leak, or to overcomplicate this part of the code by hooking into an async runtime. Thanks for pointing this out though."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-07-17T14:40:34Z",
+   "body": "Got it. Than we can consider zombie apocalypse prevented. "
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "zellij-org/zellij",
+  "default_branch": "main",
+  "commit_sha": "92e209a3072b4c05a61ad12c8e445f80ef1ee441",
+  "as_of": "2025-03-10T16:40:52Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_zellij-org_zellij_4054"
+}

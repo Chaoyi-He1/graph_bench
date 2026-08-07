@@ -1,0 +1,182 @@
+{
+ "repo": "opensearch-project/OpenSearch",
+ "number": 6103,
+ "url": "https://github.com/opensearch-project/OpenSearch/issues/6103",
+ "title": "[BUG] _cluster/stats API returning incorrect cluster_manager count",
+ "state": "closed",
+ "labels": [
+  "bug",
+  "distributed framework"
+ ],
+ "reporter": "reporter",
+ "created_at": "2023-01-31T03:24:46Z",
+ "closed_at": "2023-03-28T05:19:12Z",
+ "body": "**Describe the bug**\r\n`_cluster/stats` API returns wrong count of nodes with `cluster_manager` role.\r\n\r\n\r\n**To Reproduce**\r\nSteps to reproduce the behavior:\r\n1. Create a multi-node cluster on OS 2.3 (I tried it on 2.3), lets say with 3 nodes with `cluster_manager` role.\r\n2. Check response of `_cat/nodes` - which should show correct roles of each nodes.\r\n```\r\nip         heap.percent ram.percent cpu load_1m load_5m load_15m node.role node.roles                                   cluster_manager name\r\n10.0.3.37            40          77   0    0.00    0.00     0.00 dir       data,ingest,remote_cluster_client            -               data-node\r\n10.0.5.179           45          77   0    0.00    0.00     0.00 dir       data,ingest,remote_cluster_client            -               data-node\r\n10.0.4.180           12          76   0    0.00    0.02     0.01 -         ml                                           -               ml-node\r\n10.0.4.224           41          76   0    0.00    0.00     0.00 mmr       cluster_manager,master,remote_cluster_client -               manager-node\r\n10.0.4.16            37          78   0    0.00    0.00     0.00 dir       data,ingest,remote_cluster_client            -               data-node\r\n10.0.3.181           13          76   0    0.00    0.00     0.00 mmr       cluster_manager,master,remote_cluster_client -               manager-node\r\n10.0.5.122           17          76   0    0.01    0.01     0.00 mmr       cluster_manager,master,remote_cluster_client *               seed\r\n```\r\n3. Check response of `_cluster/stats` \r\n```\r\n.\r\n.\r\n.\r\n\"nodes\" : {\r\n    \"count\" : {\r\n      \"total\" : 7,\r\n      \"cluster_manager\" : 6,\r\n      \"coordinating_only\" : 0,\r\n      \"data\" : 3,\r\n      \"ingest\" : 3,\r\n      \"master\" : 6,\r\n      \"ml\" : 1,\r\n      \"remote_cluster_client\" : 6\r\n    },\r\n    \"versions\" : [\r\n      \"2.3.0\"\r\n    ],\r\n.\r\n.\r\n.\r\n```\r\n\r\n**Expected behavior**\r\nCount of `cluster_manager` and `master` should be 3 in above case.\r\n\r\n**Plugins**\r\nNone\r\n\r\n**Screenshots**\r\nNone\r\n\r\n**Host/Environment (please complete the following information):**\r\n - Version: 2.3\r\n\r\n**Additional context**\r\nThe above response was correct till OS 1.3.x\r\n",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2023-01-31T07:49:52Z",
+   "body": "Bug is due to the fact it is iterating over all the roles (Master & Cluster Manager are 2 roles associated with nodes) and it will end up counting twice.\r\n\r\n                    for (DiscoveryNodeRole role : nodeInfo.getNode().getRoles()) {\r\n                        // TODO: Remove the 'if' condition and only keep the statement in 'else' after removing MASTER_ROLE.\r\n                        // As of 2.0, CLUSTER_MANAGER_ROLE is added, and it should be taken as MASTER_ROLE\r\n                        if (role.isClusterManager()) {\r\n                            roles.merge(DiscoveryNodeRole.MASTER_ROLE.roleName(), 1, Integer::sum);\r\n                            roles.merge(DiscoveryNodeRole.CLUSTER_MANAGER_ROLE.roleName(), 1, Integer::sum);\r\n\r\n@reporter do you want to pick up the fix?"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-01-31T17:12:03Z",
+   "body": "I assigned the issue to you @reporter. Thanks in advance for the help! If for some reason you can't get to this then please provide an update here."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-02-07T17:36:05Z",
+   "body": "Ouch. If someone wants to start with a failing unit test that'd be awesome."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-02-09T04:26:49Z",
+   "body": "I started working on this and noticed this difference in 'master' role in single node vs dedicated cluster-manager setup:\r\n\r\n\r\n\r\nSingle node / localhost:\r\n\r\n```\r\ncurl \"localhost:9200/_cat/nodes?v\"\r\nip        heap.percent ram.percent cpu load_1m load_5m load_15m node.role node.roles                                        cluster_manager name\r\n127.0.0.1           33         100  12    8.40                  dimr      cluster_manager,data,ingest,remote_cluster_client *               runTask-0\r\n```\r\n\r\nDedicated cluster-manager cluster:\r\n```\r\ncurl \"<cluster-endpoint>/_cat/nodes?v\"\r\nip         heap.percent ram.percent cpu load_1m load_5m load_15m node.role node.roles                                   cluster_manager name\r\n10.0.3.110           62          70   0    0.00    0.00     0.00 mmr       cluster_manager,master,remote_cluster_client -               manager-node\r\n10.0.3.72            60          69   0    0.00    0.00     0.00 dir       data,ingest,remote_cluster_client            -               data-node\r\n10.0.4.132           20          70   0    0.00    0.00     0.00 dir       data,ingest,remote_cluster_client            -               data-node\r\n10.0.5.42            26          69   0    0.04    0.02     0.00 dir       data,ingest,remote_cluster_client            -               data-node\r\n10.0.4.156           39          69   0    0.00    0.00     0.00 mmr       cluster_manager,master,remote_cluster_client -               manager-node\r\n10.0.5.39            47          70   0    0.00    0.04     0.01 mmr       cluster_manager,master,remote_cluster_client *               seed\r\n```\r\n\r\nQuick question: Any reason, why is the deprecated `master` role associated in a dedicated cluster-manager setup but not in single node setup? Should this behavior be consistent in both cases? "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-02-09T04:41:56Z",
+   "body": "Making [this](https://github.com/reporter/OpenSearch/commit/8234c2a6a02c8c0cc90a45aeb082861c352357b6) change actually counts correctly based on roles. So for the above output of `_cat/nodes` the `_cluster/stats` output looks like (after the above change):\r\n\r\nSingle node setup (`master` count is 0 since role is not attached):\r\n```\r\n.\r\n.\r\n\"nodes\" : {\r\n    \"count\" : {\r\n      \"total\" : 1,\r\n      \"cluster_manager\" : 1,\r\n      \"coordinating_only\" : 0,\r\n      \"data\" : 1,\r\n      \"ingest\" : 1,\r\n      \"master\" : 0,\r\n      \"remote_cluster_client\" : 1,\r\n      \"search\" : 0\r\n    }\r\n.\r\n.\r\n```\r\n\r\n\r\n\r\nMulti-node setup (master count is 3 because `master` role is attached):\r\n```\r\n.\r\n.\r\n\"nodes\" : {\r\n    \"count\" : {\r\n      \"total\" : 5,\r\n      \"cluster_manager\" : 3,\r\n      \"coordinating_only\" : 0,\r\n      \"data\" : 2,\r\n      \"ingest\" : 2,\r\n      \"master\" : 3,\r\n      \"remote_cluster_client\" : 5,\r\n      \"search\" : 0\r\n    }\r\n.\r\n.\r\n```\r\n\r\nSo making change to `_cluster/stats` API now depends on what behavior with roles do we want with dedicated & non-dedicated setup. "
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-02-09T16:57:29Z",
+   "body": "It sounds reasonable. Consider whether there's a breaking change here or just a bug fix. Write a bunch of specs that describe the various scenarios, and let's see if any existing ones break."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-02-10T00:41:03Z",
+   "body": "> I started working on this and noticed this difference in 'master' role in single node vs dedicated cluster-manager setup:\r\n\r\n@participant4 Can you provide any insight into why the code behaves this way?"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2023-02-10T01:22:21Z",
+   "body": "I will carefully look into the problem and provide insight. I'm surprised to see the REST API response is different for single node and multi-node cluster. The current test may only cover the situation of single-node cluster."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-02-14T21:07:46Z",
+   "body": "Looking into @participant4 changes: https://github.com/opensearch-project/OpenSearch/pull/2424, it seems like the original idea was to replace the \"master\" role to \"cluster_manager\" role just and not have both the roles assigned to node. \r\nIt seems like a gap in testing where we have not validated/tested the same for a dedicated cluster-manager setup. \r\n\r\nPresent output for `_nodes/_all` for cluster-manager nodes:\r\n\r\n```\r\n....\r\n\"<node-id>\" : {\r\n      \"name\" : \"manager-node\",\r\n      \"transport_address\" : \"<>\",\r\n      \"host\" : \"<>\",\r\n      \"ip\" : \"<>\",\r\n      \"version\" : \"2.5.1\",\r\n      \"build_type\" : \"tar\",\r\n      \"build_hash\" : \"415b06c6ea7d69735a392e7d69963f4a22547af7\",\r\n      \"total_indexing_buffer\" : 107374182,\r\n      \"roles\" : [\r\n        \"cluster_manager\",\r\n        \"master\",\r\n        \"remote_cluster_client\"\r\n      ],\r\n...\r\n```\r\n\r\nLooks like bug is with the roles attached to cluster-manager nodes in dedicated setup. I'll find out the code fixes for this - how to have only `cluster-manager` role and not both. The count should correct automatically after that. Does this sounds okay?\r\n\r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-02-15T02:20:31Z",
+   "body": "This is where we are adding deprecated master role: https://github.com/opensearch-project/OpenSearch/blob/main/server/src/main/java/org/opensearch/node/Node.java#L454\r\n\r\nI have verified the changes by removing this line and checking the output of `_cluster/stats` and `_cat/nodes` for both the setups - dedicated and non-dedicated.\r\n\r\nLet me verify any other impact of this change before raising the PR."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-02-15T06:53:02Z",
+   "body": "@reporter Please raise the [DRAFT] PR, so it is easy to comment and track."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-02-16T02:37:37Z",
+   "body": "Raised a draft PR to get early feedback on changes.\r\n\r\nGetting correct responses for `_cat/nodes`, `_cluster/stats` after the above [draft](https://github.com/opensearch-project/OpenSearch/pull/6331) changes - responses mentioned in PR description.  Getting same responses with `_nodes/_cluster_manager` and `_nodes/_master`.\r\n\r\nThe [test](https://github.com/opensearch-project/OpenSearch/blob/7aea7d2506644cc6316c33f16c2acc1046fd07d2/server/src/internalClusterTest/java/org/opensearch/action/admin/cluster/stats/ClusterStatsIT.java#L150) fails now as node-roles are not updated when cluster is initialized with deprecated `master` settings with the [error](https://<redacted-host>/job/gradle-check/11205/):\r\n\r\n```\r\nExpected: <{search=0, data=0, remote_cluster_client=0, coordinating_only=0, master=1, cluster_manager=1, ingest=0}>\r\n     but: was <{search=0, data=0, remote_cluster_client=0, coordinating_only=0, master=1, cluster_manager=0, ingest=0}>\r\n```\r\n\r\nI propose we remove this test as we have already [deprecated](https://github.com/opensearch-project/OpenSearch/pull/2463) the `cluster.initial_master_nodes` setting. Also, [setDeprecatedMasterRole()](https://github.com/opensearch-project/OpenSearch/blob/7aea7d2506644cc6316c33f16c2acc1046fd07d2/server/src/main/java/org/opensearch/cluster/node/DiscoveryNode.java#L586) function should be removed as there is no need to add a deprecated `master` role to the `cluster_manager` nodes.\r\n\r\nAlthough the node role count and cluster stats still feature a count for `master` role which you would see in the updated response which is desired. \r\n\r\n@participant1 @participant2 @participant3 @participant4 Seeking comments on this!\r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-02-16T02:50:01Z",
+   "body": "Not part of this issue, I'd open a separate issue to deprecate the `master` count in cluster stats as well. This might be a breaking change so might not be a good idea to include it in 2.x, but can be food for thought for 3.x for sure. Since for 2.x we wanted to keep `master` count for backward compatibility but doesn't holds for future major versions. "
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-02-16T09:37:25Z",
+   "body": ">I propose we remove this test as we have already https://github.com/opensearch-project/OpenSearch/pull/2463 the cluster.initial_master_nodes setting. Also, [setDeprecatedMasterRole()](https://github.com/opensearch-project/OpenSearch/blob/7aea7d2506644cc6316c33f16c2acc1046fd07d2/server/src/main/java/org/opensearch/cluster/node/DiscoveryNode.java#L586) function should be removed as there is no need to add a deprecated master role to the cluster_manager nodes.\r\n\r\nThe problem with removing ```setDeprecatedMasterRole()``` is that now master role will not show up as node role and only cluster_manager role would come. This would be breaking change.\r\nBelow is the output from your PR\r\n```\r\ncurl   \"<endpoint>/_cat/nodes?v\"\r\nip         heap.percent ram.percent cpu load_1m load_5m load_15m node.role node.roles                            cluster_manager name\r\n10.0.5.192           38          63   0    0.00    0.00     0.00 mr        cluster_manager,remote_cluster_client -               manager-node\r\n10.0.3.75            30          63   0    0.00    0.00     0.00 mr        cluster_manager,remote_cluster_client -               manager-node\r\n10.0.5.168           16          63   0    0.65    0.16     0.05 dir       data,ingest,remote_cluster_client     -               data-node\r\n10.0.4.83            46          63   0    0.00    0.00     0.00 dir       data,ingest,remote_cluster_client     -               data-node\r\n10.0.5.169           55          63   0    0.00    0.00     0.00 mr        cluster_manager,remote_cluster_client *               seed\r\n10.0.3.251           60          63   0    0.00    0.00     0.00 dir       data,ingest,remote_cluster_client     -               data-node\r\n```\r\nAlso plugins accessing in-memory node.roles will not get master as the role. We need to keep both around but not double count."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-02-16T21:27:46Z",
+   "body": "@participant1 Master role doesn't shows up in non-dedicated setup also before my changes although it comes only in dedicated-setup, so ideally it should not be a breaking change. Although to avoid any breaking, we can just fix the count in `_cluster/stats`, but this will leave the dedicated and non-dedicated setup with a difference in node roles displayed to user - `mater` showing in dedicated-setup and not in non-dedicated setup.\r\n\r\nThe concern with that test is that starts up a domain with deprecated `master` settings:\r\n```\r\nSettings settings = Settings.builder()\r\n            .putList(NodeRoleSettings.NODE_ROLES_SETTING.getKey(), Collections.singletonList(DiscoveryNodeRole.MASTER_ROLE.roleName()))\r\n            .build();\r\n```\r\n\r\nIf we remove [setDeprecatedMasterRole()](https://github.com/opensearch-project/OpenSearch/blob/7aea7d2506644cc6316c33f16c2acc1046fd07d2/server/src/main/java/org/opensearch/cluster/node/DiscoveryNode.java#L586) - then above settings fail to initialize nodes with `cluster_manager` role if you would see the error:\r\n```\r\nExpected: <{search=0, data=0, remote_cluster_client=0, coordinating_only=0, master=1, cluster_manager=1, ingest=0}>\r\n     but: was <{search=0, data=0, remote_cluster_client=0, coordinating_only=0, master=1, cluster_manager=0, ingest=0}>\r\n```\r\n\r\n\r\nShouldn't we should start the cluster with `cluster_manager` role just: https://github.com/opensearch-project/OpenSearch/pull/6331/commits/d3df6eec65ac117fcf6fb292cd87cd85272f5f4a \r\n```\r\nSettings settings = Settings.builder()\r\n            .putList(NodeRoleSettings.NODE_ROLES_SETTING.getKey(), Collections.singletonList(DiscoveryNodeRole.CLUSTER_MANAGER_ROLE.roleName()))\r\n            .build();\r\n```\r\n\r\nNode role counts still gets master roles correctly in this case."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-02-17T04:40:57Z",
+   "body": "thanks @reporter . Understood your concern. Looks like we need to be on the same first with @participant4 what is the expected backward compatibility we are aiming for here. IMHO we shouldnt break any API behavior in 2.x"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2023-02-17T06:13:24Z",
+   "body": "@participant1 Thanks for your opinion! Backwards compatibility is a critical aspect when making API changes.\r\nMy original idea was to keep the existing REST API behavior to give users a smooth migration. The expected REST API changes was described in my PR https://github.com/opensearch-project/OpenSearch/pull/2424.\r\n\r\nAccording to the description in the PR. by default, `cluster_manager` role will be added to a node, and the response of `Node Info` API will be shown as below\r\n```\r\ncurl http://localhost:9200/_nodes/_all\r\n...\r\n \"nodes\": {\r\n    \"USpTGYaBSIKbgSUJR2Z9lg\": {\r\n        \"name\": \"node-0\",\r\n        \"roles\": [\"cluster_manager\",\"data\",\"ingest\"]\r\n        ...\r\n    }\r\n }\r\n```\r\nAlthough `master` role is not assigned to a node be default, the backwards compatibility is preserved if the user assigns `master` role to the node.\r\n\r\nAbout the [Cluster Stats](https://opensearch.org/docs/2.5/api-reference/cluster-api/cluster-stats/) API,\r\n> When a node has got either `master` or `cluster_manager` role, the count for both `master` and `cluster_manager` roles will be increased by 1. This behavior aims to keep backwards compatibility, so that any existing script that counting the number of master role can still get correct number.\r\n\r\n```\r\n    \"nodes\": {\r\n        \"count\": {\r\n            \"total\": 1,\r\n            \"cluster_manager\": 1,\r\n            \"coordinating_only\": 0,\r\n            \"data\": 1,\r\n            \"ingest\": 1,\r\n            \"master\": 1,\r\n            \"remote_cluster_client\": 1\r\n        },\r\n...\r\n```\r\n\r\nLooks like the API response for a \"dedicated cluster_manager\" cluster is incorrect, and `master` is added to the node role unexpectedly, which also caused the incorrect node role count.\r\n\r\nIn addition, [setDeprecatedMasterRole()](https://github.com/opensearch-project/OpenSearch/blob/2.5.0/server/src/main/java/org/opensearch/cluster/node/DiscoveryNode.java#L636) used to load `master` role into the node, and make `master` role a known role, it was added as a workaround to keep `master` and `cluster_manager` roles have the same abbreviation `m`. Previously, all the node roles that assigned to a node have to be pre-defined (either by core or plugins) to make the node starts, so loading `master` role to the node is necessary. After the commit https://github.com/opensearch-project/OpenSearch/commit/e9c5ce355c67860dae856e7745a472cab9004c38 to make OpenSearch support \"unknown\" role, probably there could be another way to make a node recognize `master` role."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-02-17T06:27:42Z",
+   "body": "@participant1 @participant4 - Are we on the same page that the non-dedicated setup should also have `master` role in conjunction with the `cluster_manager` role like that we have in dedicated setup right now for backward compatibility?\r\n\r\nPresently, non-dedicated setup only have `cluster_manager` role and not `master` role - we should have both the roles here?\r\n\r\n@participant3 @participant2 comments?"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2023-02-17T07:35:59Z",
+   "body": "@reporter After reading the description in my PR 2424 which introduced the `cluster_manager` role, I think the API behavior in single node cluster is correct. REST API response should show exactly the roles that user assigned to cluster setting `node.roles`. E.g. Assigning `cluster_manager` role to a node will result in showing only `cluster_manager` role in API responses.\r\nWhile to keep backwards compatibility, in the response of \"Cluster Stats\" API, the count of nodes having `master` role was designed to be the same with count of `cluster_manager` role, which aimed to not breaking clients or tools that reads the API response of the node counts. This behavior could be changed, and I'm open to opinions."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-02-17T07:41:20Z",
+   "body": "I'm concerned on consistency in behavior with a dedicated and non-dedicated setup. Either we should have `master` `node.role` in both the setups or none of the setups - having different behavior in a dedicated and non-dedicated setup for role assignment doesn't makes sense.\r\n\r\nRole count logic can be corrected accordingly once we reach a consensus on what node roles should be assigned in dedicated and non-dedicated setup."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-02-17T17:01:48Z",
+   "body": "> having different behavior in a dedicated and non-dedicated setup for role assignment doesn't makes sense.\r\n\r\nI agree with this.\r\n\r\nHere is the behavior I would expect:\r\n\r\n- Case 1: Node configuration: `node.roles=[\"master\"]`\r\n  - Node info result: `\"roles\": [\"master\"]`\r\n  - Cluster stats result:  `\"count\": { \"master\": 1, \"cluster_manager\": 1}`\r\n- Case 2: Node configuration: `node.roles=[\"master, cluster_manager\"]`\r\n  - Node info result: `\"roles\": [\"master\", \"cluster_manager\"]`\r\n  - Cluster stats result:  `\"count\": { \"master\": 1, \"cluster_manager\": 1}`\r\n- Case 3: Node configuration: `node.roles=[\"cluster_manager\"]`\r\n  - Node info result: `\"roles\": [\"cluster_manager\"]`\r\n  - Cluster stats result:  `\"count\": { \"master\": 1, \"cluster_manager\": 1}`\r\n\r\nThis behavior shouldn't change if these nodes have other roles assigned to them. @participant4 What do you think? It looks like there is a bug with double-counting in the stats API, right?"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2023-02-17T17:33:24Z",
+   "body": "@participant2 Thank you for your opinion! The responses of \"Node Info\" API and \"Cluster stats\" API that you expected is the same with my intention in my PR #2424 (introduce cluster_manager role). But \"Case 2\" where assigning both `master` and `cluster_manager` roles to a node is designed to be prohibited.\r\nI agree that as @reporter mentioned, for a cluster with \"dedicated cluster managers\", there is a bug that `master` roles are assigned to the nodes by mistake which results double-counting in the \"cluster stats\" API."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-02-17T18:18:11Z",
+   "body": "@participant4 Indeed!\r\n\r\n```\r\njava.lang.IllegalArgumentException: The two roles [master, cluster_manager] can not be assigned together to a node. Assigning [master] role in setting [node.roles] is deprecated. To promote inclusive language, please use [cluster_manager] role instead.\r\n```\r\n\r\nSo the expected behavior is:\r\n\r\n- Case 1: Node configuration: `node.roles=[\"master\"]`\r\n  - Node info result: `\"roles\": [\"master\"]`\r\n  - Cluster stats result:  `\"count\": { \"master\": 1, \"cluster_manager\": 1}`\r\n- Case 2: Node configuration: `node.roles=[\"cluster_manager\"]`\r\n  - Node info result: `\"roles\": [\"cluster_manager\"]`\r\n  - Cluster stats result:  `\"count\": { \"master\": 1, \"cluster_manager\": 1}`\r\n\r\nDo we just need to fix the double-counting happening today in \"Case 2\" then?"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2023-02-17T18:21:55Z",
+   "body": "@participant2 Yes, the double-counting needs to be fixed. A cause for the problem seems is `cluster_manager` and `master` roles are accidentally both assigned to node (in a multi-node cluster). As @reporter reported https://github.com/opensearch-project/OpenSearch/issues/6103#issuecomment-1423612855"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-02-17T23:41:44Z",
+   "body": "@participant2 Both roles `cluster_manager` and `master` getting assigned in a dedicated setup is the only blocker - do we want both the roles assigned or do we not?\r\n\r\n\r\nBecaus, in @participant4 PR: https://github.com/opensearch-project/OpenSearch/pull/2424 it was already decided that `cluster_manager` role should be used as a replacement to deprecated `master` role. \r\nIf so, the existing association of deprecated master role should be removed as well as in https://github.com/opensearch-project/OpenSearch/commit/749f9f148791156cbe56263aa974a9ee16bf6a87 to make the roles consistent with non-dedicated setup. \r\n\r\nBut if we remove this deprecated master role, then as @participant1 pointed out, we may not be backward compatible.\r\n"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2023-02-18T00:27:08Z",
+   "body": "@reporter I think we don't want both roles `cluster_manager` and `master` assigned to any node. `master` and `cluster_manager` role cannot co-exist.\r\nHowever, the purpose code [DiscoveryNode.setDeprecatedMasterRole()](https://github.com/opensearch-project/OpenSearch/blob/2.5.0/server/src/main/java/org/opensearch/node/Node.java#L448) is not assigning `master` role to a node, but make `master` to be a known role. Removing that line of code doesn't seems a desired solution for solving the issue that `master` role and `cluster_manager` role appear in a node.\r\nAlthough removing the line of code results in `master` role disappears in \"dedicated cluster manager\" setup, I don't think it is a proper solution to remove the line alone.\r\nTo solve the problem, I still need to reproduce the issue and find the defect in my previous PR."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-02-18T00:43:33Z",
+   "body": "No we definitely do not want both `cluster_manager` and `master` to be assigned to a node in any case. We don't allow the user to set that in the node configuration so it is a bug when that happens.\r\n\r\nThe way compatibility is handled is based off of the node configuration. If the users specifies `master` in the node configuration, then `_cat/nodes` should return `master`. If the user specifies `cluster_manager` then `cluster_manager` should be returned. The `_cluster/stats` API is something of an exception where counts for both are returned regardless of which one is specified in the configuration."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-02-21T10:17:14Z",
+   "body": "+1 to @participant2 suggestion where API responds master/ cluster_manager depending on user configuration. "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-03-02T00:09:24Z",
+   "body": "Narrowed down the issue. \r\n\r\nThis issue does not occurs when `node.roles` are used to initialize the node. It occurs when the legacy `legacySettings` is used to initialize the node as in how I was creating the cluster using https://github.com/opensearch-project/opensearch-cluster-cdk. This utilizes the legacy `'node.master': true` legacy setting: https://github.com/opensearch-project/opensearch-cluster-cdk/blob/main/lib/opensearch-config/node-config.ts#L12 (note: legacy, not deprecated)\r\n\r\nI have modified the fix where in I remove `master` role when the legacy settings are used. Please note that there is no such setting such as `'node.cluster_manager'`. The new way to initialize the nodes is via providing node roles like: https://github.com/opensearch-project/opensearch-cluster-cdk/blob/main/lib/opensearch-config/node-config.ts#L47\r\nThis is the reason why 'master' role is being removed in my changes whenever roles are decided by legacy settings.\r\n\r\nI have added test cases for better understanding of scenarios - **Asserting both the `node.roles` attached to nodes and the `cluster/_stats` response**.\r\n\r\n\r\nWhile I'm adding more test cases seeking early comments on [draft code changes](https://github.com/opensearch-project/OpenSearch/pull/6331/files). @participant1 @participant2 @participant4 \r\nWill be improving other test cases as well to assert both the things instead of just relying on `_cluster/stats` within this scope.\r\n\r\n\r\nAlso, in response to @participant2 comments:\r\n```\r\n If the users specifies master in the node configuration, then _cat/nodes should return master. If the user specifies cluster_manager then cluster_manager should be returned.\r\n```\r\nWhatever `node.roles` are specified by user, whether 'master' or 'cluster_manager' - the node obeys that - so I think we can close on this.\r\n\r\n```\r\nThe _cluster/stats API is something of an exception where counts for both are returned regardless of which one is specified in the configuration.\r\n```\r\nSince the changes were in getting roles from `legacySettings()`, no changes will be required in `_cluster/stats` API. \r\n\r\n\r\n\r\n\r\n\r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-03-02T23:22:19Z",
+   "body": "Modified the changes as per @participant2 suggestions - legacy `node.master` settings now configure deprecated `master` role to a node and not `cluster_manager` role which can be set via new `node.roles` only.\r\n\r\nAny concerns @participant1 @participant4 or difference in opinions?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-03-07T17:34:26Z",
+   "body": "@participant2 @participant1 @participant4 Gentle reminder to review the PR and let me know any additional steps that are required for merging?"
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "opensearch-project/OpenSearch",
+  "default_branch": "main",
+  "commit_sha": "7aea7d2506644cc6316c33f16c2acc1046fd07d2",
+  "as_of": "2023-01-31T03:24:46Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_opensearch-project_OpenSearch_6103"
+}

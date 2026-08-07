@@ -1,0 +1,101 @@
+{
+ "repo": "pingcap/tidb",
+ "number": 40740,
+ "url": "https://github.com/pingcap/tidb/issues/40740",
+ "title": "avoid excessive PointGet request to a single tikv node for stale read when DDL happens",
+ "state": "closed",
+ "labels": [
+  "type/enhancement"
+ ],
+ "reporter": "reporter",
+ "created_at": "2023-01-19T20:49:22Z",
+ "closed_at": "2023-03-31T03:32:58Z",
+ "body": "## Enhancement\r\n\r\ncurrently, to avoid to get the schema version for a `snapshotTs`, the `snapshotTs` of the stale read needs to be greater than the update timestamp of the current schema version. https://github.com/pingcap/tidb/blob/master/infoschema/cache.go#L111\r\n\r\nthis behavior causes significant load issue on the single tikv node stores the schema version when DDL happens. usually the stale read will request the data from a few second up to minutes before current timestamp. this mean, when DDL happens with `maxUpdatedSnapshotTS  = t0`, all of the stale read requests happens from `t0` to `t0 + t_staleness` will query the data of `snapshotTs` before `t0`, thus requires to get the schema version at that `snapshotTs`.\r\n\r\none solution i could think of is to change the change the schema version request from `GetRequest` to `VerGetRequest` to obtain the corresponding timestamp for each schema version change. in this way, tidb could maintain a local map of the schema version and its commit timestamp, so that it could completely avoid the point get request for schema version on stale read code path.\r\n",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2023-01-19T22:21:58Z",
+   "body": "/cc @participant2 @participant4 "
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-01-20T02:22:48Z",
+   "body": "I think we could just maintain a list of infoschemas sorted by snapshotTS. In fact, this list should be identical to the list of schemas sorted by schema version. The newer TS is, the larger version is. You could do it in the following function:\r\n\r\nhttps://github.com/pingcap/tidb/blob/master/infoschema/cache.go#L132-L134\r\n\r\nAll schemas loaded into cache have corresponding TS. Only the maximum TS is maintained. I've suggested to maintain a map of TS/version, but it is not accepted and done in https://github.com/pingcap/tidb/pull/25322#issuecomment-858362388 .\r\n\r\nI guess you could modify the cache into `cache []struct{infoshema, snapshotTS}` to target the problem."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-01-20T19:06:21Z",
+   "body": "yes, i think use something like the `maxUpdatedSnapshotTS` as an approximation could be fine, though it is not as precise as the the exact version, it is probably good enough in practice.\r\n\r\nif this is a good idea, i could draft a pr, wdyt @participant2 ?"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-01-21T02:55:47Z",
+   "body": "> yes, i think use something like the `maxUpdatedSnapshotTS` as an approximation could be fine, though it is not as precise as the the exact version, it is probably good enough in practice.\r\n> \r\n> if this is a good idea, i could draft a pr, wdyt @participant2 ?\r\n\r\nOf course."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-01-23T20:25:23Z",
+   "body": "The ideal sounds reasonable to me."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-02-17T08:35:16Z",
+   "body": "The implementation is problematic that the insertion TS is not accurate enough. Thus we will get errors if:\r\n\r\n```\r\nver2       |      ver1\r\nts1|   ts2 | ts3\r\n```\r\n\r\nThink a cache like this, when we inserted `ver2` with `ts1`, and `ver1` with `ts3`. Get by ts2 will load `ver1`, while it should be `ver2`.\r\n\r\nThe current implementation only works if `ts1` is accurate. Otherwise, there is correctness problem. Since some API expects accurate return value.  I'll revert the PR first and check if we can implement it correctly.\r\n\r\n/cc @reporter "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-02-17T18:03:43Z",
+   "body": "yes, though this is same behavior as leader read, when the new schema is not loaded, it will still use old schema cache? @participant2 "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-02-17T18:16:16Z",
+   "body": "if we want this to be accurate, i think we could do as the original description says, use `VerGetRequest` to read the timestamp of the schema version from tikv and use it"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-02-18T08:06:44Z",
+   "body": "> yes, though this is same behavior as leader read, when the new schema is not loaded, it will still use old schema cache? @participant2 \n\nOr worse, when new schema loaded with an inaccurate cache ts, it messed some callers expecting accurate results."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-02-18T08:07:19Z",
+   "body": "> if we want this to be accurate, i think we could do as the original description says, use `VerGetRequest` to read the timestamp of the schema version from tikv and use it\n\nProbably yes, we need the absolute value to be correct."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-02-21T18:10:02Z",
+   "body": "@participant2 could we agree on the approach to fix this? if so, i could put another fix, thanks!"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-02-22T18:54:06Z",
+   "body": "> > yes, though this is same behavior as leader read, when the new schema is not loaded, it will still use old schema cache? @participant2\r\n> \r\n> Or worse, when new schema loaded with an inaccurate cache ts, it messed some callers expecting accurate results.\r\n\r\none could argue it is similar, like says, a ddl happens with timestamp ts1, and tidb loads the schema at ts2, where ts2 > ts1, then for all the leader read in that tidb process between ts1 and ts2 will still use the old schema. and for stale read, it is same behavior.\r\n\r\ni am not trying to say it is acceptable, but in some sense, it is consistent. that is why i said \r\n```yes, i think use something like the maxUpdatedSnapshotTS as an approximation could be fine, though it is not as precise as the the exact version, it is probably good enough in practice.```\r\n\r\nbtw, this issue is very critical for us to use stale read, without a fix to avoid the excessive get request, everytime there is a ddl happens, the tidb cluster will be unavailable for a short period of time because of one tikv node is overloaded."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-02-22T19:23:52Z",
+   "body": "just found `VerGetRequest` was removed, then it needs to store a schema version to timestamp mapping, then fetch it when read a new schema version"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-02-23T03:02:31Z",
+   "body": "> just found `VerGetRequest` was removed, then it needs to store a schema version to timestamp mapping, then fetch it when read a new schema version\r\n\r\nYep, we need mvcc to tell commitTS.\r\n\r\n> one could argue it is similar, like says, a ddl happens with timestamp ts1, and tidb loads the schema at ts2, where ts2 > ts1, then for all the leader read in that tidb process between ts1 and ts2 will still use the old schema. and for stale read, it is same behavior.\r\n\r\nI know. It is sometime accepted to lag for one version. But some API(I mean history read) expect accurate `GetSchemaBySnapshot`, it is not a stale read.\r\n\r\n> i am not trying to say it is acceptable, but in some sense, it is consistent. that is why i said\r\n\r\nYeah, that is the problem. Either we need to do it accurately, or we need to treat stale read and history read differently, which seems weird for me.\r\n\r\n> could we agree on the approach to fix this? if so, i could put another fix, thanks!\r\n\r\nI agree that we can fix it by accurate TS. Just, I am actually oncalling these weeks. Feel free if you have any plan, as long as it is accurate."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-02-23T03:15:52Z",
+   "body": "thanks for the reply, i will try to put another fix shortly, though may need 1-2 weeks"
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "pingcap/tidb",
+  "default_branch": "master",
+  "commit_sha": "de856d9354e49a89282cf4ed1814b3d41f0cd50b",
+  "as_of": "2023-01-19T20:49:22Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_pingcap_tidb_40740"
+}

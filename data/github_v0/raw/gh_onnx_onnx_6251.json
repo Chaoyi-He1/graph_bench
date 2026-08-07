@@ -1,0 +1,112 @@
+{
+ "repo": "onnx/onnx",
+ "number": 6251,
+ "url": "https://github.com/onnx/onnx/issues/6251",
+ "title": "How to load multipart model multilingual-e5-large to Spring AI, how to combine .onnx and .onnx-data to single file/byte array?",
+ "state": "closed",
+ "labels": [
+  "question",
+  "stale"
+ ],
+ "reporter": "reporter",
+ "created_at": "2024-07-23T09:39:57Z",
+ "closed_at": "2025-09-19T06:46:01Z",
+ "body": "I apologize, being new to onnx...\r\n\r\nI have already described the issue here, assuming that it si linkeed with onnxruntime:\r\n\r\nhttps://github.com/microsoft/onnxruntime/issues/21321\r\n\r\nI would like to create \"one consolidated onnx file\" e.g. in some way to \"merge\" model.onnx and model onnx_data files\r\n\r\nI understand that the principle of the issue is:\r\nThe current structure of initializer in model.onnx is always pointing to model_data (example):\r\n\r\n```\r\n  initializer {\r\n    dims: 1024\r\n    data_type: 1\r\n    name: \"encoder.layer.0.attention.output.LayerNorm.bias\"\r\n    external_data {\r\n      key: \"location\"\r\n      value: \"model.onnx_data\"\r\n    }\r\n    external_data {\r\n      key: \"offset\"\r\n      value: \"1026146304\"\r\n    }\r\n    external_data {\r\n      key: \"length\"\r\n      value: \"4096\"\r\n    }\r\n    data_location: EXTERNAL\r\n  }\r\n```\r\n\r\nExpected resulting structure is without extarnal data, containing just raw_data (example):\r\n\r\n```\r\n  initializer {\r\n    dims: 384\r\n    data_type: 1\r\n    name: \"encoder.layer.0.attention.output.LayerNorm.bias\"\r\n    raw_data: \"n\\204v.......\"\r\n```\r\n\r\nI tried to:\r\n\r\nload model.onnx\r\nload model.onnx_data as ByteArray\r\nchange structure of the model\r\n\r\nFinal python code is:\r\n\r\n```\r\ndef combine_onnx_files2(model_path, data_path, output_path):\r\n    # Load the ONNX model structure\r\n    model = onnx.load(model_path)\r\n\r\n    # Load onnx_data\r\n    with open(data_path, 'rb') as f:\r\n        tensor_data = f.read()\r\n\r\n    for initializer in model.graph.initializer:\r\n        if initializer.data_location == onnx.TensorProto.EXTERNAL:\r\n            offset = 0\r\n            length = 0\r\n            for data in initializer.external_data:\r\n                if data.key == \"offset\":\r\n                    offset = int(data.value)\r\n                elif data.key == \"length\":\r\n                    length = int(data.value)\r\n\r\n            raw_data = tensor_data[offset:offset + length]\r\n\r\n            del initializer.external_data[:]\r\n            initializer.ClearField(\"data_location\")\r\n\r\n            initializer.raw_data = raw_data\r\n\r\n    onnx.save(model, output_path)\r\n```\r\n\r\nUnfortunately:\r\nprotoc --decode=onnx.ModelProto onnx.proto < model_comb.onnx > output_comb.txt\r\nis saying, that the structure is not correct...\r\n\r\nWhat I am doing wrong?\r\n",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2024-07-23T13:14:55Z",
+   "body": "1. The combined file needs to be <2gb for it to be valid\r\n2. Just do onnx.load and onnx.save without additional options will combine the file for you"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-07-23T14:27:38Z",
+   "body": "I have also tried to load/save the onnx file - resulting file has unfortunatly 2,08 Gb. When I try to validate - it is, as you say invalid.\r\nMy issue is how to utilize this model in Spring AI - see following issue, where I got one recommendation, which I am not able to implement...\r\n[onnxruntime question](https://github.com/microsoft/onnxruntime/issues/21321)"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-07-23T15:16:55Z",
+   "body": "I see. That may be a good question for the Spring AI developers"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-07-23T15:19:23Z",
+   "body": "In the ORT issue you mentioned the api OrtSession(OrtEnvironment env, String modelPath, OrtAllocator allocator, SessionOptions options) right? Jus provide the path to the model file and the InferenceSession should be able to load the data file automatically for you"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-07-23T15:23:47Z",
+   "body": "Spring AI wants to load it from the classpath so it doesn't have a location on disk. Is there a spec for the `onnx_data` file format anywhere? I can add a method to ORT in Java that could read `onnx_data` files out into memory where they can be passed in as external initializers via the session options."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-07-23T15:56:41Z",
+   "body": "onnx_data is just a plain file that stores the weights as bytes."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-07-23T16:05:52Z",
+   "body": "But what's the format of the bytes? Do they have a shape array first then bytes or just bytes? Is there a marker between the tensors?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-07-23T16:30:38Z",
+   "body": "It's just pure bytes. You can use the offset and length properties in the tensor proto message to obtain data for each tensor."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-07-23T19:12:38Z",
+   "body": "Ok, thanks. Are the floats stored little endian like protobuf, or is it platform dependent?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-07-23T19:45:48Z",
+   "body": "I **think** they are little endian. May need to verify"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-07-23T20:44:22Z",
+   "body": "Yes, they are little endian. The format is the same as that of `raw_data`, which is explained [here in the proto file](https://github.com/onnx/onnx/blob/a850906190052fee780fe44a6c00c7ec4eac135b/onnx/onnx.in.proto#L605)"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-07-24T12:48:42Z",
+   "body": "I have tried following code utilizing addExternalInitializers:\r\n\r\n\r\n```java\r\nimport ai.onnx.proto.OnnxMl;\r\nimport ai.onnxruntime.*;\r\n\r\nimport java.io.File;\r\nimport java.io.FileInputStream;\r\nimport java.io.IOException;\r\nimport java.nio.ByteBuffer;\r\nimport java.nio.channels.FileChannel;\r\nimport java.util.HashMap;\r\nimport java.util.List;\r\nimport java.util.Map;\r\nimport java.util.logging.Logger;\r\n\r\npublic class Main {\r\n    public static void main(String[] args) {\r\n        String modelPath = \"/onnx/multilingual-e5-large/model.onnx\";\r\n        String dataPath = \"/onnx/multilingual-e5-large/model.onnx_data\";\r\n\r\n        OnnxJavaType typeTest = OnnxJavaType.mapFromClass(Float.class);\r\n        System.out.println(\"Type size: \"+ String.valueOf(typeTest.size));\r\n        System.out.println(\"Max value: \"+ String.valueOf(Integer.MAX_VALUE - (8 * typeTest.size)));\r\n\r\n        try {\r\n            // Create the ONNX Runtime environment\r\n            OrtEnvironment env = OrtEnvironment.getEnvironment();\r\n            // Create SessionOptions\r\n            OrtSession.SessionOptions sessionOptions = new OrtSession.SessionOptions();\r\n            sessionOptions.setOptimizationLevel(OrtSession.SessionOptions.OptLevel.BASIC_OPT);\r\n            // Load the ONNX model\r\n            OnnxMl.ModelProto model = OnnxMl.ModelProto.parseFrom(new FileInputStream(modelPath));\r\n            OnnxMl.GraphProto graph = model.getGraph();\r\n            // Read _data file\r\n            Map<String, OnnxTensorLike> initializers = new HashMap<>();\r\n            for (OnnxMl.TensorProto initializer : graph.getInitializerList()) {\r\n                if (initializer.getDataLocation() == OnnxMl.TensorProto.DataLocation.EXTERNAL) {\r\n                    long offset = 0;\r\n                    int length = 0;\r\n                    String name = initializer.getName();\r\n                    for (OnnxMl.StringStringEntryProto data : initializer.getExternalDataList()) {\r\n                        if (data.getKey().equals(\"offset\")) {\r\n                            offset = Long.parseLong(data.getValue());\r\n                        } else if (data.getKey().equals(\"length\")) {\r\n                            length = Integer.parseInt(data.getValue());\r\n                        }\r\n                    }\r\n                    byte[] rawData = readExternalData(dataPath, offset, length);\r\n                    ByteBuffer byteBuffer = ByteBuffer.wrap(rawData);\r\n                    System.out.println(\"Raw data offset: \" + String.valueOf(offset));\r\n                    System.out.println(\"Raw data length: \" + String.valueOf(length));\r\n                    System.out.println(\"Raw data size: \" + String.valueOf(rawData.length));\r\n                    System.out.println(\"Buffer limit: \" + String.valueOf(byteBuffer.limit()));\r\n\r\n\r\n                    // Create OnnxTensor and use it as OnnxTensorLike\r\n                    /*\r\n                    OnnxTensorLike onnxTensorLike = OnnxTensor.createTensor(\r\n                            env,\r\n                            byteBuffer,\r\n                            convertListToLongArray(initializer.getDimsList()),\r\n                            OnnxJavaType.mapFromInt(initializer.getDataType())\r\n                    );\r\n\r\n                    initializers.put(name, onnxTensorLike);\r\n                     */\r\n                }\r\n            }\r\n\r\n            // Add external initializers to SessionOptions\r\n            sessionOptions.addExternalInitializers(initializers);\r\n\r\n            // Load the model and create a session\r\n            OrtSession session = env.createSession(modelPath, sessionOptions);\r\n\r\n            // Use the session for inference (example code)\r\n            // ...\r\n\r\n            // Close resources\r\n            session.close();\r\n            sessionOptions.close();\r\n            env.close();\r\n        } catch (IOException | OrtException e) {\r\n            e.printStackTrace();\r\n        }\r\n    }\r\n\r\n    private static byte[] readExternalData(String dataPath, long offset, int length) throws IOException {\r\n        try (FileInputStream fis = new FileInputStream(dataPath);\r\n             FileChannel fileChannel = fis.getChannel()) {\r\n            ByteBuffer buffer = ByteBuffer.allocate(length);\r\n            fileChannel.position(offset);\r\n            fileChannel.read(buffer);\r\n            return buffer.array();\r\n        }\r\n    }\r\n\r\n    public static long[] convertListToLongArray(List<Long> longList) {\r\n        long[] longArray = new long[longList.size()];\r\n        for (int i = 0; i < longList.size(); i++) {\r\n            longArray[i] = longList.get(i);\r\n        }\r\n        return longArray;\r\n    }\r\n}\r\n```\r\n\r\nWhen you uncomment \"Create OnnxTensor and use it as OnnxTensorLike\" part, I am gettting an error:\r\n\r\nCannot allocate a direct buffer of the requested size and type, size 1024008192, type = FLOAT\r\n\r\nI am using Java 17 and added tesese VM options: -XX:MaxDirectMemorySize=4g -Xmx2g - did not help\r\n\r\nGoing to OrtUtil.java, line 492 I see folllowing condition:\r\n\r\n  static BufferTuple prepareBuffer(Buffer data, OnnxJavaType type) {\r\n    if (type == OnnxJavaType.STRING || type == OnnxJavaType.UNKNOWN) {\r\n      throw new IllegalStateException(\"Cannot create a \" + type + \" tensor from a buffer\");\r\n    }\r\n    int bufferPos;\r\n    long bufferSizeLong = data.remaining() * (long) type.size;\r\n    if (bufferSizeLong > (Integer.MAX_VALUE - (8 * type.size))) {\r\n\r\nTherefore I have commented \"Create OnnxTensor and use it as OnnxTensorLike\" part, getting for first largest initializer\r\nType size: 4     //e.g. OnnxJavaType typeTest = OnnxJavaType.mapFromClass(Float.class);System.out.println(\"Type size: \"+ String.valueOf(typeTest.size));\r\nMax value: 2147483615  //e.g. System.out.println(\"Max value: \"+ String.valueOf(Integer.MAX_VALUE - (8 * typeTest.size)));\r\nRaw data offset: 0  //e.g. initializer offset\r\nRaw data length: 1024008192 //e.g. initializer length\r\nRaw data size: 1024008192 //e.g. check of raw data size\r\nBuffer limit: 1024008192  //e.g. byteBuffer.limit()\r\n\r\nRaw data offset: 1024008192\r\nRaw data length: 2105344\r\nRaw data size: 2105344\r\nBuffer limit: 2105344\r\n.....\r\n\r\nIt seems, that even here is 2Gb limit (2147483615), and I do not understand why it fails if initializer has 1Gb... What I am doing wrong?"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-07-24T13:07:24Z",
+   "body": "That might be a bug in the ORT create buffer logic. Try doing `byteBuffer.order(ByteOrder.LITTLE_ENDIAN).asFloatBuffer()` and then passing that to the `OnnxTensor.createTensor(OrtEnvironment, FloatBuffer, long[])` method. I'll try to run down the issue in the base method, we don't extensively test passing in byte buffers that are pretending to be other types and it looks like our validation is missing some cases."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-07-24T13:44:05Z",
+   "body": "It seems (at least the run did not failed), that this code might be working:\r\n\r\n```\r\nbyte[] rawData = readExternalData(dataPath, offset, length);\r\nByteBuffer byteBuffer = ByteBuffer.wrap(rawData);\r\nbyteBuffer.order(ByteOrder.LITTLE_ENDIAN);\r\nFloatBuffer floatBuffer = byteBuffer.asFloatBuffer();\r\nOnnxTensorLike onnxTensorLike = OnnxTensor.createTensor(env,floatBuffer,convertListToLongArray(initializer.getDimsList()));\r\n\r\n```\r\nThank you for workaround...can you let me know result of your test?\r\n                    "
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-08-16T14:57:21Z",
+   "body": "There is a bug in the create buffer logic, I'll get it fixed next week."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-08-26T20:26:50Z",
+   "body": "Fix is in this PR - https://github.com/microsoft/onnxruntime/pull/21774."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-08-28T06:13:43Z",
+   "body": "Dne 2024-08-26 22:27, Adam Pocock napsal:\n> Fix is in this PR - microsoft/onnxruntime#21774 [1].\n> \n> --\n> Reply to this email directly, view it on GitHub [2], or unsubscribe\n> [3].\n> You are receiving this because you authored the thread.Message ID:\n> ***@***.***> [ { ***@***.***\":\n> \"http://schema.org\", ***@***.***\": \"EmailMessage\", \"potentialAction\": {\n> ***@***.***\": \"ViewAction\", \"target\":\n> \"https://github.com/onnx/onnx/issues/6251#issuecomment-2311025348\",\n> \"url\":\n> \"https://github.com/onnx/onnx/issues/6251#issuecomment-2311025348\",\n> \"name\": \"View Issue\" }, \"description\": \"View this Issue on GitHub\",\n> \"publisher\": { ***@***.***\": \"Organization\", \"name\": \"GitHub\", \"url\":\n> \"https://github.com\" } } ]\n> \n> Links:\n> ------\n> [1] https://github.com/microsoft/onnxruntime/pull/21774\n> [2] https://github.com/onnx/onnx/issues/6251#issuecomment-2311025348\n> [3]\n> https://github.com/notifications/unsubscribe-auth/AVYFQBUV7MYT44FP7KH7WZLZTOFSBAVCNFSM6AAAAABLKBLD7SVHI2DSMVQWIX3LMV43OSLTON2WKQ3PNVWWK3TUHMZDGMJRGAZDKMZUHA\nHello Adam,\nthank you for the correction...\n\nJirka\n"
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "onnx/onnx",
+  "default_branch": "main",
+  "commit_sha": "31e468831061af3c675faa445ba303533214c078",
+  "as_of": "2024-07-23T09:39:57Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_onnx_onnx_6251"
+}

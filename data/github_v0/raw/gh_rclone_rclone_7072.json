@@ -1,0 +1,217 @@
+{
+ "repo": "rclone/rclone",
+ "number": 7072,
+ "url": "https://github.com/rclone/rclone/issues/7072",
+ "title": "new feature: VFS auto normalization",
+ "state": "closed",
+ "labels": [
+  "enhancement",
+  "VFS / mount"
+ ],
+ "reporter": "reporter",
+ "created_at": "2023-06-21T08:56:32Z",
+ "closed_at": "2024-03-06T16:12:14Z",
+ "body": "Immediate goal of this enhancement is to fix macOS `rclone mount` which at the moment does not work properly regardless of mounting method used - macOSFUSE or FUSE-T. Optionally normalized VFS can bring other benefits as well e.g. some less common or future filesystems rclone users can work with and normalization constraints imposed.\r\n\r\nThe background issue and possible solutions have been discussed on the forum:\r\n\r\nhttps://<redacted-host>/t/possible-special-character-encoding-issue-on-macos/39048/30\r\n\r\nAt the moment many cloud storage destinations (and rclone virtual crypt remote) allow to store both NFC and NFD encoded files/directories names. Also rclone allows to upload/download both forms.\r\n\r\nThis in general works trouble free on Linux and Windows but breaks rclone mount functionality in macOS - depending on mount options either only NFC or only NFD content is visible/accessible - this is [unfortunate](https://eclecticlight.co/2021/05/08/explainer-unicode-normalization-and-apfs/) consequence of Apple design decision to be different than rest of the world and use exclusively NFD in their APIs. We won't change it.\r\n\r\nExperimentation and testing, including [attempts](https://github.com/macos-fuse-t/fuse-t/issues/16) to improve situation with FUSE-T (it has now - since v1.0.20 - `-o nfc` option which should help with NFC path) lead me to believe that last missing part of the puzzle is rclone VFS lack of normalization.\r\n\r\nI would like to propose to add optional normalization to VFS.\r\n\r\nNew option:\r\n\r\n--vfs-normalize OFF/NFC/NFD - with OFF being default \r\n\r\nWhen set to NFC or NFD it would apply characters normalization to served content.\r\n\r\nEdge case to watch is situation where two names differ only by normalization and coexist in the same folder e.g.:\r\n\r\n```\r\n$ rclone lsf crypt:TEST\r\n\r\nCONFLICTéééFILE.txt\r\nCONFLICTéééFILE.txt\r\n```\r\n\r\none file is NFC and other is NFD. Only solution I see for such case is use only one name and log ERROR.\r\n",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2023-06-23T13:39:36Z",
+   "body": "I think this should be achievable relatively easily.\r\n\r\nAll file / dir objects are ultimately made from the directory cache. So we only need to do the normalized comparison in the directory cache searching routine.\r\n\r\nWe actually do this already for case sensitive / insensitive file systems.\r\n\r\nSo first we look for an exact match which is a quick hash look up, and then we look for a case insensitive match which involves comparing every item.\r\n\r\nhttps://github.com/rclone/rclone/blob/2c50f26c36e7b18e0fcfe18bc844a2141c9245af/vfs/dir.go#L710-L732\r\n\r\nWe could do something very similar for the normalization options too. I think we'd want to make a normalization function which does the (NFC, NFD) and/or (lower case) and just run through the loop once. We do exactly this in the sync routines so factoring this out would be sensible.\r\n\r\nhttps://github.com/rclone/rclone/blob/2c50f26c36e7b18e0fcfe18bc844a2141c9245af/fs/march/march.go#L58-L71\r\n\r\n> Edge case to watch is situation where two names differ only by normalization and coexist in the same folder\r\n\r\nWe currently just use the first one in the case vs CASE comparison. That is the easy thing to do. To detect a collision would require scanning the whole directory which would take on average twice as long.\r\n\r\nWorth the extra CPU for an ERROR message?\r\n\r\n> New option:\r\n> \r\n> --vfs-normalize OFF/NFC/NFD - with OFF being default\r\n\r\nAssuming we are only using the normalize option to find matching file names and not actually returning them to the OS then we can get away with using NFC only and this would match this flag which only does NFC normalization.\r\n\r\n      --no-unicode-normalization   Don't normalize unicode characters in filenames\r\n\r\nOnce thing I am unclear on though - do you think we need to apply that normalization to the file names sent to the OS - is that your intention? So we  receive an NFC file name from Google Drive (say) and send the macOS kernel an NFD file name according to the flag? That will be a bit more work (but not much). I think this might be what the FUSE-T option `-o nfc` does though so maybe isn't necessary?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-06-23T14:12:34Z",
+   "body": "> Once thing I am unclear on though - do you think we need to apply that normalization to the file names sent to the OS - is that your intention?\r\n\r\nYes this is the most important thing actually and whole purpose of this  - it is about sending to OS normalized names. Today we have a problem that remotes can contain both NFC and NFD names - it works on Linux but breaks macOS. \r\n\r\n> I think this might be what the FUSE-T option `-o nfc` does though so maybe isn't necessary?\r\n\r\nThis option converts names received from OS (macOS uses NFD) and makes sure that NFS mount receives NFC - so all NFS content is NFC. It also makes NFC content to work with macOS APIs.\r\nIt breaks when some content in remote is already NFD - files are not visible/directories are not browsable.\r\n\r\nOn macOS it happens for example when user uses `rclone copy/sync` - NFD names are saved in remote.\r\n\r\nWith `--vfs-normalize` to make macOS mount work we could either:\r\n\r\n1. `--vfs-normalize NFD` - this is what macOS likes the most I think\r\n\r\nREMOTE  ----------------------->  MOUNT\r\nNFC -> RCLONE -> NFD -> FUSE -> NFD <---- rclone normalized NFC->NFD\r\nNFD -> RCLONE -> NFD -> FUSE -> NFD\r\n\r\n\r\nMOUNT  ----------------------->  REMOTE\r\nNFC -> FUSE -> NFC -> RCLONE -> NFC\r\nNFD -> FUSE -> NFD -> RCLONE -> NFD\r\n\r\n\r\n\r\n2. `--vfs-normalize NFC` and use `-o nfc`\r\n\r\nREMOTE  ----------------------->  MOUNT\r\nNFC -> RCLONE -> NFC -> FUSE -> NFD \r\nNFD -> RCLONE -> NFC -> FUSE -> NFD <---- rclone normalized NFD->NFC\r\n\r\n\r\nMOUNT  ----------------------->  REMOTE\r\nNFC -> FUSE -> NFC -> RCLONE -> NFC\r\nNFD -> FUSE -> NFC-> RCLONE -> NFC\r\n\r\nIt is difficult to say which one will behave better on macOS - I think that both would work. But with NFC/NFD and macOS I have learnt that only testing can tell."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-06-23T14:22:50Z",
+   "body": "The key purpose of this enhancement is to fix `rclone mount` on macOS. \r\n\r\nToday it simply does not work - does not matter with macFUSE or FUSE-T. And is unfixable by `-o modules=iconv,from_code=UTF-8,to_code=UTF-8` or `-o modules=iconv,from_code=UTF-8,to_code=UTF-8-MAC` workaround. It only helps in some cases and creates new issues - like for example that files can not be open in Finder (macOS file browser)\r\n\r\n![image](https://github.com/rclone/rclone/assets/15635386/8f61ee97-d18d-432d-8606-9a357b4d0f7c)\r\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-06-23T16:35:55Z",
+   "body": "I think what I'll do is try the smallest patch that could work first. That would fix the \"... can't be found\" errors I think but it wouldn't normalize the returns to the OS. This might mean we need the `-o nfc` flag. If that doesn't work I can do the further parts.."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-06-23T16:44:18Z",
+   "body": "Cool. I am happy at all stages to test - I do not need binary build I can happily build myself from `git clone`. I have my test bed - crypt with carefully crafted mix of NFC/NFD files and folders:) so far it breaks everything.\r\n\r\nI hoped that fuse-t can handle it fully but does not seem to be possible."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-06-23T19:06:38Z",
+   "body": "Note:\r\n\r\nWith `--vfs-normalize` set to NFC or NFD `iconv` should not be applied:\r\n\r\nhttps://github.com/rclone/rclone/blob/fcb912a664de2e4df0e71b63aa3a8a1f956dd495/cmd/cmount/mount.go#L120-L126\r\n\r\nIt is crude way to actually try to normalize to NFD- but it stopped working fully with advent of APFS FS few years ago and changes in normalization in all macOS - also I suspect not 100% correct way macFUSE handles it. I actually suspect it never worked 100% before neither - but nowadays it is more apparent.\r\n\r\nStill should be there for old Apple computers users - this is why  `--vfs-normalize`  should be optional"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-07-27T21:22:25Z",
+   "body": "Sorry to keep pestering... but can it be implemented one day?  I am not skilled enough in go to give it a go.  I do try to earn my karma points on the forum instead:) I do believe that it is missing piece of macOS `rclone mount` to work predictably and consistently - and now it is disaster people using it do not realize.\r\n\r\nI managed to convince author of `fuse-t` to make [changes](https://github.com/macos-fuse-t/fuse-t/issues/16) helping to alleviate problems moving forward. But without option to normalize `mount` to NFD on rclone side it is only half measure."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-07-28T00:12:41Z",
+   "body": "> Sorry to keep pestering... but can it be implemented one day? I am not skilled enough in go to give it a go. I do try to earn my karma points on the forum instead:)\r\n\r\nYou have lots of karma indeed :-)\r\n\r\nI put this on the 1.64 milestone which isn't a guarantee that it will make that release, but it will be on my radar at least!\r\n\r\n"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-01-30T09:24:07Z",
+   "body": "Just dropping in to say that I would be extremely thankful for having this fixed at some point. It would save a lot of trouble for me and many users in Slovakia, Czech republic and other countries, where basically all words are accented, which makes using `rclone` very problematic."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-02-05T08:20:03Z",
+   "body": "I took a shot at fixing this: https://github.com/participant3/rclone/commit/af6c376ef102e56704a8bb6d81e53f3311474fd3 \r\n\r\nIt is the \"smallest patch that could work\" approach as participant1 suggested. So, it does not add a new `--vfs-normalize` flag -- rather, it uses the existing `--no-unicode-normalization` (and note the double-negative -- `false` means normalize.) This seemed to be enough to fix it -- @reporter I wonder if you agree?\r\n\r\n> > Edge case to watch is situation where two names differ only by normalization and coexist in the same folder\r\n> \r\n> We currently just use the first one in the case vs CASE comparison. That is the easy thing to do. To detect a collision would require scanning the whole directory which would take on average twice as long.\r\n> \r\n> Worth the extra CPU for an ERROR message?\r\n\r\nI attempted to split the difference on this by adding a new flag for this (disabled by default), `--vfs-block-norm-dupes` (better name suggestions welcome). participant1 is right that there will be a performance hit, so I think most non-mac users will want to leave it off. However some mac users may want it, as otherwise the \"edge case\" @reporter mentioned will have an odd effect: both versions of the file will be visible in the mount, and both will appear to be editable, however, editing either version will actually result in only the NFD version getting edited under the hood. So `--vfs-block-norm-dupes` prevents this confusion by detecting this scenario and hiding the duplicates + logging an error, similar to what `march` would do. Thoughts on this approach?\r\n\r\nOn a slightly-related note, it seems to me that there is something odd about how `lib/encoder` is behaving on mac. For example, if I mount a `crypt` remote with invalid UTF-8 paths and then run `rclone lsl` on the mount, I will get errors. However if I `rclone sync` that same remote to `local` and then `rclone lsl` the copied files, it works just fine. But then if I `rclone check` the same paths I synced, suddenly there are errors due to name encoding differences. Is it that the conversion only goes one way? Probably out of scope for this ticket, but thought I'd mention it."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-02-05T08:42:28Z",
+   "body": "> I took a shot at fixing this: [participant3@participant4](https://github.com/participant3/rclone/commit/af6c376ef102e56704a8bb6d81e53f3311474fd3)\r\n\r\nThis is a big one for us macOS users:)\r\n\r\nAs soon as I have a moment I will start testing it."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-02-05T09:20:21Z",
+   "body": "OK I could not wait - I am very excited about this chance to fix this long standing issue:) - so I quickly tried with my test data (NFC/NFD mix usage) I used in the past. And hurrah! It works. Both in Finder and terminal using FUSE-T mount.\r\n\r\nHave not looked at \"duplicates\" yet. I am a bit swamped at the moment so it is only quick try - I will take it for a proper ride later.\r\n\r\nHow exactly this patch work? Sorry I am not a programmer and struggle to understand exactly how it is achieved. I see that it ditches `iconv` conversions - this is nice - was doing it myself for long as it was maybe something working for HFS+ but definitely for APFS was only trouble. But on its own it was not enough.\r\n "
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-02-05T10:10:36Z",
+   "body": "> And hurrah! It works. Both in Finder and terminal using FUSE-T mount.\r\n\r\nThat is encouraging to hear! 😃 \r\n\r\n> How exactly this patch work? Sorry I am not a programmer and struggle to understand exactly how it is achieved.\r\n\r\nBasically it takes the existing `--vfs-case-insensitive` logic and extends it to apply to both case insensitivity and unicode normalization form. So, if mac references a file with its NFD name, rclone first looks to see if it has a file with that exact NFD name. If it does, great -- we're done. If it does not, instead of telling mac \"sorry, I don't have that\", it will look to see if it has a file that normalizes to the same NFC name as the one that mac is asking for. If it finds exactly one such file, it will consider this a match. If it finds more than one, it will error (this is possible for case sensitivity but should be pretty rare for NFC/NFD. For example, if mac asks for \"hello\" but rclone has both \"HELLO\" and \"HeLlo\".)\r\n\r\nSo the result is that if rclone gives mac an NFC file but mac converts it to NFD, rclone will not get confused and will be able to figure out which file mac is talking about.\r\n\r\nThe most important part is [here](https://github.com/participant3/rclone/blob/af6c376ef102e56704a8bb6d81e53f3311474fd3/vfs/dir.go#L809-L822). And this calls `operations.ApplyTransforms` to do the actual conversion:\r\n\r\nhttps://github.com/rclone/rclone/blob/91b54aafccc3aed01a5389864e8ef3902286b406/fs/operations/check.go#L381-L390\r\n\r\nThis uses the [`norm`](https://<redacted-host>/golang.org/x/text/unicode/norm) package from the Go standard library instead of Mac's `iconv` implementation, which is known to be buggy."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-02-05T10:15:36Z",
+   "body": "Thank you for this explanation. When I digest it I will try to break it with my testing:) And of course I hope I will fail."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-02-05T10:18:35Z",
+   "body": "Maybe you could land both normalisation and nfsmount fixes at the same time? At last we could have FUSE free mount life on macOS:)"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-02-05T10:27:20Z",
+   "body": "> At last we could have FUSE free mount life on macOS:)\r\n\r\nThat's the dream! 😆 \r\n\r\nAside from https://github.com/rclone/rclone/issues/7503#issuecomment-1910713905 which I posted a fix for, are there other `nfsmount` issues?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-02-05T10:31:06Z",
+   "body": "> Aside from [#7503 (comment)](https://github.com/rclone/rclone/issues/7503#issuecomment-1910713905) which I posted a fix for, are there other `nfsmount` issues?\r\n\r\nI have been using your fix few times and it serves its purpose - writing to NFS mount is possible.\r\n\r\nOne issue I noticed was `nfsmount` mount name. Firstly it can not be controlled with `--volname` and secondly it was rather random as I remember (definitely not using remote name). Not show stopper for my use so I just ignored it:)"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-02-05T10:43:18Z",
+   "body": "Ok. That sounds fairly easy, I'll try to take a look."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-02-05T11:25:23Z",
+   "body": "> It is the \"smallest patch that could work\" approach as participant1 suggested. So, it does not add a new `--vfs-normalize` flag -- rather, it uses the existing `--no-unicode-normalization` (and note the double-negative -- `false` means normalize.) This seemed to be enough to fix it -- @reporter I wonder if you agree?\r\n\r\nUsing below test set,\r\n\r\n```\r\n$ rclone tree crypt:NFC_NFD_testing\r\n/\r\n├── NFCéééFILE.txt\r\n├── NFCééééDIR\r\n│   ├── NFCéééFILE.txt\r\n│   └── NFDééééFILE.txt\r\n├── NFDééééDIR\r\n│   ├── NFCéééFILE.txt\r\n│   └── NFDééééFILE.txt\r\n├── NFDééééFILE.txt\r\n└── TEST_DUPES\r\n    ├── CONFLICTéééDIR\r\n    │   ├── CONFLICTéééFILE.txt\r\n    │   └── CONFLICTéééFILE.txt\r\n    ├── CONFLICTéééFILE.txt\r\n    ├── CONFLICTéééDIR\r\n    │   ├── CONFLICTéééFILE.txt\r\n    │   └── CONFLICTéééFILE.txt\r\n    └── CONFLICTéééFILE.txt\r\n\r\n5 directories, 12 files\r\n\r\n\r\n$ rclone lsf -R crypt:NFC_NFD_testing | xargs -I'{}' bash -c 'hd <<< \"${1}\"' -- '{}' \r\n00000000  4e 46 43 c3 a9 c3 a9 c3  a9 46 49 4c 45 2e 74 78  |NFC......FILE.tx|\r\n00000010  74 0a                                             |t.|\r\n00000012\r\n00000000  4e 46 43 c3 a9 c3 a9 c3  a9 c3 a9 44 49 52 2f 0a  |NFC........DIR/.|\r\n00000010\r\n00000000  4e 46 44 65 cc 81 65 cc  81 65 cc 81 65 cc 81 44  |NFDe..e..e..e..D|\r\n00000010  49 52 2f 0a                                       |IR/.|\r\n00000014\r\n00000000  4e 46 44 65 cc 81 65 cc  81 65 cc 81 65 cc 81 46  |NFDe..e..e..e..F|\r\n00000010  49 4c 45 2e 74 78 74 0a                           |ILE.txt.|\r\n00000018\r\n00000000  54 45 53 54 5f 44 55 50  45 53 2f 0a              |TEST_DUPES/.|\r\n0000000c\r\n00000000  54 45 53 54 5f 44 55 50  45 53 2f 43 4f 4e 46 4c  |TEST_DUPES/CONFL|\r\n00000010  49 43 54 65 cc 81 65 cc  81 65 cc 81 44 49 52 2f  |ICTe..e..e..DIR/|\r\n00000020  0a                                                |.|\r\n00000021\r\n00000000  54 45 53 54 5f 44 55 50  45 53 2f 43 4f 4e 46 4c  |TEST_DUPES/CONFL|\r\n00000010  49 43 54 65 cc 81 65 cc  81 65 cc 81 46 49 4c 45  |ICTe..e..e..FILE|\r\n00000020  2e 74 78 74 0a                                    |.txt.|\r\n00000025\r\n00000000  54 45 53 54 5f 44 55 50  45 53 2f 43 4f 4e 46 4c  |TEST_DUPES/CONFL|\r\n00000010  49 43 54 c3 a9 c3 a9 c3  a9 44 49 52 2f 0a        |ICT......DIR/.|\r\n0000001e\r\n00000000  54 45 53 54 5f 44 55 50  45 53 2f 43 4f 4e 46 4c  |TEST_DUPES/CONFL|\r\n00000010  49 43 54 c3 a9 c3 a9 c3  a9 46 49 4c 45 2e 74 78  |ICT......FILE.tx|\r\n00000020  74 0a                                             |t.|\r\n00000022\r\n00000000  4e 46 44 65 cc 81 65 cc  81 65 cc 81 65 cc 81 44  |NFDe..e..e..e..D|\r\n00000010  49 52 2f 4e 46 43 c3 a9  c3 a9 c3 a9 46 49 4c 45  |IR/NFC......FILE|\r\n00000020  2e 74 78 74 0a                                    |.txt.|\r\n00000025\r\n00000000  4e 46 44 65 cc 81 65 cc  81 65 cc 81 65 cc 81 44  |NFDe..e..e..e..D|\r\n00000010  49 52 2f 4e 46 44 65 cc  81 65 cc 81 65 cc 81 65  |IR/NFDe..e..e..e|\r\n00000020  cc 81 46 49 4c 45 2e 74  78 74 0a                 |..FILE.txt.|\r\n0000002b\r\n00000000  4e 46 43 c3 a9 c3 a9 c3  a9 c3 a9 44 49 52 2f 4e  |NFC........DIR/N|\r\n00000010  46 43 c3 a9 c3 a9 c3 a9  46 49 4c 45 2e 74 78 74  |FC......FILE.txt|\r\n00000020  0a                                                |.|\r\n00000021\r\n00000000  4e 46 43 c3 a9 c3 a9 c3  a9 c3 a9 44 49 52 2f 4e  |NFC........DIR/N|\r\n00000010  46 44 65 cc 81 65 cc 81  65 cc 81 65 cc 81 46 49  |FDe..e..e..e..FI|\r\n00000020  4c 45 2e 74 78 74 0a                              |LE.txt.|\r\n00000027\r\n00000000  54 45 53 54 5f 44 55 50  45 53 2f 43 4f 4e 46 4c  |TEST_DUPES/CONFL|\r\n00000010  49 43 54 c3 a9 c3 a9 c3  a9 44 49 52 2f 43 4f 4e  |ICT......DIR/CON|\r\n00000020  46 4c 49 43 54 65 cc 81  65 cc 81 65 cc 81 46 49  |FLICTe..e..e..FI|\r\n00000030  4c 45 2e 74 78 74 0a                              |LE.txt.|\r\n00000037\r\n00000000  54 45 53 54 5f 44 55 50  45 53 2f 43 4f 4e 46 4c  |TEST_DUPES/CONFL|\r\n00000010  49 43 54 c3 a9 c3 a9 c3  a9 44 49 52 2f 43 4f 4e  |ICT......DIR/CON|\r\n00000020  46 4c 49 43 54 c3 a9 c3  a9 c3 a9 46 49 4c 45 2e  |FLICT......FILE.|\r\n00000030  74 78 74 0a                                       |txt.|\r\n00000034\r\n00000000  54 45 53 54 5f 44 55 50  45 53 2f 43 4f 4e 46 4c  |TEST_DUPES/CONFL|\r\n00000010  49 43 54 65 cc 81 65 cc  81 65 cc 81 44 49 52 2f  |ICTe..e..e..DIR/|\r\n00000020  43 4f 4e 46 4c 49 43 54  65 cc 81 65 cc 81 65 cc  |CONFLICTe..e..e.|\r\n00000030  81 46 49 4c 45 2e 74 78  74 0a                    |.FILE.txt.|\r\n0000003a\r\n00000000  54 45 53 54 5f 44 55 50  45 53 2f 43 4f 4e 46 4c  |TEST_DUPES/CONFL|\r\n00000010  49 43 54 65 cc 81 65 cc  81 65 cc 81 44 49 52 2f  |ICTe..e..e..DIR/|\r\n00000020  43 4f 4e 46 4c 49 43 54  c3 a9 c3 a9 c3 a9 46 49  |CONFLICT......FI|\r\n00000030  4c 45 2e 74 78 74 0a                              |LE.txt.|\r\n00000037\r\n\r\n\r\n\r\n```\r\nI can confirm that it works exactly like described including `--vfs-block-norm-dupes` flag behaviour.\r\n\r\nAnd first time ever all files and directories in this set `rclone mount` are visible and more important accessible by Finder\r\n\r\n<img width=\"397\" alt=\"image\" src=\"https://github.com/rclone/rclone/assets/15635386/7f006c0e-d640-4d4b-8bd3-891e62fee5f2\">\r\n\r\n\r\n\r\n\r\nI am impressed by simplicity of this solution - it gives me confidence that it actually works as intended. \r\nMyself I was thinking about some unnecessarily complex `--vfs-normalize OFF/NFC/NFD ` approach. \r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-02-05T12:02:56Z",
+   "body": "> I attempted to split the difference on this by adding a new flag for this (disabled by default), `--vfs-block-norm-dupes` (better name suggestions welcome). participant1 is right that there will be a performance hit, so I think most non-mac users will want to leave it off. However some mac users may want it, as otherwise the \"edge case\" @reporter mentioned will have an odd effect: both versions of the file will be visible in the mount, and both will appear to be editable, however, editing either version will actually result in only the NFD version getting edited under the hood. So `--vfs-block-norm-dupes` prevents this confusion by detecting this scenario and hiding the duplicates + logging an error, similar to what `march` would do. Thoughts on this approach?\r\n\r\nI think it is perfectly acceptable approach. Definitely it should be optional as normalisation cases are IMO very rare - it actually takes some effort to even create them:) But they are possible so for people who might have this issue this flag is a solution."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-02-05T14:18:56Z",
+   "body": "> Aside from [#7503 (comment)](https://github.com/rclone/rclone/issues/7503#issuecomment-1910713905) which I posted a fix for, are there other `nfsmount` issues?\r\n\r\nThere is one more problem with `rclone nfsmount`. When you unmount (right click->unmount) - share folder is gone - but `rclone nfsmount` process is still running (confirmed with `ps -ef | grep rclone`) and has to be CTRL-C in terminal."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-02-05T15:16:53Z",
+   "body": "Thanks, I'll take a look."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-02-05T15:28:19Z",
+   "body": "One other thought just occurred to me -- I wonder if we should just return [here](https://github.com/participant3/rclone/blob/af6c376ef102e56704a8bb6d81e53f3311474fd3/vfs/dir.go#L819), at least when not using `--vfs-block-norm-dupes`. In other words, as soon as we find the first match, use it and move on instead of continuing to look for a possible second match. If all we care about is the first match, it would be a lot faster."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-02-05T15:34:21Z",
+   "body": "> One other thought just occurred to me -- I wonder if we should just return [here](https://github.com/participant3/rclone/blob/af6c376ef102e56704a8bb6d81e53f3311474fd3/vfs/dir.go#L819), at least when not using `--vfs-block-norm-dupes`. In other words, as soon as we find the first match, use it and move on instead of continuing to look for a possible second match. If all we care about is the first match, it would be a lot faster.\r\n\r\nI think yes - it would be even safer. Given that without `--vfs-block-norm-dupes` I can be editing wrong file on my mount... This way I think we would have dupe missing - which again I think is better."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-02-05T15:47:22Z",
+   "body": "And one thought in my head too... Could we add this logic to [rclone dedupe](https://rclone.org/commands/rclone_dedupe/)? so I could validate my remote not only for exact duplicates but also for potential ones based on case (`--by-case`)and normalisation (`--by-normalisation`)?\r\n\r\nObviously this is not something critical but rather nice to have functionality."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-02-05T16:05:48Z",
+   "body": "> I think yes - it would be even safer.\r\n\r\nI think it would actually be a little less safe... as the purpose of looking for a second match is so that it can return an error if it finds one. But the question is... is that error actually useful, and if so, is it worth the CPU tradeoff? \r\n\r\n> And one thought in my head too... Could we add this logic to [rclone dedupe](https://rclone.org/commands/rclone_dedupe/)? so I could validate my remote not only for exact duplicates but also for potential ones based on case (`--by-case`)and normalisation (`--by-normalisation`)?\r\n\r\nThat's an interesting idea! I bet that would be possible. One other thought I had along these lines is whether something like an `rclone iconv` command might be a useful thing. For example, to convert any NFC filenames to NFD, or vice versa. "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-02-05T16:32:09Z",
+   "body": "> I think it would actually be a little less safe... as the purpose of looking for a second match is so that it can return an error if it finds one. But the question is... is that error actually useful, and if so, is it worth the CPU tradeoff?\r\n\r\nError is only useful when using `--vfs-block-norm-dupes`? Isn't it?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-02-05T16:33:08Z",
+   "body": "> That's an interesting idea! I bet that would be possible. One other thought I had along these lines is whether something like an `rclone iconv` command might be a useful thing. For example, to convert any NFC filenames to NFD, or vice versa.\r\n\r\nBIG yes - another nice to have feature:) I use `brew install convmv` for this:\r\n\r\n```\r\nconvmv -r -f utf8 -t utf8 --nfc --notest .\r\nconvmv -r -f utf8 -t utf8 --nfd --notest .\r\n```"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-02-05T17:29:38Z",
+   "body": "> Error is only useful when using `--vfs-block-norm-dupes`? Isn't it?\r\n\r\nI tend to think that the type of user that would care about this error would be using `--vfs-block-norm-dupes` anyway, and the vast majority of users will not care about it and would rather have the performance boost. It is a very unlikely error to begin with -- you'd have to have multiple equal-folding filenames in the same directory to encounter it. And even if you did, \"pick the first one and move on\" might still be preferable to an error, for many users."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-02-05T18:09:45Z",
+   "body": "Any rough idea what is performance impact? Because maybe we worry about non existing problem? Or negligible in real life.\r\n\r\nIt is not that `rclone mount` is used for mission critical applications... It is mostly used to lazy browse video collections or some docs.\r\n\r\nIMO in case of `rclone mount` performance can be sacrificed for convenience."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-02-05T18:53:55Z",
+   "body": "I suppose we could run some tests and find out. It would depend a lot on how many files you have -- with a small number you probably wouldn't notice it, but with a large number it could become noticeable. I worked on a unicode normalization issue for `bisync` recently and was surprised at how much of a bottleneck all the conversions turned out to be -- I ended up reworking the code because of it.\r\n\r\nOne thing that helps in this case though is that we only find ourselves in this loop if we already failed to find an exact match. For most users, this should be pretty rare -- it basically requires the sort of scenario like macOS where the OS is actively auto-converting filenames as opposed to merely enforcing case-insensitive uniqueness. And even then, we're just talking about the small subset of files that have special characters and came from some non-mac source. "
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-02-05T19:01:33Z",
+   "body": "Come to think of it, this is another good use case for `rclone convmv`... the more files that are already in the correct format, the fewer checks you have to do each time."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-02-05T19:21:04Z",
+   "body": "Yes this is what I do with my rclone remotes data - at least for now before I store it in the cloud I convert all to NFD - so I can live with crippled mount as it is today.\r\n\r\nOf course there are multiplatform scenarios etc.\r\n\r\nBut `rclone convmv` would make it easy - as other systems do not face NFC/NFD issues.\r\n\r\nAnd most people are not stupid - so if everything is properly documented people will do what is needed to make sure their macOS mount works fast. \r\n\r\n\"My macOS mount is slow\"... simple - run `rclone convmv` and all will be like new:)"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-02-07T19:00:07Z",
+   "body": "@participant3 sorry for pestering:) do you think your improvements (normalisation and nfsmount writes on macOS) can be PR-ed?:) These are fixes I was waiting for years so now trying to make sure that they are not lost:)\r\n\r\nI have been using them the last few days and this is day and night compared to what it was before in terms of macOS `rclone mount` compatibility.\r\n\r\nI bet some bits can be still ironed but the best way is to get exposure to myriad of use cases we can't even imagine - simply make it live. `rclone nfsmount` made to release in disastrous stage - effectively useless so compared to it your changes are gold.  "
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-02-07T20:36:54Z",
+   "body": "> I have been using them the last few days and this is day and night compared to what it was before in terms of macOS `rclone mount` compatibility.\r\n\r\nVery glad to hear that 🙂 \r\n\r\nYes, I can submit PRs. I was planning to also look at some of the other `nfsmount` issues you mentioned (`--volname` and unmounting), but as they are less critical maybe it's best to submit the most important changes first and fix the rest later. What do you think?\r\n\r\n> `rclone nfsmount` made to release in disastrous stage - effectively useless so compared to it your changes are gold.\r\n\r\n🤣 "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-02-07T20:58:00Z",
+   "body": "> Yes, I can submit PRs. I was planning to also look at some of the other `nfsmount` issues you mentioned (`--volname` and unmounting), but as they are less critical maybe it's best to submit the most important changes first and fix the rest later. What do you think?\r\n\r\nIMO normalisation is fully working and is ready to be included in rclone release. I even took time to understand your code) it looks very clean and logical.\r\n\r\nnfsmount - I do appreciate good engineering so have to say that indeed maybe better to solve known issues and make it real feature not just some half baked thing.\r\n\r\nMost importantly normalisation works perfectly with macFUSE/FUSE-T so it immediately solves old issue. nfsmount is very nice addition but not critical."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-02-13T15:01:06Z",
+   "body": "@reporter I made a proof-of-concept for a `rclone convmv` command. Very much still a WIP, but if you are interested: https://github.com/participant3/rclone/commit/1d6be937035854dba5a8f58a320fb8b3826755a0 \r\n\r\nExamples of what it does: [Link](https://github.com/participant3/rclone/blob/1d6be937035854dba5a8f58a320fb8b3826755a0/docs/content/commands/rclone_convmv.md?plain=1#L123-L183)"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-02-16T21:10:10Z",
+   "body": "> @reporter I made a proof-of-concept for a `rclone convmv` command. Very much still a WIP, but if you are interested: [participant3@participant5](https://github.com/participant3/rclone/commit/1d6be937035854dba5a8f58a320fb8b3826755a0)\r\n> \r\n> Examples of what it does: [Link](https://github.com/participant3/rclone/blob/1d6be937035854dba5a8f58a320fb8b3826755a0/docs/content/commands/rclone_convmv.md?plain=1#L123-L183)\r\n\r\nI have managed to compile it and run few simple tests. All worked! I think that it is very cool small utility. When needed it is purely irreplaceable. Things like this make rclone truly pro utility. Thank you very much for doing it."
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "rclone/rclone",
+  "default_branch": "master",
+  "commit_sha": "4f8dab8bcec40f34f02074549747437ac17b0bef",
+  "as_of": "2023-06-21T08:56:32Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_rclone_rclone_7072"
+}

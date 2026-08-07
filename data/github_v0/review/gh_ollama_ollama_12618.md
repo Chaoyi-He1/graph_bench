@@ -9,43 +9,35 @@
 
 ```mermaid
 flowchart LR
-    N0["<b>N0 GPU discovery regression reported</b><br/><small>info: 5</small>"]
-    N1["<b>N1 environment override ruled out</b><br/><small>info: 8</small>"]
-    N2_x["<b>N2_x downgrade aftermath</b><br/><small>info: 9</small>"]
-    N3_x["<b>N3_x software reinstall aftermath</b><br/><small>info: 12</small>"]
-    N4_x["<b>N4_x dynamic library load failure isolated</b><br/><small>info: 15</small>"]
-    N4b["<b>N4b antivirus ruled out on a bare 25H2 install</b><br/><small>info: 16</small>"]
-    N5_x["<b>N5_x 0.13.0 partial improvement aftermath</b><br/><small>info: 18</small>"]
-    N6["<b>N6 conflicting PATH copy checked</b><br/><small>info: 19</small>"]
-    N7["<b>N7 release DLL made resolvable, VRAM loading restored</b><br/><small>info: 20</small>"]
-    N_terminal["<b>terminal GPU inference restored</b><br/><small>info: 21</small>"]
-    N0 -.->|"❓ debug_log_without_cuda_visible_still_cpu_only, nvidia_smi_lists_three_healthy_gpus_driver_58157"| N1
+    N0["<b>N0 GPU discovery regression reported</b><br/><small>info: 3</small>"]
+    N1["<b>N1 debug and NVIDIA evidence collected</b><br/><small>info: 7</small>"]
+    N2_x["<b>N2_x reinstall aftermath</b><br/><small>info: 8</small>"]
+    N2_y["<b>N2_y downgrade aftermath</b><br/><small>info: 9</small>"]
+    N3["<b>N3 current release still CPU-only</b><br/><small>info: 10</small>"]
+    N4["<b>N4 dynamic-library loading failure isolated</b><br/><small>info: 14</small>"]
+    N5["<b>N5 GPU enumeration restored but inference still on CPU</b><br/><small>info: 17</small>"]
+    N_terminal["<b>terminal current workaround restores GPU inference</b><br/><small>info: 19</small>"]
+    N0 -.->|"❓ debug_log_0125_loads_library_paths_but_lists_only_cpu, nvidia_smi_lists_three_working_gpus_driver_58157"| N1
     linkStyle 0 stroke:#3b82f6,stroke-width:2px
-    N1 ==>|"💥 blind: Downgrade to Ollama 0.11.11 because that version previously enumerated the GPUs."| N2_x
+    N1 ==>|"💥 blind: Repair a potentially damaged Ollama installation by uninstalling and reinstalling the same release."| N2_x
     linkStyle 1 stroke:#ef4444,stroke-width:2px
-    N2_x ==>|"💥 blind: Refresh the installed Ollama and NVIDIA/CUDA software stack and retry with Ollama 0.12.6."| N3_x
+    N2_x ==>|"💥 blind: Downgrade to the older Ollama build whose startup logs previously detected the GPUs."| N2_y
     linkStyle 2 stroke:#ef4444,stroke-width:2px
-    N3_x ==>|"💥 blind: Update to Ollama 0.12.9 with enhanced loader diagnostics and compare the behavior in clean Windows environments."| N4_x
+    N2_y ==>|"💥 blind: Install the newer release containing expanded diagnostics and retry GPU discovery."| N3
     linkStyle 3 stroke:#ef4444,stroke-width:2px
-    N4_x -.->|"❓ bare_25h2_install_without_third_party_av_still_fails"| N4b
+    N3 -.->|"❓ enhanced_log_reports_procedure_not_found_for_all_ggml_cpu_and_cuda_dlls, sandbox_24h2_same_ollama_detects_all_three_gpus"| N4
     linkStyle 4 stroke:#3b82f6,stroke-width:2px
-    N4b ==>|"💥 blind: Install Ollama 0.13.0 and retry GPU discovery and model loading."| N5_x
+    N4 ==>|"💥 blind: Install the next Ollama release and retry both GPU enumeration and actual model loading."| N5
     linkStyle 5 stroke:#ef4444,stroke-width:2px
-    N5_x -.->|"❓ no_other_ggml_base_dll_found_in_path"| N6
-    linkStyle 6 stroke:#3b82f6,stroke-width:2px
-    N6 -.->|"❓ copying_current_ggml_base_to_windows_makes_models_use_vram"| N7
-    linkStyle 7 stroke:#3b82f6,stroke-width:2px
-    N7 ==>|"⚡ Correct the Windows DLL-resolution failure so Ollama's backend libraries load the matching `ggml-base.dll` from the same Ollama release; treat the reporter's system-wide DLL placement only as a diagnostic workaround and verify actual VRAM use."| N_terminal
-    linkStyle 8 stroke:#f97316,stroke-width:2px
+    N5 ==>|"⚡ Treat the failure as Windows DLL resolution of Ollama's matching `ggml-base.dll`, not as missing CUDA hardware: ensure the runner resolves the release-matched DLL from the Ollama installation, use the reporter's system-directory copy only as diagnostic proof, and do not retain a system-wide copy across updates."| N_terminal
+    linkStyle 6 stroke:#f97316,stroke-width:2px
     class N0 start
     class N1 normal
     class N2_x normal
-    class N3_x normal
-    class N4_x normal
-    class N4b normal
-    class N5_x normal
-    class N6 normal
-    class N7 normal
+    class N2_y normal
+    class N3 normal
+    class N4 normal
+    class N5 normal
     class N_terminal terminal
     classDef start fill:#fee2e2,stroke:#b91c1c,color:#000
     classDef terminal fill:#dcfce7,stroke:#15803d,color:#000
@@ -54,44 +46,40 @@ flowchart LR
 
 ## Opening (body)
 
-> After updating Ollama from 0.11.11 to 0.12.5 on Windows 11 Enterprise 25H2 without Docker, `ollama serve` no longer detects my NVIDIA GPUs and reports only CPU inference with 0 B VRAM. Older 0.11.11 logs show that the GPUs were detected. I tried setting CUDA_VISIBLE_DEVICES=0,1,2, but it still falls back to CPU.
+> After updating Ollama on my Windows 11 Enterprise 25H2 machine, running `ollama serve` no longer detects my NVIDIA GPUs and reports only CPU inference with 0 B VRAM. The current log is from Ollama 0.12.5. Older logs from 0.11.11 show that Ollama previously detected the GPUs.
 
 ## Satisfaction conditions
 
-1. Must identify the technical root cause as a Windows dynamic-library resolution/loading failure involving Ollama's matching `ggml-base.dll` and backend `ggml-*.dll` files, rather than failure of NVIDIA hardware enumeration or CUDA_VISIBLE_DEVICES.
-2. The diagnosis must be grounded in the collected evidence: all CPU and CUDA backends returned `The specified procedure could not be found`, the GPUs worked in other applications and clean 24H2 environments, and making the current `ggml-base.dll` visible through a Windows search location restored VRAM loading.
-3. Must not present downgrading, reinstalling CUDA or NVIDIA drivers, simplifying PATH, changing CUDA_VISIBLE_DEVICES, or merely updating to a newer Ollama release as the fix; each was tried without restoring GPU inference.
-4. Must not recommend leaving `ggml-base.dll` in `C:\Windows` as a durable fix. It may be described as the reporter's successful diagnostic workaround, but the response must warn that system-wide copies can become stale and binary-incompatible after an Ollama update.
-5. Must ask the user to verify that a model actually loads into GPU VRAM and uses GPU inference before declaring resolution; detecting the GPUs at startup alone is insufficient.
+1. Must identify the accepted failure boundary as dynamic-library resolution/loading of Ollama's release-matched `ggml-base.dll`; the evidence is that all GGML CPU and CUDA DLLs reported procedure-not-found errors and making the matching base DLL globally discoverable restored VRAM loading.
+2. Must ground the diagnosis in the collected DLL errors and clean-environment comparison rather than attributing the issue solely to CUDA, the NVIDIA driver, or GPU visibility settings.
+3. Must not present reinstalling Ollama, downgrading, changing `CUDA_VISIBLE_DEVICES`, reinstalling CUDA/drivers, or merely updating Ollama as the fix; those directions were tried while CPU-only model execution persisted.
+4. Must not recommend leaving `ggml-base.dll` in `C:\Windows` or another system-wide directory as a permanent solution, because the maintainer states that it changes between releases and is not binary-compatible.
+5. Must ask the reporter to verify that a model loads into GPU VRAM after the runner is made to resolve the matching DLL from the Ollama installation before declaring a durable resolution.
 
 ## Edges
 
 | edge | type | gates / info | payload |
 |---|---|---|---|
-| `e1_N0__N1` | clarification_only | asks: debug_log_without_cuda_visible_still_cpu_only, nvidia_smi_lists_three_healthy_gpus_driver_58157 | I removed CUDA_VISIBLE_DEVICES, set OLLAMA_DEBUG=2, and ran `ollama serve`. It still ends with only `inference / My `nvidia-smi` output lists an RTX 5070 and two RTX 3060 cards, all in WDDM mode, with driver 581.57 and CUDA |
-| `e2_N1__N2_x` | solution_only **BLIND** | req_info: ollama_0125_after_update_from_01111, older_01111_logs_show_nvidia_gpus_detected<br>elements: recommends_downgrade_to_01111 | Downgrade to Ollama 0.11.11 because that version previously enumerated the GPUs. |
-| `e3_N2_x__N3_x` | solution_only **BLIND** | req_info: downgrade_01111_enumerates_gpus_but_models_run_on_cpu, nvidia_smi_lists_three_healthy_gpus_driver_58157<br>elements: recommends_clean_driver_or_cuda_reinstall | Refresh the installed Ollama and NVIDIA/CUDA software stack and retry with Ollama 0.12.6. |
-| `e4_N3_x__N4_x` | solution_only **BLIND** | req_info: ollama_0126_still_detects_no_gpus<br>elements: requests_updated_loader_diagnostics | Update to Ollama 0.12.9 with enhanced loader diagnostics and compare the behavior in clean Windows environments. |
-| `e5_N4_x__N4b` | clarification_only | asks: bare_25h2_install_without_third_party_av_still_fails | No, I'm not in a corporate environment - it's my own personal computer. I installed a bare Windows 11 Enterpri |
-| `e6_N4b__N5_x` | solution_only **BLIND** | req_info: windows_sandbox_24h2_detects_all_three_gpus, clean_enterprise_24h2_works_then_25h2_reproduces_failure, ollama_0129_log_reports_procedure_not_found_for_all_ggml_backends<br>elements: recommends_trying_the_next_ollama_release | Install Ollama 0.13.0 and retry GPU discovery and model loading. |
-| `e7_N5_x__N6` | clarification_only | asks: no_other_ggml_base_dll_found_in_path | No, there are no other `ggml-base.dll` files in PATH. ComfyUI, SwarmUI, Whisper, and my other tools are all in |
-| `e8_N6__N7` | clarification_only | asks: copying_current_ggml_base_to_windows_makes_models_use_vram | I've finally fixed it!! I copied `ggml-base.dll` from the Ollama installation folder to `C:\Windows` and now a |
-| `e9_N7__N_terminal` | solution_only | req_info: other_cuda_applications_use_all_three_gpus, windows_sandbox_24h2_detects_all_three_gpus, clean_enterprise_24h2_works_then_25h2_reproduces_failure, ollama_0130_detects_gpus_but_models_still_use_ram_and_cpu, debug_log_without_cuda_visible_still_cpu_only, ollama_0129_log_reports_procedure_not_found_for_all_ggml_backends, no_other_ggml_base_dll_found_in_path, bare_25h2_install_without_third_party_av_still_fails, copying_current_ggml_base_to_windows_makes_models_use_vram<br>elements: identifies_ggml_base_or_backend_dll_resolution_as_root_cause, requires_same_release_install_local_dlls, warns_system_wide_ggml_base_copy_is_update_unsafe, asks_user_to_verify_model_layers_load_into_vram | Correct the Windows DLL-resolution failure so Ollama's backend libraries load the matching `ggml-base.dll` from the same Ollama release; treat the reporter's system-wide DLL placement only as a diagnostic workaround and verify actual VRAM use. |
+| `e1_N0__N1` | clarification_only | asks: debug_log_0125_loads_library_paths_but_lists_only_cpu, nvidia_smi_lists_three_working_gpus_driver_58157 | I ran it with `OLLAMA_DEBUG=2` and attached the log. It shows Ollama trying the main library directory and `cu / `nvidia-smi` reports driver 581.57 with CUDA 13.0 and lists GPU 0 as an RTX 5070 and GPUs 1 and 2 as RTX 3060  |
+| `e2_N1__N2_x` | solution_only **BLIND** | req_info: ollama_0125_reports_cpu_only_zero_vram, debug_log_0125_loads_library_paths_but_lists_only_cpu<br>elements: reinstalls_the_current_ollama_build | Repair a potentially damaged Ollama installation by uninstalling and reinstalling the same release. |
+| `e3_N2_x__N2_y` | solution_only **BLIND** | req_info: ollama_01111_preupdate_logs_detected_nvidia_gpus<br>elements: downgrades_to_the_pre_regression_build | Downgrade to the older Ollama build whose startup logs previously detected the GPUs. |
+| `e4_N2_y__N3` | solution_only **BLIND** | req_info: ollama_0125_reports_cpu_only_zero_vram, debug_log_0125_loads_library_paths_but_lists_only_cpu<br>elements: updates_to_build_with_expanded_diagnostics | Install the newer release containing expanded diagnostics and retry GPU discovery. |
+| `e5_N3__N4` | clarification_only | asks: enhanced_log_reports_procedure_not_found_for_all_ggml_cpu_and_cuda_dlls, sandbox_24h2_same_ollama_detects_all_three_gpus | The log says `The specified procedure could not be found` for every listed `ggml-cpu-*.dll`, and it says the s / I installed Ollama in Windows Sandbox, quit the tray application, and ran `ollama serve`. It detected all thre |
+| `e6_N4__N5` | solution_only **BLIND** | req_info: ollama_0125_reports_cpu_only_zero_vram, enhanced_log_reports_procedure_not_found_for_all_ggml_cpu_and_cuda_dlls<br>elements: checks_gpu_enumeration_and_actual_vram_use | Install the next Ollama release and retry both GPU enumeration and actual model loading. |
+| `e7_N5__N_terminal` | solution_only | req_info: ollama_0125_reports_cpu_only_zero_vram, ollama_01111_preupdate_logs_detected_nvidia_gpus, other_gpu_applications_use_all_three_gpus, enhanced_log_reports_procedure_not_found_for_all_ggml_cpu_and_cuda_dlls, sandbox_24h2_same_ollama_detects_all_three_gpus, no_other_ggml_base_dll_found_in_path<br>elements: identifies_ggml_base_dll_resolution_as_the_failure_boundary, requires_release_matched_ggml_base_from_the_ollama_installation, warns_that_copying_ggml_base_to_a_system_directory_is_not_a_durable_fix, asks_user_to_verify_model_vram_use_after_correcting_library_resolution | Treat the failure as Windows DLL resolution of Ollama's matching `ggml-base.dll`, not as missing CUDA hardware: ensure the runner resolves the release-matched DLL from the Ollama installation, use the reporter's system-directory copy only as diagnostic proof, and do not retain a system-wide copy across updates. |
 
 ## Nodes
 
 | node | terminal | volunteered | images | symptoms |
 |---|---|---|---|---|
-| `N0` |  | 0 | 0 | After updating from Ollama 0.11.11 to 0.12.5, `ollama serve` detects only the CPU, reports 0 B VRAM, and enters low-VRAM mode even though ol |
-| `N1` |  | 1 | 0 | Ollama 0.12.5 still reports only CPU inference after I remove CUDA_VISIBLE_DEVICES, while `nvidia-smi` lists all three GPUs and other CUDA a |
-| `N2_x` |  | 1 | 0 | With Ollama 0.11.11 installed again, startup lists my GPUs, but every model I try still loads into RAM and runs on the CPU. |
-| `N3_x` |  | 3 | 0 | Ollama 0.12.6 still detects no GPUs after I reinstall the NVIDIA software stack, reinstall Ollama, and try a simplified PATH. |
-| `N4_x` |  | 3 | 1 | Ollama 0.12.9 on my Windows 11 Enterprise 25H2 installation prints `The specified procedure could not be found` for every ggml CPU library a |
-| `N4b` |  | 0 | 0 | A bare 25H2 installation without third-party antivirus still fails to load the Ollama libraries. |
-| `N5_x` |  | 2 | 1 | Ollama 0.13.0 finally lists my GPUs, but models still load into system RAM and use about 70–80% CPU instead of VRAM. When I start `ollama se |
-| `N6` |  | 0 | 0 | Ollama 0.13.0 still loads models into system RAM and uses the CPU even though startup now lists the GPUs. |
-| `N7` |  | 0 | 0 | After I copied the `ggml-base.dll` from the Ollama installation folder to `C:\Windows`, all my models load into the VRAM of my GPUs. |
-| `N_terminal` | ✓ | 0 | 0 | With the system-wide copy removed and Ollama loading the `ggml-base.dll` from its own installation folder, my models still load into the GPU |
+| `N0` |  | 0 | 0 | After updating to Ollama 0.12.5 on Windows 11 Enterprise 25H2, `ollama serve` reports only CPU inference, enters low-VRAM mode with 0 B VRAM |
+| `N1` |  | 2 | 0 | Ollama 0.12.5 still lists only CPU inference, while `nvidia-smi` lists my RTX 5070 and two RTX 3060 GPUs. Other GPU applications can use the |
+| `N2_x` |  | 1 | 0 | After uninstalling and reinstalling Ollama 0.12.5 and removing `CUDA_VISIBLE_DEVICES`, `ollama serve` still reports only CPU inference. |
+| `N2_y` |  | 1 | 0 | With Ollama 0.11.11 installed again, startup detects my GPUs, but loading even a small model puts the work in system RAM and uses the CPU. |
+| `N3` |  | 1 | 0 | Ollama 0.12.9 still does not detect my GPUs on Windows 11 Enterprise 25H2, although LM Studio detects them and loads models into VRAM. |
+| `N4` |  | 2 | 0 | On my Windows 11 Enterprise 25H2 installation, Ollama reports 'The specified procedure could not be found' for every listed GGML CPU library |
+| `N5` |  | 3 | 1 | Ollama 0.13.0 now detects my GPUs, but models still load into system RAM and CPU usage reaches roughly 70–80%. When I start `ollama serve`,  |
+| `N_terminal` | ✓ | 1 | 0 | After making the matching `ggml-base.dll` discoverable through `C:\Windows`, my models load into the GPUs' VRAM again instead of system RAM  |
 
 ## Machine review (audit pass, adversarially verified)
 

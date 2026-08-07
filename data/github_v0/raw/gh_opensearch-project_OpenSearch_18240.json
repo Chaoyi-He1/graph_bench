@@ -1,0 +1,211 @@
+{
+ "repo": "opensearch-project/OpenSearch",
+ "number": 18240,
+ "url": "https://github.com/opensearch-project/OpenSearch/issues/18240",
+ "title": "[BUG] Snapshot repositories don't work with S3 compatible storage in 3.0.0",
+ "state": "closed",
+ "labels": [
+  "bug",
+  "Plugins",
+  "Storage",
+  "Storage:Snapshots",
+  "Storage:Remote",
+  "v3.3.0"
+ ],
+ "reporter": "reporter",
+ "created_at": "2025-05-08T14:06:43Z",
+ "closed_at": "2025-09-23T21:02:47Z",
+ "body": "### Describe the bug\n\nRepository S3 plugin 3.0.0 upgrade AWS SDK version to 2.30.31\n\nUnfortunately, there is incompatibilities with some S3-like storages, like Outscale (see https://<redacted-host>/en/userguide/AWS-SDK-and-CLI-Compatibility-Warning.html).\n\nError when testing S3 repository :\n\n> \"Caused by: software.amazon.awssdk.services.s3.model.S3Exception: trailing checksum is not supported (Service: S3, Status Code: 400, Request ID: 8d0e880c5c4786c2ed08, Extended Request ID: 8d0e880c5c4786c2ed08) (SDK Attempt Count: 1)\"\n\nThe workaround provided (disable checksum calculation with env vars or java properties) doesn't work, because in that case no checksum is sent, and Outscale expect MD5 checksum.\n\nError with checksum disabled :\n\n> \"Caused by: software.amazon.awssdk.services.s3.model.S3Exception: The Content-MD5 you specified did not match what we received. (Service: S3, Status Code: 400, Request ID: 6fc31e21444eb5fc1a6b, Extended Requ\nest ID: 6fc31e21444eb5fc1a6b) (SDK Attempt Count: 1)\"\n\nTo keep Opensearch S3 repository plugin compatible with all S3-like storages, you can :\n- revert back AWS SDK dependency version to <= 2.29.52\n- implement a workaround like https://github.com/aws/aws-sdk-java-v2/discussions/5802#discussioncomment-12281124\n\nIt may be the same with others S3-like object storages, wich aren't compatible yet with new aws S3 integrity check\n\n\n### Related component\n\nPlugins\n\n### To Reproduce\n\nTry to configure a S3 repository, with Outscale Object Storage as backend\nSee the error in logs\n\n\n### Expected behavior\n\nOpensearch should work with any S3-like storage\n\n### Additional Details\n\n**Plugins**\nrepository-s3\n\n\n**Host/Environment (please complete the following information):**\n - OS: Debian\n - Version 11\n",
+ "comments": [
+  {
+   "author": "reporter",
+   "created_at": "2025-05-08T16:41:41Z",
+   "body": "For information :\nI changed aws version in gradle/libs.versions.toml from 2.30.31 to 2.29.52\nI rebuilt the plugin zip, installed it on my cluster, and it works"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-06-02T16:10:19Z",
+   "body": "[Catch All Triage](https://github.com/opensearch-project/.github/blob/main/TRIAGING.md) - [1](https://github.com/participant1) [2](https://github.com/andrross)"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-06-18T08:16:48Z",
+   "body": "We faced this as well. A fix would be greatly appreciated!"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-06-27T15:53:33Z",
+   "body": "For those who wants to rebuild the plugin themselves : \n\n- Install JDK and Gradle\n- checkout desired Opensearch repo tag\n- modify gradle/libs.versions.toml : aws=\"2.XX.YY\" to aws=\"2.29.52\"\n- go to plugins/repository-s3\n- gradle updateSHAs\n- gradle assemble -Dbuild.snapshot=false\n- you have the zip in build/distributions/repository-s3-X.Y.Z.zip"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-07-18T12:34:39Z",
+   "body": "This bug still exists in version 3.1, it is a showstopper for upgrades."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-07-18T12:36:53Z",
+   "body": "> This bug still exists in version 3.1, it is a showstopper for upgrades.\n\n@participant3 it works in 3.1 if you rebuild manually the plugin with my method"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-07-18T12:39:47Z",
+   "body": "> > This bug still exists in version 3.1, it is a showstopper for upgrades.\n> \n> [@participant3](https://github.com/participant3) it works in 3.1 if you rebuild manually the plugin with my method\n\nYes of course, but for a enterprise ready solution this is not really the way forward that we need to build essentials plugins manually, so I was more that I wanted to highlight it again so the issue can be resolved for real.\n\n"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-08-26T14:44:32Z",
+   "body": "> This bug still exists in version 3.1, it is a showstopper for upgrades.\n\nWe encountered this issue in 3.1.0, tried updating to 3.2.0 but it didn't solve the problem\nOur solution is to replace the jar in the plugin directory. /usr/share/opensearch/plugins/repository-s3/s3-2.30.31.jar to old version s3-2.20.86.jar and restart OpenSearch.\n\n\n"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2025-08-26T15:26:31Z",
+   "body": "@participant4 I think it would be possible to build the s3 client in \"compat mode\" to support s3-compatible repositories that don't yet have support for extra trailing checksums. Something like the changes in https://github.com/participant5/OpenSearch/pull/316\n\n```\nfinal S3ClientBuilder builder = S3Client.builder()\n    .requestChecksumCalculation(RequestChecksumCalculation.WHEN_REQUIRED)\n    .responseChecksumValidation(ResponseChecksumValidation.WHEN_REQUIRED)\n    .addPlugin(LegacyMd5Plugin.create());\n```\n\nChanges would be made [here](https://github.com/opensearch-project/OpenSearch/blob/main/plugins/repository-s3/src/main/java/org/opensearch/repositories/s3/S3Service.java#L213). I'm not sure how to setup a test for those changes to ensure they work for s3-compatible repositories. "
+  },
+  {
+   "author": "participant6",
+   "created_at": "2025-08-27T07:46:35Z",
+   "body": "@reporter Hello.\nI done a new plugin with your instruction. \n\nThis solution helped get rid of the \"x-amz-trailer\" error, but now there's another nuance.\nThe structure in my bucket has changed.\n\nPreviously, the plugin created a structure like this:\n<RООT>/<BASE_PATH>/indices//0/<SHARD_BLOBS>\n\nNow the structure is like this:\n<RООT>/<HASH-ОF-INDEX-ID-AND-SHARD-ID>/<BASE_PATH>/indices//0/<SHARD_BLOBS>\n<RООT>/<BАSE_PATH>/indices/<indеx-id>/<meta.dat>\n\nSo it turns out that the meta.dat file is located separately in a different directory, while the index files are separate.\n\nIt's creating a mess in the bucket as a result."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-08-27T09:08:30Z",
+   "body": "@participant6 \nI don't think the aws sdk version change the directory structure.\nMaybe this change comes with the Opensearch upgrade from 2.X to 3.X ?"
+  },
+  {
+   "author": "participant6",
+   "created_at": "2025-08-27T09:20:24Z",
+   "body": "@reporter \n\nWe've identified the issue.\nThe problem is that in version 3.x.x, the default parameter for s3 or fs `shard_path_type` is not set to `FIXED`. However, the documentation states that this is the default value.\n\nIssue resolved. Thank you."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-08-27T14:38:47Z",
+   "body": "@participant5 \nIf you can provide me with an archive containing the plugin, I could test its functionality in my setup"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2025-08-27T14:43:25Z",
+   "body": "> [@participant5](https://github.com/participant5) If you can provide me with an archive containing the plugin, I could test its functionality in my setup\n\nCertainly, fyi building a plugin from source is pretty simple as well in case you need to make further changes.\n\nHere are the steps:\n\n1. Checkout the feature branch\n2. `./gradlew :<nick>:repository-s3:assemble`\n3. Plugin zip is in `build/distributions/` folder of the plugin <- in this case `plugins/repository-s3/build/distributions/repository-s3-3.3.0-SNAPSHOT.zip`.\n\n@participant4 should I generate a zip for 3.2, the latest released version of OpenSearch?"
+  },
+  {
+   "author": "participant7",
+   "created_at": "2025-08-27T16:09:02Z",
+   "body": "> > This bug still exists in version 3.1, it is a showstopper for upgrades.\n> \n> We encountered this issue in 3.1.0, tried updating to 3.2.0 but it didn't solve the problem Our solution is to replace the jar in the plugin directory. /usr/share/opensearch/plugins/repository-s3/s3-2.30.31.jar to old version s3-2.20.86.jar and restart OpenSearch.\n\nIntersting. Any \"other issues\" so far? Or is it \"just\" working, @participant4 ?"
+  },
+  {
+   "author": "participant6",
+   "created_at": "2025-08-28T08:08:28Z",
+   "body": "> > [@participant5](https://github.com/participant5) If you can provide me with an archive containing the plugin, I could test its functionality in my setup\n> \n> Certainly, fyi building a plugin from source is pretty simple as well in case you need to make further changes.\n> \n> Here are the steps:\n> \n>     1. Checkout the feature branch\n> \n>     2. `./gradlew :<nick>:repository-s3:assemble`\n> \n>     3. Plugin zip is in `build/distributions/` folder of the plugin <- in this case `plugins/repository-s3/build/distributions/repository-s3-3.3.0-SNAPSHOT.zip`.\n> \n> \n> [@participant4](https://github.com/participant4) should I generate a zip for 3.2, the latest released version of OpenSearch?\n\n@participant5 Yes, generate a plugin for version 3.2, I'm interested in testing it."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2025-08-29T18:27:13Z",
+   "body": "@participant6 @participant4 Please find 3.2 archive to test here: https://github.com/participant5/OpenSearch/blob/repository-s3-fix-3.2/repository-s3-3.2.0-SNAPSHOT.zip\n\n\nThat archive contains the changes described here: https://github.com/opensearch-project/OpenSearch/issues/18240#issuecomment-3224659260\n\nI'm not sure it will work, but worth a try."
+  },
+  {
+   "author": "participant6",
+   "created_at": "2025-09-01T07:33:47Z",
+   "body": "> [@participant6](https://github.com/participant6) [@participant4](https://github.com/participant4) Please find 3.2 archive to test here: https://github.com/participant5/OpenSearch/blob/repository-s3-fix-3.2/repository-s3-3.2.0-SNAPSHOT.zip\n> \n> That archive contains the changes described here: [#18240 (comment)](https://github.com/opensearch-project/OpenSearch/issues/18240#issuecomment-3224659260)\n> \n> I'm not sure it will work, but worth a try.\n\n@participant5 hello. This plugin don't work.\n\n```\nMissing required header for this request: Content-MD5 (Service: S3, Status Code: 400, Request ID: 9bb8e898-eaac-1fff-9fa6-1070fdfaaa9c) (SDK Attempt Count: 1)\n[WARN ][o.o.r.RepositoriesService] [opensearch-restore] [test-plugin] failed to finish repository verification\norg.opensearch.repositories.RepositoryVerificationException: [test-plugin] cannot delete test data at [test-plugin]\n\njava.lang.RuntimeException: java.util.concurrent.CompletionException: software.amazon.awssdk.services.s3.model.InvalidRequestException: Missing required header for this request: Content-MD5 (Service: S3, Status Code: 400, Request ID: 9bb8e898-eaac-1fff-9fa6-1070fdfaaa9c) (SDK Attempt Count: 1)\njava.util.concurrent.CompletionException: software.amazon.awssdk.services.s3.model.InvalidRequestException: Missing required header for this request: Content-MD5 (Service: S3, Status Code: 400, Request ID: 9bb8e898-eaac-1fff-9fa6-1070fdfaaa9c) (SDK Attempt Count: 1)\n```"
+  },
+  {
+   "author": "participant7",
+   "created_at": "2025-09-01T10:09:04Z",
+   "body": "In my test setup, I'm still using the rebuild plugin following https://github.com/opensearch-project/OpenSearch/issues/18240#issuecomment-2863672298 instructions. I did not yet try to use the newly built release"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-09-01T11:19:04Z",
+   "body": "@participant5\n\nIt seems you forgot to do the same changes in S3AsyncService.java.\nI did the changes, rebuilt the plugin, and it works in my setup."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2025-09-02T14:02:55Z",
+   "body": "> [@participant5](https://github.com/participant5)\n> \n> It seems you forgot to do the same changes in S3AsyncService.java. I did the changes, rebuilt the plugin, and it works in my setup.\n\nAwesome, thank you for confirming @reporter . I will raise a PR later today once the build has been fixed. "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-09-02T14:07:22Z",
+   "body": "@participant5 \nI only tested with Outscale Object Storage, which is a \"S3 like\" cloud service.\nI think it should be tested with other providers (Minio...) and AWS S3, ton confirm it works in all cases"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2025-09-02T15:37:09Z",
+   "body": "@reporter raised a PR [here](https://github.com/opensearch-project/OpenSearch/pull/19220) and added the change in S3AsyncService as well. The challenge I am facing is in how to write a test to ensure this doesn't break in the future. "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-09-02T16:58:08Z",
+   "body": "@participant5 \nThe build fail, but the log is awful, not easy to understand why it fails.\n\nAbout the tests, I don't know how we can simulate a S3 storage that is not compatible.\nActual tests use a minio fixture, but minio is now fully compatible with S3 checksums."
+  },
+  {
+   "author": "participant8",
+   "created_at": "2025-09-20T10:00:05Z",
+   "body": "so, in which version of opensearch will this be resolved?\n@participant5 did a great job resolving this\nwho is responsible to merge his fix?\nwill this go into v3.3.0 or do we have to lean back to temporary fix like https://github.com/opensearch-project/OpenSearch/issues/18240#issuecomment-3224477520 or rebuilding it ourselves, not an enterprise solution imo?"
+  },
+  {
+   "author": "participant9",
+   "created_at": "2025-10-27T15:44:01Z",
+   "body": "I still got the problem using Oracle cloud infrastructure buckets and opensearch 3.3.1\n\n```\nRepositoryVerificationException[[segment-repo] cannot delete test data at [segments]]; nested: RuntimeException[java.util.con\ncurrent.CompletionException: software.amazon.awssdk.services.s3.model.InvalidRequestException: Missing required header for this request:\n Content-MD5 (Service: S3, Status Code: 400, Request ID: fra-1:K1Yy1-qlb7BPiHaB9OebzI_d6g8sVpVrRqsBh5vtoYHrzDnpMVFY6DES9IVPEh2u) (SDK At\ntempt Count: 1)];\n```\n\nlooks a lot like this comment\n\n> > [@participant6](https://github.com/participant6) [@participant4](https://github.com/participant4) Please find 3.2 archive to test here: https://github.com/participant5/OpenSearch/blob/repository-s3-fix-3.2/repository-s3-3.2.0-SNAPSHOT.zip\n> > That archive contains the changes described here: [#18240 (comment)](https://github.com/opensearch-project/OpenSearch/issues/18240#issuecomment-3224659260)\n> > I'm not sure it will work, but worth a try.\n> \n> [@participant5](https://github.com/participant5) hello. This plugin don't work.\n> \n> ```\n> Missing required header for this request: Content-MD5 (Service: S3, Status Code: 400, Request ID: 9bb8e898-eaac-1fff-9fa6-1070fdfaaa9c) (SDK Attempt Count: 1)\n> [WARN ][o.o.r.RepositoriesService] [opensearch-restore] [test-plugin] failed to finish repository verification\n> org.opensearch.repositories.RepositoryVerificationException: [test-plugin] cannot delete test data at [test-plugin]\n> \n> java.lang.RuntimeException: java.util.concurrent.CompletionException: software.amazon.awssdk.services.s3.model.InvalidRequestException: Missing required header for this request: Content-MD5 (Service: S3, Status Code: 400, Request ID: 9bb8e898-eaac-1fff-9fa6-1070fdfaaa9c) (SDK Attempt Count: 1)\n> java.util.concurrent.CompletionException: software.amazon.awssdk.services.s3.model.InvalidRequestException: Missing required header for this request: Content-MD5 (Service: S3, Status Code: 400, Request ID: 9bb8e898-eaac-1fff-9fa6-1070fdfaaa9c) (SDK Attempt Count: 1)\n> ```\n\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-10-27T16:35:26Z",
+   "body": "@participant9 \n\nIt works for me with 3.3.0 version.\n\nThough you have to do an extra config to make the connector use \"compatibility mode\"."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2025-10-27T16:45:44Z",
+   "body": "@participant9 Have you tried adding the following to `opensearch.yml`?\n\n`s3.client.legacy_md5_checksum_calculation: true`"
+  },
+  {
+   "author": "participant9",
+   "created_at": "2025-10-27T16:54:56Z",
+   "body": "I'm using the helm chart if that changes anything\n\nI just tried s3.client.legacy_md5_checksum_calculation: true which lead to ->\n\n```\nCaused by: org.opensearch.common.settings.SettingsException: Failed to get setting group for [s3.client.] setting prefix and \nsetting [s3.client.legacy_md5_checksum_calculation] because of a missing '.'\n```\n\nMy guess here is that looking at the rest of the configuration I have \n\nit's declared like that most of the time\ns3.client.default.x: value\nif I add the .default\n\n```\nSettingsException[unknown setting [s3.client.default.legacy_md5_checksum_calculation] please check that any required plugins \nare installed, or check the breaking changes documentation for removed settings]\n```\n\nNot sure if it's specific to the helm chart configuration or if i'm misunderstanding something"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-10-27T17:00:30Z",
+   "body": "@participant5 @participant9  \n\nI thought the parameter was `s3.client.default.legacy_md5_checksum_calculation`, and I had the same error.\n\nI managed to make it working by creating/updating the snapshot repos by API (https://<redacted-host>/latest/api-reference/snapshots/create-repository/) : \n\n```\n{\n    \"type\": \"s3\",\n    \"settings\": {\n        \"bucket\": \"bucketname\",\n        \"base_path\": \"path_in_bucket\",\n        \"legacy_md5_checksum_calculation\": \"true\"\n    }\n}\n```"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2025-10-27T17:00:54Z",
+   "body": "hmm, sorry that was missed. It was supposed to be added in https://github.com/opensearch-project/OpenSearch/blob/main/plugins/repository-s3/src/main/java/org/opensearch/repositories/s3/S3RepositoryPlugin.java#L345-L378. I would like to see if that resolves your issue and create a PR to add to that list. CC: @participant11 "
+  },
+  {
+   "author": "participant5",
+   "created_at": "2025-10-27T17:02:50Z",
+   "body": "@reporter thank you for confirming! I will raise a PR and ask for inclusion in 3.3.2 scheduled for 10/30."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2025-10-27T19:17:58Z",
+   "body": "@participant9 does the workaround that @reporter posted above work for you?\n\nI raised https://github.com/opensearch-project/OpenSearch/pull/19788 to make sure this is settable in opensearch.yml as well."
+  },
+  {
+   "author": "participant9",
+   "created_at": "2025-10-28T09:09:04Z",
+   "body": "Hey @participant5 , didn't seem to make it work, i'll wait for the release hopefully it'll be in 3.3.2\nThanks"
+  },
+  {
+   "author": "participant10",
+   "created_at": "2025-10-28T09:12:38Z",
+   "body": "> [@participant9](https://github.com/participant9) does the workaround that [@reporter](https://github.com/reporter) posted above work for you?\n> \n> I raised [#19788](https://github.com/opensearch-project/OpenSearch/pull/19788) to make sure this is settable in opensearch.yml as well.\n\nSorry for the noise, @reporter workaround (https://github.com/opensearch-project/OpenSearch/issues/18240#issuecomment-3452385993) works for me (opensearch v3.3.1)."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-11-01T16:30:04Z",
+   "body": "@participant5 \n\nI confirm the setting `s3.client.default.legacy_md5_checksum_calculation` works in 3.3.2, no need to specify it in each repo config now."
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "opensearch-project/OpenSearch",
+  "default_branch": "main",
+  "commit_sha": "99642ffb1b9bb499abf4f507fc6b4a67cb1956e4",
+  "as_of": "2025-05-08T14:06:43Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_opensearch-project_OpenSearch_18240"
+}

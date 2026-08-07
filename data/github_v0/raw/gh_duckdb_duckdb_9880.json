@@ -1,0 +1,271 @@
+{
+ "repo": "duckdb/duckdb",
+ "number": 9880,
+ "url": "https://github.com/duckdb/duckdb/issues/9880",
+ "title": "Out of Memory Error: Failed to allocate block of 13230080 bytes",
+ "state": "closed",
+ "labels": [
+  "under review"
+ ],
+ "reporter": "reporter",
+ "created_at": "2023-12-04T10:55:43Z",
+ "closed_at": "2025-11-07T13:55:18Z",
+ "body": "### What happens?\r\n\r\nI am performing the following query with a window function and `QUALIFY` clause on a GCP `n2-highmem-64` instance (64 CPU, 500GB RAM, with plenty of free swap just in case).\r\n\r\n```sql\r\n-- perform query\r\nCREATE TABLE tbl_out AS\r\nSELECT\r\n\tA, B, C,\r\n\trow_number() OVER (PARTITION BY A, B ORDER BY C DESC) AS D\r\nFROM tbl_in\r\nQUALIFY row_number() OVER (PARTITION BY A, B ORDER BY C DESC) <= 5\r\nORDER BY A, B, D ASC;\r\n```\r\n\r\nDuckDB is configured as such:\r\n\r\n```sql\r\n-- only use 16 threads and 200G RAM, set a temporary directory\r\nSET threads TO 16;\r\nSET memory_limit = '200GB';\r\nSET temp_directory='<some path>';\r\n```\r\n\r\nThis issue is likely similar to https://github.com/duckdb/duckdb/issues/8135: the issue happens randomly, and there's 300GB of free RAM available.\r\n\r\nAs advised by @participant2 [here](https://github.com/duckdb/duckdb/issues/8135#issuecomment-1684399615), I reduced the thread count which helped for previous queries, but not this one. I set memory to less than 50% of the available RAM. I set up a temporary directory.\r\n\r\nThis query works on my OSX M1 Max, 64GB RAM, 10 CPUs.\r\n\r\n### To Reproduce\r\n\r\nI cannot share the original data as it is private, but I generated synthetic data that keeps the original cardinality and reproduce the error.\r\n\r\nOn a GCP instance `n2-highmem-64`,\r\n\r\n```bash\r\n$ curl -O https://storage.googleapis.com/capp-dev/duckdb/tbl_in.parquet\r\n$ duckdb oom\r\n```\r\n\r\nthen\r\n\r\n```sql\r\nSET threads TO 16;\r\nSET memory_limit = '200GB';\r\nSET temp_directory='tmp';\r\n\r\nCREATE TABLE tbl_in AS SELECT * FROM 'tbl_in.parquet';\r\n\r\nCREATE TABLE tbl_out AS\r\nSELECT\r\n\tA, B, C,\r\n\trow_number() OVER (PARTITION BY A, B ORDER BY C DESC) AS D\r\nFROM tbl_in\r\nQUALIFY row_number() OVER (PARTITION BY A, B ORDER BY C DESC) <= 5\r\nORDER BY A, B, D ASC;\r\n```\r\n\r\nYou should likely see the following error:\r\n\r\n```\r\nOut of Memory Error: Failed to allocate block of XXXX bytes\r\n```\r\n\r\nalthough you have plenty of free RAM\r\n\r\n### OS:\r\n\r\nLinux instance-2 5.10.0-26-cloud-amd64 #1 SMP Debian 5.10.197-1 (2023-09-29) x86_64 GNU/Linux\r\n\r\n### DuckDB Version:\r\n\r\n0.9.2\r\n\r\n### DuckDB Client:\r\n\r\nCLI & Go\r\n\r\n### Full Name:\r\n\r\nGawen Arab\r\n\r\n### Affiliation:\r\n\r\nairbuds.fm\r\n\r\n### Have you tried this on the latest `main` branch?\r\n\r\nI have tested with a release build (and could not test with a main build)\r\n\r\n### Have you tried the steps to reproduce? Do they include all relevant data and configuration? Does the issue you report still appear there?\r\n\r\n- [X] Yes, I have",
+ "comments": [
+  {
+   "author": "reporter",
+   "created_at": "2023-12-04T14:49:45Z",
+   "body": "Disabling the `jemalloc` extension makes the query work - although slightly slower.\r\n\r\nI guess `jemalloc` needs some fine-tuning, but I wouldn't know where to start."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-12-05T14:02:40Z",
+   "body": "I got a similar error importing ~11b records across 3.8 TB of JSON files. I also tried reducing threads and memory)limit.\r\n\r\nIs there a way to disable `jemalloc` without compiling from source? I did: `SKIP_EXTENSIONS=jemalloc make -j8`"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-12-06T17:09:29Z",
+   "body": "> Is there a way to disable `jemalloc` without compiling from source? I did: `SKIP_EXTENSIONS=jemalloc make -j8`\r\n\r\nI tried `BUILD_JEMALLOC=0 make` but it didn't do. I Q&D commented [this line](https://github.com/duckdb/duckdb/blob/3c695d7ba94d95d9facee48d395f46ed0bd72b46/src/common/allocator.cpp#L19)."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-12-06T19:58:02Z",
+   "body": "There is something very wrong here - the dataset is only 3.8GB but the memory footprint shoots straight up to 80GB on my machine before any paging even happens.\r\n\r\nOther statistics:\r\n\r\n```sql\r\nselect count(*) from tbl_in;\r\n```\r\n| count_star() |\r\n|--------------|\r\n| 963673805    |\r\n\r\n```sql\r\nsummarize tbl_in;\r\n```\r\n\r\n| column_name | column_type |         min          |         max         | approx_unique |        avg         |        std         | q25  | q50  |  q75  |   count   | null_percentage |\r\n|-------------|-------------|----------------------|---------------------|---------------|--------------------|--------------------|------|------|-------|-----------|-----------------|\r\n| A           | VARCHAR     | 10000004372858080438 | 9999977954010178949 | 1370913       |                    |                    |      |      |       | 963673805 | 0.00            |\r\n| B           | VARCHAR     | 12362087849403487841 | 7616756250057145536 | 5             |                    |                    |      |      |       | 963673805 | 0.00            |\r\n| C           | DOUBLE      | 90.0                 | 201889.0            | 2922          | 130.55059520166162 | 267.95533001870956 | 90.0 | 90.0 | 109.0 | 963673805 | 0.00            |\r\n\r\n```sql\r\nselect count(*) from (select A, B from tbl_in group by all) t;\r\n``` \r\n\r\n| count_star() |\r\n|--------------|\r\n| 6774620      |\r\n"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-12-06T21:16:57Z",
+   "body": "The data has ~1B rows of ~50 bytes each, giving an uncompressed size of ~50GB.  Parquet (and DuckDB) do an admirable job of compressing this data (3.8GB for DuckDB and 1.2GB for parquet). \r\n\r\nWhen we partition, we have no compression, and the partitions leave empty space to avoid reallocation overhead, so the partitions will end up being a significant multiple of this uncompressed size. With 16 threads, the data will be split into ~16M rows per thread, each of which has 1024 partition buffers. These buffers will then each end up containing ~16K rows of _uncompressed_ data, along with what appears to be an average of 50% buffering overhead, for an average row cost of ~100GB."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-12-06T21:39:21Z",
+   "body": "One workaround is to compress the strings yourself:\r\n\r\n```sql\r\ncreate temporary table dim_a as \r\n    select row_number() over (order by A) AS aid, A \r\n    from (select distinct A from tbl_in order by all) t;\r\n\r\ncreate temporary table dim_b as \r\n    select row_number() over (order by B) AS bid, B \r\n    from (select distinct B from tbl_in order by all) t;\r\n\r\nWITH view_in as (\r\n    select \r\n    \taid::INTEGER as A, \r\n    \tbid::TINYINT as B, \r\n    \tC \r\n    from tbl_in, dim_a, dim_b \r\n    where tbl_in.A = dim_a.A \r\n      and tbl_in.B = dim_b.B\r\n)\r\nSELECT\r\n\tA, B, C,\r\n\trow_number() OVER (PARTITION BY A, B ORDER BY C DESC) AS D\r\nFROM view_in\r\nQUALIFY row_number() OVER (PARTITION BY A, B ORDER BY C DESC) <= 5\r\nORDER BY A, B, D ASC;\r\n```\r\n\r\nThis completes for me in about a minute using < 50GB on 16 cores."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-12-06T21:43:31Z",
+   "body": "Another part of the problem is that the strings are too long to inline (> 12 bytes) so we have to allocate heap blocks instead of treating them as fixed-width data."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-12-07T13:29:54Z",
+   "body": "Thanks @participant2 for the investigation, the insights about how it works internally, and your advice to optimize it! 🙏 \r\n\r\nI'd like to clarify my understanding of the issue we're addressing. Is your objective to reduce the memory usage of this query to make it work? It seems that the main problem isn't that duckdb is running out of available RAM; in fact, it sometimes raises an OOM error when allocating few KiB blocks of memory, despite there are GiBs of RAM unused. This occurs regardless of setting the `memory_limit` to a high percentage of the available RAM.\r\n\r\nThis lead me to the conclusion that the root issue is closely tied to the memory allocator being `jemalloc` rather than the query's memory usage itself. Maybe some memory fragmentation, or some configuration limit to fine-tune 💭. Disabling `jemalloc` makes it work all the time without any OOMs. WDYT?\r\n\r\n> The data has ~1B rows of ~50 bytes each,\r\n> [...]\r\n> Another part of the problem is that the strings are too long to inline (> 12 bytes) so we have to allocate heap blocks instead of treating them as fixed-width data.\r\n\r\nNote that the dataset in `tbl_in` is synthetic and only matches the original dataset's `approx_unique`s. Rows and string lengths were changed.\r\n\r\nThanks again for your time!"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-12-07T18:25:50Z",
+   "body": "Good question. My objective was actually to see if there was something dumb going on in the window operator (which is my responsibility). The workaround came from my observations of that. \r\n\r\nBut why the allocator is failing is something I have little clue about and should probably be addressed by another member of the team. I do know that not all of our memory is tracked, which can be an issue at times. it may also be that once the partitioning ground through, we were unable to allocate a large untracked block of 1/1024 of the data for the window calculations on one of the cores."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-02-11T19:12:14Z",
+   "body": "I don't quite understand the internals of duckdb memory allocation and have not been following the discussions here closely but wanted to add that I ran into a similar OOM issue when left joining a Table of ~12B rows to another 12B row table using any number of  threads (I tested from 5 up to max) and setting a memory limit of ~500GB on an 880GB machine. Disabling Jemalloc also rectified the problem for me though the join did consume 3TB of temporary disk space during the process. "
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-02-11T19:18:42Z",
+   "body": "@participant3 which OS are using?"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-02-11T19:28:48Z",
+   "body": "@participant3 And which version? If not the latest, then can you give it a try with that because we have done a fair bit of work on this lately."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-02-11T19:38:44Z",
+   "body": "@participant4  @participant2 Currently using Linux (Debian 12) with DuckDB v0.9.2 via the downloaded binary. Similar to @reporter, to disable Jemalloc, i downloaded the repo at the v0.9.2 release, commented out the line referenced above and rebuilt. I would share the data for a reproducible result if i could but it's proprietary. \r\n\r\n@participant2 By latest, you mean the nightly build?"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-02-11T20:01:25Z",
+   "body": "> By latest, you mean the nightly build?\r\n\r\nYes. The python install uses `latest` - sorry for the confusion!"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-02-22T06:30:17Z",
+   "body": "This is entirely unhelpful to you because i can't actually provide the data but wanted to follow up on this. I have updated to build 0.10.0 and am still getting allocator issues with jemalloc when joining large tables (~12B rows) that i have only been able to solve by disabling jemalloc. The error that keeps popping up is the same as above: `Error: Out of Memory Error: Failed to allocate block of 262144 bytes` even though ostensibly there is memory still available. I'm also on a gcp machine n2-highmem with 856GB RAM and 128 vcpus. During execution of one particular join i limit the threads to 24 and the memory to 700GB. These settings work with the system allocator but not with jemalloc. If it's also helpful, the tables that i'm joining contain anywhere from 100GB to 1TB of data under whatever compression duckdb is using."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2024-03-08T20:05:26Z",
+   "body": "I'm seeing this as well in 0.10.0 with large data (several times the size of RAM). As someone who installed DuckDB via pip, it's not very clear to me how I would disable jemalloc."
+  },
+  {
+   "author": "participant6",
+   "created_at": "2024-03-22T12:38:05Z",
+   "body": "I also came across this issue. With over 400GB memory unused \"Out of Memory Error: Failed to allocate block of 262144 bytes\" pops out."
+  },
+  {
+   "author": "participant7",
+   "created_at": "2024-04-12T04:16:20Z",
+   "body": "I have 512gb RAM with 64CPU and dataset in gziped json format ~300gb raises exactly same error, rerun script 3 times and same issue. Reducing `thread` or `memory_limit` don't help. Any other suggestions? @participant3 could you please guide, how to disable `jemalloc`? Thanks"
+  },
+  {
+   "author": "participant7",
+   "created_at": "2024-04-12T22:53:10Z",
+   "body": "> I have 512gb RAM with 64CPU and dataset in gziped json format ~300gb raises exactly same error, rerun script 3 times and same issue. Reducing `thread` or `memory_limit` don't help. Any other suggestions? @participant3 could you please guide, how to disable `jemalloc`? Thanks\r\n\r\nI have fixed my OOM issue by disabling `jemalloc` on Ubuntu, just run this `GEN=ninja BUILD_JSON=1 SKIP_EXTENSIONS=jemalloc BUILD_JEMALLOC=0 make`"
+  },
+  {
+   "author": "participant7",
+   "created_at": "2024-04-16T14:04:28Z",
+   "body": "On disabled `jemalloc` keep getting it `Out of Memory Error: failed to allocate data of size 2.0 KiB (403.0 GiB/403.0 GiB used)`. \r\n\r\n```sql\r\nCOPY companies TO 'companies' \r\n(FORMAT PARQUET, FILENAME_PATTERN 'chunk_{i}', PARTITION_BY(postal_code), OVERWRITE_OR_IGNORE);\r\n```\r\n\r\n(copied this without partitions and it worked fine, the result file was just 20gb large)\r\n\r\nMachine: 512GB RAM 64CPU\r\n\r\nAny ideas?"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2024-04-16T19:26:55Z",
+   "body": "@participant7 are you sure you're not legitimately running out of memory? That `(403.0 GiB/403.0 GiB used)` doesn't seem suggestive of memory fragmentation (which I assume is the cause of this issue with jemalloc)."
+  },
+  {
+   "author": "participant7",
+   "created_at": "2024-04-16T19:37:38Z",
+   "body": "> @participant7 are you sure you're not legitimately running out of memory? That `(403.0 GiB/403.0 GiB used)` doesn't seem suggestive of memory fragmentation (which I assume is the cause of this issue with jemalloc).\r\n\r\nI have more tables inside that duckdb file, but I am reading the smallest one (uncompressed -> ~25gb). No other instances running, this is a fully isolated environment just for this work. I have issues with both `duckdb 0.10.1` and rebuild without `jemalloc` from `main` branch.  \r\n\r\n"
+  },
+  {
+   "author": "participant7",
+   "created_at": "2024-04-17T19:24:27Z",
+   "body": "> > @participant7 are you sure you're not legitimately running out of memory? That `(403.0 GiB/403.0 GiB used)` doesn't seem suggestive of memory fragmentation (which I assume is the cause of this issue with jemalloc).\r\n> \r\n> I have more tables inside that duckdb file, but I am reading the smallest one (uncompressed -> ~25gb). No other instances running, this is a fully isolated environment just for this work. I have issues with both `duckdb 0.10.1` and rebuild without `jemalloc` from `main` branch.\r\n\r\nreproduces also under v0.10.2 1601d94f94 (release)"
+  },
+  {
+   "author": "participant7",
+   "created_at": "2024-04-17T19:32:37Z",
+   "body": "```sql\r\nSET threads TO 32;\r\nSET memory_limit = '256GB';\r\nSET temp_directory='/mnt/data/tmp';\r\nSELECT * FROM read_json_auto('companies/*.json', union_by_name=True);\r\n  0% ▕                                                            ▏ Out of Memory Error: could not allocate block of size 32.0 KiB (238.4 GiB/238.4 GiB used)\r\n```\r\n\r\nI was watching memory on my machine, it was not even close to 50gb of RAM used.\r\n\r\n\r\n`update`: 290k of json files was giving this OOM, moving into single JSONL file and then read it by Duckdb was successful. (something is going wrong with reading a lot of json files)"
+  },
+  {
+   "author": "participant8",
+   "created_at": "2024-04-29T07:13:42Z",
+   "body": "I had a very similar problem with `duckdb`, and found some references to problems with `jemalloc` in systems with `transparent hugepages` enabled. I wrote a small C program that switches off `transparent hugepages` for the current process (and processest started by it), and that has solved the problem for me, at least.\r\n\r\nThe entire wrapper program looks like this:\r\n\r\n```\r\n#include <stdio.h>\r\n\r\n#include <unistd.h>\r\n#include <sys/prctl.h>\r\n\r\nint main(int argc, char **argv)\r\n{\r\n  int res;\r\n  res = prctl(PR_SET_THP_DISABLE, 1, 0, 0, 0);\r\n  execvp(*(argv+1), argv+1);\r\n}\r\n```\r\n\r\nThe crucial part is `prctl(PR_SET_THP_DISABLE, 1, 0, 0, 0);`."
+  },
+  {
+   "author": "participant9",
+   "created_at": "2024-05-04T10:53:24Z",
+   "body": "Also encountering the above issue, and when I try to comment out the line as suggested by @reporter , or to build without jemalloc as suggested in the docs, it fails.\r\n@participant8 could you give a little more detail regarding the use of your wrapper please 🙏"
+  },
+  {
+   "author": "participant8",
+   "created_at": "2024-05-06T07:16:49Z",
+   "body": "\"My\" application is a python script that I would normally run with `python <script> <arg1> ... <argn>`. With the wrapper above compiled as `nothp` (\"No Transparent HugePages\"), I run the script as `nothp python <script> <arg1> ... <argn>`. \r\n\r\nIf your application is in C/C++, simply insert a call to `prctl(PR_SET_THP_DISABLE, 1, 0, 0, 0);` somewhere in your startup code (early in `main`, typically)."
+  },
+  {
+   "author": "participant10",
+   "created_at": "2024-05-08T14:12:00Z",
+   "body": "> > I have 512gb RAM with 64CPU and dataset in gziped json format ~300gb raises exactly same error, rerun script 3 times and same issue. Reducing `thread` or `memory_limit` don't help. Any other suggestions? @participant3 could you please guide, how to disable `jemalloc`? Thanks\r\n> \r\n> I have fixed my OOM issue by disabling `jemalloc` on Ubuntu, just run this `GEN=ninja BUILD_JSON=1 SKIP_EXTENSIONS=jemalloc BUILD_JEMALLOC=0 make`\r\n\r\n@participant7 how would I reference the duckdb built from source in the python script? I git cloned the source repo and ran your above command in Ubuntu, but am now stuck at how to use this version of duckdb in python."
+  },
+  {
+   "author": "participant7",
+   "created_at": "2024-05-08T14:39:44Z",
+   "body": "> > > I have 512gb RAM with 64CPU and dataset in gziped json format ~300gb raises exactly same error, rerun script 3 times and same issue. Reducing `thread` or `memory_limit` don't help. Any other suggestions? @participant3 could you please guide, how to disable `jemalloc`? Thanks\r\n> > \r\n> > \r\n> > I have fixed my OOM issue by disabling `jemalloc` on Ubuntu, just run this `GEN=ninja BUILD_JSON=1 SKIP_EXTENSIONS=jemalloc BUILD_JEMALLOC=0 make`\r\n> \r\n> @participant7 how would I reference the duckdb built from source in the python script? I git cloned the source repo and ran your above command in Ubuntu, but am now stuck at how to use this version of duckdb in python.\r\n\r\nI was using plain cli command, so can't help with that sorry. :( Check if you can replace `bin` in virtualenv folder"
+  },
+  {
+   "author": "participant11",
+   "created_at": "2024-05-17T16:45:53Z",
+   "body": "I tried @participant8's [`nothp`](https://github.com/duckdb/duckdb/issues/9880#issuecomment-2082032179) suggestion and it did not resolve my issue.\r\n\r\nI rebuilt duckdb using `GEN=ninja SKIP_EXTENSIONS=jemalloc make` and, though duckdb seems overall slower, the query that was running out of memory now successfully completes."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-06-11T13:54:04Z",
+   "body": "Is this the same problem?\r\n\r\n### OS\r\n`6.1.77-99.164.amzn2023.aarch64`\r\n### DuckDB Version\r\n` v1.0.0 1f98600c2c`\r\n\r\n### DuckDB Client:\r\n`CLI`\r\n\r\n### To Reproduce\r\n\r\n```\r\n$ df -hT | grep tempdrive\r\n/dev/nvme1n1     xfs      1000G  7.1G  993G   1% /tempdrive\r\n$ ~/duckdb /tempdrive/test.duckdb\r\nv1.0.0 1f98600c2c\r\nEnter \".help\" for usage hints.\r\nD COPY (SELECT * from read_parquet('https://<redacted-host>/trip-data/yellow_tripdata_2024-01.parquet')) TO 's3://<mybucket>/' (FORMAT 'parquet', COMPRESSION 'zstd', PARTITION_BY(tpep_pickup_datetime), FILENAME_PATTERN '{uuid}', OVERWRITE_OR_IGNORE 1);\r\nOut of Memory Error: failed to allocate data of size 1.0 KiB (49.1 GiB/49.1 GiB used)\r\nD SET threads TO 16;\r\nD SET memory_limit = '16GB';\r\nD SET temp_directory='/tempdrive';\r\nD COPY (SELECT * from read_parquet('https://<redacted-host>/trip-data/yellow_tripdata_2024-01.parquet')) TO 's3://<mybucket>/'  (FORMAT 'parquet', COMPRESSION 'zstd', PARTITION_BY(tpep_pickup_datetime), FILENAME_PATTERN '{uuid}', OVERWRITE_OR_IGNORE 1);\r\nOut of Memory Error: failed to allocate data of size 512 bytes (14.9 GiB/14.9 GiB used)\r\n\r\n```"
+  },
+  {
+   "author": "participant8",
+   "created_at": "2024-06-11T17:23:27Z",
+   "body": "I'd be interested to see what, if any, effect you see from running duckdb through nothp (my simple no-transparent-hugepages wrapper).\r\n\r\n> On 11 Jun 2024, at 15:54, Sam Eckhouse ***@***.***> wrote:\r\n> \r\n> \r\n> Is this the same problem?\r\n> \r\n> OS\r\n> \r\n> 6.1.77-99.164.amzn2023.aarch64\r\n> \r\n> DuckDB Version\r\n> \r\n> v1.0.0 1f98600c2c\r\n> \r\n> DuckDB Client:\r\n> \r\n> CLI\r\n> \r\n> To Reproduce\r\n> \r\n> $ df -hT | grep tempdrive\r\n> /dev/nvme1n1     xfs      1000G  7.1G  993G   1% /tempdrive\r\n> $ ~/duckdb /tempdrive/test.duckdb\r\n> v1.0.0 1f98600c2c\r\n> Enter \".help\" for usage hints.\r\n> D COPY (SELECT * from read_parquet('https://<redacted-host>/trip-data/yellow_tripdata_2024-01.parquet')) TO 's3://<mybucket>/' (FORMAT 'parquet', COMPRESSION 'zstd', PARTITION_BY(tpep_pickup_datetime), FILENAME_PATTERN '{uuid}', OVERWRITE_OR_IGNORE 1);\r\n> Out of Memory Error: failed to allocate data of size 1.0 KiB (49.1 GiB/49.1 GiB used)\r\n> D SET threads TO 16;\r\n> D SET memory_limit = '16GB';\r\n> D SET temp_directory='/tempdrive';\r\n> D COPY (SELECT * from read_parquet('https://<redacted-host>/trip-data/yellow_tripdata_2024-01.parquet')) TO 's3://<mybucket>/'  (FORMAT 'parquet', COMPRESSION 'zstd', PARTITION_BY(tpep_pickup_datetime), FILENAME_PATTERN '{uuid}', OVERWRITE_OR_IGNORE 1);\r\n> Out of Memory Error: failed to allocate data of size 512 bytes (14.9 GiB/14.9 GiB used)\r\n> \r\n> —\r\n> Reply to this email directly, view it on GitHub <https://github.com/duckdb/duckdb/issues/9880#issuecomment-2160829044>, or unsubscribe <https://github.com/notifications/unsubscribe-auth/AAIDQOX5UGSNI5UBLDNNM6LZG36RJAVCNFSM6AAAAABAFYTP2SVHI2DSMVQWIX3LMV43OSLTON2WKQ3PNVWWK3TUHMZDCNRQHAZDSMBUGQ>.\r\n> You are receiving this because you were mentioned.\r\n> \r\n\r\n"
+  },
+  {
+   "author": "participant12",
+   "created_at": "2024-07-30T05:13:13Z",
+   "body": "In case it is helpful to anyone in the future, for me:\r\n\r\n- Fiddling with THP did not help\r\n- Fiddling with `memory_limit` and `max_threads` did not help\r\n- Reducing the size of the data helped sporadically\r\n- Running on equivalent `arm64` instead of AWS `x86_64` instances, resolved the crashes completely."
+  },
+  {
+   "author": "participant13",
+   "created_at": "2024-08-02T21:10:26Z",
+   "body": "> Is this the same problem?\r\n> \r\n> ### OS\r\n> `6.1.77-99.164.amzn2023.aarch64`\r\n> \r\n> ### DuckDB Version\r\n> ` v1.0.0 1f98600c2c`\r\n> \r\n> ### DuckDB Client:\r\n> `CLI`\r\n> \r\n> ### To Reproduce\r\n> ```\r\n> $ df -hT | grep tempdrive\r\n> /dev/nvme1n1     xfs      1000G  7.1G  993G   1% /tempdrive\r\n> $ ~/duckdb /tempdrive/test.duckdb\r\n> v1.0.0 1f98600c2c\r\n> Enter \".help\" for usage hints.\r\n> D COPY (SELECT * from read_parquet('https://<redacted-host>/trip-data/yellow_tripdata_2024-01.parquet')) TO 's3://<mybucket>/' (FORMAT 'parquet', COMPRESSION 'zstd', PARTITION_BY(tpep_pickup_datetime), FILENAME_PATTERN '{uuid}', OVERWRITE_OR_IGNORE 1);\r\n> Out of Memory Error: failed to allocate data of size 1.0 KiB (49.1 GiB/49.1 GiB used)\r\n> D SET threads TO 16;\r\n> D SET memory_limit = '16GB';\r\n> D SET temp_directory='/tempdrive';\r\n> D COPY (SELECT * from read_parquet('https://<redacted-host>/trip-data/yellow_tripdata_2024-01.parquet')) TO 's3://<mybucket>/'  (FORMAT 'parquet', COMPRESSION 'zstd', PARTITION_BY(tpep_pickup_datetime), FILENAME_PATTERN '{uuid}', OVERWRITE_OR_IGNORE 1);\r\n> Out of Memory Error: failed to allocate data of size 512 bytes (14.9 GiB/14.9 GiB used)\r\n> ```\r\n\r\nActually I was trying a similar query (CSV to Parquet) and failed with OOM error - setting the `partitioned_write_flush_threshold` to a lower value than the default (`524288`) fixed it:\r\n\r\n`SET partitioned_write_flush_threshold = 1024;`\r\n\r\nDuckDB version: v1.0.0 1f98600c2c"
+  },
+  {
+   "author": "participant14",
+   "created_at": "2024-08-16T21:43:55Z",
+   "body": "Bumping: \r\nhttps://duckdb.org/docs/guides/performance/how_to_tune_workloads.html\r\n>When importing or exporting data sets (from/to the Parquet or CSV formats), which are much larger than the available memory, an out of memory error may occur:\r\n\r\n`SET preserve_insertion_order = false;` worked for me!"
+  },
+  {
+   "author": "participant15",
+   "created_at": "2024-08-21T13:34:41Z",
+   "body": "\r\n> I have fixed my OOM issue by disabling `jemalloc` on Ubuntu, just run this `GEN=ninja BUILD_JSON=1 SKIP_EXTENSIONS=jemalloc BUILD_JEMALLOC=0 make`\r\n\r\nThis worked for me!\r\n\r\nAlternatively, another option that worked for me was tuning the `jemalloc` parameters by declaring an environment variable `MALLOC_CONF`. This was after `pip install duckdb` so latest version (1.0.0)\r\n\r\n```\r\nexport MALLOC_CONF=\"narenas:8,lg_chunk:21,background_thread:true,dirty_decay_ms:1000,muzzy_decay_ms:10000\"\r\n```\r\n\r\nor if you want to set it in your python code:\r\n\r\n```python\r\nos.environ[\"MALLOC_CONF\"] = (\r\n    f\"narenas:{os.cpu_count()},lg_chunk:21,background_thread:true,dirty_decay_ms:10000,muzzy_decay_ms:10000\"\r\n)\r\n```\r\n\r\nI just set `narenas` to CPU count. If memory is not an issue, this should be fine.\r\n\r\nHere are some commonly used jemalloc options that you might find useful:\r\n\r\n - narenas: Sets the number of arenas. More arenas can reduce contention in multi-threaded applications but may increase memory usage.\r\n - lg_chunk: Sets the chunk size. Larger chunks can reduce fragmentation but may increase memory usage.\r\ndirty_decay_ms: Controls the time (in milliseconds) before dirty pages are purged. Lower values can reduce memory usage at the cost of performance.\r\n - muzzy_decay_ms: Similar to dirty_decay_ms, but for \"muzzy\" pages (pages that have been decommitted but not yet purged).\r\n - background_thread: Enables or disables background threads for purging unused memory. Setting this to true can improve performance by offloading purging work to background threads.\r\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-08-22T11:36:35Z",
+   "body": "> I'd be interested to see what, if any, effect you see from running duckdb through nothp (my simple no-transparent-hugepages wrapper).\r\n> […](#)\r\n> On 11 Jun 2024, at 15:54, Sam Eckhouse ***@***.***> wrote: Is this the same problem? OS 6.1.77-99.164.amzn2023.aarch64 DuckDB Version v1.0.0 [1f98600](https://github.com/duckdb/duckdb/commit/1f98600c2cf8722a6d2f2d805bb4af5e701319fc) DuckDB Client: CLI To Reproduce $ df -hT | grep tempdrive /dev/nvme1n1 xfs 1000G 7.1G 993G 1% /tempdrive $ ~/duckdb /tempdrive/test.duckdb v1.0.0 [1f98600](https://github.com/duckdb/duckdb/commit/1f98600c2cf8722a6d2f2d805bb4af5e701319fc) Enter \".help\" for usage hints. D COPY (SELECT * from read_parquet('https://<redacted-host>/trip-data/yellow_tripdata_2024-01.parquet')) TO 's3://<mybucket>/' (FORMAT 'parquet', COMPRESSION 'zstd', PARTITION_BY(tpep_pickup_datetime), FILENAME_PATTERN '{uuid}', OVERWRITE_OR_IGNORE 1); Out of Memory Error: failed to allocate data of size 1.0 KiB (49.1 GiB/49.1 GiB used) D SET threads TO 16; D SET memory_limit = '16GB'; D SET temp_directory='/tempdrive'; D COPY (SELECT * from read_parquet('https://<redacted-host>/trip-data/yellow_tripdata_2024-01.parquet')) TO 's3://<mybucket>/' (FORMAT 'parquet', COMPRESSION 'zstd', PARTITION_BY(tpep_pickup_datetime), FILENAME_PATTERN '{uuid}', OVERWRITE_OR_IGNORE 1); Out of Memory Error: failed to allocate data of size 512 bytes (14.9 GiB/14.9 GiB used) — Reply to this email directly, view it on GitHub <[#9880 (comment)](https://github.com/duckdb/duckdb/issues/9880#issuecomment-2160829044)>, or unsubscribe <https://github.com/notifications/unsubscribe-auth/AAIDQOX5UGSNI5UBLDNNM6LZG36RJAVCNFSM6AAAAABAFYTP2SVHI2DSMVQWIX3LMV43OSLTON2WKQ3PNVWWK3TUHMZDCNRQHAZDSMBUGQ>. You are receiving this because you were mentioned.\r\n\r\nNo luck since I'm on ARM64 and apparently [not using jemalloc! ](https://duckdb.org/docs/extensions/jemalloc.html)"
+  },
+  {
+   "author": "github-actions[bot]",
+   "created_at": "2024-11-21T00:35:19Z",
+   "body": "This issue is stale because it has been open 90 days with no activity. Remove stale label or comment or this will be closed in 30 days."
+  },
+  {
+   "author": "participant16",
+   "created_at": "2024-12-21T21:19:38Z",
+   "body": "same issue for me, but using lambdas on a list OOMs no matter what query I write"
+  },
+  {
+   "author": "participant17",
+   "created_at": "2025-01-05T20:09:59Z",
+   "body": "+1 to this issue, experiencing this myself when running a COPY to S3. For what it's worth, with HTTP debug logging enabled, I was able to observe a number of files being PUT prior to the OOM so it _may_ be a case of accumulation and something not being free'd properly.\r\n\r\nI ended up building a process to compute all the partitions first and then doing individual copies but not ideal.\r\n\r\n```\r\n$ uname -a\r\nLinux main-99577987d-968xd 6.1.112 #1 SMP PREEMPT_DYNAMIC Thu Oct 24 18:31:06 UTC 2024 x86_64 GNU/Linux\r\n\r\n$ duckdb --version\r\nv1.1.3 19864453f7\r\n```\r\n"
+  },
+  {
+   "author": "participant18",
+   "created_at": "2025-01-05T20:15:18Z",
+   "body": "@participant17 / @participant16 / others: could you produce a reproduction as a separate issue?\r\n\r\nIdeally if you could provide one using a nightly installation even better.\r\n\r\nThis issue has become a catch all and the various comment are not really actionable / reproducible in the current form."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-02-14T14:15:00Z",
+   "body": "💭 Does disabling `jemalloc` fix all catched-all issues?"
+  },
+  {
+   "author": "participant19",
+   "created_at": "2025-03-24T04:45:37Z",
+   "body": "> > I have fixed my OOM issue by disabling `jemalloc` on Ubuntu, just run this `GEN=ninja BUILD_JSON=1 SKIP_EXTENSIONS=jemalloc BUILD_JEMALLOC=0 make`\n> \n> This worked for me!\n> \n> Alternatively, another option that worked for me was tuning the `jemalloc` parameters by declaring an environment variable `MALLOC_CONF`. This was after `pip install duckdb` so latest version (1.0.0)\n> \n> ```\n> export MALLOC_CONF=\"narenas:8,lg_chunk:21,background_thread:true,dirty_decay_ms:1000,muzzy_decay_ms:10000\"\n> ```\n> \n> or if you want to set it in your python code:\n> \n> os.environ[\"MALLOC_CONF\"] = (\n>     f\"narenas:{os.cpu_count()},lg_chunk:21,background_thread:true,dirty_decay_ms:10000,muzzy_decay_ms:10000\"\n> )\n> I just set `narenas` to CPU count. If memory is not an issue, this should be fine.\n> \n> Here are some commonly used jemalloc options that you might find useful:\n> \n> * narenas: Sets the number of arenas. More arenas can reduce contention in multi-threaded applications but may increase memory usage.\n> * lg_chunk: Sets the chunk size. Larger chunks can reduce fragmentation but may increase memory usage.\n>   dirty_decay_ms: Controls the time (in milliseconds) before dirty pages are purged. Lower values can reduce memory usage at the cost of performance.\n> * muzzy_decay_ms: Similar to dirty_decay_ms, but for \"muzzy\" pages (pages that have been decommitted but not yet purged).\n> * background_thread: Enables or disables background threads for purging unused memory. Setting this to true can improve performance by offloading purging work to background threads.\n\nthis doesn't seem to work on my mac.\nI was trying to convert a 13GB JSONL file into a temporary table using:\n\n```sql\nCREATE TEMP TABLE tmp_tb AS (\n  SELECT \n    *,\n    row_number() OVER (PARTITION BY A) AS row_number\n  FROM read_json('13G_file.jsonl', union_by_name=True)\n)\n```\n\nwith config \n\n```sql\nSET threads = 10;\nSET memory_limit = '5GB';\n```\n\nBut it consistently failed until I increased the memory limit.\n\nThe tricky part is that success appears to depend on the following relationship:\n\n```\nmemory_limit = 0.08 × file_size_GB × threads\n```\n\nFor example, with `threads = 10`, I needed to set the memory limit to at least `10.4GB`.\nIf I want to cap memory usage at `6GB`, I need to keep the number of threads under `5`.\n\nIs this expected? For a 1TB file with 10 threads, would I really need at least 819GB of memory?\n"
+  },
+  {
+   "author": "participant20",
+   "created_at": "2025-04-30T20:35:18Z",
+   "body": "Reporting the same issue with read_csv. I am trying to read all compressed CSV files in a directory via the CLI like so:\n```\nduckdb -c \"SET temp_directory='/tmp';\nSET memory_limit = '6GB';\nSELECT DISTINCT(product) FROM read_csv('/data/order/*',delim=chr(3),header=true,columns = `cat ./order_schema.txt`) WHERE seller = 'somevalue');\n```\nThe output is as: \n```\ncould not allocate block of size XXXX MiB (5.5 GiB/5.5 GiB used)\n```\n\nI added the following settings based on some of other users' suggestion above, but it does not budge: \n```\nSET partitioned_write_flush_threshold = 1024;\nSET preserve_insertion_order = false;\n```\nI also checked on my temp_directory and nothing is being written to it. \n\nQuick work around for now is to just iteratively read each files. This does spill onto disk as expected. Not sure what's the under the hood mechanism for read_csv that makes it work like this. "
+  },
+  {
+   "author": "participant21",
+   "created_at": "2025-05-14T08:24:08Z",
+   "body": "can you please try this config: \nSET memory_limit = '200GB';\nSET temp_directory='/data/tmp/';"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-05-14T21:29:13Z",
+   "body": "Hey guys - This issue is specifically about OOMs during windowing. If you have other OOMs related to copying data, that should be a separate issue."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-06-17T12:35:18Z",
+   "body": "> Hey guys - This issue is specifically about OOMs during windowing. If you have other OOMs related to copying data, that should be a separate issue.\n\n@participant2 I believe the core of this issue is \"DuckDB runs OOM when using jemalloc, but not with vanilla malloc.\" I'm not convinced it's strictly tied to window functions, and it may be worth confirming if the allocator is the root cause more broadly."
+  },
+  {
+   "author": "participant22",
+   "created_at": "2025-08-13T05:31:45Z",
+   "body": "My experience supports reporter's belief in a jemalloc issue and also that there may be separate memory issues related to COPY or WINDOW. \n\nI am struggling to using a COPY statement to repartition a quite large parquet dataset on a machine with 4TB of RAM. With jemalloc enabled it failed with only a few hundred GB in use. After building with jemalloc disabled it failed again, but at over 50% completion and high memory usage. I'm currently trying again with a lower memory_limit and number of threads.  "
+  },
+  {
+   "author": "participant23",
+   "created_at": "2025-08-18T19:08:56Z",
+   "body": "I'm having the same issue as many other people here as well.\n\nIt's happening with the Splink python package when using duckdb as the backend: https://github.com/moj-analytical-services/splink/discussions/2752\n\nAlot of reproducing the error is dependant on the model in Splink as well as the input dataset which I cannot provide, but I'll try and give a few details.\n\n- The server is a Posit Connect server hosted in Azure running Red Hat Enterprise Linux\n- If I use newer versions of duckdb above v1.0.0, the RAM that duckdb uses is never relased back for the Python process to continue using\n- With duckdb v1.0.0, memory for one part of the model process is released back, but in another process, it starts spilling ~500+GB to disk (the input dataset is only a 300mb parquet file). This part where is spills in 1.0.0 works perfectly fine in later versions of duckdb (except memory does't get released)"
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "duckdb/duckdb",
+  "default_branch": "main",
+  "commit_sha": "26ae748bea067ad665dcee08495fe9fe5b31cf94",
+  "as_of": "2023-12-04T10:55:43Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_duckdb_duckdb_9880"
+}

@@ -1,0 +1,101 @@
+{
+ "repo": "restic/restic",
+ "number": 5289,
+ "url": "https://github.com/restic/restic/issues/5289",
+ "title": "Interrupting large uploads leads to re-upload as additional files aren't considered for snapshots",
+ "state": "closed",
+ "labels": [
+  "state: need feedback"
+ ],
+ "reporter": "reporter",
+ "created_at": "2025-03-21T12:30:38Z",
+ "closed_at": "2025-04-11T18:06:03Z",
+ "body": "\nOutput of `restic version`\n--------------------------\nrestic 0.17.3 compiled with go1.23.3 on linux/amd64\n\n\nWhat backend/service did you use to store the repository?\n---------------------------------------------------------\nlocal\n\n\nProblem description / Steps to reproduce\n----------------------------------------\nI am backing up a local repository containing 700,000 files and 16TB of data. \n\nThe backup process has been interrupted multiple times with CTRL+C after running for over 30 minutes. \n> signal interrupt received, cleaning up\n> Fatal: unable to save snapshot: context canceled\n> 2025/03/21 11:44:13 backup on profile 'default': exit status 1\n\nEach time the backup was interrupted, the number of \"additional files\" reported by Restic increased. \n> 11173 additional files were found in the repo, which likely contain duplicate data.\n\nThese additional files existed in the repository but were not included in any snapshot. \nRunning the recovery process did not incorporate them into a snapshot either. \nAllowing the backup to continue until completion also failed to include these files in the final snapshot. \nThis suggests that they were processed again, meaning they would have been uploaded again if it had been a remote repository. \nConsequently, it appears that safely interrupting Restic during large uploads is not feasible, especially considering my repository will take eight days to upload. \nTherefore, the only reliable methods for uploading a large repository seems to be \"exclude-larger-than\" or to upload one large folder at a time until a safe snapshot is created.\nWhich seems to mean I would have to break down the 8 day upload into 4-8h chunks each time adjusting the \"larger then\" or \"which folders\".\n\n\nExpected behavior\n-----------------\nGraceful handling of interruption and the additional files get added to the final snapshot and don't get uploaded again\nRecover includes the additional files into a snapshot #5287 \nMaybe there could be a temporary _inprogress snapshot and every 10 minutes uploads get committed to it and once they get put into a real snapshot they are removed from the _inprogress snapshot\n\n<!--\nDescribe what you'd like restic to do differently.\n-->\n\nActual behavior\n---------------\nIt very much looks like the files get uploaded again and I need to run prune to just remove them and the upload time is wasted\n\n<!--\nIn this section, please try to concentrate on observations, so only describe\nwhat you observed directly.\n-->\n\nDo you have any idea what may have caused this?\n-----------------------------------------------\nBecause restic isn't resuming gracefully after being interrupted \n<!--\nDid something noteworthy happen on your system, Internet connection, backend services, etc?\n-->\n\n\nDid restic help you today? Did it make you happy in any way?\n------------------------------------------------------------\nI do like using it and hope to keep using it also for large repos \n<!--\nAnswering this question is not required, but if you have anything positive to share, please do so here!\nSometimes we get tired of reading bug reports all day and a little positive end note does wonders.\nIdea by Joey Hess, https://joeyh.name/blog/entry/two_holiday_stories/\n-->\n\n\nHere the logs\n\nresticprofile backup showing additional files and also that the backup completes\n```\nbackup_container:/resticprofile# resticprofile backup\n2025/03/21 10:57:55 using configuration file: profiles.yaml\n2025/03/21 10:57:55 profile 'default': initializing repository (if not existing)\n2025/03/21 10:57:55 profile 'default': checking repository consistency\nusing temporary cache in /tmp/restic-check-cache-3617993501\ncreate exclusive lock for repository\nrepository 20f8db84 opened (version 2, compression level auto)\ncreated new cache in /tmp/restic-check-cache-3617993501\nload indexes\n[0:16] 100.00%  314 / 314 index files loaded\ncheck all packs\n11173 additional files were found in the repo, which likely contain duplicate data.\nThis is non-critical, you can run `restic prune` to correct this.\ncheck snapshots, trees and blobs\n[0:11] 100.00%  76 / 76 snapshots\nno errors were found\n----------------------\n2025/03/21 10:58:33 profile 'default': starting 'backup'\nrepository 20f8db84 opened (version 2, compression level off)\nusing parent snapshot 2c011216\n[0:15] 100.00%  314 / 314 index files loaded\n\nFiles:           0 new,     0 changed, 572702 unmodified\nDirs:            0 new,  2381 changed,  9698 unmodified\nAdded to the repository: 225.781 KiB (111.122 KiB stored)\n\nprocessed 572702 files, 14.699 TiB in 1:53\nsnapshot cdf38aff saved\n2025/03/21 11:00:27 profile 'default': finished 'backup'\n```\nresticprofile check with additional files that are still there after a full run of the backup\n```\nbackup_container:/resticprofile# resticprofile check\n2025/03/21 11:00:36 using configuration file: profiles.yaml\n2025/03/21 11:00:36 profile 'default': initializing repository (if not existing)\n2025/03/21 11:00:36 profile 'default': starting 'check'\nusing temporary cache in /tmp/restic-check-cache-2519064560\ncreate exclusive lock for repository\nrepository 20f8db84 opened (version 2, compression level auto)\ncreated new cache in /tmp/restic-check-cache-2519064560\nload indexes\n[0:16] 100.00%  315 / 315 index files loaded\ncheck all packs\n11173 additional files were found in the repo, which likely contain duplicate data.\nThis is non-critical, you can run `restic prune` to correct this.\ncheck snapshots, trees and blobs\n[0:11] 100.00%  77 / 77 snapshots\nno errors were found\n2025/03/21 11:01:15 profile 'default': finished 'check'\n\n```\n\nrecover does not remove them\n```\nbackup_container:/resticprofile# resticprofile recover\n2025/03/21 11:03:12 using configuration file: profiles.yaml\n2025/03/21 11:03:12 profile 'default': initializing repository (if not existing)\n2025/03/21 11:03:12 profile 'default': starting 'recover'\nrepository 20f8db84 opened (version 2, compression level auto)\nload index files\n[0:15] 100.00%  315 / 315 index files loaded\nload 68693 trees\n[1:10] 100.00%  68693 / 68693 trees loaded\nload snapshots\ndone\n\nfound 0 unreferenced roots\nno snapshot to write.\n2025/03/21 11:04:40 profile 'default': finished 'recover'\n```\n\nprune removes them \n```\nbackup_container:/resticprofile# restic prune latest\nFatal: Please specify repository location (-r or --repository-file)\nbackup_container:/resticprofile# resticprofile prune latest\n2025/03/21 11:13:43 using configuration file: profiles.yaml\n2025/03/21 11:13:43 profile 'default': initializing repository (if not existing)\n2025/03/21 11:13:43 profile 'default': starting 'prune'\nrepository 20f8db84 opened (version 2, compression level auto)\nloading indexes...\n[0:15] 100.00%  316 / 316 index files loaded\nloading all snapshots...\nfinding data that is still in use for 78 snapshots\n[0:19] 100.00%  78 / 78 snapshots\nsearching used packs...\ncollecting packs for deletion and repacking\n[0:04] 100.00%  885281 / 885281 packs processed\n\nto repack:          1377 blobs / 11.376 MiB\nthis removes:          0 blobs / 0 B\nto delete:             0 blobs / 185.012 GiB\ntotal prune:           0 blobs / 185.012 GiB\nnot yet compressed:              14.109 TiB\nremaining:      11518986 blobs / 14.378 TiB\nunused size after prune: 0 B (0.00% of remaining size)\n\ndeleting unreferenced packs\n[0:04] 100.00%  11173 / 11173 files deleted\nrepacking packs\n[0:19] 100.00%  74 / 74 packs repacked\nrebuilding index\n[0:11] 100.00%  317 / 317 indexes processed\n[0:00] 100.00%  175 / 175 old indexes deleted\nremoving 74 old packs\n[0:00] 100.00%  74 / 74 files deleted\ndone\n2025/03/21 11:15:51 profile 'default': finished 'prune'\n\n```\n\nadditional files are gone\n```\nbackup_container:/resticprofile# resticprofile check\n2025/03/21 11:17:12 using configuration file: profiles.yaml\n2025/03/21 11:17:12 profile 'default': initializing repository (if not existing)\n2025/03/21 11:17:12 profile 'default': starting 'check'\nusing temporary cache in /tmp/restic-check-cache-1667916244\ncreate exclusive lock for repository\nrepository 20f8db84 opened (version 2, compression level auto)\ncreated new cache in /tmp/restic-check-cache-1667916244\nload indexes\n[0:16] 100.00%  230 / 230 index files loaded\ncheck all packs\ncheck snapshots, trees and blobs\n[0:11] 100.00%  78 / 78 snapshots\nno errors were found\n2025/03/21 11:17:49 profile 'default': finished 'check'\n```\n",
+ "comments": [
+  {
+   "author": "reporter",
+   "created_at": "2025-03-21T12:36:41Z",
+   "body": "@participant4  you had mentioned that the additional files would be included in my final snapshot once the backup completes. looks from the log files above like this isn't the case"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-03-21T13:10:52Z",
+   "body": "Your successful full backup says:\n\n```\nFiles:           0 new,     0 changed, 572702 unmodified\nDirs:            0 new,  2381 changed,  9698 unmodified\nAdded to the repository: 225.781 KiB (111.122 KiB stored)\n```\n\nSo clearly it is not re-uploading the files, it is reusing the data uploaded in previous failed jobs, as designed.\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-03-21T13:35:22Z",
+   "body": "Hm the backup was run multiple times and this is just the last time with close to 0 modifications in the source folder. I shared it to show that even though the backup completed the additional files are still there.\n\n> So clearly it is not re-uploading the files, it is reusing the data uploaded in previous failed jobs, as designed.\nSo I can't see how this proves that nothing was re-uploaded.\n\nMy assumption is. \n- If the \"additional files\" are my uploaded files where the backup didn't complete \n- then they would end up in the snapshot when the backup does complete. \n- and they would be removed from being additional files as they are now in a snapshot\n\nIs that assumption correct? And if yes why are the additional files still there when they are now inside the last snapshot?\n\nMy only conclusion is that the additional files are being ignore and are re-processed. \nI'm open to being wrong here but I would like to see how we can be certain  that the code works as intended"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-03-21T19:46:50Z",
+   "body": "Did the data change between backups? Did you edit the source paths / command sources at all?\n\nYou mentioned that the interruptions were every 30 minutes but we can't see from your output how much of that time was spent scanning source data etc. If it took 20 minutes to rescan the source, calculating new data to send etc., perhaps restic only had 10 minutes per run to actually send new data.\n\nIt might help in the future to test and provide output of your commands using restic, rather than a third party tool, as we cannot see what parameters are being passed to restic and it introduces an unknown element.\n\n\"Additional files\" in this context do not refer to your individual files but refer to pack files stored in the repository. The data that is inside these packs is included in the backup now that it has completed, but perhaps they contain data which was only completely deduplicated on the final run - that is to say they may contain duplicate data which is no longer needed; particularly since you're backing up several TB of data. Restic does not remove any packs unless a `prune` is run so it is to be expected that these additional files are not automatically removed, assuming that the process is working and they do contain data that's no longer needed.\n\nTo be sure that this is a bug it would be helpful to have reproduceable steps, using only restic, and output from each attempt, with checks on the size of the repository between each run. Obviously not with TBs of data though :-) "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-03-21T22:15:18Z",
+   "body": "the scan took usually 3 minutes so there were at least 25 minutes of upload. \n\nthis is the command line\n`/usr/bin/restic backup --compression=off --exclude=/source/#snapshot --exclude=/source/#recycle --exclude=\"**/@eaDir/**\" --exclude=\"**/.DS_Store/**\" --exclude=\"**/Thumbs.db\" --exclude-caches --one-file-system --password-file=key --read-concurrency=8 --repo=local:/restic_repo --skip-if-unchanged /source\n`\n> \"Additional files\" in this context do not refer to your individual files but refer to pack files stored in the repository. The data that is inside these packs is included in the backup now that it has completed,\n\nif you tell me you looked at the code and that its 100% certain in my case that even though restic said this\n> signal interrupt received, cleaning up\n> Fatal: unable to save snapshot: context canceled\n> 2025/03/21 11:44:13 backup on profile 'default': exit status 1\n\nand left behind \"additional files\" and the number only went up and never down \nthat everything is fine and nothing got uploaded twice and all the additional packs got automatically integrated without being uploaded again then I rest my case as I have not looked at the code.\n\nand then the only thing to do is to consider if the error message \"Fatal: unable to save snapshot: context canceled\" should be changed to \"Warning: Backup interrupted, temp snapshot saved, just run backup again\" \n"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-03-21T22:33:02Z",
+   "body": "Thanks for clarifying the timings and the command you used, that helps.\n\nIt appears that you cherry-picked what I wrote and missed out this next part of the paragraph, in order to form a sarcastic reply:\n\"...but perhaps they contain data which was only completely deduplicated on the final run - that is to say they may contain duplicate data which is no longer needed.\" Being rude doesn't help this issue."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-03-23T16:20:26Z",
+   "body": "During a backup restic periodically uploads new index files. Currently this happens each ten minutes or after uploading 50GB data (happens earlier for small files). A later backup run will reuse blobs that are included in the index. If you interrupt a backup, you can run `restic repair index` to also index pack files that have been uploaded between the index uploads.\n\nOther than that, you're looking for https://github.com/restic/restic/issues/2280 . Is there anything left to discuss here?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-03-24T15:05:43Z",
+   "body": "> It appears that you cherry-picked what I wrote and missed out this next part of the paragraph, in order to form a sarcastic reply: \n>  Being rude doesn't help this issue.\n\nhey @participant2, thanks for letting me know that you felt my comment was sarcastic and felt rude to you. On my end that wasn't my intention. I genuinely \"rest my case\" if its incorrect as I was just going off \"Fatal: unable to save snapshot: context canceled\" and being concerned by that message. "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-03-24T15:07:13Z",
+   "body": "> Currently this happens each ten minutes or after uploading 50GB data (happens earlier for small files). A later backup run will reuse blobs that are included in the index\n\nGreat news! I wonder if the error message \"Fatal: unable to save snapshot: context canceled\" could be improved so users know they don't need to worry. ie \"Fatal: unable to save snapshot: context canceled (but index stored to skip files when backup is run again)\""
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-03-24T15:17:54Z",
+   "body": "Thank you for the explanation, Michael!  I have two suggestions:\n\n1. upload index files on SIGINT/SIGTERM (ah, this is #2367) *and/or*\n2. update the text from `restic check` to suggest `restic repair index` as a possible alternative to `restic prune`.\n\nSomething like:\n\n> 11173 additional files were found in the repo, which likely contain duplicate data.\n> This is non-critical, you can run `restic prune` to remove unreferenced files or\n> `restic repair index` to incorporate them into the index.\n"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-03-24T17:20:58Z",
+   "body": "There's also https://github.com/restic/restic/issues/2960 . I'd prefer to let restic upload a final index on SIGINT/SIGTERM.\n\nI'd like to exclude `restic repair index` as far as possible from the normal usage of restic."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-04-06T08:56:42Z",
+   "body": "> 11173 additional files were found in the repo, which likely contain duplicate data.\n\nwhat would be the proper way to deal with this now?\n\n> I'd like to exclude `restic repair index` as far as possible from the normal usage of restic.\n\nwhen this isn't the preferred way of fixing it @participant3 ? thanks\n"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-04-09T20:01:22Z",
+   "body": "For now the only two options are `restic repair index` (which adds those files to the index) or `restic prune` (which deletes them). Both solve the problem and work fine.\n\nPreferring `prune` over `repair index` is primarily my personal preference, simply because `prune` is the standard command to remove unnecessary data from a repository. In contrast, `repair index` is intended for fixing a damaged repository and is likely used a lot less than `prune`."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-04-11T13:22:42Z",
+   "body": "Thanks @participant3 for the details. I'll use repair index to rescue my upload and then prune for anything that is left. Thanks!"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-04-11T18:06:03Z",
+   "body": "Closing as the immediate problems seems to be solved and there are also separate issues for the discussed improvement ideas."
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "restic/restic",
+  "default_branch": "master",
+  "commit_sha": "3f42c0ad96d4e2c6fa4baa20b0c48c4ab518b429",
+  "as_of": "2025-03-21T12:30:38Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_restic_restic_5289"
+}

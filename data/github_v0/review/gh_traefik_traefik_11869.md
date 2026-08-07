@@ -1,6 +1,6 @@
 # Review: gh_traefik_traefik_11869
 
-**Traefik stops serving HTTP and HTTPS after Nextcloud iOS requests with setsockopt error**
+**Traefik stops working when Nextcloud iOS app connects with setsockopt operation not supported**
 
 - source: https://github.com/traefik/traefik/issues/11869
 - kind: LLM draft (needs review)
@@ -9,27 +9,23 @@
 
 ```mermaid
 flowchart LR
-    N0["<b>N0 intermittent listener failure reported</b><br/><small>info: 6</small>"]
-    N1["<b>N1 version and HTTP3 scope established</b><br/><small>info: 9</small>"]
-    N2_x["<b>N2_x network-label change aftermath</b><br/><small>info: 11</small>"]
-    N3["<b>N3 reliable iOS trigger and version comparison collected</b><br/><small>info: 14</small>"]
-    N4["<b>N4 Multipath TCP disablement probe succeeds</b><br/><small>info: 15</small>"]
-    N_terminal["<b>terminal resolved</b><br/><small>info: 17</small>"]
-    N0 -.->|"❓ problem_started_after_343_update, reporter_explicitly_confirms_http3_disabled, standalone_docker_user_has_same_failure"| N1
+    N0["<b>N0 intermittent entry-point outage reported</b><br/><small>info: 4</small>"]
+    N1["<b>N1 version and deployment scope established</b><br/><small>info: 7</small>"]
+    N2["<b>N2 iOS traffic trigger reproduced</b><br/><small>info: 9</small>"]
+    N3["<b>N3 diagnostic environment-variable probe succeeds</b><br/><small>info: 10</small>"]
+    N_terminal["<b>terminal mitigated and verified</b><br/><small>info: 10</small>"]
+    N0 -.->|"❓ problem_started_after_3_4_3_and_prior_version_probably_3_4_1, reporter_does_not_use_http3, standalone_docker_has_same_failure_and_browser_loop"| N1
     linkStyle 0 stroke:#3b82f6,stroke-width:2px
-    N1 ==>|"💥 blind: Attribute the outage to the deprecated Docker network label and replace `traefik.docker.network` with `traefik.swarm.network`."| N2_x
-    linkStyle 1 stroke:#ef4444,stroke-width:2px
-    N2_x -.->|"❓ nextcloud_ios_request_reliably_triggers_failure, traefik_process_can_remain_running_while_entrypoint_stops, traefik_341_unaffected_for_other_users"| N3
+    N1 -.->|"❓ nextcloud_ios_request_immediately_reproduces_outage, other_ios_api_traffic_can_trigger_same_failure"| N2
+    linkStyle 1 stroke:#3b82f6,stroke-width:2px
+    N2 -.->|"❓ godebug_multipathtcp_zero_probe_has_no_recurrence"| N3
     linkStyle 2 stroke:#3b82f6,stroke-width:2px
-    N3 -.->|"❓ godebug_multipathtcp_zero_prevents_recurrence"| N4
-    linkStyle 3 stroke:#3b82f6,stroke-width:2px
-    N4 ==>|"⚡ Treat this as a Multipath TCP socket-option regression, use `GODEBUG=multipathtcp=0` as the immediate mitigation, and move to a Traefik build in which the failing Multipath TCP socket setup is no longer performed once such a build is available."| N_terminal
-    linkStyle 4 stroke:#f97316,stroke-width:2px
+    N3 ==>|"⚡ Mitigate the Traefik entry-point failure by disabling Go MultiPath TCP for the Traefik process with `GODEBUG=multipathtcp=0`, retain the setting in the container environment, and verify under the previously reproducible iOS traffic before declaring the deployment stable."| N_terminal
+    linkStyle 3 stroke:#f97316,stroke-width:2px
     class N0 start
     class N1 normal
-    class N2_x normal
+    class N2 normal
     class N3 normal
-    class N4 normal
     class N_terminal terminal
     classDef start fill:#fee2e2,stroke:#b91c1c,color:#000
     classDef terminal fill:#dcfce7,stroke:#15803d,color:#000
@@ -38,36 +34,36 @@ flowchart LR
 
 ## Opening (body)
 
-> Since updating to Traefik v3.4.3, my Docker Swarm deployment stops working several times a day. The logs repeatedly show `set tcp ...:443->...: setsockopt: operation not supported` followed by `Error while starting server` for the `websecure` entry point, with nothing more relevant even at DEBUG level. After this happens, none of the URLs served through Traefik can be reached. My static configuration defines HTTP on port 80, HTTPS on port 443, Swarm and file providers, Let's Encrypt, and TLS options; Traefik is running in Docker Swarm.
+> Since updating to Traefik v3.4.3, my Docker Swarm deployment stops serving every URL through Traefik multiple times a day. The logs show `set tcp ...:443->...: setsockopt: operation not supported` followed by repeated `Error while starting server` messages for the `websecure` entry point. There is nothing more relevant in the normal or debug logs. I cannot rule out other updates around the same time.
 
 ## Satisfaction conditions
 
-1. Must identify the root cause as Multipath TCP socket handling attempting an unsupported socket option, which can take down Traefik's entry-point listener after an affected client connection.
-2. The diagnosis must be grounded in the v3.4.3 regression evidence, reproduction from an iOS/Nextcloud request across multiple deployment types, and the successful `GODEBUG=multipathtcp=0` probe.
-3. Must not attribute the failure to HTTP/3, the deprecated Docker/Swarm network label, or an invalid TLS certificate: affected users reproduced it without HTTP/3, the label change did not prevent it, and standalone Docker deployments were also affected.
-4. Must present `GODEBUG=multipathtcp=0` as an immediate mitigation and recommend moving to a Traefik build in which the failing Multipath TCP socket behavior is no longer used, as the permanent fix.
-5. Must ask the user to retest a build containing the fix with the known iOS trigger and verify that HTTP and HTTPS remain reachable before declaring resolution.
+1. Must identify the accepted cause at the level established by the thread: the Go MultiPath TCP networking path is implicated in the unsupported setsockopt failure that disables Traefik's listening entry points.
+2. The diagnosis must be grounded in the v3.4.3 regression, the repeatable iOS-triggered outage, and the successful `GODEBUG=multipathtcp=0` probe rather than inferred from the error text alone.
+3. Must recommend setting `GODEBUG=multipathtcp=0` for the Traefik process as the verified mitigation and retaining it in the container, pod, or service environment.
+4. Must not treat HTTP/3 as a prerequisite or sole cause, because the original reporter and other affected deployments reproduced the failure without HTTP/3 enabled.
+5. Must not describe the problem as exclusive to Nextcloud; Nextcloud iOS provides a reliable reproducer, but other iOS API traffic produced the same entry-point failure.
+6. Must ask the user to repeat the previously triggering traffic and monitor for recurrence before declaring resolution.
+7. Must not claim that an upstream fixed build was verified by an affected user; the thread only establishes closure by a linked change after users verified the environment-variable mitigation.
 
 ## Edges
 
 | edge | type | gates / info | payload |
 |---|---|---|---|
-| `e1_N0__N1` | clarification_only | asks: problem_started_after_343_update, reporter_explicitly_confirms_http3_disabled, standalone_docker_user_has_same_failure | Yes, it only started after my last update to v3.4.3. I cannot say with certainty that I had 3.4.1 immediately  / No, I do not use HTTP/3, as you can also see from my configuration. / I get the same setsockopt errors with a standalone Docker container. When it happens, neither HTTP nor HTTPS w |
-| `e2_N1__N2_x` | solution_only **BLIND** | req_info: docker_swarm_environment<br>elements: recommends_replacing_deprecated_network_label_as_fix | Attribute the outage to the deprecated Docker network label and replace `traefik.docker.network` with `traefik.swarm.network`. |
-| `e3_N2_x__N3` | clarification_only | asks: nextcloud_ios_request_reliably_triggers_failure, traefik_process_can_remain_running_while_entrypoint_stops, traefik_341_unaffected_for_other_users | Yes. If I open the Nextcloud iOS app and go to the files or images page, Traefik immediately logs the setsocko / The Traefik process can still be running, but the websecure endpoint has stopped and connections no longer wor / With v3.4.3 the iOS request takes the services down, but after rolling back to v3.4.1 the problem disappears.  |
-| `e4_N3__N4` | clarification_only | asks: godebug_multipathtcp_zero_prevents_recurrence | I tried v3.4.4 with `GODEBUG=multipathtcp=0` and could not reproduce the issue. I have had no more crashes sin |
-| `e5_N4__N_terminal` | solution_only | req_info: traefik_343_intermittently_stops_serving, setsockopt_operation_not_supported_on_websecure, provided_configuration_has_no_http3_setting, traefik_process_can_remain_running_while_entrypoint_stops, nextcloud_ios_request_reliably_triggers_failure, traefik_341_unaffected_for_other_users, godebug_multipathtcp_zero_prevents_recurrence<br>elements: identifies_multipath_tcp_socket_option_as_root_cause, recommends_upgrading_to_a_build_with_mptcp_disabled, asks_user_to_verify_on_a_build_containing_the_fix | Treat this as a Multipath TCP socket-option regression, use `GODEBUG=multipathtcp=0` as the immediate mitigation, and move to a Traefik build in which the failing Multipath TCP socket setup is no longer performed once such a build is available. |
+| `e1_N0__N1` | clarification_only | asks: problem_started_after_3_4_3_and_prior_version_probably_3_4_1, reporter_does_not_use_http3, standalone_docker_has_same_failure_and_browser_loop | It only started after my last update to v3.4.3. I cannot say for certain that I was on v3.4.1 immediately befo / No, I do not use HTTP/3. / I see the same log sequence in a standalone Docker container. When it happens, I cannot connect over either HT |
+| `e2_N1__N2` | clarification_only | asks: nextcloud_ios_request_immediately_reproduces_outage, other_ios_api_traffic_can_trigger_same_failure | Yes. I asked a friend with an iPhone to open the Nextcloud app against my instance behind Traefik. Traefik imm / I have also seen the websecure endpoint stop on a deployment serving an API used by iOS clients, without Nextc |
+| `e3_N2__N3` | clarification_only | asks: godebug_multipathtcp_zero_probe_has_no_recurrence | I added `GODEBUG=multipathtcp=0`. With v3.4.4 and that variable I could not reproduce the issue, and after sev |
+| `e4_N3__N_terminal` | solution_only | req_info: traefik_3_4_3_intermittent_setsockopt_error, all_proxied_urls_unreachable_after_error, standalone_docker_has_same_failure_and_browser_loop, problem_started_after_3_4_3_and_prior_version_probably_3_4_1, reporter_does_not_use_http3, nextcloud_ios_request_immediately_reproduces_outage, godebug_multipathtcp_zero_probe_has_no_recurrence<br>elements: identifies_go_multipath_tcp_as_the_implicated_networking_path, sets_GODEBUG_multipathtcp_zero_for_the_traefik_process, retains_the_setting_in_the_container_or_process_environment, asks_user_to_verify_with_previously_reproducing_traffic_before_declaring_resolution, does_not_claim_the_later_upstream_build_was_user_verified | Mitigate the Traefik entry-point failure by disabling Go MultiPath TCP for the Traefik process with `GODEBUG=multipathtcp=0`, retain the setting in the container environment, and verify under the previously reproducible iOS traffic before declaring the deployment stable. |
 
 ## Nodes
 
 | node | terminal | volunteered | images | symptoms |
 |---|---|---|---|---|
-| `N0` |  | 1 | 0 | Several times a day, Traefik logs `setsockopt: operation not supported` for the websecure entry point and then none of the URLs behind it ca |
-| `N1` |  | 1 | 0 | The failure started after updating to v3.4.3 and also occurs with HTTP/3 disabled. The same error can leave both HTTP and HTTPS inaccessible |
-| `N2_x` |  | 1 | 0 | After I replaced the deprecated Docker network label with the Swarm network label, the same setsockopt error occurred again and all services |
-| `N3` |  | 0 | 0 | Opening the Nextcloud iOS app and accessing its files or images immediately triggers the setsockopt error and makes every service behind Tra |
-| `N4` |  | 0 | 0 | With `GODEBUG=multipathtcp=0` set during the test, I cannot reproduce the failure and Traefik continues serving requests without another cra |
-| `N_terminal` | ✓ | 0 | 0 | After installing a build containing the fix, Nextcloud iOS requests no longer stop the HTTP or HTTPS entry points and the setsockopt error d |
+| `N0` |  | 2 | 0 | Since updating to Traefik v3.4.3, I see `setsockopt: operation not supported` on the websecure entry point several times a day. After the er |
+| `N1` |  | 0 | 0 | The websecure entry point can stop accepting connections with the same setsockopt error in both Swarm and standalone Docker deployments. On  |
+| `N2` |  | 0 | 0 | When an iPhone opens the Nextcloud app against the instance behind Traefik, the setsockopt error appears immediately and Traefik stops servi |
+| `N3` |  | 0 | 0 | After adding `GODEBUG=multipathtcp=0`, I could no longer reproduce the outage and had no more crashes during the observation period. Another |
+| `N_terminal` | ✓ | 0 | 0 | With `GODEBUG=multipathtcp=0` retained in the Traefik container environment, the setsockopt outage no longer recurs and the proxied services |
 
 ## Machine review (audit pass, adversarially verified)
 

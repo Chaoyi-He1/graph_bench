@@ -1,0 +1,193 @@
+{
+ "repo": "pola-rs/polars",
+ "number": 8510,
+ "url": "https://github.com/pola-rs/polars/issues/8510",
+ "title": "Split off list constructor logic from `pl.concat_list` into `pl.list`",
+ "state": "closed",
+ "labels": [
+  "enhancement",
+  "A-api",
+  "A-dtype-list/array"
+ ],
+ "reporter": "cmdlineluser",
+ "created_at": "2023-04-25T21:40:29Z",
+ "closed_at": "2026-07-06T14:42:04Z",
+ "body": "### Problem description\n\nDiscussing #8503 sparked the thought - would it make sense to \"rename\" `pl.concat_list` to `pl.list`?\r\n\r\n`pl.list` is currently marked for deprecation as part of the [`.arr` to `.list` rename.](https://github.com/pola-rs/polars/issues/7529)\r\n```\r\nDeprecationWarning: `pl.list` is deprecated, \r\nplease use `pl.implode` instead.\r\n```\r\nSimilar to how there is `pl.struct` and the `.struct` namespace:\r\n```\r\npl.struct(...).struct\r\n```\r\nIf `pl.list` were repurposed it would be:\r\n```\r\npl.list(...).list\r\n```",
+ "comments": [
+  {
+   "author": "stinodego",
+   "created_at": "2023-04-25T22:21:20Z",
+   "body": "Fully agree. Will add this to the milestones for the next breaking release."
+  },
+  {
+   "author": "cmdlineluser",
+   "created_at": "2023-05-02T16:31:39Z",
+   "body": "Hi @stinodego - I just read [your comment regarding horizontal sum](https://github.com/pola-rs/polars/issues/8646#issuecomment-1531698680) which made me think of this issue.  \r\n\r\nAfter the concat_list/namespace rename\r\n```\r\npl.concat_list(pl.col(\"nums\") * 2).arr.sum()\r\n```\r\nWould become\r\n```\r\npl.list(pl.col(\"nums\") * 2).list.sum()\r\n```\r\nYour comment made me wonder if it would be possible to provide a syntax sugar version:\r\n```\r\npl.list.sum(pl.col(\"nums\") * 2)\r\n```\r\nsugar:\r\n```\r\npl.sum(\"nums\")      # vertical\r\npl.list.sum(\"nums\") # horizontal\r\n```\r\nno-sugar:\r\n```\r\npl.col(\"nums\").sum()\r\npl.list(\"nums\").list.sum()\r\n```"
+  },
+  {
+   "author": "lucazanna",
+   "created_at": "2023-05-02T20:42:23Z",
+   "body": "Quick thoughts on this:\r\n\r\ni like the idea of aligning the methods name between structs and lists. \r\nhowever a pl.list(…).list does not seem very readable to me / clear that it works on rows instead of columns (at least at first)\r\n\r\nWhat about keeping concat_list so we have \r\nconcat_list(…).list\r\n\r\nAnd then rename struct to concat_struct so that we have \r\nconcat_struct(…).struct\r\n\r\ni believe that concat word makes it clearer that we are concatenating multiple rows together \r\n\r\nthoughts ?"
+  },
+  {
+   "author": "stinodego",
+   "created_at": "2023-05-02T21:50:43Z",
+   "body": "I am also a bit on the fence about this. On the Rust side, `struct` is called `as_struct`. Maybe that's better; not sure. I'll brood on this for a bit."
+  },
+  {
+   "author": "ritchie46",
+   "created_at": "2023-05-03T06:08:41Z",
+   "body": "Yes, I agree that we miss an (I don't know the english name of this, adjective? verb?), but something that says \"what\" we are going to do with the noun \"list\".\r\n\r\nWe already have this on many places. `read_csv`, `to_uppercase`. So I think we should do one of those:\r\n\r\n-  `as_list`, `as_struct`\r\n- `to_list`, `to_struct`,\r\n- `pack_list`, `pack_struct`\r\n\r\nBut the noun `list`, `struct` is not clear as we do not state what we do with those."
+  },
+  {
+   "author": "stinodego",
+   "created_at": "2023-05-28T14:39:05Z",
+   "body": "We have a set of functions that take one or more expressions and combines them to generate a new column of a certain datatype. We should rename these to reflect that they are essentially doing the same thing. I have given it a lot of thought and I think the `as_` prefix is the most expressive. It would result in the following names:\r\n\r\n\r\n| Before | After |\r\n| -- | -- |\r\n| datetime | as_datetime |\r\n| date| as_date|\r\n| time| as_time|\r\n| duration| as_duration |\r\n| struct| as_struct |\r\n| concat_list | as_list |\r\n| concat_str | as_string |\r\n| format* | format |\r\n\r\n_* Convenience wrapper around `concat_str`, remains unchanged_\r\n\r\nI plan to do the following:\r\n1. Refactor to put all these functions into a single module, as well as gather any dedicated tests (DONE)\r\n2. ~Change behaviour to have the expression named after the datatype~\r\n3. Add new function names, deprecate old."
+  },
+  {
+   "author": "lucazanna",
+   "created_at": "2023-05-28T17:19:15Z",
+   "body": "hi @stinodego,\r\n\r\nWould it make sense to add an ‘as_array’ method?\r\n\r\nSame logic as ´as_list’ but with the result being an array "
+  },
+  {
+   "author": "stinodego",
+   "created_at": "2023-05-28T17:19:34Z",
+   "body": "Yes, it's already up on my whiteboard 😄 "
+  },
+  {
+   "author": "granthamtaylor",
+   "created_at": "2023-06-19T15:58:21Z",
+   "body": "I use `pl.concat_list()` to concatenate a number of columns together.\n\nWith a seemingly small number of assumptions, this operation will always result in a fixed size list.\n\nIt would be very convenient to be able to have the resulting concatenation be an array."
+  },
+  {
+   "author": "stinodego",
+   "created_at": "2023-06-20T04:00:56Z",
+   "body": "That won't be possible, as `concat_list` does not always result in lists of the same size. Consider:\r\n\r\n```python\r\nimport polars as pl\r\n\r\ndf = pl.DataFrame({\"a\": [[1, 2], [3], [3, 4]], \"b\": [1, 2, 3]})\r\nresult = df.with_columns(pl.concat_list(\"a\", \"b\").alias(\"concat\"))\r\n```\r\n```\r\nshape: (3, 3)\r\n┌───────────┬─────┬───────────┐\r\n│ a         ┆ b   ┆ concat    │\r\n│ ---       ┆ --- ┆ ---       │\r\n│ list[i64] ┆ i64 ┆ list[i64] │\r\n╞═══════════╪═════╪═══════════╡\r\n│ [1, 2]    ┆ 1   ┆ [1, 2, 1] │\r\n│ [3]       ┆ 2   ┆ [3, 2]    │\r\n│ [3, 4]    ┆ 3   ┆ [3, 4, 3] │\r\n└───────────┴─────┴───────────┘\r\n```\r\n\r\nWe will add an `as_array` function soon enough - for now, you'll have to cast the result of `concat_list` to an array."
+  },
+  {
+   "author": "stinodego",
+   "created_at": "2024-05-27T19:31:20Z",
+   "body": "We have discussed this, and there is a distinction to be made between the functions listed.\r\n\r\nThere are \"constructor\" functions:\r\n\r\n* `datetime`\r\n* `date`\r\n* `time`\t\r\n* `duration`\r\n* `struct`\r\n\r\nThose are fine as-is. Perhaps a prefix like `new_` would be more clear (e.g. `new_datetime`), but there is no great need to change this right now.\r\n\r\nThen there are the \"concatenate\" functions:\r\n\r\n* `concat_list`\r\n* `concat_str`\r\n\r\nThese names are clear and we don't want to change them.\r\n\r\nThe real issue here is that `concat_list` has extremely strange behavior - it functions both as a 'concatenate' and also as a 'constructor'. The following two code samples have the same result:\r\n\r\n```python\r\npl.select(pl.concat_list(1, 2, 3))\r\npl.select(pl.concat_list([1], [2], [3]))\r\n```\r\n```\r\nshape: (1, 1)\r\n┌───────────┐\r\n│ literal   │\r\n│ ---       │\r\n│ list[i64] │\r\n╞═══════════╡\r\n│ [1, 2, 3] │\r\n└───────────┘\r\n```\r\n\r\nThe second one is clearly concatenating the inputs, while the first one is constructing a new list and taking the inputs as elements to that list.\r\n\r\nWe should add a new `pl.list` function that acts as a constructor and supports the first behavior. We should become much stricter in the `concat_list` function and only allow list inputs."
+  },
+  {
+   "author": "reswqa",
+   "created_at": "2024-06-06T09:39:41Z",
+   "body": "@stinodego Quick Q: For the new `pl.list` constructor, does it only allow scalar inputs? For example:\r\n\r\n```\r\npl.list(1, 2, 3, 4) # allow -> a Series[List] has only one element [1,2,3,4]\r\n\r\npl.list([1,2,3]) # disallow\r\npl.list(1,[2,3]) # disallow\r\npl.list(pl.col(\"a\"), pl.col(\"b\")) # disallow\r\n```\r\n\r\nLet's take a look at the other `constructors`, they all seem to support `Expr`. For instance, we allow\r\n```\r\npl.time(pl.col(\"hour\"), pl.col(\"minute\"))\r\n\r\n┌──────────┐\r\n│ time     │\r\n│ ---      │\r\n│ time     │\r\n╞══════════╡\r\n│ 12:15:00 │\r\n│ 13:30:00 │\r\n│ 14:45:00 │\r\n└──────────┘\r\n```\r\nSo shall we also support `pl.list(pl.col(\"non-list-col1\"), pl.col(\"non-list-col2\"))`? This again looks very similar to `pl.concat_list`... Is the difference only that `pl.concat_list` only supports `list` inputs: `pl.concat_list(pl.col(\"list-col1\"), pl.col(\"list-col2\"))`?"
+  },
+  {
+   "author": "stinodego",
+   "created_at": "2024-06-08T10:11:56Z",
+   "body": "I hadn't really thought very deeply about this, but I think basically the distinction will be that `concat_list` will remove one level of nesting, while `pl.list` does not.\r\n\r\n`pl.list` will take any number of (possibly expression) inputs. These are cast to their supertype, and then the return type will be `List(supertype)` with every list having the same length (number of inputs).\r\nWe can possibly add `pl.array` constructor in exactly the same manner.\r\n\r\n`pl.concat_list` will take any number of (possibly expression) inputs _that must be of type list_. The _inner_ types can be cast to a supertype. Then the return type is `List(_inner_ supertype)`.\r\nWe can possibly add a `pl.concat_array` in the same manner, which will guarantee the output has size (sum of all input sizes).\r\n\r\nI think one of the issues currently is that supertypes allow adding nesting levels, e.g. supertype of `List(Int8)` and `Int16` is `List(Int16)`. This should probably not be allowed (these types should have no common supertype). That should clarify a lot. But I'm not sure what the implications are of this."
+  },
+  {
+   "author": "reswqa",
+   "created_at": "2024-06-12T08:40:37Z",
+   "body": "Thanks for the clarification. I think basically the proposal makes sense, I just not sure if letting things like `Int` and `List(Int)` without supertype would break other codes.\r\n\r\nBut more importantly, we may need to have a discussion about whether supertypes should disallow adding nesting level(That's probably what we'll have to decide before 1.0).\r\n\r\n\r\n\r\n"
+  },
+  {
+   "author": "stinodego",
+   "created_at": "2024-06-12T08:43:04Z",
+   "body": "> But more importantly, we may need to have a discussion about whether supertypes should disallow adding nesting level(That's probably what we'll have to decide before 1.0).\r\n\r\nAgreed!"
+  },
+  {
+   "author": "stinodego",
+   "created_at": "2024-06-13T13:11:05Z",
+   "body": "@reswqa : Supertypes no longer add a List nesting level, see the recent fix by Ritchie:\r\nhttps://github.com/pola-rs/polars/pull/16918\r\n\r\nSo with that, I think this can be implemented and tested properly."
+  },
+  {
+   "author": "reswqa",
+   "created_at": "2024-06-14T03:33:28Z",
+   "body": "Great! Let me try to implement the proposal above."
+  },
+  {
+   "author": "reswqa",
+   "created_at": "2024-06-21T08:09:23Z",
+   "body": "Hi @stinodego, FYI: \r\nMy best friend was recently ill and hospitalized, and I have to took care of him in the hospital (That's why you probably haven't seen me active here lately 😞). I'm afraid I don't have enough time to finish this recently.\r\nI don't want to slow down the 1.0 release, so feel free to take over this. Apologize for the inconvenience."
+  },
+  {
+   "author": "stinodego",
+   "created_at": "2024-06-21T08:32:13Z",
+   "body": "@reswqa Understandable! Please take good care of your friend. Hope to see you again soon."
+  },
+  {
+   "author": "stinodego",
+   "created_at": "2024-06-22T14:14:31Z",
+   "body": "Now that the supertype issue has been fixed, I no longer think we really need to split up `concat_list`. The current behavior seems to be:\r\n\r\n1. Any non-list types are cast to list\r\n2. All columns are combined at one nesting level is removed.\r\n\r\nThis is perfectly usable and I don't think splitting up the function is going to really help anyone. It is technically a bit overloaded but that's more of a technicality, in my opinion.\r\n\r\nI added some doc examples to clarify this behavior. With that, this can be closed, in my opinion. I will consider re-opening this if I hear some strong arguments for another approach here."
+  },
+  {
+   "author": "NickCrews",
+   "created_at": "2024-06-30T17:56:01Z",
+   "body": "I want to argue that we want separate functions for `pl.list()` and `pl.concat_list()`.\r\n\r\nIn ibis, we transpile ibis expressions into polars expressions. One of our rules is to turn an ibis.Array into a polars.List:\r\n\r\nhttps://github.com/NickCrews/ibis/blob/1162137c6c702315ab136c55e8cafa0c32b3d422/ibis/backends/polars/compiler.py#L971-L980\r\n\r\n1. note how we need separate code paths for empty arrays and non-empty arrays. It would be great if there was one polars function that could handle both.\r\n2. The signature for our transpilation function is supposed to be `ibis.Array[T] -> pl.List[T]`. And it usually is, except for when T is an array. We have to mark a test as xfail for this case: https://github.com/NickCrews/ibis/blob/1162137c6c702315ab136c55e8cafa0c32b3d422/ibis/backends/tests/test_array.py#L1409-L1436. If polars stays the way it is, in order to make our compilation rule work, I think we need to add some special casing to our transpilation rule, something like\r\n\r\n```python\r\n@translate.register(ops.Array)\r\ndef array_column(op, **kw):\r\n    cols = [translate(col, **kw) for col in op.exprs]\r\n    if op.dtype.is_array():\r\n        cols = [c.implode() for c in cols]\r\n    return pl.concat_list(cols)\r\n```\r\n\r\nIn an effort very similar to this issue, I am trying to overhaul array construction in https://github.com/ibis-project/ibis/pull/9473. The API that I am pushing for there is `def array(values: Iterable[Any], *, type: ibis.DataType | str | None = None)`\r\nThis API has some advantages:\r\n- Since it accepts a single `Iterable[Any]`, instead of the variadic `*args: Any` version, it can be idempotent, ie `ibis.array(ibis.array([1,2]))` works. This is a nice property.\r\n- This also makes it have the same API as python's `list(values: Iterable[Any])` constructor. Familiar to python users.\r\n- Since it has the `dtype` optional kwarg-only parameter, it can support empty arrays (without this, we can't infer the dtype of the contained values).\r\n\r\nI advocate for polars to create a `def list(values: Iterable[Any], *, type: pl.DataType | None = None)` or similar API."
+  },
+  {
+   "author": "NickCrews",
+   "created_at": "2024-07-01T18:16:10Z",
+   "body": "Just added a workaround for this in ibis: https://github.com/ibis-project/ibis/pull/9484"
+  },
+  {
+   "author": "stinodego",
+   "created_at": "2024-07-01T19:07:58Z",
+   "body": "Comment by @mcrumiller in the duplicated issue is relevant:\r\nhttps://github.com/pola-rs/polars/issues/17307#issuecomment-2198635388\r\n\r\nPerhaps there is some merit to splitting the two after all."
+  },
+  {
+   "author": "mcrumiller",
+   "created_at": "2024-07-01T19:23:49Z",
+   "body": "If you do decide to go this route, the following seems simple and obvious from a user perspective:\r\n\r\n* `pl.list()` - make a list out of columns, i.e. each column becomes an element. All columns must have a common supertype.\r\n* `pl.array()` - make an array out of columns. All columns must have a common super dtype.\r\n* `pl.concat_lists()` - (note addition of the 's' because we are concatenating multiple lists). Take existing `pl.List` columns and concatenate them. If a column is scalar, wrap it in a list. All columns must have common inner supertype.\r\n* `pl.concat_arrays()` - Take existing `pl.Array` columns and concatenate. All columns must have common inner supertype."
+  },
+  {
+   "author": "jeroenjanssens",
+   "created_at": "2024-08-02T18:07:50Z",
+   "body": "@mcrumiller, will any of these functions allow us to combine two (or more) `list[...]` columns into one `list[list[...]]` column? Currently `pl.concat_list()` flattens the `list[...]` columns into one `list[...]` column."
+  },
+  {
+   "author": "m00ngoose",
+   "created_at": "2024-08-09T16:49:40Z",
+   "body": "I agree with @mcrumiller 's suggestions.\r\n@jeroenjanssens  yes I think `pl.list()` would be that function"
+  },
+  {
+   "author": "NickCrews",
+   "created_at": "2024-08-09T17:32:43Z",
+   "body": "@mcrumiller's API seems good to me. Reiterating that I think they should all accept `vals: Iterable[x]`, not `*vals: x`, for the reason I say above."
+  },
+  {
+   "author": "deanm0000",
+   "created_at": "2024-08-15T21:22:08Z",
+   "body": "@stinodego I just stumbled on this and saw you said you'd make it a milestone but I think that was before you had milestones setup in github so I made it a 2.0.0 milestone."
+  },
+  {
+   "author": "corwinjoy",
+   "created_at": "2024-10-03T01:33:02Z",
+   "body": "I have added a draft PR (https://github.com/pola-rs/polars/pull/19079) to discuss the design of a `pl.array` function in order to firm up what this would look like and how it should behave. @adamreeve"
+  },
+  {
+   "author": "MarcoGorelli",
+   "created_at": "2025-11-03T19:04:37Z",
+   "body": "If we start with\n```py\nIn [9]: df = pl.DataFrame({'a': [[1,2], [3]], 'b': [[4], [5,6,7]]})\n\nIn [10]: df\nOut[10]:\nshape: (2, 2)\n┌───────────┬───────────┐\n│ a         ┆ b         │\n│ ---       ┆ ---       │\n│ list[i64] ┆ list[i64] │\n╞═══════════╪═══════════╡\n│ [1, 2]    ┆ [4]       │\n│ [3]       ┆ [5, 6, 7] │\n└───────────┴───────────┘\n```\nthen I don't think there's currently any way of obtaining\n```py\nIn [11]: duckdb.sql(\"\"\"\n    ...: from df\n    ...: select *, list_pack(a, b) as c\n    ...: \"\"\").pl()\nOut[11]:\nshape: (2, 3)\n┌───────────┬───────────┬──────────────────┐\n│ a         ┆ b         ┆ c                │\n│ ---       ┆ ---       ┆ ---              │\n│ list[i64] ┆ list[i64] ┆ list[list[i64]]  │\n╞═══════════╪═══════════╪══════════════════╡\n│ [1, 2]    ┆ [4]       ┆ [[1, 2], [4]]    │\n│ [3]       ┆ [5, 6, 7] ┆ [[3], [5, 6, 7]] │\n└───────────┴───────────┴──────────────────┘\n```\nwith just Polars\n\n@NickCrews the workaround using `implode` doesn't produce the same output, right?\n```py\nIn [8]: df.with_columns(c=pl.concat_list(pl.col('a').implode(), pl.col('b').implode()))\nOut[8]:\nshape: (2, 3)\n┌───────────┬───────────┬───────────────────────────────┐\n│ a         ┆ b         ┆ c                             │\n│ ---       ┆ ---       ┆ ---                           │\n│ list[i64] ┆ list[i64] ┆ list[list[i64]]               │\n╞═══════════╪═══════════╪═══════════════════════════════╡\n│ [1, 2]    ┆ [4]       ┆ [[1, 2], [3], [4], [5, 6, 7]] │\n│ [3]       ┆ [5, 6, 7] ┆ [[1, 2], [3], [4], [5, 6, 7]] │\n└───────────┴───────────┴───────────────────────────────┘\n```\n\nDesired API:\n```py\nIn [8]: df.with_columns(c=pl.list('a', 'b'))\nOut[8]:\nshape: (2, 3)\n┌───────────┬───────────┬──────────────────┐\n│ a         ┆ b         ┆ c                │\n│ ---       ┆ ---       ┆ ---              │\n│ list[i64] ┆ list[i64] ┆ list[list[i64]]  │\n╞═══════════╪═══════════╪══════════════════╡\n│ [1, 2]    ┆ [4]       ┆ [[1, 2], [4]]    │\n│ [3]       ┆ [5, 6, 7] ┆ [[3], [5, 6, 7]] │\n└───────────┴───────────┴──────────────────┘\n```"
+  },
+  {
+   "author": "deanm0000",
+   "created_at": "2025-11-03T19:31:08Z",
+   "body": "To elaborate on @MarcoGorelli's post, currently concat_list tries to be smart and either, in base python terms, `append` or `extend` the list depending on what is fed to it. There's no way to explicitly tell it that you want to further nest your lists rather than extend them.\n\nTo get the desired behavior you've got to pre-nest the lists before calling `concat_list`. One way to do that is with an initial `group_by` like this:\n\n```python\n(\n    df.with_row_index('i')\n    .group_by('i')\n    .agg(pl.col('a','b').first(),\n         pl.col('a','b').name.suffix('_nested'))\n    .select('a','b',c=pl.concat_list('a_nested','b_nested'))\n)\nshape: (2, 3)\n┌───────────┬───────────┬──────────────────┐\n│ a         ┆ b         ┆ c                │\n│ ---       ┆ ---       ┆ ---              │\n│ list[i64] ┆ list[i64] ┆ list[list[i64]]  │\n╞═══════════╪═══════════╪══════════════════╡\n│ [1, 2]    ┆ [4]       ┆ [[1, 2], [4]]    │\n│ [3]       ┆ [5, 6, 7] ┆ [[3], [5, 6, 7]] │\n└───────────┴───────────┴──────────────────┘\n```\n\nNeedless to say, this is not optimal.\n"
+  },
+  {
+   "author": "MarcoGorelli",
+   "created_at": "2026-06-17T08:10:31Z",
+   "body": "Another solution one can use for now is\n```py\ndef list_pack(*exprs):\n    exprs = (pl.col(x) if isinstance(x, str) else x for x in exprs)\n    return pl.concat_list((x.implode().over(pl.int_range(pl.len())) for x in exprs))\n```\n\ndemo\n```py\n\nIn [6]: df.with_columns(c=list_pack('a', 'b'))\nOut[6]:\nshape: (2, 3)\n┌───────────┬───────────┬──────────────────┐\n│ a         ┆ b         ┆ c                │\n│ ---       ┆ ---       ┆ ---              │\n│ list[i64] ┆ list[i64] ┆ list[list[i64]]  │\n╞═══════════╪═══════════╪══════════════════╡\n│ [1, 2]    ┆ [4]       ┆ [[1, 2], [4]]    │\n│ [3]       ┆ [5, 6, 7] ┆ [[3], [5, 6, 7]] │\n└───────────┴───────────┴──────────────────┘\n```\n\n(credit to @cangyuanli in https://github.com/narwhals-dev/narwhals/issues/3691#issuecomment-4727179218 !)"
+  },
+  {
+   "author": "MarcoGorelli",
+   "created_at": "2026-06-17T16:05:55Z",
+   "body": "Seeing as this issue has attracted quite some attention (13 participants!) - if anyone wants to try out https://github.com/pola-rs/polars/pull/27990 and provide feedback, that would be helpful 🙏 "
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "pola-rs/polars",
+  "default_branch": "main",
+  "commit_sha": "b97eef8ce269b0d36662d1c750a52d8503ed0a8e",
+  "as_of": "2023-04-25T21:40:29Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_pola-rs_polars_8510"
+}

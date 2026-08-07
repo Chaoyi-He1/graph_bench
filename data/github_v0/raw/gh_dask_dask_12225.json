@@ -1,0 +1,106 @@
+{
+ "repo": "dask/dask",
+ "number": 12225,
+ "url": "https://github.com/dask/dask/issues/12225",
+ "title": "Pandas 3 test failures",
+ "state": "closed",
+ "labels": [
+  "dataframe"
+ ],
+ "reporter": "reporter",
+ "created_at": "2026-01-07T13:04:26Z",
+ "closed_at": "2026-05-28T17:46:03Z",
+ "body": "The `Upstream` workflow is failing against pandas nightly:\nhttps://github.com/dask/dask/actions/runs/20952839301/job/60210224683\n\n```\nFAILED dask/dataframe/dask_expr/tests/test_collection.py::test_map_meta - AssertionError: Series.index are different\n```",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2026-01-18T11:26:25Z",
+   "body": "I’ve been following the pandas-nightly workflow failures and noticed the AssertionError in test_map_meta. I have my local dev environment set up (Python 3.10) and I'd like to help investigate this.\n\nI'm going to try and isolate a minimal reproducible example to see if this is caused by a change in how pandas 3.0 handles index metadata or if it's a dask_expr specific logic change. I'll post my findings here shortly!\n\nCan you assign this issue to me?"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2026-01-22T11:37:53Z",
+   "body": "@participant1 we don't assign issues to non-core members here. But please feel free to take a look!\n\ncc @participant3 who has also been looking at this"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2026-01-22T12:50:18Z",
+   "body": "Sorry, I forgot to push up https://github.com/dask/dask/pull/12243 earlier."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-01-23T13:31:36Z",
+   "body": "Now that pandas 3.0 final is out, main CI is failing with\n> FAILED dask/dataframe/io/tests/test_parquet.py::test_filter_nonpartition_columns[pyarrow-pyarrow-True] - pandas.errors.Pandas4Warning: Constructing a Categorical with a dtype and values containing non-null entries not in that dtype's categories is deprecated and will raise in a future version."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2026-01-23T13:42:51Z",
+   "body": "@reporter do you have a link to a failure? https://github.com/dask/dask/actions/runs/21265711624/job/61204242073 is a recent run from main that passed."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-01-23T15:38:05Z",
+   "body": "@participant3  https://github.com/dask/dask/actions/runs/21276378399/job/61236740674 \n\nBriefly looking at the test, I see a random.choice in it, which would explain why the warning only appears occasionally."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2026-01-24T05:15:19Z",
+   "body": "I'm seeing a couple of failures when testing the panda 3.0 upgrade in Fedora:\n\n``\nFAILED dask/dataframe/dask_expr/tests/test_collection.py::test_map_meta - AssertionError: Series.index are different\nFAILED dask/dataframe/dask_expr/tests/test_collection.py::test_len - AssertionError: assert 100 == 10\n= 2 failed, 16059 passed, 1230 skipped, 336 xfailed, 282 xpassed, 28 warnings in 446.83s (0:07:26) =\n``"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2026-01-24T17:43:09Z",
+   "body": "> `FAILED dask/dataframe/dask_expr/tests/test_collection.py::test_map_meta - AssertionError: Series.index are different`\n\nI suspect that was fixed by https://github.com/dask/dask/pull/12243.\n\nI don't recall seeing `dask/dataframe/dask_expr/tests/test_collection.py::test_len`. Can you post a full traceback and any investigation you're able to do?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-01-24T22:06:08Z",
+   "body": "> I don't recall seeing `dask/dataframe/dask_expr/tests/test_collection.py::test_len`. Can you post a full traceback and any investigation you're able to do?\n\nIt appeared before: 🤓 https://github.com/dask/dask/pull/12191#issuecomment-3637973856"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2026-01-25T09:47:06Z",
+   "body": "Reproduction of test_map_meta failure with pandas 3.0\n\nI was able to reproduce the failure locally in test_map_meta when testing against pandas 3.0.\n\n**Environment**\nPython 3.12.3\npytest 9.0.2\npandas 3.0\nlocal checkout of main\n\n**Command used**\n```\nPYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \\\npytest -o addopts= \\\ndask/dataframe/dask_expr/tests/test_collection.py::test_map_meta -s\n```\n\n**Debugging details**\nTo understand the failure, I added debug prints just before the first assertion in test_map_meta:\n\n```\nprint(f\"DEBUG - RESULT META INDEX: {result._meta.index}\")\nprint(f\"DEBUG - EXPECTED INDEX: {expected.index}\")\n\n```\n**Observed output**\n```\nDEBUG - RESULT META INDEX: RangeIndex(start=0, stop=0, step=1)\nDEBUG - EXPECTED INDEX: RangeIndex(start=0, stop=100, step=1)\n```\n\n\nThe test then fails at:\nassert result._meta.index.equals(expected.index)\n\nInterpretation\nThis indicates that when calling:\n`df.x.map(lambda x: x + 1, meta=expected.iloc[:0])`\n\nthe resulting _meta does not preserve the index information from the provided meta. Instead, _meta.index is inferred as an empty RangeIndex(0, 0), even though the supplied meta carries the full index type.\n\nThis reproduces the CI failure and suggests that index handling during _meta inference for Series.map has changed (or regressed) with pandas 3.0.\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-02-03T13:16:48Z",
+   "body": "> [@participant3](https://github.com/participant3) https://github.com/dask/dask/actions/runs/21276378399/job/61236740674\n> \n> Briefly looking at the test, I see a random.choice in it, which would explain why the warning only appears occasionally.\n\nLooking at it closer, I'm reading\n\n```\ndask/dataframe/io/parquet/arrow.py:603: in read_partition\n    pd.Categorical(\n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \n\nvalues = array([2], dtype=int32)\ncategories = Index([1, 2, 3, 4], dtype='int32')\n[...]\nE           pandas.errors.Pandas4Warning: Constructing a Categorical with a dtype and values containing non-null entries not in that dtype's categories is deprecated and will raise in a future version.\n```\n\nwhich makes no sense.\nI can trigger the warning with\n```python\npd.Categorical(values = np.array([5], dtype=np.int32), categories = pd.Index([1, 2, 3, 4], dtype='int32')\n```\n\nTo me it smells of a race condition within pandas where different dask threads have different values and categories in their stacks and they call `categories.get_indexer_for(values)` in parallel, but they may share a common global state and thus interfere with each other. It reminds me of https://github.com/pydata/xarray/issues/10923.\n\nHowever, just like the other issue I just linked, I'm utterly failing to reproduce it locally - either synthetically or with the dask test suite.\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-02-03T13:27:46Z",
+   "body": "Possible root cause: race condition in `pd.Index._ensure_mapping_populated`: https://github.com/pandas-dev/pandas/issues/63685"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-02-03T13:36:56Z",
+   "body": "New flakiness in `dask/dataframe/io/tests/test_parquet.py::test_roundtrip_partitioned_pyarrow_dataset` also may have the same root cause:\nhttps://github.com/dask/dask/actions/runs/21628536686/job/62334916154?pr=12266\n```\npandas/_libs/index.pyx:168: in pandas._libs.index.IndexEngine.get_loc\n    ???\npandas/_libs/index.pyx:197: in pandas._libs.index.IndexEngine.get_loc\n    ???\npandas/_libs/hashtable_class_helper.pxi:4823: in pandas._libs.hashtable.Int32HashTable.get_item\n    ???\n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \n\n>   ???\nE   KeyError: 1\n```"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-02-04T18:40:42Z",
+   "body": "> I'm seeing a couple of failures when testing the panda 3.0 upgrade in Fedora:\n> \n> FAILED dask/dataframe/dask_expr/tests/test_collection.py::test_len - AssertionError: assert 100 == 10 = 2 failed, 16059 passed, 1230 skipped, 336 xfailed, 282 xpassed, 28 warnings in 446.83s (0:07:26) =`\n\nI've just observed this on a 3.10 environment, which is stuck on pandas 2.3.\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-02-04T18:44:35Z",
+   "body": "This also looks caused by https://github.com/pandas-dev/pandas/issues/63685:\n\n> FAILED dask/dataframe/io/tests/test_parquet.py::test_arrow_partitioning - pandas.errors.Pandas4Warning: Constructing a Categorical with a dtype and values containing non-null entries not in that dtype's categories is deprecated and will raise in a future version.\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-02-05T20:03:00Z",
+   "body": "I've tested https://github.com/pandas-dev/pandas/pull/63783 vs. pandas git tip on 3.14 and 3.14t (https://github.com/dask/dask/pull/12284).\n\nTL;DR; the pandas PR seems to make all flakiness disappear, and I consider it a blocker to 3.14t support for dask.dataframe.\n\n\n## Shared based environments\n```\n=== 3.14 ===\nmamba env create -n dask-314 -f continuous_integration/environment-3.14.yaml \nconda activate dask-314\nmamba install pytest-repeat\npip install . git+https://github.com/dask/distributed\n\n=== 3.14t ===\nwget https://raw.githubusercontent.com/reporter/dask/refs/heads/314t_pandas/continuous_integration/environment-3.14t.yaml\nmamba env create -n dask-314t -f environment-3.14t.yaml\nconda activate dask-314t\nconda uninstall -y -v --force msgpack-python\nMSGPACK_PUREPYTHON=1 pip install msgpack --no-binary msgpack --no-cache --force-reinstall -v\nmamba install pytest-repeat\npip install . git+https://github.com/dask/distributed\n```\n\n## pandas variants\n- pandas 3.0.0\n`mamba install pandas=3.0.0 --force-reinstall`\n- pandas git tip\n`pip install git+https://github.com/pandas-dev/pandas.git@2455fb9066628929be67011d01bb62a098cdb9ea`\n- https://github.com/pandas-dev/pandas/pull/63783\n`pip install git+https://github.com/reporter/pandas.git@727c73034f9d2c63d7e0164a10c2f5e367b017c6`\n\n## Test run\nThese are tests that are frequently seen to fail in our CI throughout all Python versions:\n```\ntaskset -c 0,1,2,3 python -m pytest --pyargs --count=100 \\\n    dask/dataframe/io/tests/test_parquet.py::test_filter_nonpartition_columns \\\n    dask/dataframe/io/tests/test_parquet.py::test_roundtrip_partitioned_pyarrow_dataset \\\n    dask/dataframe/io/tests/test_parquet.py::test_arrow_partitioning\n```\n# Outcome\n- Python 3.14, Pandas 3.0.0: I failed to replicate CI failures locally (probably due to much faster hardware than CI)\n- Python 3.14t, Pandas 3.0.0: 3~15% failure rate on the above tests\n- Python 3.14t, Pandas main git tip: same as 3.0.0\n- Python 3.14t, https://github.com/pandas-dev/pandas/pull/63783: all failures disappear. :<nick>: \n\nBecause I failed to replicate the failures on the GIL-enabled interpreter, I cannot assertively say if these race conditions are a regression in Pandas 3.0 or if they were already there in 2.3. I can only observe from git blame that `Index._ensure_mapping_populated` has not been touched in at least 3 years.\n\n"
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "dask/dask",
+  "default_branch": "main",
+  "commit_sha": "14eaa0bf06ec4ee5b8f226f69f967fafcb2b6d1a",
+  "as_of": "2026-01-07T13:04:26Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_dask_dask_12225"
+}

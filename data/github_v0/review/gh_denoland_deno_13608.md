@@ -10,34 +10,26 @@
 ```mermaid
 flowchart LR
     N0["<b>N0 severe upload slowdown reported</b><br/><small>info: 5</small>"]
-    N1["<b>N1 comparison implementation collected</b><br/><small>info: 7</small>"]
-    N2_x["<b>N2_x native file Web Stream aftermath</b><br/><small>info: 9</small>"]
-    N3["<b>N3 hardware and version dependence checked</b><br/><small>info: 11</small>"]
-    N3_x["<b>N3_x Deno.serve aftermath</b><br/><small>info: 12</small>"]
-    N4["<b>N4 upload profile collected</b><br/><small>info: 14</small>"]
-    N5_x["<b>N5_x newer release aftermath</b><br/><small>info: 15</small>"]
-    N_terminal["<b>terminal equivalent APIs benchmarked</b><br/><small>info: 18</small>"]
-    N0 -.->|"❓ node_server_uses_native_stream_pipeline, reporter_using_latest_deno_and_node_16"| N1
+    N1["<b>N1 comparison implementations collected</b><br/><small>info: 7</small>"]
+    N2_x["<b>N2_x native file writable aftermath</b><br/><small>info: 8</small>"]
+    N3["<b>N3 hardware limitation checked</b><br/><small>info: 9</small>"]
+    N4_x["<b>N4_x newer release aftermath</b><br/><small>info: 10</small>"]
+    N_terminal["<b>terminal maintainer diagnosis without reporter retest</b><br/><small>info: 14</small>"]
+    N0 -.->|"❓ node_server_uses_native_request_and_fs_stream_pipeline, initial_environment_latest_deno_and_node16"| N1
     linkStyle 0 stroke:#3b82f6,stroke-width:2px
-    N1 ==>|"💥 blind: Upgrade to the release with native Web Streams on files and pipe the request body directly to file.writable instead of using the standard-library writer adapter."| N2_x
+    N1 ==>|"💥 blind: Replace the std Reader/Writer adapter with Deno's native file Web Stream and pipe the request body directly to file.writable."| N2_x
     linkStyle 1 stroke:#ef4444,stroke-width:2px
-    N2_x -.->|"❓ four_cpu_vps_reproduces_twofold_gap, versions_through_124_keep_similar_gap"| N3
+    N2_x -.->|"❓ larger_vps_still_shows_approximately_twofold_gap"| N3
     linkStyle 2 stroke:#3b82f6,stroke-width:2px
-    N3 ==>|"💥 blind: Replace the standard-library HTTP server with Deno.serve while continuing to pipe the Web request body to the file's writable stream."| N3_x
+    N3 ==>|"💥 blind: Update to a newer Deno release containing ongoing HTTP performance work and repeat the upload test."| N4_x
     linkStyle 3 stroke:#ef4444,stroke-width:2px
-    N3_x -.->|"❓ profile_512mb_browser_4687ms_deno_save_2947ms, upload_performance_recording_shared"| N4
-    linkStyle 4 stroke:#3b82f6,stroke-width:2px
-    N4 ==>|"💥 blind: Update to a substantially newer Deno release and repeat the existing Deno.serve plus file.writable benchmark."| N5_x
-    linkStyle 5 stroke:#ef4444,stroke-width:2px
-    N5_x ==>|"⚡ Correct the benchmark and performance-sensitive implementation by comparing the same stream API on both runtimes: use native Node-compatible streams under Deno when maximum throughput is required, or compare Web Streams against Web Streams. The remaining apparent runtime gap comes from comparing Deno Web Streams with Node native streams, not from slower Deno socket or file I/O."| N_terminal
-    linkStyle 6 stroke:#f97316,stroke-width:2px
+    N4_x ==>|"⚡ Correct the comparison by testing the same stream API on both runtimes: the remaining apparent runtime gap comes from comparing Deno Web Streams with Node native streams. Use native Node-compatible streams under Deno when maximum throughput is required, or compare Web Streams on both sides, and ask the reporter to verify the matched test on a current build."| N_terminal
+    linkStyle 4 stroke:#f97316,stroke-width:2px
     class N0 start
     class N1 normal
     class N2_x normal
     class N3 normal
-    class N3_x normal
-    class N4 normal
-    class N5_x normal
+    class N4_x normal
     class N_terminal terminal
     classDef start fill:#fee2e2,stroke:#b91c1c,color:#000
     classDef terminal fill:#dcfce7,stroke:#15803d,color:#000
@@ -46,41 +38,36 @@ flowchart LR
 
 ## Opening (body)
 
-> I tested uploads of 10 MB, 100 MB, and 1 GB files to a localhost HTTP server. My Deno server streams req.body to a file, but it is about 2–3x slower than my Node.js server for the smaller files. With a 1 GB file, Deno takes between 20 seconds and 5 minutes, uses almost all CPU on my Ubuntu 20.04 VPS with 2 CPU cores and 2 GB RAM, and becomes progressively slower over repeated uploads. Node takes about 1–1.7 seconds and remains stable. I create the test files with truncate and upload them with curl --data-binary.
+> I compared localhost file-upload performance between Deno and Node using 10 MB, 100 MB, and 1 GB files created with truncate and uploaded with curl. My Deno server uses std@0.125.0, opens a file, wraps it with writableStreamFromWriter, and pipes req.body to it. Deno takes about 60–90 ms for 10 MB, 500–600 ms for 100 MB, and anywhere from 20 seconds to 5 minutes for 1 GB, while Node takes about 35–40 ms, 260 ms, and 1–1.7 seconds respectively. Repeating the 1 GB upload makes Deno progressively slower and consumes almost all CPU on my Ubuntu 20.04 VPS with 2 CPU cores and 2 GB RAM; Node remains stable. What am I doing wrong, and how can I improve the upload speed?
 
 ## Satisfaction conditions
 
-1. Must identify the final accepted root cause: the original benchmark compares Deno's Web Streams upload path with Node's native stream.pipeline path, so the residual difference is primarily Web Streams abstraction overhead rather than slower Deno socket or filesystem I/O.
-2. The diagnosis must be grounded in the collected implementations, repeated large-file timings, cross-machine tests, and profiling evidence, together with a same-API benchmark; it must not be asserted from the initial timing alone.
-3. Must recommend an apples-to-apples comparison: native streams on both runtimes or Web Streams on both runtimes, with Node-compatible native streams under Deno as the maximum-throughput option.
-4. Must not present direct file.writable use, switching to Deno.serve, or merely updating Deno while retaining the unlike-API benchmark as a complete fix; each was tried and the measured gap remained.
-5. Must distinguish the old catastrophic progressive slowdown and CPU saturation from the later residual stream-API cost; the former was no longer reproducible in the final investigation.
-6. Must ask the user to verify repeated large uploads, timings, and CPU behavior with a matched stream API before declaring the issue resolved.
+1. Must identify the final accepted diagnosis: the remaining approximately twofold comparison was apples-to-oranges because the Deno server used Web Streams while the Node server used native Node request and filesystem streams; controlled same-API tests show no meaningful Deno runtime I/O gap.
+2. Must ground the diagnosis in the two supplied server implementations and the maintainer's controlled same-API matrix, while distinguishing that engineer analysis from evidence produced by the reporter.
+3. Must not present replacing writableStreamFromWriter with file.writable, adding more VPS resources, or merely updating older Deno releases as a complete fix; those moves improved stability or absolute speed but retained a measured gap.
+4. For maximum throughput, must recommend an API-equivalent native-stream pipeline under Deno, or otherwise compare Web Streams on both runtimes rather than attributing their abstraction cost solely to Deno.
+5. Must ask the reporter to verify an API-matched test on a current build before declaring the issue resolved on the reporter's system; the thread contains no such reporter confirmation.
 
 ## Edges
 
 | edge | type | gates / info | payload |
 |---|---|---|---|
-| `e1_N0__N1` | clarification_only | asks: node_server_uses_native_stream_pipeline, reporter_using_latest_deno_and_node_16 | My Node server is an Express route that creates an fs.WriteStream and runs await stream.pipeline(req, fs_strea / I'm using the latest Deno available at the time and Node 16. The server has two CPUs and 2 GB RAM. Please try  |
-| `e2_N1__N2_x` | solution_only **BLIND** | req_info: opening_deno_server_uses_std_stream_adapter, node_server_uses_native_stream_pipeline<br>elements: uses_file_writable_directly, removes_standard_library_writer_adapter | Upgrade to the release with native Web Streams on files and pipe the request body directly to file.writable instead of using the standard-library writer adapter. |
-| `e3_N2_x__N3` | clarification_only | asks: four_cpu_vps_reproduces_twofold_gap, versions_through_124_keep_similar_gap | I ran it on another VPS with four CPUs and 8 GB RAM and got the same result: Deno is about 200 MB/s and Node a / I retested releases from Deno 1.19.2 through 1.24 with their current standard-library versions. Individual tim |
-| `e4_N3__N3_x` | solution_only **BLIND** | req_info: deno_http_upload_slower_than_node, four_cpu_vps_reproduces_twofold_gap<br>elements: switches_server_to_Deno_serve | Replace the standard-library HTTP server with Deno.serve while continuing to pipe the Web request body to the file's writable stream. |
-| `e5_N3_x__N4` | clarification_only | asks: profile_512mb_browser_4687ms_deno_save_2947ms, upload_performance_recording_shared | I sent a 512 MB buffer from the browser. It took 4687 ms from start to finish in the browser and 2947 ms on th / I've attached the performance graph for one upload and a zoomed-in view of the same recording. |
-| `e6_N4__N5_x` | solution_only **BLIND** | req_info: four_cpu_vps_reproduces_twofold_gap, profile_512mb_browser_4687ms_deno_save_2947ms<br>elements: updates_deno_and_retests_existing_web_streams_path | Update to a substantially newer Deno release and repeat the existing Deno.serve plus file.writable benchmark. |
-| `e7_N5_x__N_terminal` | solution_only | req_info: deno_http_upload_slower_than_node, opening_deno_server_uses_std_stream_adapter, one_gb_upload_progressively_slows_and_uses_cpu, node_server_uses_native_stream_pipeline, native_writable_1gb_5_3s_vs_node_2_3s, four_cpu_vps_reproduces_twofold_gap, deno_serve_125_same_twofold_gap, profile_512mb_browser_4687ms_deno_save_2947ms, deno_1343_1gb_2_7s_vs_node_1_8s<br>elements: identifies_the_original_comparison_as_native_node_streams_versus_web_streams, attributes_the_residual_gap_to_web_streams_abstraction_cost_not_deno_io, recommends_matching_the_stream_api_across_runtimes, offers_native_node_compatible_streams_for_maximum_throughput, asks_user_to_verify_repeated_large_uploads_with_the_matched_implementation | Correct the benchmark and performance-sensitive implementation by comparing the same stream API on both runtimes: use native Node-compatible streams under Deno when maximum throughput is required, or compare Web Streams against Web Streams. The remaining apparent runtime gap comes from comparing Deno Web Streams with Node native streams, not from slower Deno socket or file I/O. |
+| `e1_N0__N1` | clarification_only | asks: node_server_uses_native_request_and_fs_stream_pipeline, initial_environment_latest_deno_and_node16 | My Node server uses Express, creates an fs.WriteStream, and runs await stream.pipeline(req, fs_stream) to copy / I'm using the latest Deno version available at the time and Node 16. The severe repeated-upload result is on m |
+| `e2_N1__N2_x` | solution_only **BLIND** | req_info: deno_std_0125_pipe_to_adapter_upload_code, initial_environment_latest_deno_and_node16<br>elements: uses_native_file_writable_stream, removes_writable_stream_adapter | Replace the std Reader/Writer adapter with Deno's native file Web Stream and pipe the request body directly to file.writable. |
+| `e3_N2_x__N3` | clarification_only | asks: larger_vps_still_shows_approximately_twofold_gap | I ran the same test on another VPS with 4 CPUs and 8 GB RAM. The result is essentially the same: Deno is about |
+| `e4_N3__N4_x` | solution_only **BLIND** | req_info: deno_slower_than_node_across_10m_100m_1g_tests, larger_vps_still_shows_approximately_twofold_gap<br>elements: updates_to_a_newer_deno_release, repeats_the_same_upload_measurement | Update to a newer Deno release containing ongoing HTTP performance work and repeat the upload test. |
+| `e5_N4_x__N_terminal` | solution_only | req_info: deno_std_0125_pipe_to_adapter_upload_code, one_gb_repeats_progressively_slower_with_high_cpu, node_server_uses_native_request_and_fs_stream_pipeline, larger_vps_still_shows_approximately_twofold_gap, deno1343_upload_2_7s_vs_node_1_8s<br>elements: identifies_the_original_comparison_as_using_different_stream_apis, attributes_the_remaining_gap_to_web_streams_abstraction_cost_not_deno_runtime_io, recommends_native_streams_for_maximum_throughput_or_matching_web_streams_on_both_sides, asks_user_to_verify_on_a_current_build_with_api_matched_servers | Correct the comparison by testing the same stream API on both runtimes: the remaining apparent runtime gap comes from comparing Deno Web Streams with Node native streams. Use native Node-compatible streams under Deno when maximum throughput is required, or compare Web Streams on both sides, and ask the reporter to verify the matched test on a current build. |
 
 ## Nodes
 
 | node | terminal | volunteered | images | symptoms |
 |---|---|---|---|---|
-| `N0` |  | 5 | 0 | My Deno upload server takes 60–90 ms for 10 MB, 500–600 ms for 100 MB, and between 20 seconds and 5 minutes for 1 GB, while Node takes about |
-| `N1` |  | 0 | 0 | Repeated 1 GB uploads to the Deno server become progressively slower and consume nearly all available CPU, while the Node server remains sta |
-| `N2_x` |  | 2 | 0 | With Deno 1.19 and req.body.pipeTo(file.writable), a 1 GB upload now takes about 5.3 seconds instead of 16.5 seconds and repeated results ar |
-| `N3` |  | 0 | 0 | On a second VPS with four CPUs and 8 GB RAM, Deno writes the 1 GB upload at about 200 MB/s while Node reaches about 450 MB/s. Across later D |
-| `N3_x` |  | 1 | 0 | After changing the server to Deno.serve on Deno 1.25, the 1 GB upload remains about twice as slow as the Node server. |
-| `N4` |  | 0 | 0 | In my additional test, sending a 512 MB buffer takes 4687 ms from the browser and 2947 ms on the Deno side to open and save the file. |
-| `N5_x` |  | 1 | 0 | On Deno 1.34.3, a 1 GB upload takes 2.7 seconds on my four-core VPS while Node takes 1.8 seconds. |
-| `N_terminal` | ✓ | 0 | 0 | With both runtimes tested through the same native-stream API, repeated 1 GB uploads complete in approximately the same time; the progressive |
+| `N0` |  | 0 | 0 | My Deno uploads take about 60–90 ms for 10 MB, 500–600 ms for 100 MB, and 20 seconds to 5 minutes for 1 GB, compared with about 35–40 ms, 26 |
+| `N1` |  | 0 | 0 | Repeated 1 GB uploads remain much slower in Deno than in Node and consume nearly all CPU. |
+| `N2_x` |  | 1 | 0 | With Deno 1.19 and file.writable, my repeated 1 GB uploads are stable and improve from 16.5 seconds to about 5.3 seconds, but Node takes 2.3 |
+| `N3` |  | 0 | 0 | On another VPS with 4 CPUs and 8 GB RAM, I still get about 200 MB/s in Deno and 450 MB/s in Node for the 1 GB upload. |
+| `N4_x` |  | 1 | 0 | On my 4-core VPS with Deno 1.34.3, the 1 GB upload takes 2.7 seconds versus 1.8 seconds in Node, so the gap is smaller but still visible. |
+| `N_terminal` | ✓ | 0 | 0 | I have not retested a current build using API-matched Deno and Node servers on my own VPS, so I cannot confirm the final result on my system |
 
 ## Machine review (audit pass, adversarially verified)
 

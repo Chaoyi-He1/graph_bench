@@ -1,0 +1,148 @@
+{
+ "repo": "qdrant/qdrant",
+ "number": 5463,
+ "url": "https://github.com/qdrant/qdrant/issues/5463",
+ "title": "Timeout error on query if timeout=1 in a distributed deployment",
+ "state": "closed",
+ "labels": [
+  "bug",
+  "💎 Bounty"
+ ],
+ "reporter": "reporter",
+ "created_at": "2024-11-18T17:42:34Z",
+ "closed_at": "2024-11-25T09:43:06Z",
+ "body": "## Current Behavior\r\nWhen querying the Qdrant Recommendation API, if the collection is distributed (across multiple shards) and the timeout is set to 1 second, Qdrant may return a timeout error during request distribution, even if the request execution time is less than 1 second. Without a timeout specified, or with timeout=2, the request succeeds.\r\n\r\n\r\n## Steps to Reproduce\r\n1.\tCreate a Qdrant cluster with multiple nodes using the official Helm Chart.\r\n2.\tCreate a collection with multiple shards.\r\n3.\tExecute a simple recommend query like the one below (with timeout=1):\r\n```\r\nPOST /collections/<collection_name>/points/query?timeout=1\r\n{\r\n  \"query\": {\r\n    \"recommend\": {\r\n      \"positive\": [\r\n        \"c026bde1-8399-488d-954a-c777a42ab74a\"\r\n      ]\r\n    }\r\n  },\r\n  \"with_payload\": false,\r\n  \"with_vector\": false\r\n}\r\n```\r\n4. Qdrant output the following error\r\n```\r\n{\r\n  \"error\": \"Service internal error: 2 of 2 read operations failed:\\n  Timeout error: Deadline Exceeded: status: DeadlineExceeded, message: \\\"Timeout: Timeout error: Operation 'Search' timed out after 0 seconds\\\", details: [], metadata: MetadataMap { headers: {\\\"content-type\\\": \\\"application/grpc\\\", \\\"date\\\": \\\"Mon, 18 Nov 2024 17:28:13 GMT\\\", \\\"content-length\\\": \\\"0\\\"} }\\n  Timeout error: Deadline Exceeded: status: DeadlineExceeded, message: \\\"Timeout: Timeout error: Operation 'Search' timed out after 0 seconds\\\", details: [], metadata: MetadataMap { headers: {\\\"content-type\\\": \\\"application/grpc\\\", \\\"date\\\": \\\"Mon, 18 Nov 2024 17:28:13 GMT\\\", \\\"content-length\\\": \\\"0\\\"} }\"\r\n}\r\n```\r\n\r\n## Expected Behavior\r\nThe request should return a result without any errors. (Running the same request without a timeout set returns a response in less than 1 second.)\r\n\r\n## Possible Solution\r\nThe issue seems to stem from the timeout settings between nodes (shards), as indicated by the message timed out after 0 seconds. This might be due to subtracting 1 (an integer) instead of a float (less than 1). The issue could be related to the following commits:\r\n- https://github.com/qdrant/qdrant/pull/4844\r\n- https://github.com/qdrant/qdrant/pull/4849 \r\n\r\n## Context (Environment)\r\n- **Deployment**: Qdrant deployed in a private Kubernetes cluster using the official Helm Chart.\r\n- **Affected Versions**: At least Qdrant 1.11.5 and 1.12.3. It worked fine with 1.10.1\r\n- **Reproducibility**: The issue is not related to any specific client, as it can be reproduced using Python or Curl.\r\n- **Scope**: The issue occurs only with distributed clusters (multiple shards).\r\n\r\n\r\ncc @participant7",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2024-11-18T18:01:24Z",
+   "body": "Regarding the time it reports for completion, do you have the end-to-end time it usually takes without setting timeout to 1?  Qdrant operations report _server_ timings, without considering network time.\r\n\r\nIf it is close to 1, then I believe we could improve the message by reporting the original timeout, but I don't think this is a bug in functionality. \r\n\r\nThe timeout is reported as zero because, after the initial operations, the timeout is reduced to exclude the time it already took. For formatting the error message, it calls `Duration::as_secs()`, which truncates the number, so it is expected that it will return 0 in the case of setting timeout to 1.\r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-11-18T18:05:49Z",
+   "body": "We are way below 1 second without the timeout parameter: \r\n\r\n```\r\n{\r\n  \"result\": {\r\n    \"points\": [<REDACTED>]\r\n  },\r\n  \"status\": \"ok\",\r\n  \"time\": 0.008113211\r\n}\r\n```\r\n\r\nAlso, we did not encounter this issue with version 1.10.x; it appeared after upgrading to 1.11.x"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-11-18T18:13:51Z",
+   "body": "if you have anything stored on disk (vectors / indexes / e.t.c.) first request might time out just because it is slower than 1 second cause it needs to fill the cache. Also, reported time doesn't include networking"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-11-18T18:20:01Z",
+   "body": "Here is my collection config: \r\n\r\n```json\r\n{\r\n  \"params\": {\r\n    \"vectors\": {\r\n      \"size\": 384,\r\n      \"distance\": \"Cosine\"\r\n    },\r\n    \"shard_number\": 3,\r\n    \"replication_factor\": 2,\r\n    \"write_consistency_factor\": 1,\r\n    \"on_disk_payload\": true\r\n  },\r\n  \"hnsw_config\": {\r\n    \"m\": 32,\r\n    \"ef_construct\": 256,\r\n    \"full_scan_threshold\": 10000,\r\n    \"max_indexing_threads\": 0,\r\n    \"on_disk\": false,\r\n    \"payload_m\": 32\r\n  },\r\n  \"optimizer_config\": {\r\n    \"deleted_threshold\": 0.2,\r\n    \"vacuum_min_vector_number\": 1000,\r\n    \"default_segment_number\": 0,\r\n    \"max_segment_size\": null,\r\n    \"memmap_threshold\": null,\r\n    \"indexing_threshold\": 20000,\r\n    \"flush_interval_sec\": 5,\r\n    \"max_optimization_threads\": null\r\n  },\r\n  \"wal_config\": {\r\n    \"wal_capacity_mb\": 32,\r\n    \"wal_segments_ahead\": 0\r\n  },\r\n  \"quantization_config\": null,\r\n  \"strict_mode_config\": {\r\n    \"enabled\": false\r\n  }\r\n}\r\n```\r\n\r\n- I don't use any filter in my query\r\n- I use `\"with_payload\": false,` so I assume payload on disk doesn't have any impact here.\r\n- `it needs to fill the cache` --> If I rerun the query multiple time I still have the issue\r\n- Chrome report 69ms (this include network time)\r\n<img width=\"801\" alt=\"image\" src=\"https://github.com/user-attachments/assets/3d1e5db9-86a0-431c-b1a2-14e4e435bd58\">\r\n"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-11-18T18:55:08Z",
+   "body": "ok, yeah, it seems I can reproduce it locally."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-11-18T18:57:38Z",
+   "body": "/bounty $100"
+  },
+  {
+   "author": "algora-pbc[bot]",
+   "created_at": "2024-11-18T18:57:44Z",
+   "body": "## 💎 $100 bounty [• Qdrant](https://<redacted-host>/org/Qdrant)\n\n### Steps to solve:\n1. **Start working**: Comment `/attempt #5463` with your implementation plan\n2. **Submit work**: Create a pull request including `/claim #5463` in the PR body to claim the bounty\n3. **Receive payment**: 100% of the bounty is received 2-5 days post-reward. [Make sure you are eligible for payouts](https://<redacted-host>/bounties/payments#supported-countries-regions)\n\nThank you for contributing to qdrant/qdrant!\n\n**[Add a bounty](https://<redacted-host>/org/Qdrant/bounties/community?fund=qdrant%2Fqdrant%235463)** • **[Share on socials](https://twitter.com/intent/tweet?text=%24100+bounty%21+%F0%9F%92%8E+https%3A%2F%2Fgithub.com%2Fqdrant%2Fqdrant%2Fissues%2F5463&related=algoraio)**\n\n<table>\n<thead>\n<tr>\n<th>Attempt</th>\n<th>Started (GMT+0)</th>\n<th>Solution</th>\n</tr>\n</thead>\n<tbody>\n<tr>\n<td>🟢 @participant3</td>\n<td>Nov 18, 2024, 7:01:12 PM</td>\n<td>WIP</td>\n</tr>\n</tbody>\n</table>"
+  },
+  {
+   "author": "algora-pbc[bot]",
+   "created_at": "2024-11-18T18:57:44Z",
+   "body": "## 💎 $100 bounty [• Qdrant](https://<redacted-host>/org/Qdrant)\n\n### Steps to solve:\n1. **Start working**: Comment `/attempt #5463` with your implementation plan\n2. **Submit work**: Create a pull request including `/claim #5463` in the PR body to claim the bounty\n3. **Receive payment**: 100% of the bounty is received 2-5 days post-reward. [Make sure you are eligible for payouts](https://<redacted-host>/bounties/payments#supported-countries-regions)\n\nThank you for contributing to qdrant/qdrant!\n\n**[Add a bounty](https://<redacted-host>/org/Qdrant/bounties/community?fund=qdrant%2Fqdrant%235463)** • **[Share on socials](https://twitter.com/intent/tweet?text=%24100+bounty%21+%F0%9F%92%8E+https%3A%2F%2Fgithub.com%2Fqdrant%2Fqdrant%2Fissues%2F5463&related=algoraio)**\n\n"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-11-18T19:01:05Z",
+   "body": "/attempt #5463\n\n<div id=\"algora-attempt\" />\n\n| [Algora profile](https://<redacted-host>/@/participant3) | Completed bounties | Tech | Active attempts | Options |\n| --- | --- | --- | --- | --- |\n| @participant3 | &nbsp;&nbsp;&nbsp;1 Qdrant bounty <br/> + 19 bounties from 9 projects | <div align=\"center\">Rust, Scala, <br />Go & more</div> | <div align=\"center\"></div> | [Cancel attempt](https://<redacted-host>/api/bounties/cm3ne1gwr0014l803oe8fqxow/cancel-attempt) |"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-11-18T22:37:41Z",
+   "body": "I investigated the issue and believe I’ve identified the root cause, but I’m not sure how to fix it. I’m happy to contribute if possible—maybe you can help me!\r\n\r\nFirst, it seems the bug was introduced in this pull request: https://github.com/qdrant/qdrant/pull/4842. Especially the problematic line is \r\n`let timeout = timeout.map(|timeout| timeout - start.elapsed());` in `query.rs`.\r\n\r\nFrom what I understand, the code performs some local processing, subtracting the elapsed time from the timeout. Then, the query is dispatched to the shard with the updated timeout. The issue arises when the shards are remote: the timeout is converted back to an integer and effectively floored. In case of a 1-second timeout, it becomes 0 seconds for the distant shards (leading to the error).\r\n\r\nI also noticed this because of a validation error in the logs on my second node:\r\nWARN collection::operations::validation: - timeout: value 0 invalid, must be 1 or larger.\r\n\r\ncc @participant4 as you are the author of the commits."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-11-19T08:50:19Z",
+   "body": "@reporter Thanks a lot for the investigation!\r\n\r\nI have some ideas how to fix this which I will share on the existing PR https://github.com/qdrant/qdrant/pull/5475"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2024-11-21T14:04:22Z",
+   "body": "can you guys please treat this as a patch for 1.12.4 or do a new release?"
+  },
+  {
+   "author": "participant6",
+   "created_at": "2024-11-21T14:27:14Z",
+   "body": "> can you guys please treat this as a patch for 1.12.4 or do a new release?\r\n\r\nWe estimate to release a patch for this next week.\r\n\r\nIn the meanwhile I can suggest to do either of two things:\r\n- use a higher timeout for the time being\r\n- use the `qdrant/qdrant:dev` image"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2024-11-21T14:39:08Z",
+   "body": "I tried higher timeout with no success. I'll switch to `dev` image for now. Thank you!"
+  },
+  {
+   "author": "participant6",
+   "created_at": "2024-11-21T14:40:13Z",
+   "body": "Can I ask what the highest timeout is you've tried? I expect that `2` or `3` may not be high enough.\r\n\r\nAlternatively you can enforce a shorter timeout in your own code, where you pass a longer timeout (30 seconds?) to Qdrant."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2024-11-21T14:48:07Z",
+   "body": "I actually tried 30 seconds, the index is around 60M points with 8 replicas. Now, I'm at 10 seconds: \r\n```rust\r\nstatic QDRANT_CLIENT: Lazy<Qdrant> = Lazy::new(|| {\r\n    let qdrant_url =\r\n        std::env::var(\"QDRANT_URL\").unwrap_or_else(|_| \"http://localhost:6334\".to_owned());\r\n    Qdrant::from_url(&qdrant_url)\r\n        .timeout(std::time::Duration::from_secs(10))\r\n        .build()\r\n        .unwrap()\r\n});\r\n```\r\n\r\nWhen I use the recommend groups, it just time out when points are not indexed:\r\n\r\n```rust\r\nlet resp = QDRANT_CLIENT.recommend_groups(req)\r\n...\r\n```\r\nAll what I get is `Status { code: Cancelled, message: \"Timeout expired\"` }\r\n\r\n\r\n\r\n"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2024-11-21T14:53:21Z",
+   "body": "I was on `0.9` for a while and this hasn't been an issue until I upgraded"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2024-11-21T15:09:52Z",
+   "body": "I have to clarify.. qdrant is being called around `~800req/s`"
+  },
+  {
+   "author": "participant6",
+   "created_at": "2024-11-21T15:12:14Z",
+   "body": "At that rate I don't expect this issue report to be related. Your searches are likely 'just' timing out because they are taking long. The upcoming patch release will not help with that.\r\n\r\nPlease have a look at the following documentation page if you're interested in tuning performance: https://qdrant.tech/documentation/guides/optimize/"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2024-11-21T16:28:24Z",
+   "body": "I did try a lot of these options with no avail, any other suggestions?"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-11-21T16:35:45Z",
+   "body": "I agree that it is most likely unrelated.\r\n\r\nThis is why I recommend you to open a new issue with the details of your setup and query for us to investigate.\r\nEven better is to ask on our [Discord](https://qdrant.to/discord) server :)"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-11-22T21:28:23Z",
+   "body": "fixed in https://github.com/qdrant/qdrant/pull/5495"
+  },
+  {
+   "author": "participant6",
+   "created_at": "2024-12-09T15:34:51Z",
+   "body": "We've released [Qdrant 1.12.5](https://github.com/qdrant/qdrant/releases/tag/v1.12.5) which includes the fix for this problem."
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "qdrant/qdrant",
+  "default_branch": "master",
+  "commit_sha": "5b578c4f34188f0474f901e49d4726213596433d",
+  "as_of": "2024-11-18T17:42:34Z",
+  "method": "github_commits_until"
+ },
+ "images": [
+  {
+   "where": "c3",
+   "source_url": "https://github.com/user-attachments/assets/3d1e5db9-86a0-431c-b1a2-14e4e435bd58",
+   "file": "gh_qdrant_qdrant_5463_img0.png"
+  }
+ ],
+ "slug": "gh_qdrant_qdrant_5463"
+}

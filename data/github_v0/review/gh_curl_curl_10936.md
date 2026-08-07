@@ -9,23 +9,23 @@
 
 ```mermaid
 flowchart LR
-    N0["<b>N0 sporadic HTTP/2 stream-close crash reported</b><br/><small>info: 5</small>"]
-    N1_x["<b>N1_x current-version assumption falsified by 8.2.1</b><br/><small>info: 6</small>"]
-    N2_x["<b>N2_x unpatched 8.5.0 aftermath</b><br/><small>info: 7</small>"]
-    N3["<b>N3 handle and stream lifecycle captured</b><br/><small>info: 11</small>"]
-    N4["<b>N4 candidate fix verified under sustained testing</b><br/><small>info: 13</small>"]
-    N_terminal["<b>terminal resolved</b><br/><small>info: 16</small>"]
-    N0 ==>|"💥 blind: Assume the HTTP/2 code changes made after curl 8.0.1 already fixed the crash and resolve it by updating to curl 8.2.0 or newer."| N1_x
+    N0["<b>N0 sporadic HTTP/2 stream-close crash reported</b><br/><small>info: 8</small>"]
+    N1_x["<b>N1_x current-release update aftermath</b><br/><small>info: 9</small>"]
+    N2_x["<b>N2_x related-fix update aftermath</b><br/><small>info: 10</small>"]
+    N3["<b>N3 stale stream lifecycle evidenced</b><br/><small>info: 17</small>"]
+    N4["<b>N4 candidate patch verified</b><br/><small>info: 19</small>"]
+    N_terminal["<b>terminal fix merged after candidate verification</b><br/><small>info: 20</small>"]
+    N0 ==>|"💥 blind: Assume the HTTP/2 crash was already corrected by the numerous changes since the affected development build and update to a current curl release."| N1_x
     linkStyle 0 stroke:#ef4444,stroke-width:2px
-    N1_x ==>|"💥 blind: Treat the crash as the issue fixed by curl #12356 and resolve it by upgrading to unpatched curl 8.5.0."| N2_x
+    N1_x ==>|"💥 blind: Treat the crash as the already-fixed related HTTP/2 cleanup problem and update to the newer release containing that earlier fix."| N2_x
     linkStyle 1 stroke:#ef4444,stroke-width:2px
-    N2_x -.->|"❓ custom_application_uses_libcurl_multi, trace_shows_timed_out_request_done_and_easy_handle_closed_before_late_stream_close, crash_dump_shows_discarded_easy_pointer_and_mostly_stream_closed_error"| N3
+    N2_x -.->|"❓ custom_application_uses_libcurl_multi, internal_test_can_trigger_rare_crash, crash_dumps_show_discarded_easy_data_pointer, stream_closed_error_dominates_crash_reports, weak_connection_timeout_then_easy_handle_cleanup, delayed_nghttp2_close_callback_after_handle_cleanup, trace_shows_data_done_before_data_detach"| N3
     linkStyle 2 stroke:#3b82f6,stroke-width:2px
-    N3 -.->|"❓ clearing_stream_user_data_before_rst_stops_repeated_crashes, curl_850_with_12562_runs_without_observed_crash"| N4
+    N3 -.->|"❓ candidate_patch_sixteen_hours_without_crash, reporter_candidate_patch_two_days_without_crash"| N4
     linkStyle 3 stroke:#3b82f6,stroke-width:2px
-    N4 ==>|"⚡ Fix the use-after-free by clearing nghttp2's stream user-data pointer before submitting RST_STREAM when an easy transfer is completed, and defensively validate or clear stream user data in the close path; use commit 35380273b9311cf0741e386284310fa7ca4d005e or a curl release containing it."| N_terminal
+    N4 ==>|"⚡ Prevent a delayed nghttp2 stream-close callback from dereferencing an easy handle that the application has already closed: clear the stream's user-data association during HTTP/2 data completion before submitting the reset, add defensive callback checks, land the change, and ask the affected user to verify a build containing it."| N_terminal
     linkStyle 4 stroke:#f97316,stroke-width:2px
-    N0 ==>|"🚀 Fix the use-after-free by clearing nghttp2's stream user-data pointer before submitting RST_STREAM when an easy transfer is completed, and defensively validate or clear stream user data in the close path; use commit 35380273b9311cf0741e386284310fa7ca4d005e or a curl release containing it. (skip 8)"| N_terminal
+    N0 ==>|"🚀 Prevent a delayed nghttp2 stream-close callback from dereferencing an easy handle that has already been closed by clearing stream user data during HTTP/2 data completion before reset submission, adding defensive callback checks, and requesting verification on a build containing the fix. (skip 11)"| N_terminal
     linkStyle 5 stroke:#0ea5e9,stroke-width:2px
     class N0 start
     class N1_x normal
@@ -40,58 +40,43 @@ flowchart LR
 
 ## Opening (body)
 
-> Trying to upgrade to recent curl releases causes very sporadic crashes in my embedded application. I cannot reproduce them consistently because they happen on random systems in the field. curl_multi_perform() ends with SIGSEGV in on_stream_close(), apparently while accessing the HTTP/2 stream. I am currently staying on curl 7.86.0 because later releases trigger the behavior. The affected systems run aarch64 GNU/Linux, and I am happy to apply debug patches or test potential changes. The crash backtrace goes through nghttp2_session_close_stream; I've pasted the full backtrace.
+> Trying to upgrade to recent curl releases causes very sporadic crashes on embedded systems in the field. I cannot reproduce them consistently, but curl_multi_perform() ends with SIGSEGV in on_stream_close() through nghttp2_session_close_stream. The crash appears near access to the HTTP/2 stream data. curl 7.86.0 avoids the behavior, while the affected build is curl 8.0.1-DEV with nghttp2 1.52.0 on an aarch64 Linux 4.9.337 embedded system. I can apply debug patches or test potential changes.
 
 ## Satisfaction conditions
 
-1. Must identify the root cause as stale nghttp2 stream user data surviving after curl completed and the application closed the easy handle, allowing a delayed on_stream_close callback to dereference freed or invalid Curl_easy/HTTP stream state.
-2. The diagnosis must be grounded in the collected lifecycle trace and crash-dump evidence: the timed-out transfer was completed and its easy handle closed before the later stream-close callback, and the callback's data_s pointer was already invalid.
-3. The fix must clear nghttp2's stream user-data pointer before or as the stream is cancelled and defensively avoid using stale callback data, using commit 35380273b9311cf0741e386284310fa7ca4d005e or a curl release containing it.
-4. Must not claim that merely upgrading to curl 8.2.1 or to unpatched curl 8.5.0 resolves the issue; both were tested in-case and still crashed.
-5. Must require verification under the affected workload before declaring resolution; the targeted change ran 16 hours without the usual six or seven crashes, and the reporter's curl 8.5.0 plus #12562 build ran for two days without an observed crash.
+1. Must identify the accepted root cause: after a timed-out HTTP/2 transfer is completed and its easy handle is closed, nghttp2 can later invoke the stream-close callback with stale per-stream user data pointing to that freed Curl_easy object.
+2. The diagnosis must be grounded in the collected lifecycle and crash evidence: the discarded easy pointer in dumps, completion and easy-handle cleanup on weak connections, and the delayed on_stream_close() callback for the same stream.
+3. The fix must clear nghttp2's stream user data during HTTP/2 data completion before submitting the stream reset, with defensive validation when on_stream_close() observes user data.
+4. Must not claim that merely upgrading to another recent curl release or relying on the earlier related HTTP/2 fix resolves this case; the crash was reproduced with both curl 8.2.1 and curl 8.5.0.
+5. Must require affected-user verification on a build containing the fix before declaring the deployed issue resolved; the thread has strong pre-merge candidate verification but no separate post-merge release retest from the opening reporter.
 
 ## Edges
 
 | edge | type | gates / info | payload |
 |---|---|---|---|
-| `e1_N0__N1_x` | solution_only **BLIND** | req_info: sporadic_sigsegv_in_on_stream_close, opening_backtrace_through_nghttp2_session_close_stream<br>elements: recommends_updating_to_curl_8_2_or_current_git | Assume the HTTP/2 code changes made after curl 8.0.1 already fixed the crash and resolve it by updating to curl 8.2.0 or newer. |
-| `e2_N1_x__N2_x` | solution_only **BLIND** | req_info: curl_821_nghttp2_1551_still_crashes<br>elements: recommends_unpatched_curl_8_5_0_as_the_fix | Treat the crash as the issue fixed by curl #12356 and resolve it by upgrading to unpatched curl 8.5.0. |
-| `e3_N2_x__N3` | clarification_only | asks: custom_application_uses_libcurl_multi, trace_shows_timed_out_request_done_and_easy_handle_closed_before_late_stream_close, crash_dump_shows_discarded_easy_pointer_and_mostly_stream_closed_error | This is a custom application where we call into libcurl, using the multi interface. / I captured logs from a failed request. In my case the request times out, receives CF_CTRL_DATA_DONE, is report / In our crash dumps, the address used for Curl_easy *data_s had already been discarded, and the address read fr |
-| `e4_N3__N4` | clarification_only | asks: clearing_stream_user_data_before_rst_stops_repeated_crashes, curl_850_with_12562_runs_without_observed_crash | I added nghttp2_session_set_stream_user_data(ctx->h2, stream->id, NULL) before nghttp2_submit_rst_stream(). Af / I am running curl 8.5.0 with the change from #12562 and have not seen a crash after two days. The amount of te |
-| `e5_N4__N_terminal` | solution_only | req_info: custom_application_uses_libcurl_multi, trace_shows_timed_out_request_done_and_easy_handle_closed_before_late_stream_close, clearing_stream_user_data_before_rst_stops_repeated_crashes, curl_850_with_12562_runs_without_observed_crash, crash_dump_shows_discarded_easy_pointer_and_mostly_stream_closed_error<br>elements: identifies_stale_nghttp2_stream_user_data_as_root_cause, explains_late_callback_dereferenced_a_completed_or_freed_easy_handle, clears_stream_user_data_before_or_during_stream_cancellation, recommends_commit_35380273_or_a_release_containing_it | Fix the use-after-free by clearing nghttp2's stream user-data pointer before submitting RST_STREAM when an easy transfer is completed, and defensively validate or clear stream user data in the close path; use commit 35380273b9311cf0741e386284310fa7ca4d005e or a curl release containing it. |
-| `e6_N0__N_terminal_shortcut` | solution_only | req_info: custom_application_uses_libcurl_multi, trace_shows_timed_out_request_done_and_easy_handle_closed_before_late_stream_close, clearing_stream_user_data_before_rst_stops_repeated_crashes, curl_850_with_12562_runs_without_observed_crash, crash_dump_shows_discarded_easy_pointer_and_mostly_stream_closed_error<br>elements: identifies_stale_nghttp2_stream_user_data_as_root_cause, explains_late_callback_dereferenced_a_completed_or_freed_easy_handle, clears_stream_user_data_before_or_during_stream_cancellation, recommends_commit_35380273_or_a_release_containing_it | Fix the use-after-free by clearing nghttp2's stream user-data pointer before submitting RST_STREAM when an easy transfer is completed, and defensively validate or clear stream user data in the close path; use commit 35380273b9311cf0741e386284310fa7ca4d005e or a curl release containing it. |
+| `e1_N0__N1_x` | solution_only **BLIND** | req_info: affected_curl_801_dev_nghttp2_152, no_consistent_local_reproduction<br>elements: recommends_testing_a_current_curl_release | Assume the HTTP/2 crash was already corrected by the numerous changes since the affected development build and update to a current curl release. |
+| `e2_N1_x__N2_x` | solution_only **BLIND** | req_info: curl_821_nghttp2_1551_still_crashes<br>elements: attributes_crash_to_the_earlier_related_fix, recommends_updating_to_the_newer_release | Treat the crash as the already-fixed related HTTP/2 cleanup problem and update to the newer release containing that earlier fix. |
+| `e3_N2_x__N3` | clarification_only | asks: custom_application_uses_libcurl_multi, internal_test_can_trigger_rare_crash, crash_dumps_show_discarded_easy_data_pointer, stream_closed_error_dominates_crash_reports, weak_connection_timeout_then_easy_handle_cleanup, delayed_nghttp2_close_callback_after_handle_cleanup, trace_shows_data_done_before_data_detach | This is a custom application that calls into libcurl and uses the multi interface. / I just noticed that an internal test can trigger this crash, so I can add more logging and try the HTTP/2 debu / In our crash dumps, the Curl_easy *data_s address had already been discarded. The address read from data_s for / The error code was NGHTTP2_STREAM_CLOSED in 317 of 318 reports. The one outlier held NGHTTP2_REFUSED_STREAM. / On a very weak connection, a request times out. curl_multi_info_read returns its completion message, and my cl / Later, sometimes about 15 minutes afterward, nghttp2 processes the same stream and on_stream_close() is reache / My added logs show the filter receives CF_CTRL_DATA_DONE before CF_CTRL_DATA_DETACH, and the stream is still p |
+| `e4_N3__N4` | clarification_only | asks: candidate_patch_sixteen_hours_without_crash, reporter_candidate_patch_two_days_without_crash | After 16 hours with the proposed change, I have not seen a single crash. Normally this setup would have produc / I am running curl 8.5.0 with the proposed changes. I have not seen any crashes in two days, although the amoun |
+| `e5_N4__N_terminal` | solution_only | req_info: sporadic_sigsegv_in_on_stream_close, curl_786_avoids_observed_crash, custom_application_uses_libcurl_multi, opening_backtrace_through_nghttp2_stream_close, crash_dumps_show_discarded_easy_data_pointer, weak_connection_timeout_then_easy_handle_cleanup, delayed_nghttp2_close_callback_after_handle_cleanup, trace_shows_data_done_before_data_detach, candidate_patch_sixteen_hours_without_crash, reporter_candidate_patch_two_days_without_crash<br>elements: identifies_delayed_stream_close_using_stale_easy_handle_user_data, clears_nghttp2_stream_user_data_during_data_done_before_reset, includes_defensive_validation_in_stream_close_callback, asks_user_to_verify_on_a_build_containing_the_fix | Prevent a delayed nghttp2 stream-close callback from dereferencing an easy handle that the application has already closed: clear the stream's user-data association during HTTP/2 data completion before submitting the reset, add defensive callback checks, land the change, and ask the affected user to verify a build containing it. |
+| `e6_N0__N_terminal` | solution_only | req_info: sporadic_sigsegv_in_on_stream_close, curl_786_avoids_observed_crash, opening_backtrace_through_nghttp2_stream_close<br>elements: identifies_delayed_stream_close_using_stale_easy_handle_user_data, clears_nghttp2_stream_user_data_during_data_done_before_reset, includes_defensive_validation_in_stream_close_callback, asks_user_to_verify_on_a_build_containing_the_fix | Prevent a delayed nghttp2 stream-close callback from dereferencing an easy handle that has already been closed by clearing stream user data during HTTP/2 data completion before reset submission, adding defensive callback checks, and requesting verification on a build containing the fix. |
 
 ## Nodes
 
 | node | terminal | volunteered | images | symptoms |
 |---|---|---|---|---|
-| `N0` |  | 3 | 0 | My embedded systems sporadically crash with SIGSEGV in on_stream_close() while curl_multi_perform() is processing HTTP/2 traffic. I cannot r |
-| `N1_x` |  | 1 | 0 | With curl 8.2.1 and nghttp2 1.55.1, field devices still sporadically crash in on_stream_close(); reverting curl to 7.86.0 avoids it. |
-| `N2_x` |  | 1 | 0 | Curl 8.5.0 with nghttp2 1.58.0 still very rarely crashes in on_stream_close(), with the stack passing through nghttp2_session_close_stream a |
-| `N3` |  | 1 | 0 | The crash occurs in a custom application using libcurl's multi interface. In a traced failure, a timed-out request is completed and its easy |
-| `N4` |  | 0 | 0 | After clearing the stream user data before submitting RST_STREAM, a setup that normally crashed six or seven times produced no crash for 16  |
-| `N_terminal` | ✓ | 0 | 0 | With the stream-user-data fix applied, the application continues processing HTTP/2 requests without the sporadic on_stream_close() crash dur |
+| `N0` |  | 2 | 0 | Recent curl builds very sporadically crash in on_stream_close() while my application is inside curl_multi_perform(); the backtrace passes th |
+| `N1_x` |  | 1 | 0 | With curl 8.2.1 and nghttp2 1.55.1, field devices still very rarely crash in on_stream_close(); reverting curl to 7.86.0 still avoids the cr |
+| `N2_x` |  | 1 | 0 | With curl 8.5.0 and nghttp2 1.58.0, I still get a rare SIGSEGV in on_stream_close(); the backtrace again passes through nghttp2_session_clos |
+| `N3` |  | 0 | 0 | The custom libcurl application can now trigger the same rare on_stream_close() crash in an internal test. On weak connections, a timed-out r |
+| `N4` |  | 0 | 0 | After applying the proposed patch, one affected setup ran for 16 hours without any crash where it would normally see six or seven. My curl 8 |
+| `N_terminal` | ✓ | 1 | 0 | My pre-merge build with the patch ran for two days without the crash, and a maintainer reports that the change is now present in master; I h |
 
 ## Machine review (audit pass, adversarially verified)
 
-Auditor verdict: **minor_issues** · 1 of 3 findings survived independent refutation.
+Auditor verdict: **n/a** · 0 of 0 findings survived independent refutation.
 
-_The case tests a long-running, non-reproducible use-after-free: nghttp2's on_stream_close() firing long after curl completed a timed-out transfer and the app closed the easy handle, because the stream user-data pointer was never cleared before RST_STREAM. The graph is a faithful answer key: both blind paths (upgrade to 8.2.x, upgrade to unpatched 8.5.0) were genuinely falsified in-thread by real retests, the two patch-validation tests are correctly modeled as clarification (measurement-class) edges rather than solutions, the multi-user merge is declared on every affected edge, and the root cause and fix commit match what participant3/participant6/participant1 actually established and merged. The only issues found are a blind-path intent whose wording ("curl 8.2.0 or newer") overlaps the correct fix recommendation, a small self-contradiction in the Task body, and a cosmetic reordering of when the crash-dump evidence appears._
-
-### Confirmed findings
-
-- [ ] 🟡 **blind_path_intent_overscoped** (low) — `graph.edges[edge_id=e1_N0__N1_x].solution.intent`
-  - claim: The blind path's intent is phrased as "updating to curl 8.2.0 or newer", and "or newer" collides with the correct resolution (a curl release containing commit 35380273, i.e. 8.6.0+), so a correct answer can be judged onto a scored dead end.
-  - thread evidence: The thread scopes this attempt narrowly: participant1 (2023-07-24) wrote "It would make a lot of sense to first test this problem with curl 8.2.0 or current git", and what was falsified was exactly that version: reporter (2023-08-18) "Still see this with cURL 8.2.1 and nghttp2 1.55.1". Nothing in the thread falsifies "newer" curl generally — the reporter (2024-01-09) says the fix "will be part of 8.6.0 release", and participant1 (2024-01-11) confirms commit 35380273 ships in the next release. Note the sibling blind edge e2 is correctly scoped with the word "unpatched".
-  - suggested fix: Reword the intent to the version actually tested and falsified, e.g. "...resolve it by updating to curl 8.2.x / then-current git (which predates the stream-user-data fix)", dropping "or newer"; optionally add an explicit exclusion so a recommendation of 8.6.0+/commit 35380273 cannot match this edge.
-  - verifier: The textual basis checks out verbatim. Thread c5 (participant1, 2023-07-24): "It would make a lot of sense to first test this problem with curl 8.2.0 or current git"; falsified by c15 (reporter, 2023-08-18): "Still see this with cURL 8.2.1 and nghttp2 1.55.1, reverting cURL to 7.86.0 works around the issue." c49/c50 confirm the real fix ships in 8.6.0 via commit 35380273. So e1.solution.intent's "
-
-### Refuted claims (auditor was wrong — do not act on these)
-
-- ~~unfaithful_reveal~~: The opening report ends with "I've pasted the full backtrace" but no backtrace text is present in the body, so the report promises evidence it does not deliver.
-  - why refuted: The observation is factually true (the real opening post pastes 10 frames plus the curl 8.0.1-DEV banner; the graph body compresses to prose) but it is not a defect under the contract, and the defect class is wrong -- nothing is REVEALED that the reporter did not know at filing time, which is what unfaithful_reveal cov
-- ~~graph_shape~~: The crash-dump evidence is placed after the curl 8.5.0 falsification (N2_x), but in the thread it was supplied months earlier, before the 8.5.0 attempt.
-  - why refuted: The chronology the reviewer cites is accurate (participant5 posted the dump analysis in c18 on 2023-09-01: "the address indicated for `Curl_easy *data_s` had been discarded ... `NGHTTP2_STREAM_CLOSED` for 317 out of 318 reports"; the 8.5.0 retest is c28, reporter, 2023-12-19), but wall-clock order is not what a task gr
+__
 
 
 ## Review checklist

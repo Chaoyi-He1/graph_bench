@@ -1,0 +1,92 @@
+{
+ "repo": "restic/restic",
+ "number": 5477,
+ "url": "https://github.com/restic/restic/issues/5477",
+ "title": "restic hangs before the password prompt / trying to get the password",
+ "state": "closed",
+ "labels": [
+  "type: bug",
+  "category: user interface"
+ ],
+ "reporter": "reporter",
+ "created_at": "2025-08-18T19:15:06Z",
+ "closed_at": "2025-10-12T15:59:05Z",
+ "body": "<!--\n\nWelcome! - We kindly ask that you:\n\n  1. Fill out the issue template below - not doing so needs a good reason.\n  2. Use the forum if you have a question rather than a bug or feature request.\n\nThe forum is at: https://<redacted-host>\n\nNOTE: Not filling out the issue template needs a good reason, as otherwise it\nmay take a lot longer to find the problem, not to mention it can take up a lot\nmore time which can otherwise be spent on development. Please also take the\ntime to help us debug the issue by collecting relevant information, even if\nit doesn't seem to be relevant to you. Thanks!\n\nThe forum is a better place for questions about restic or general suggestions\nand topics, e.g. usage or documentation questions! This issue tracker is mainly\nfor tracking bugs and feature requests directly relating to the development of\nthe software itself, rather than the project.\n\nThanks for understanding, and for contributing to the project!\n\n-->\n\n\nOutput of `restic version`\n--------------------------\n\n`restic 0.18.0 compiled with go1.24.4 on linux/amd64` (on latest Fedora, F42, using the packaged version)\n\nWhat backend/service did you use to store the repository?\n---------------------------------------------------------\n\nRepo on hard drives / local drive\n\nProblem description / Steps to reproduce\n----------------------------------------\n\nI first noted the issue relatively recently when backing up onto external hard drives (LUKS + btrfs RAID1 volume). My normal run would be to do a dry-run first and then backup. After the dry run, restic hangs when attempting to re open the repo. The same hangs happen with other commands, such as `check` or `forget`. I would say that it hangs about 1 in 2 to 1 in 4 times.\n\nI've tried to reproduce the issue on a blank setup with the following:\n\n```\nrestic init -r testrepo\nrestic check -r testrepo\nusing temporary cache in /tmp/restic-check-cache-2953796536\ncreate exclusive lock for repository\nenter password for repository:\n# prompt shows, so cancel with ^C\nsignal interrupt received, cleaning up\ncontext canceled\n# keep doing this until it hangs\nusing temporary cache in /tmp/restic-check-cache-2645346029\ncreate exclusive lock for repository\n... (hangs indefinitely)\n```\n\nOn an empty test repo, this hangs perhaps 1 in 50 times. Thinking that perhaps the amount of snapshots on my backup drives matter, I ran `forget` to get from ~180 snapshots to ~40 and it did decrease the frequency of the hangs - which could also explain that it takes a significant number of attempts on a blank repo to hang it.\n\n<!--\nThis section should include at least:\n\n * A description of the problem you are having with restic.\n\n * The complete command line and any environment variables you used to\n   configure restic's backend access. Make sure to replace sensitive values!\n\n * The output of the commands, what restic prints gives may give us much\n   information to diagnose the problem!\n\n * The more time you spend describing an easy way to reproduce the behavior (if\n   this is possible), the easier it is for the project developers to fix it!\n-->\n\n\nExpected behavior\n-----------------\n\n<!--\nDescribe what you'd like restic to do differently.\n-->\n\nAlways able to open the repo\n\nActual behavior\n---------------\n\n<!--\nIn this section, please try to concentrate on observations, so only describe\nwhat you observed directly.\n-->\n\nNeed to cancel with ^C before attempting to open again the repo\n\nDo you have any idea what may have caused this?\n-----------------------------------------------\n\n<!--\nDid something noteworthy happen on your system, Internet connection, backend services, etc?\n-->\n\nI did not notice it on the 0.17.X branch. After further testing, that may be linked to the password request routine? Using a dummy repo and doing: `RESTIC_PASSWORD=test restic check -r testrepo` does not seem to hang it. And actually entering the password before attempting the same command seems to hang more often than just using ^C and repeating the command.\n\nDid restic help you today? Did it make you happy in any way?\n------------------------------------------------------------\n\n<!--\nAnswering this question is not required, but if you have anything positive to share, please do so here!\nSometimes we get tired of reading bug reports all day and a little positive end note does wonders.\nIdea by Joey Hess, https://joeyh.name/blog/entry/two_holiday_stories/\n-->\n\nYes, restic is a WONDERFUL piece of software. I've been backing up on hard drives, and online first through the `s3` dedicated interface and then using `rclone` (another amazing piece of software) for years. I've only ever had one issue (the storage provider messed up a blob) and could recover from it. Thank you so much!",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2025-09-03T20:35:11Z",
+   "body": "This sounds like hardware issue if you ask me. If I may suggest:\n\nSomething easy to test is:\n- Depending on the external hard drive, try out a different cable\n- Try out an entirely different USB Port -> if its a tower PC, maybe a port not on the front but on the back\n- Best test: use an entirely different disk/usb stick and try to reproduce the same command and perhaps even the same repository data as with the disk that shows these errors\n\nMaybe skip the LUKS + BTRFS stuff and go the ext4 route for now, you can always narrow in later"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-09-04T19:13:29Z",
+   "body": "Hello, thanks for this,\n\nI did (a lot) of further testing, including on a fresh USB drive formatted in ext4. This is not the problem. It seems that the issue is with the `-v` flag. \n\nThis took me a while as I use a wrapper script to call restic (which hangs) and calling the binary with just a few flags (so without `-v`) did not hang. But i can now reproduce it very reliably, eg. within a few attempts:\n\n```\nmkdir testrepo\nrestic init -r testrepo\nrestic backup -r testrepo -vn ~\n...hangs\n```\n\nIt this does not hang the first time around, ctrl-c and redo the last command a few times. It always hang for me at least once within a dozen attempt (when trying again) but always consistently on the first attempt.\n\nFunny enough now that I'm playing with it, it seems it's just the prompt that is not displayed, if I type the password blind, it works. So I'd make a guess and think it's a race condition between \"open repository\" that is displayed with the `-v` flag and \"enter password for repository:\" but if typing the password, this works as intended.\n\nI don't think that I had this issue with the previous version of restic."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-09-05T17:41:41Z",
+   "body": "Send a SIGQUIT signal to restic. This will dump a full stacktrace (and kill restic in the process), then we'll be able to figure out what's going on."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-09-05T18:54:51Z",
+   "body": "Please see what has been dumped to screen. I could also send the entire coredump, I've had the same issue in a test VM with a dummy repo.\n\n[error.log](https://github.com/user-attachments/files/22178928/error.log)"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-09-06T16:36:43Z",
+   "body": "Judging from the stacktrace, restic actually waits for you to enter the password. So the question is why the password prompt didn't show up. What shell & terminal are you using exactly? Does calling `reset` before restic fix the problem?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-09-06T17:11:17Z",
+   "body": "Hello, calling the backup command with the `-v` has the same issue with: `reset && /usr/bin/restic backup -r testrepo -vn ~`. I have tested with both my normal setup (Alacritty and Tmux) but also a plain terminal (Ptyxis, the new default on Fedora). Same issue with both setups (and on my laptop + a VM that's a mirror setup).\n\nYou're not seeing the same issue? For some reason for my hard drive, this happens almost all the time but in my tests with dummy repos this only does it about once in 10-15 attempts, sometimes quicker, sometimes not.\n\nIndeed, this is just the \"enter password for repository:\" which does not get printed for some reasons. Entering the password without seeing the prompt and typing enter does work, which makes it much less problematic than when I thought it was just hanging."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-09-06T17:28:15Z",
+   "body": "> You're not seeing the same issue?\n\nI've never seen this issue before. My setup is Arch + Gnome Terminal + zsh. Ptyxis 48.5 also works perfectly fine for me. \n\nCan you try a plain bash/zsh session without custom configuration? It might also be worth a try to test the official restic binaries (from the Github releases page) to exclude any problems in that regard."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-09-06T18:10:01Z",
+   "body": "I could reproduce it with Gnomer Terminal on Fedora, and in a plain tty accessed with ctrl alt F#. I also could reproduce in a light Arch VM I keep around. This seems linked to the TERM variable although this does not fully match. I'll give an example run from my test Arch VM:\n\n```\n[user@participant3 ~]$ uname -a\nLinux archbox 6.16.5-arch1-1 #1 SMP PREEMPT_DYNAMIC Thu, 04 Sep 2025 23:18:13 +0000 x86_64 GNU/Linux\n[user@participant3 ~]$ restic version\nrestic 0.18.0 compiled with go1.24.1 on linux/amd64\n[user@participant3 ~]$ restic backup -r testrepo -vn ~\n# Prompt for password not displayed\nopen repository\nsignal interrupt received, cleaning up\ncontext canceled\n[user@participant3 ~]$ env -u TERM restic backup -r testrepo -vn ~\n# Prompt displayed here after \"open repository\" but erased by \"signal interrupt received, cleaning up\"\n# Continuing until something different happens\nopen repository\n                               signal interrupt received, cleaning up\ncontext canceled\n[user@participant3 ~]$ env -u TERM restic backup -r testrepo -vn ~\n# Here both \"open repository\" which should come first and the prompt are displayed on the same line\n# Interestingly the prompt comes first... So perhaps when TERM is set, it also appears first and is erased by \"open repository\"\nenter password for repository: open repository\n```\n\nBelow the entire environment of the test user:\n```\n[rais@participant3 ~]$ env\nSHELL=/usr/bin/bash\nPWD=/home/<user>\nLOGNAME=user\nHOME=/home/<user>\nLANG=en_US.UTF-8\nTERM=vt220\nUSER=user\nSHLVL=1\nDEBUGINFOD_URLS=https://<redacted-host>\nPATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/usr/bin/site_perl:/usr/bin/vendor_perl:/usr/bin/core_perl\n_=/usr/bin/env\n```\n\nI'll be away tomorrow but happy to resume investigating when back.\n\nEdit: same result with `bash --noprofile --norc`"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-10-04T15:51:53Z",
+   "body": "I'm see `TERM=xterm-256color`. The modern Gnome Terminal is called \"Console\" btw.\n\n> ```\n> [user@participant3 ~]$ env -u TERM restic backup -r testrepo -vn ~\n> # Here both \"open repository\" which should come first and the prompt are displayed on the same line\n> # Interestingly the prompt comes first... So perhaps when TERM is set, it also appears first and is erased by \"open repository\"\n> enter password for repository: open repository\n> ```\n\nSomething seems to mess up stdout/stderr interleaving on your system. The correct output should have been:\n```\nopen repository\nenter password for repository: \n```\n\nRestic first prints `open repository\\n` to stdout and afterwards `enter password for repository:` to stderr. There's zero concurrency on restic's side that could explain what you're seeing. "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-10-04T19:13:27Z",
+   "body": "Hello and thank you for your response and patience, I really appreciate it.\n\nI think that having something messing up with stdout & stderr makes sense. This said, I don't think that it's my system, as said I tested in an Arch VM, I've tested on Fedora with different terminals (Alacritty/Tmux and Ptyxis and Console, including when `TERM=xterm-256color`. \n\nI've also tested booting with a live CD of Fedora on another laptop and could still replicate the issue. For some reasons, this happened very regularly on my normal setup (like 1 in 3, perhaps repo size) and on a live CD, a lot less often, but still present and could replicate it.\n\nIt's still the same, eg.\n\n```\nliveuser@participant4:~$ restic backup -r testdir -vn ~\nopen repository\n_\n```\nor\n```\nliveuser@participant4:~$ env -u TERM restic backup -r testdir -vn ~\nenter password for repository: open repository\n_\n```\ninstead of\n```\nliveuser@participant4:~$ restic backup -r testdir -vn ~\nopen repository\nenter password for repository: _\n```\n\nAfter downgrading to \"restic 0.17.3 compiled with go1.24rc1 on linux/amd64\" on Fedora, I could not replicate the issue any more. "
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-10-04T20:46:27Z",
+   "body": "Hmm, I'm wondering whether we're seeing a new variant of https://github.com/restic/restic/pull/2717 .\n\nI've missed that the backup command by now wraps stdout, such that `open repository` is no longer strictly guaranteed to be displayed before `enter password ...`. But I don't see what could have change between 0.17.3 and 0.18.0 to cause this issue. Maybe it's related to the Go version as this is effectively related to goroutine scheduling."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-10-04T21:05:40Z",
+   "body": "And I just managed to also reproduce the issue on my machine. So either I've previously missed the `-v` or something has changed. Anyways, sorry for the back and forth."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-10-05T16:07:17Z",
+   "body": "No problems, thank you for your patience! Glad that you've been able to reproduce. It's quite harmless when you know what it is, but the first time I was not seeing the password prompt, I was somewhat worried the repo would not open or something. Many thanks!"
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "restic/restic",
+  "default_branch": "master",
+  "commit_sha": "9b2c0a0c547d81c61572b00e4874905cc2dc452a",
+  "as_of": "2025-08-18T19:15:06Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_restic_restic_5477"
+}

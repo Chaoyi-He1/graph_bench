@@ -1,0 +1,105 @@
+{
+ "repo": "participant1/fzf",
+ "number": 4242,
+ "url": "https://github.com/participant1/fzf/issues/4242",
+ "title": "automatic tty redirection should not statically target /dev/tty, but the current pty/pts",
+ "state": "closed",
+ "labels": [],
+ "reporter": "reporter",
+ "created_at": "2025-02-14T13:16:56Z",
+ "closed_at": "2025-04-20T02:24:51Z",
+ "body": "### Checklist\n\n- [x] I have read through the manual page (`man fzf`)\n- [x] I have searched through the existing issues\n- [ ] For bug reports, I have checked if the bug is reproducible in the latest version of fzf\n\n### Output of `fzf --version`\n\n0.59.0 (bbe1721)\n\n### OS\n\n- [x] Linux\n- [ ] macOS\n- [ ] Windows\n- [ ] Etc.\n\n### Shell\n\n- [x] bash\n- [x] zsh\n- [x] fish\n\n### Problem / Steps to reproduce\n\nSince 0.53.0 fzf will automatically redirect execute actions to /dev/tty,\n\nso that the usual hack\n\n```sh\nls | fzf --bind 'space:execute:vim {} < /dev/tty >/dev/tty'  > selected\n```\n\ncould be simplified, without worrying about any redirection\n\n```sh\nls | fzf --bind `space:execute:vim {}' > selected\n```\n\nbut the static /dev/tty is not universally understood/not always a working solution.\nA more robust approach would be to query the current pty (e.g. with /usr/bin/tty), which would return something like /dev/pts/4\n\nThe more general solution, that also works with programs like emacsclient, should probably be equivalent to something like this:\n\n```sh\nCURRENT_TTY=$(tty)\nls | fzf --bind \"space:execute:emacsclient -t -a \\\"\\\" -c {} < $CURRENT_TTY > $CURRENT_TTY\" > selected\n```",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2025-02-15T00:49:39Z",
+   "body": "Have you actually had the problem while using `emacsclient`? If so, can you describe what happens in that case?\n\nIt's odd because fzf writes directly to `/dev/tty`, so if it's not available, fzf shouldn't run at all, let alone `execute`.\n\nhttps://github.com/participant1/fzf/blob/ac32fbb3b2d58a7ba61a9a8b1c09420dc4870199/src/tui/light.go#L30"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-02-15T01:24:31Z",
+   "body": "Yes emacsclient will always fail with simple /dev/tty redirection.\nReporting\n\n> *error*: could not open file: /dev/tty\n\n\n I guess the problem is, that it connects to the emacsdaemon, which no longer has access to a controlling terminal, but still can make use of the concrete pty device node you can obtain by asking $(tty). This is probably also the reason why the non-deamon version of emacs will work in this case.\n\nThis is not specific to emacsclient though, it's just the most likely candidate for me to observe this problem. \nThe point is, a controlling terminal is typically available, that's why /dev/tty usually works, but in some cases it will fail. On the other hand, accessing the correct unix.Ttyname(os.Stdin.Fd()) device node should work reliably."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-02-15T02:58:22Z",
+   "body": "Can you explain how I can test fzf in emacs? I've never used emacs before."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-02-15T04:56:59Z",
+   "body": "> unix.Ttyname(os.Stdin.Fd()) device node should work reliably.\n\nUnfortunately, this approach can't be used. Because fzf is a filter, stdin is usually not the tty device.\n\n```sh\n$ ls | fzf\n\n$ tty\n/dev/ttys009\n\n$ ls | tty\nnot a tty\n```\n\nWe could make fzf check if a variable named `FZF_TTY` is set and use it instead of `/dev/tty`."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-02-15T05:33:10Z",
+   "body": "Ah right, sorry good point. Since fzf requires to have a controlling terminal, we could just keep using that to learn the pty, that we need to provide to the children \n\n```go\nfd, err := unix.Open(\"/dev/tty\", unix.O_RDWR, 0)\nconsoleDevice, err := unix.Ttyname(fd)\n```"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-02-15T08:19:57Z",
+   "body": "Can you show me how I can reproduce the problem and see if the patch helps? Like I said, no experience in Emacs."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-02-15T11:30:31Z",
+   "body": "Sure, i really should have added this to the first message already, sorry:\n\n* First you need to start emacs as a daemon.\n\n```sh\nemacs --daemon\n```\n\n* launching emacslcient from fzf  with the actual pty works as exepcted:\nemacs will allow you to edit a selected file after pressing space.\nYou can exit emacs with ctrl+(x,c). That is pressing and holding ctrl, then typing \"x\", then typing \"c\", while still holding ctrl.\n\n\n```sh\nCURRENT_TTY=$(tty)\nls | fzf --bind \"space:execute:emacsclient -t -a \\\"\\\" -c {} < $CURRENT_TTY > $CURRENT_TTY\" > selected\n```\n\n* trying to launch emacsclient with /dev/tty will fail, because emacsdaemon has no access to it.\n\n```sh\nls | fzf --bind \"space:execute:emacsclient  -t -a \\\"\\\" -c {} < /dev/tty > /dev/tty\" > selected\n*ERROR*: Could not open file: /dev/tty\n```"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-02-16T00:46:38Z",
+   "body": "Thanks, I can reproduce the problem. One other thing I noticed is that `CURRENT_TTY=$(tty)` approach doesn't really work nicely with `--tmux` option as shown below.\n\n<img width=\"1710\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/c47ab920-4d84-4445-942f-8b64c29e3529\" />\n\nSo, fzf should get the device name after starting fzf inside tmux popup."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-02-20T03:26:39Z",
+   "body": "\n> fd, err := unix.Open(\"/dev/tty\", unix.O_RDWR, 0)\n> consoleDevice, err := unix.Ttyname(fd)\n\nDoes this code work? There is no `unix.Ttyname` function. I've tested the approach using our `ttyname` implementation slightly changing it to take a file descriptor (instead of using hard-coded 2).\n\nhttps://github.com/participant1/fzf/blob/6fa8295ac5cd271f25f431611c25944bed416120/src/tui/ttyname_unix.go#L15-L21\n\nBut I couldn't get it to work."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-03-02T23:47:24Z",
+   "body": "Ah sorry. Looks like I led you into a wrong direction. Getting the ttyname of /dev/tty will usually still return /dev/tty, instead of the actual pty. \n\nInstead when allocating a new PTY, everything seems to work as intended. Even with --tmux.\n\n\n```diff\ndiff --git a/src/tui/light_unix.go b/src/tui/light_unix.go\nindex 76aac2eb..447c0a13 100644\n--- a/src/tui/light_unix.go\n+++ b/src/tui/light_unix.go\n@@ -2,6 +2,15 @@\n \n package tui\n \n+/*\n+#define _XOPEN_SOURCE 600\n+#include <fcntl.h>\n+#include <unistd.h>\n+#include <stdlib.h>\n+#include <errno.h>\n+*/\n+import \"C\"\n+\n import (\n        \"errors\"\n        \"os\"\n@@ -42,8 +51,30 @@ func (r *LightRenderer) closePlatform() {\n        r.ttyout.Close()\n }\n \n+func open_pty() (processTTY string, err error) {\n+\n+       m, err := C.posix_openpt(C.O_RDWR | C.O_NOCTTY)\n+       if m < 0 {\n+               return \"\", err\n+       }\n+       defer C.close(m)\n+       if res, err := C.grantpt(m); res < 0 {\n+               return \"\", err\n+       }\n+       if res, err := C.unlockpt(m); res < 0 {\n+               return \"\", err\n+       }\n+       processTTY = C.GoString(C.ptsname(m))\n+       return processTTY, nil\n+}\n+\n func openTty(mode int) (*os.File, error) {\n-       in, err := os.OpenFile(consoleDevice, mode, 0)\n+       ptyname, err := open_pty()\n+       if err != nil {\n+               ptyname = consoleDevice\n+       }\n+\n+       in, err := os.OpenFile(ptyname, mode, 0)\n        if err != nil {\n                tty := ttyname()\n                if len(tty) > 0 {\n\n```\n\nThe code above is mostly a copy of [pty_cgo.go](https://github.com/golang/go/blob/master/src/internal/testpty/pty_cgo.go) "
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-03-03T00:15:48Z",
+   "body": "Thanks, is there any way we can do it without cgo? I remember we had moved away from using cgo for various reasons (e.g. trouble with cross compiling), and I don't want to bring it back."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-04-13T18:33:10Z",
+   "body": "Fallbacking to /dev/tty in case a ttyname can't be found would make it work for both fzf and fzf --tmux.\n\n```diff\ndiff -ru ./src/tui/light_unix.go b/src/tui/light_unix.go\n--- ./src/tui/light_unix.go\t1969-12-31 19:00:01.000000000 -0500\n+++ b/src/tui/light_unix.go\t2025-04-13 11:07:53.380319509 -0400\n@@ -43,14 +43,14 @@\n }\n \n func openTty(mode int) (*os.File, error) {\n+\ttty := ttyname()\n+\tif len(tty) > 0 {\n+\t\tif in, err := os.OpenFile(tty, mode, 0); err == nil && util.IsTty(in) {\n+\t\t\treturn in, nil\n+\t\t}\n+\t}\n \tin, err := os.OpenFile(consoleDevice, mode, 0)\n \tif err != nil {\n-\t\ttty := ttyname()\n-\t\tif len(tty) > 0 {\n-\t\t\tif in, err := os.OpenFile(tty, mode, 0); err == nil {\n-\t\t\t\treturn in, nil\n-\t\t\t}\n-\t\t}\n \t\treturn nil, errors.New(\"failed to open \" + consoleDevice)\n \t}\n \treturn in, nil\ndiff -ru ./test/test_exec.rb b/test/test_exec.rb\n--- ./test/test_exec.rb\t1969-12-31 19:00:01.000000000 -0500\n+++ b/test/test_exec.rb\t2025-04-13 14:23:10.215855096 -0400\n@@ -380,7 +380,7 @@\n   end\n \n   def test_become_tty\n-    tmux.send_keys \"sleep 0.5 | #{FZF} --bind 'start:reload:ls' --bind 'load:become:tty'\", :Enter\n+    tmux.send_keys \"sleep 0.5 | #{FZF} --bind 'start:reload:ls' --bind 'load:become:tty' 2>/dev/null\", :Enter\n     tmux.until { |lines| assert_includes lines, '/dev/tty' }\n   end\n``` "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-04-17T07:55:46Z",
+   "body": "I can confirm the changes suggested by @participant2 solve the issue. Thanks!\nAlso the code stays nice without introducing cgo dependencies. "
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-04-17T09:25:32Z",
+   "body": "@participant2  Thanks. Can you open a pull request? We can continue the discussion there."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-04-20T02:42:46Z",
+   "body": "Released 0.61.2 with `--no-tty-default` option. This should work now:\n\n```sh\nls | fzf --no-tty-default --bind 'space:execute:emacsclient -t -a \"\" -c {}'\n```"
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "participant1/fzf",
+  "default_branch": "master",
+  "commit_sha": "ac32fbb3b2d58a7ba61a9a8b1c09420dc4870199",
+  "as_of": "2025-02-14T13:16:56Z",
+  "method": "github_commits_until"
+ },
+ "images": [
+  {
+   "where": "c7",
+   "source_url": "https://github.com/user-attachments/assets/c47ab920-4d84-4445-942f-8b64c29e3529",
+   "file": "gh_participant1_fzf_4242_img0.png"
+  }
+ ],
+ "slug": "gh_participant1_fzf_4242"
+}

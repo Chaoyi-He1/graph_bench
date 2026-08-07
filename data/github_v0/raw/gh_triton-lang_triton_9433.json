@@ -1,0 +1,191 @@
+{
+ "repo": "triton-lang/triton",
+ "number": 9433,
+ "url": "https://github.com/triton-lang/triton/issues/9433",
+ "title": "RAW hazard with pipelined wgmma and LHS in register",
+ "state": "closed",
+ "labels": [
+  "bug"
+ ],
+ "reporter": "reporter",
+ "created_at": "2026-02-11T15:53:40Z",
+ "closed_at": "2026-05-29T01:06:30Z",
+ "body": "We hit a RAW hazard when the `wgmma.mma_async` LHS operand is passed in registers.\n\nFrom the [`wgmma.wait_group`](https://docs.nvidia.com/cuda/parallel-thread-execution/#asynchronous-warpgroup-level-matrix-instructions-wgmma-wait-group) documentation:\n\n> Accessing the accumulator register or the input register containing the fragments of matrix A of a `wgmma.mma_async` instruction without first performing a `wgmma.wait_group` instruction that waits on a wgmma-group including that `wgmma.mma_async` instruction is undefined behavior.\n\nTriton [inserts](https://github.com/triton-lang/triton/blob/088fbe15e4868506ac0ad42a3cfbbc923971b8d4/lib/Dialect/TritonGPU/Transforms/Pipeliner/WGMMAPipeline.cpp#L666) a `warp_group_dot_wait` for this, which lowers to `wgmma.wait_group`. The `pendings` value (explained in [this comment](https://github.com/triton-lang/triton/blob/088fbe15e4868506ac0ad42a3cfbbc923971b8d4/lib/Dialect/TritonGPU/Transforms/Pipeliner/WGMMAPipeline.cpp#L657-L660)) however does not prevent the RAW hazard: `properlyAsyncDots.size() - 1` only guarantees that the first `wgmma.mma_async` has finished during the next loop iteration. As a result, dot prologue instructions may write to the input registers of the other `wgmma.mma_async` instructions from the previous iteration before they have executed.\n\nWe have only seen the issue manifest itself with an 'empty' prologue, where the results of a `ldmatrix` instruction are passed directly to `wgmma.mma_async`. If the `ldmatrix` results are first copied to another register (for example through negating the input), the issue seems to disappear. Passing the LHS input in register directly from `ldmatrix` requires a bit of a dance (see repro below), but we do see the same issue in real workloads where the `if` statement is the result of a concat.\n\nChanging `properlyAsyncDots.size() - 1` to `0` fixes the issue, but has significant performance impact, because the `wgmma.wait_group` follows right after the `wgmma.mma_async`, instead of before the input register is written.\n\n```\nimport sys\nimport torch\nimport triton\nimport triton.language as tl\n\n\n@participant6.jit\ndef wgmma_register_sync_repro_kernel(\n    a_ptr,\n    b_ptr,\n    c_ptr,\n    M: tl.constexpr,\n    N: tl.constexpr,\n    K: tl.constexpr,\n    BLOCK_M: tl.constexpr,\n    BLOCK_N: tl.constexpr,\n    BLOCK_K: tl.constexpr,\n):\n  pid = tl.program_id(axis=0)\n\n  offs_m = tl.arange(0, BLOCK_M)\n  offs_n = tl.arange(0, BLOCK_N)\n  offs_k = tl.arange(0, BLOCK_K)\n\n  a_ptrs = a_ptr + (offs_m[:, None] * K + offs_k[None, :])\n  b_ptrs = b_ptr + (offs_k[:, None] * 1 + offs_n[None, :] * K)\n\n  acc = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32)\n\n  for k in range(0, K, BLOCK_K):\n    # Force A to be passed in register directly from ldmatrix.\n    if pid >= 0:\n      a = tl.load(a_ptrs)\n    else:\n      a = tl.load(a_ptrs)\n    b = tl.load(b_ptrs)\n\n    # This produces the following PTX code:\n    # 4x ldmatrix.sync.aligned.m8n8.x4.shared.b16 {<A registers>}, [...];\n    # 4x {\n    #   wgmma.fence.sync.aligned;\n    #   wgmma.mma_async.sync.aligned {<ACC registers>}, {<A registers>}, ...;\n    #   wgmma.commit_group.sync.aligned;\n    #   wgmma.wait_group.sync.aligned 3;\n    # }\n    # RAW hazard: the ldmatrix instructions write <A registers> before the last\n    # 3 wgmma.mma_sync instructions have read them.\n    acc = tl.dot(a, b, acc, out_dtype=tl.float32)\n\n    a_ptrs += BLOCK_K\n    b_ptrs += BLOCK_K\n\n  c_ptrs = c_ptr + (pid * M * N) + (offs_m[:, None] * N + offs_n[None, :])\n  tl.store(c_ptrs, acc)\n\n\ndef test_repro():\n  torch.manual_seed(0)\n\n  M = 64\n  N = 128\n  K = 4096\n  BLOCK_M = 64\n  BLOCK_N = 128\n  BLOCK_K = 64\n\n  NUM_BLOCKS = 512\n\n  a = torch.randn((M, K), device=\"cuda\", dtype=torch.bfloat16)\n  b = torch.randn((N, K), device=\"cuda\", dtype=torch.bfloat16).t()\n  c = torch.empty((NUM_BLOCKS, M, N), device=\"cuda\", dtype=torch.float32)\n\n  print(\n      f\"Running on {torch.cuda.get_device_name(0)} with {NUM_BLOCKS} blocks...\"\n  )\n\n  wgmma_register_sync_repro_kernel[(NUM_BLOCKS,)](\n      a, b, c, M=M, N=N, K=K, BLOCK_M=BLOCK_M, BLOCK_N=BLOCK_N, BLOCK_K=BLOCK_K\n  )\n\n  torch.cuda.synchronize()\n\n  target = torch.matmul(a.float(), b.float())\n  diff = torch.abs(c - target.unsqueeze(0))\n  max_diff = torch.max(diff)\n\n  print(f\"Max Abs Error: {max_diff.item()}\")\n\n  if max_diff.item() > 1.0:\n    print(\"FAILED: Output corrupted (Race Condition triggered).\")\n    sys.exit(1)\n  else:\n    print(\"PASSED: Output matches.\")\n\n\nif __name__ == \"__main__\":\n  test_repro()\n```\n\n### Environment details\n\nTriton version: 84214b6\nGPU: H100",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2026-02-11T16:41:45Z",
+   "body": "interesting, in case the input is going trough we usually don't pipeline the wgmma wait based on this logic: https://github.com/participant6-lang/participant6/blob/main/lib/Dialect/TritonGPU/Transforms/Pipeliner/WGMMAPipeline.cpp#L40\n\nWe could move it in the next iteration but then it is hard to make sure the compiler doesn't later moves it across non side-effecting ops "
+  },
+  {
+   "author": "participant2",
+   "created_at": "2026-02-11T16:47:30Z",
+   "body": "@participant3 do we need to update     \n```cpp\nreturn !isa<ttg::NvidiaMmaEncodingAttr>(\n        cvt.getSrc().getType().getEncoding());\n```\nTo match the condition in the ldmatrix code?"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2026-02-11T17:49:32Z",
+   "body": "This is not an issue in the participant6 compiler, AFAIK, but in ptxas. It's an issue known to nvidia, but in their words:\n>The compiler team confirms this is a long-standing bug in the compiler's physical register liveness model with no simple fix.\n\nWe tried a number of workarounds at a PTX level in participant6 but all of them were overridden by ptxas.\n\nFor OAI reference, the discussion of this bug is in:\nhttps://<redacted-host>/archives/C04CZ1MCL65/p1755081175673579"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2026-02-11T17:50:18Z",
+   "body": "Unrelated to this, the `isa<ttg::NvidiaMmaEncodingAttr>` logic seems rather sus lol"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2026-02-11T18:32:19Z",
+   "body": "> This is not an issue in the participant6 compiler, AFAIK, but in ptxas. It's an issue known to nvidia, but in their words:\n> \n> > The compiler team confirms this is a long-standing bug in the compiler's physical register liveness model with no simple fix.\n> \n> We tried a number of workarounds at a PTX level in participant6 but all of them were overridden by ptxas.\n> \n> For OAI reference, the discussion of this bug is in: https://<redacted-host>/archives/C04CZ1MCL65/p1755081175673579\n\nif participant6 uses wgmma_wait 3 is it a functional bug in Triton"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2026-02-11T20:04:52Z",
+   "body": "The problem is that we assume ptxas will schedule the LHS argument update so that instead of updating the LHS registers all in one go, it goes as:\n```\nwgmma_wait 1\nupdate A[0]\nwgmma acc, A[0], B[0]\nwgmma_wait 1\nupdate A[1]\nwgmma acc, A[1], B[1]\n```\nI guess the ldmatrix somehow blocks this rescheduling.\n\nIt's unclear how we could fix this at an llvm level. You would need to ensure that `A` lives in a different set of logical registers to the LHS argument to the wgmma which requires us to somehow allocate registers in llvm which is nonsense. WGMMA is just broken from a compiler perspective.\n\n\n\n\n"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2026-02-11T20:08:58Z",
+   "body": "Maybe we could create temporary registers in the inline ptx just for the LHS argument, and do manual `mov` instructions?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2026-02-11T20:14:43Z",
+   "body": "I believe I had tried adding moves to make the \"ptx\" correct but that didn't help. \nLet's leave this up to NV engineers who added this pipelining optimizations and own ptxas behavior"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2026-02-11T20:17:53Z",
+   "body": "> Maybe we could create temporary registers in the inline ptx just for the LHS argument, and do manual `mov` instructions?\n\nIf this is the same problem as the one we discussed before (like @participant3 said), Triton does do this trivial mov stuff. But ptxas had a bug which defeated this trick. The issue was fixed internally and should be available in CUDA 13.2."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-02-12T13:17:02Z",
+   "body": "Thank you everyone for responding so quickly. I'm not sure we are all on the same page if this is a Triton or ptxas issue, or both.\n\nFor me, it's a Triton bug. The ptxas bug is only relevant for register ping-pong, which is not what Triton emits.\n\nCurrently, Triton emits something like this:\n\n```\nload %d0;\nload %d1;\n\nLoop:\n    mov %a0, %d0; \n    mov %a1, %d1; \n    wgmma.fence;\n    wgmma.mma_async {%c}, {%a0}, %b;\n    wgmma.commit_group;\n    wgmma.mma_async {%c}, {%a1}, %b;\n    wgmma.commit_group;\n    load %d0;\n    load %d1;\n    wgmma.wait_group 1;\n    \n    bra Loop;\n```\n\nThe `wait_group 1` is a bug in Triton, because of the RAW hazard:\n`mov %a1, %d1` might be executed before `mma_async {%c}, {%a1}, %b`.\nWith the above loop structure, it needs to say `wait_group 0`.\nThe code above does not suffer from any ptxas liveness analysis bug.\n\nPipelining the `mma_async` with input registers requires unrolling the loop to ping-pong between two sets of registers:\n\n```\nload %d0;\nload %d1;\nload %d2;\nload %d3;\n\nLoop:\n    mov %a0, %d0; \n    mov %a1, %d1; \n    wgmma.fence;\n    wgmma.mma_async {%c}, {%a0}, %b;\n    wgmma.mma_async {%c}, {%a1}, %b;\n    wgmma.commit_group;\n    load %d0;\n    load %d1;\n    wgmma.wait_group 1;\n    \n    mov %a2, %d2;\n    mov %a3, %d3;\n    wgmma.fence;\n    wgmma.mma_async {%c}, {%a2}, %b;\n    wgmma.mma_async {%c}, {%a3}, %b;\n    wgmma.commit_group;\n    load %d2;\n    load %d3;\n    wgmma.wait_group 1;\n    \n    bra Loop;\n```\n\n`wait_group 1` is sufficient here, *if* ptxas correctly analyzes that `%a0` and `%a1` are live all the way until the second `wait_group 1`. This is not currently the case but will be fixed with ptxas 13.2.\n\n**Disclaimer:** Please don't assume above analysis is correct. My knowledge is limited, and I don't have access to the slack conversation.\n"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2026-02-12T13:39:53Z",
+   "body": "Ah, sorry for not having fully explained the context. The thing is that when we realised of this issue, we tried always emitting a mov before the `wgmma` instruction, but ptxas would override this decision and still emit incorrect code, so we removed that hack.\n\nAccording to @participant4 's info, it looks like we should go back to implement that to be sure that, at least on our side, our code is correct, and then whenever the ptxas lands we should be in a good place."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-02-12T16:28:40Z",
+   "body": "Oh, I see. So you intend to emit something like this?\n\nAdjusted from the first example [above](https://github.com/participant6-lang/participant6/issues/9433#issuecomment-3890904677):\n\n```\nload %d0;\nload %d1;\n\nLoop:\n    mov %a0, %d0; \n    wgmma.fence;\n    wgmma.mma_async {%c}, {%a0}, %b;\n    wgmma.commit_group;\n    load %d0;            // moved up, just for symmetry\n    wgmma.wait_group 1;  // new\n    mov %a1, %d1;        // moved down\n    wgmma.fence;         // new\n    wgmma.mma_async {%c}, {%a1}, %b;\n    wgmma.commit_group;\n    load %d1;\n    wgmma.wait_group 1;\n    \n    bra Loop;\n```\n\nYeah, I see that this should work if ptxas correctly analyzed that\n- `%a0` is live past `load %d0` until after the second `wait_group`\n- `%a1` is live past `load %d1` until after the first `wait_group` of the next iteration.\n\nIt prevents eliding the copy because the live range of `%a0` overlaps with `%d0`, and `%a1` overlaps with `%d1`."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2026-02-12T19:27:34Z",
+   "body": "```\nload %d0;\nload %d1;\n\nLoop:\n    mov %a0, %d0; \n    mov %a1, %d1; \n    wgmma.fence;\n    wgmma.mma_async {%c}, {%a0}, %b;\n    wgmma.commit_group;\n    wgmma.mma_async {%c}, {%a1}, %b;\n    wgmma.commit_group;\n    load %d0;\n    load %d1;\n    wgmma.wait_group 1;\n    \n    bra Loop;\n```\n\nThis is indeed incorrect. Can you post the whole ptx for completeness? This is not what I expect as the output from the WGMMA pipelining pass.\n\nThe PTX I was working with is here https://gist.github.com/participant4/d1d7f2f14a616ddaff9e6d8a5c199c66. The structure of the kernel looks like\n```\nW_bf16 = upcast W_mxfp4, scales \nw1, w2, ... w8 = split W_bf16 // split into 8 pieces along K dim\n\nmov w1', w1\nwgmma w1', x1, acc  // w1 is reg, x1 is smem\ncommit_group\nwait 7\n\nmov w2', w2\nwgmma w2', x2, acc\ncommit_group\nwait 7\n.\n.\n.\nmov w8', w8\nwgmma w8', x8, acc\ncommit_group\nwait 7\n```\nEach wait 7 is supposed to ensure that, at each iteration, a wgmma op from the previous iteration is finished before the LHS operand is overwritten for the corresponding wgmma op in the current iteration.\n\nWe see that\n* At the start of the loop, the second wgmma op from the prev iteration is still in flight\n* WGMMA in the second commit group uses registers LHS `%r1303,%r1304,%r1305,%r1306` https://gist.github.com/participant4/d1d7f2f14a616ddaff9e6d8a5c199c66#file-moe_h20_racy-ptx-L1473\n* Which are overwritten at https://gist.github.com/participant4/d1d7f2f14a616ddaff9e6d8a5c199c66#file-moe_h20_racy-ptx-L1460-L1463\n* This overwrite is safe thanks to `wait_group 7` at https://gist.github.com/participant4/d1d7f2f14a616ddaff9e6d8a5c199c66#file-moe_h20_racy-ptx-L1457\n"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2026-02-12T19:37:38Z",
+   "body": "The pseudocode you posted is equivalent, but with 8 splits instead of 2. In your case w[2-8] are still being used while they're being assigned from the split op."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2026-02-12T20:06:33Z",
+   "body": "> The pseudocode you posted is equivalent, but with 8 splits instead of 2. In your case w[2-8] are still being used while they're being assigned from the split op.\n\nWhat do you mean? The overwrite to the registers is not done by the split op, but by `mov` op before each WGMMA ops. At the PTX level, upcast / split are done at the beginning of the loop, but each WGMMA makes sure to do \"trivial mov\" so that it consumes registers overwritten at the right point. \n\nBut yeah, my pseudocode is a bit confusing, it's just for explaining the structure of the kernel at the high level.  Updated to make `mov` before each WGMMA explicit."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2026-02-12T20:45:42Z",
+   "body": "Oh, I saw the comment before you edited it to add the `mov` instructions. Yes I agree that `mov` should theoretically fix it, modulo any `ptxas` bugs."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-02-12T20:49:01Z",
+   "body": "> Can you post the whole ptx for completeness?\n\nYeah, my pseudo-ptx is trimmed down / hypothetical and not what Triton actually produces.\nHere is the IR from the repro I posted at the top:\n\n[wgmma_register_sync_repro_kernel.ttir.txt](https://github.com/user-attachments/files/25273425/wgmma_register_sync_repro_kernel.ttir.txt)\n[wgmma_register_sync_repro_kernel.ttgir.txt](https://github.com/user-attachments/files/25273423/wgmma_register_sync_repro_kernel.ttgir.txt)\n[wgmma_register_sync_repro_kernel.ptx.txt](https://github.com/user-attachments/files/25273424/wgmma_register_sync_repro_kernel.ptx.txt)\n\nThanks again everyone for looking into this!"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2026-02-12T22:36:46Z",
+   "body": "Indeed the ptx is very different from what I had. WGMMA is using the result of ldmatrix directly, without the mov trick. Looks like an issue in the WGMMA pipelining pass.\n\n```\n\tst.shared.v4.b32 \t[%rd2+49152], {%r46, %r47, %r48, %r49};\n\tst.shared.v4.b32 \t[%rd2+49408], {%r50, %r51, %r52, %r53};\n\tst.shared.v4.b32 \t[%rd2+49664], {%r54, %r55, %r56, %r57};\n\tst.shared.v4.b32 \t[%rd2+49920], {%r58, %r59, %r60, %r61};\n\tbar.sync \t0;\n\tldmatrix.sync.aligned.m8n8.x4.shared.b16 {%r62, %r74, %r68, %r80}, [%rd3];\n\tldmatrix.sync.aligned.m8n8.x4.shared.b16 {%r63, %r75, %r69, %r81}, [%rd4];\n\tldmatrix.sync.aligned.m8n8.x4.shared.b16 {%r64, %r76, %r70, %r82}, [%rd5];\n\tldmatrix.sync.aligned.m8n8.x4.shared.b16 {%r65, %r77, %r71, %r83}, [%rd6];\n\t.loc\t1 52 23                         // wgmma_register_sync_repro.py:52:23\n\tbfe.u64 \t%rd53, %rd44, 4, 14;\n\twgmma.fence.sync.aligned;\n\tor.b64 \t%rd37, %rd53, 4611686293305294848;\n\tmov.pred \t%p1, -1;\n\t// begin inline asm\n\twgmma.mma_async.sync.aligned.m64n128k16.f32.bf16.bf16 {%r194,%r195,%r196,%r197,%r198,%r199,%r200,%r201,%r202,%r203,%r204,%r205,%r206,%r207,%r208,%r209,%r210,%r211,%r212,%r213,%r214,%r215,%r216,%r217,%r218,%r219,%r220,%r221,%r222,%r223,%r224,%r225,%r226,%r227,%r228,%r229,%r230,%r231,%r232,%r233,%r234,%r235,%r236,%r237,%r238,%r239,%r240,%r241,%r242,%r243,%r244,%r245,%r246,%r247,%r248,%r249,%r250,%r251,%r252,%r253,%r254,%r255,%r256,%r257}, {%r62,%r63,%r64,%r65}, %rd37, %p1, 1, 1, 0;\n```"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2026-02-12T23:28:06Z",
+   "body": "not a pipeliner issue, we can just always emit the `mov` when lowering the RS WGMMA and that should always give us correctness."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-02-13T12:21:55Z",
+   "body": "I did some experiments with `ptxas` from CUDA 13.1 (`build cuda_13.1.r13.1/compiler.36836380_0`).\n\nThe kernel ([wgmma_register_sync_test.ptx.txt](https://github.com/user-attachments/files/25289161/wgmma_register_sync_test.ptx.txt)) doesn't perform a correct matmul, it only intends to investigate the behaviour of `ptxas`'s liveness analysis. It follows the structure of the code in my previous [comment](https://github.com/participant6-lang/participant6/issues/9433#issuecomment-3891954250).\n\n`ptxas` maps `%a0` and `%d0`, `%a1` and `%d1` to the same physical register and then detects its own mistake:\nIt changes `wait_group` to `0` (`WARPGROUP.DEPBAR.LE gsb0, 0x0;` in [wgmma_register_sync_test_c7513.sass.txt](https://github.com/user-attachments/files/25289353/wgmma_register_sync_test_c7513.sass.txt)) and prints `(C7513) Potential Performance Loss: wgmma.mma_async instructions are serialized due to non wgmma instructions defining input registers of a wgmma between start and end of the pipeline stage in the function 'wgmma_register_sync_test' in line 0`.\n\nSo the test does not expose a correctness bug in `ptxas`. With correct code (copy `%d` to `%a` before `fence/mma_async`), it produces correct but slow code. Without the copy, it's simply garbage in, garbage out.\n\nIn order to prevent `ptxas` from mapping `%a` and `%d` to the same physical register, I manually extended the lifetime of `%a` until after the `wait_group` with extra `xor %d, %d, %a` instructions. With those, it leaves `wait_group` unchanged (`WARPGROUP.DEPBAR.LE gsb0, 0x1;` in [wgmma_register_sync_test_xor.sass.txt](https://github.com/user-attachments/files/25289704/wgmma_register_sync_test_xor.sass.txt)) and `C7513` goes away.\n\nSo I'm wondering, is the `ptxas` fix coming in CUDA 13.2 about correctly analyzing the lifetime of `mma_async` input registers and producing *faster* code, or is there also a correctness bug that I failed to trigger in my experiments?\n\nI did not experiment with register ping-pong and an unrolled loop (second snippet in [this comment](https://github.com/participant6-lang/participant6/issues/9433#issuecomment-3890904677)). I assumed this is the recommended structure to work around the `ptxas` limitation, but I suspect that it would result in the same `C7513`."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2026-02-13T17:55:00Z",
+   "body": "> So I'm wondering, is the ptxas fix coming in CUDA 13.2 about correctly analyzing the lifetime of mma_async input registers and producing faster code, or is there also a correctness bug that I failed to trigger in my experiments?\n\nWe'll confirm next week whether the kernel compiles with the ptxas fix coming in CUDA 13.2 and emits valid SASS, stay tuned."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2026-02-13T19:56:10Z",
+   "body": "> So I'm wondering, is the ptxas fix coming in CUDA 13.2 about correctly analyzing the lifetime of mma_async input registers and producing faster code, or is there also a correctness bug that I failed to trigger in my experiments?\n\nSorry I haven't fully read your analysis, but the fix coming to CUDA 13.2 is strictly for correctness, not performance. In my  pseudocode below, the positions of movs wrt `wait 7` is crucial for correctness. Triton is emitting correct PTX (race free), and the fix to ptxas will also make the SASS correct. \n\n```\nW_bf16 = upcast W_mxfp4, scales \nw1, w2, ... w8 = split W_bf16 // split into 8 pieces along K dim\n\nmov w1', w1\nwgmma w1', x1, acc  // w1 is reg, x1 is smem\ncommit_group\nwait 7\n\nmov w2', w2\nwgmma w2', x2, acc\ncommit_group\nwait 7\n.\n.\n.\nmov w8', w8\nwgmma w8', x8, acc\ncommit_group\nwait 7\n```"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-02-14T07:35:21Z",
+   "body": "My repro and experiments show something different.\n- Triton emits incorrect PTX without the `mov`.\n- With the `mov`, `ptxas` 13.1 emits correct but slow code (`WARPGROUP.DEPBAR.LE gsb0, 0x0;`)."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2026-02-18T04:26:11Z",
+   "body": "@reporter I have an update on this issue. When I said \"Triton generates movs\", that turned out to be true only for some workloads in the MoE test that I was looking at last year. Moreover, those movs are actually generated by LLVM from `insert / bitcast` etc in https://github.com/participant6-lang/participant6/blob/main/third_party/nvidia/lib/TritonNVIDIAGPUToLLVM/DotOpToLLVM/WGMMA.cpp#L118-L125. Today I found that there are workloads in the MoE test for which those `insert / bitcast` are optimized away by LLVM which results in\n\n```\nLHS = ...\n\nwait N - 1\n\nwgmma acc, LHS, RHS\n```  \n\nrather than\n\n```\nLHS = ...\n\nwait N - 1\n\nreg = mov LHS\nwgmma acc, reg, RHS\n```  \n\nAccording to @participant1, such copy propagation across `wait N - 1` by LLVM is legal. So we cannot rely on LLVM to materialize `mov` from `insert / bitcast`. Previously OAI tried such manual `mov` insertion in Triton, but due to the bug in ptxas, such trick didn't work. Now that the fixed ptxas is coming, we should revisit this. I don't know why your workload + manual mov is not affected by the ptxas bug, but it's good that you don't have to wait for the 13.2 update."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2026-02-18T08:04:31Z",
+   "body": "When investigating this I added the manual mov emission during wgmma lowering but I removed it since it did not fix the issue. Feel free to submit a PR emitting this"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2026-02-18T21:31:01Z",
+   "body": "@reporter Can you share how you manually added the movs? With the following patch, [the generated PTX](https://gist.github.com/participant4/69f2a9c48d64857fa44d5305ef8d975b) looks good to me but the results from your repro is still garbage.\n\n```\ndiff --git a/third_party/nvidia/lib/TritonNVIDIAGPUToLLVM/DotOpToLLVM/WGMMA.cpp b/third_party/nvidia/lib/TritonNVIDIAGPUToLLVM/DotOpToLLVM/WGMMA.cpp\nindex c284fc977b..fadcc020a9 100644\n--- a/third_party/nvidia/lib/TritonNVIDIAGPUToLLVM/DotOpToLLVM/WGMMA.cpp\n+++ b/third_party/nvidia/lib/TritonNVIDIAGPUToLLVM/DotOpToLLVM/WGMMA.cpp\n@@ -296,6 +296,26 @@ LogicalResult convertDot(const LLVMTypeConverter *typeConverter,\n           llvm::SmallVector<Value> regA =\n               loadReg(rewriter, loc, structA, (m * numRepK + k) * regASize,\n                       regASize, startSequence);\n+          for (Value &regAVal : regA) {\n+            Type regTy = regAVal.getType();\n+            if (!regTy.isIntOrFloat() || regTy.getIntOrFloatBitWidth() != 32) {\n+              return mlir::emitError(loc, \"unsupported WGMMA A register type \")\n+                     << regTy;\n+            }\n+\n+            Value movIn = regTy.isInteger(32)\n+                              ? regAVal\n+                              : tb.bitcast(regAVal, rewriter.getI32Type());\n+\n+            PTXBuilder ptxBuilder;\n+            auto *dstOpr = ptxBuilder.newOperand(\"=r\");\n+            auto *srcOpr = ptxBuilder.newOperand(movIn, \"r\");\n+            ptxBuilder.create(\"mov\")->o(\"b32\")(dstOpr, srcOpr);\n+            Value movedReg =\n+                ptxBuilder.launch(rewriter, loc, rewriter.getI32Type());\n+            regAVal =\n+                regTy.isInteger(32) ? movedReg : tb.bitcast(movedReg, regTy);\n+          }\n```"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2026-02-20T08:29:36Z",
+   "body": "This landed in https://github.com/participant6-lang/participant6/pull/9514, so I don't think there is much more to do on the participant6 side of things. @reporter do you want to keep this open or should we close it?"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2026-02-20T10:24:07Z",
+   "body": "I think it makes sense to keep it open until a fixed ptxas is released and Triton is updated to use it. "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-02-20T14:15:44Z",
+   "body": "Thanks for adding these `mov`s. I've tested this change at HEAD with my repro from the top.\n\nIt looks like the `mov`s are placed after instead of before the `fence`. I've opened https://github.com/participant6-lang/participant6/pull/9530 to put them before.\n\nWith that, the PTX looks correct, but the SASS does have the RAW hazard: `R96` and `R88` (the inputs to the second set of `HGMMA`) are written before the first `WARPGROUP.DEPBAR`: [wgmma_register_sync_repro_kernel.sass.txt](https://github.com/user-attachments/files/25444162/wgmma_register_sync_repro_kernel.sass.txt). This is with `ptxas V13.1.115`.\n\nGiven that it will likely take a while before XLA upgrades to CUDA 13.2, we will play it safe and use the `wait_group 0` [patch](https://github.com/openxla/xla/blob/main/third_party/participant6/temporary/wgmma_pipeline_fix.patch) for the time being.\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-04-30T13:31:52Z",
+   "body": "I noticed that the issue is now documented at https://docs.nvidia.com/cuda/cuda-toolkit-release-notes/index.html#id3. Thanks!"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2026-05-27T18:28:05Z",
+   "body": "Hi @reporter, 13.3 was posted today. Would you be able to confirm with the latest ptxas that the bug has been resolved?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-05-28T15:16:28Z",
+   "body": "Yes, I can confirm that the issue is fixed for my repro. The register `MOV`s are staggered around the `DEPBAR` instructions when compiled with ptxas 13.3, but not before."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2026-05-28T17:22:53Z",
+   "body": "Great thanks for confirming it's been fixed. @participant3 @participant1 we can now close this issue"
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "participant6-lang/participant6",
+  "default_branch": "main",
+  "commit_sha": "088fbe15e4868506ac0ad42a3cfbbc923971b8d4",
+  "as_of": "2026-02-11T15:53:40Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_participant6-lang_participant6_9433"
+}

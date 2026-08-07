@@ -1,0 +1,157 @@
+{
+ "repo": "fluent/fluent-bit",
+ "number": 9152,
+ "url": "https://github.com/fluent/fluent-bit/issues/9152",
+ "title": "tls.verify_hostname seems not working in [OUTPUT] forward",
+ "state": "closed",
+ "labels": [
+  "status: waiting-for-triage"
+ ],
+ "reporter": "reporter",
+ "created_at": "2024-08-01T14:41:21Z",
+ "closed_at": "2024-08-17T05:18:14Z",
+ "body": "## Bug Report\r\n\r\n**Describe the bug**\r\nIn [OUTPUT] forward, when I enabled `tls.verify_hostname`, it seems this flag does not work, but in [INPUT] it does work.\r\n\r\nHere is the basic config and which is working as expected:\r\n\r\ncentos8-1:\r\n```\r\n[OUTPUT]\r\n    Name                forward\r\n    Match               *\r\n    Host                centos8-2\r\n    tls                 on\r\n    tls.verify          on\r\n    tls.verify_hostname on\r\n    tls.debug           1\r\n    tls.ca_file         ca.crt\r\n    tls.crt_file        centos8-1.crt\r\n    tls.key_file        centos8-1.key\r\n    self_hostname       ${HOSTNAME}\r\n```\r\n\r\ncentos8-2:\r\n```\r\n[INPUT]\r\n    Name                forward\r\n    Listen              0.0.0.0\r\n    Port                24224\r\n    tls                 on\r\n    tls.verify          on\r\n    tls.verify_hostname on\r\n    tls.debug           1\r\n    tls.ca_file         ca.crt\r\n    tls.crt_file        centos8-2.crt\r\n    tls.key_file        centos8-2.key\r\n    self_hostname       ${HOSTNAME}\r\n```\r\n\r\nIf I change the cert and key to centos8-1.crt and centos8-1.key in centos8-2's config (the INPUT side), the connection cannot be set up with error as below, this makes sense as the CN and the hostname does not match, which is as expected:\r\ncentos8-1:\r\n![image](https://github.com/user-attachments/assets/b3152f13-a43a-422e-bfbb-79f63a614067)\r\n\r\ncentos8-2:\r\n![image](https://github.com/user-attachments/assets/ccad1dd5-1a7a-48e3-9fd4-560cb26fb367)\r\n\r\nHowever, if I change the cert and key on centos8-1's config (the OUTPUT side) to centos8-2.crt and centos8-2.key, the connection can still be set up with logs sending to centos8-2, it seems the tls.verify_hostname on OUTPUT forward does not work.\r\n\r\n@participant1 I noticed that you've helped added this function in https://github.com/fluent/fluent-bit/pull/8934, could you please help check this issue?\r\n\r\n**To Reproduce**\r\n- In [OUTPUT] forward config, using a cert with different CN than the current server\r\n\r\n**Expected behavior**\r\nOUTPUT tls.verify_hostname should also check the CN and hostname.\r\n\r\n**Your Environment**\r\n* Version used: 3.1.4\r\n* Configuration:\r\n* Environment name and version (e.g. Kubernetes? What version?): virtual machine\r\n* Server type and version: centos8\r\n* Operating System and version: 4.18.0-514.el8.x86_64\r\n* Filters and plugins: [INPUT] and [OUTPUT] forward\r\n\r\n",
+ "comments": [
+  {
+   "author": "ghost",
+   "created_at": "2024-08-07T07:11:41Z",
+   "body": "Maybe related to:\r\nhttps://github.com/fluent/fluent-bit/issues/8072\r\nhttps://github.com/fluent/fluent-bit/security/advisories/GHSA-rvxv-vp29-qf2h\r\nhttps://github.com/fluent/fluent-bit/pull/8934"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-08-07T08:33:27Z",
+   "body": "Yes. tls.verify_hostname is quite tight condition for some of the server certificates.\r\nThis is because some of the server certificates do not have the actual hostnames for their servers.\r\nWe use X509_VERIFY_PARAM_set1_host function to verify server's hostname within the used certificate which is described as: https://<redacted-host>/index.php/Hostname_validation\r\n\r\nAnd, input and output slightly differ the verification mechanism for certificates.\r\nBoth of behavior is just shutdown the TLS connections but how to disconnect the connections are different."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-08-07T16:14:55Z",
+   "body": "Thanks @participant1 for the reply, per my understanding this behavior (output tls.verify_hostname's not working) is as expected, or do I miss something in the config to make it work correctly?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-08-07T16:15:37Z",
+   "body": "Thanks @participant3 , that's why I opened this issue after checking that change, but seems not working per my understanding."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-08-09T10:56:50Z",
+   "body": "Hi @reporter,\r\n\r\nIn my case (Fluent Bit 3.1.4) `tls.verify_hostname` configuration option works well when is turned on (i.e. Fluent Bit fails to send data to the host providing wrong certificate) in Forward output plugin **without HA** configuration, e.g.:\r\n\r\n```text\r\n    [OUTPUT]\r\n        Name            forward\r\n        Match_Regex     ^(kube|host)\\..*\r\n        Host            <redacted-host>\r\n        Port            24224\r\n        Shared_Key      XXX\r\n        Require_ack_response True\r\n        tls         on\r\n        tls.verify  on\r\n        tls.verify_hostname on\r\n        tls.ca_file /fluent-bit/extra/ca.crt\r\n        Retry_Limit     20\r\n```\r\n\r\nBut when `tls.verify_hostname` is turned on and used **with [HA configuration](https://<redacted-host>/manual/administration/configuring-fluent-bit/classic-mode/upstream-servers)** of Forward output plugin, then Fluent Bit 3.1.4 doesn't work correctly (as expected), i.e. Fluent Bit 3.1.4 successfully sends data to the server providing wrong certificate. \r\n\r\nThis case seems to be serious security regression from what we have with Fluent Bit 3.0.7 (where `tls.verify_hostname` configuration option is not available and [Fluent But 3.0.7 just always validates CN / SAN of certificate to match hostname](https://github.com/fluent/fluent-bit/issues/8975#issuecomment-2212385029)).\r\n\r\nHere is part of my Fluent Bit 3.1.4 configuration for HA:\r\n\r\n```text\r\n    [OUTPUT]\r\n        Name            forward\r\n        Match_Regex     ^(kube|host)\\..*\r\n        Upstream        /fluent-bit/extra/upstream.conf\r\n        Retry_Limit     20\r\n```\r\n\r\nand (/fluent-bit/extra/upstream.conf file):\r\n\r\n```text\r\n    [UPSTREAM]\r\n        name        forward-balancing\r\n    [NODE]\r\n        name        node-1\r\n        Host        <redacted-host>\r\n        Port        24224\r\n        Shared_Key  XXX\r\n        Require_ack_response True\r\n        tls         on\r\n        tls.verify  on\r\n        tls.verify_hostname on\r\n        tls.ca_file /fluent-bit/extra/ca.crt\r\n    [NODE]\r\n        name        node-2\r\n        Host        <redacted-host>\r\n        Port        24225\r\n        Shared_Key  XXX\r\n        Require_ack_response True\r\n        tls         on\r\n        tls.verify  on\r\n        tls.verify_hostname on\r\n        tls.ca_file /fluent-bit/extra/ca.crt\r\n```\r\n\r\nI also tried to put (move, copy) `tls.verify_hostname on` into `[OUTPUT]` section from `[NODE]` section, but it didn't change behavior of Fluent Bit 3.1.4.\r\n\r\nSo far, my team decided to stay on 3.0.7 version, because TLS is less meaningful if client (Fluent Bit) doesn't validate CN / SAN of server certificate to match expected hostname."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-08-09T12:14:31Z",
+   "body": "Thanks for the report of verify_hostname settings leaks for HA.\r\nI created a PR to plug this case: https://github.com/fluent/fluent-bit/pull/9180\r\n\r\nHowever, this is just in an early stage. Still not handled for memory managements."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-08-11T07:02:39Z",
+   "body": "@participant2 thanks for jumping into this issue.\r\n\r\nIn you first `output` config, it seems there is no `tls.crt_file` and `tls.crt_key` part but only the `tls.ca_file`, could you please try that as well?"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-08-12T08:49:08Z",
+   "body": "Hi @reporter,\r\n\r\nUnfortunately, my team doesn't use mTLS b/w Fluent Bit (Forward output plugin) and Fluentd and I do not have example / test of configuration with `tls.crt_file` and `tls.crt_key` options in Fluent Bit configuration. It will take some time for me to build and test (Fluent Bit 3.0.7 vs 3.1.4) that configuration, so please do not expect it to happen this week.\r\n\r\nSorry, I realize that the case from my previous message doesn't match your case for 100%, but it is still about `tls.verify_hostname` and Forward output plugin.\r\n\r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-08-12T12:37:22Z",
+   "body": "@participant2 no worry at all and I am not using Fluentd in my case, both `output` and `input` are from FluentBit"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-08-13T09:44:37Z",
+   "body": "> Thanks @participant1 for the reply, per my understanding this behavior (output tls.verify_hostname's not working) is as expected, or do I miss something in the config to make it work correctly?\r\n\r\nIf the CN of server is not matched for the provided certificates, the TLS handshake will be failed.\r\nIn short, the handshake is expected not to be succeed for wrong certificates and sending logs or other types of payloads will not send via TLS with wrong certificates.\r\nSo, if your certificates are wrong for CN of server hostname, the connections will be failed and it's expected behavior."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-08-13T13:57:24Z",
+   "body": "> > Thanks @participant1 for the reply, per my understanding this behavior (output tls.verify_hostname's not working) is as expected, or do I miss something in the config to make it work correctly?\r\n> \r\n> If the CN of server is not matched for the provided certificates, the TLS handshake will be failed. In short, the handshake is expected not to be succeed for wrong certificates and sending logs or other types of payloads will not send via TLS with wrong certificates. So, if your certificates are wrong for CN of server hostname, the connections will be failed and it's expected behavior.\r\n\r\nyes, this is for sure, but my issue is when I set the mismatched cert in `OUTPUT` as below, the connection can still be set up:\r\n\r\n```\r\n[OUTPUT]\r\n    Name                forward\r\n    Match               *\r\n    Host                centos8-2\r\n    tls                 on\r\n    tls.verify          on\r\n    tls.verify_hostname on\r\n    tls.debug           1\r\n    tls.ca_file         ca.crt\r\n    tls.crt_file        centos8-2.crt\r\n    tls.key_file        centos8-2.key\r\n    self_hostname       ${HOSTNAME}\r\n```\r\nThe config above is on `centos8-1`, thus the `tls.crt_file` and `tls.crt_key` should match the server that it is running on, isn't it?"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-08-13T15:57:56Z",
+   "body": "@reporter,\r\n\r\nWhat about [Subject Alternative Name](https://en.wikipedia.org/wiki/Subject_Alternative_Name) (SAN) of the server certificate in your case? Does it also not match value specified in `Host` parameter (`centos8-2`, because `tls.verify_hostname` is about verification of server certificate, not certificate configured in `tls.crt_file` parameter)?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-08-14T09:14:48Z",
+   "body": "> > > Thanks @participant1 for the reply, per my understanding this behavior (output tls.verify_hostname's not working) is as expected, or do I miss something in the config to make it work correctly?\r\n> > \r\n> > \r\n> > If the CN of server is not matched for the provided certificates, the TLS handshake will be failed. In short, the handshake is expected not to be succeed for wrong certificates and sending logs or other types of payloads will not send via TLS with wrong certificates. So, if your certificates are wrong for CN of server hostname, the connections will be failed and it's expected behavior.\r\n> \r\n> yes, this is for sure, but my issue is when I set the mismatched cert in `OUTPUT` as below, the connection can still be set up:\r\n> \r\n> ```\r\n> [OUTPUT]\r\n>     Name                forward\r\n>     Match               *\r\n>     Host                centos8-2\r\n>     tls                 on\r\n>     tls.verify          on\r\n>     tls.verify_hostname on\r\n>     tls.debug           1\r\n>     tls.ca_file         ca.crt\r\n>     tls.crt_file        centos8-2.crt\r\n>     tls.key_file        centos8-2.key\r\n>     self_hostname       ${HOSTNAME}\r\n> ```\r\n> \r\n> The config above is on `centos8-1`, thus the `tls.crt_file` and `tls.crt_key` should match the server that it is running on, isn't it?\r\n\r\nIt depends on your SAN value in your certificates.\r\nThis can be verified with:\r\n\r\n```console\r\n$ openssl  x509 -noout -ext subjectAltName -in /path/to/your_certificates.pem\r\n```\r\n\r\nThen, if there is a SAN extension in your certificates:\r\n\r\n\r\n```console\r\nX509v3 Subject Alternative Name: \r\n    DNS:a.super.cool.dns.address\r\n```"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-08-14T12:55:37Z",
+   "body": "@participant1,\r\n\r\nHere is the output of the `openssl`:\r\n![image](https://github.com/user-attachments/assets/387f1687-84d1-47c5-a453-b1e7ee733bf5)\r\n\r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-08-14T13:01:45Z",
+   "body": "> @reporter,\r\n> \r\n> What about [Subject Alternative Name](https://en.wikipedia.org/wiki/Subject_Alternative_Name) (SAN) of the server certificate in your case? Does it also not match value specified in `Host` parameter (`centos8-2`, because `tls.verify_hostname` is about verification of server certificate, not certificate configured in `tls.crt_file` parameter)?\r\n\r\nhi @participant2,\r\n\r\nDo you mean the `tls.verify_hostname` is used to verify the destination (the value in `Host` of [OUPTUT] FORWARD, yes, centos8-2) instead of the server that fluentbit is running on (in my case, it is centos8-1)?\r\n\r\nIf this is the case, the initial config as below (on centos8-1) should not work (as centos8-1.crt cannot verify the destination centos8-2) but it does work:\r\n```\r\n[OUTPUT]\r\n    Name                forward\r\n    Match               *\r\n    Host                centos8-2\r\n    tls                 on\r\n    tls.verify          on\r\n    tls.verify_hostname on\r\n    tls.debug           1\r\n    tls.ca_file         ca.crt\r\n    tls.crt_file        centos8-1.crt\r\n    tls.key_file        centos8-1.key\r\n    self_hostname       ${HOSTNAME}\r\n```\r\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-08-14T13:58:51Z",
+   "body": "For out_forward, it could be verified for the destination of CN:\r\nhttps://github.com/fluent/fluent-bit/blob/master/src/tls/flb_tls.c#L525-L556\r\nThis is because vhost is came from the destination. flb_upstream_create will be created at:\r\nSimple: https://github.com/fluent/fluent-bit/blob/master/plugins/out_forward/forward.c#L1069\r\nFor HA: https://github.com/fluent/fluent-bit/blob/master/src/flb_upstream_node.c#L171\r\n\r\nSo, the verification of hostname should be used for the destinations on out_forward plugin."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-08-14T20:44:48Z",
+   "body": "Hi @reporter,\r\n\r\n`tls.verify_hostname` is about verification of certificate provided by destination (which is defined by `Host` parameter).\r\n\r\nThis part of your configuration:\r\n\r\n```text\r\n[OUTPUT]\r\n    ...\r\n    tls.crt_file        centos8-1.crt\r\n    tls.key_file        centos8-1.key\r\n```\r\n\r\nhas no relation with verification (performed by Fluent Bit Forward output plugin at `centos8-1` host) of certificate provided by destination (located at `centos8-2`). These parameters are used for mTLS when both client (which is Fluent Bit Forward output plugin running at `centos8-1` host) and server (destination, `centos8-2`) provide certificate.\r\n\r\nIn case of configuration which you provided only following options impact verification (performed by Fluent Bit Forward output plugin running at `centos8-1` host) of certificate provided by destination (of certificate provided by Fluent Bit Forward input plugin running at `centos8-2` host):\r\n\r\n```text\r\n[OUTPUT]\r\n    ...\r\n    Host                centos8-2\r\n    tls                 on\r\n    tls.verify          on\r\n    tls.verify_hostname on\r\n    ...\r\n    tls.ca_file         ca.crt\r\n```\r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-08-15T13:06:26Z",
+   "body": "hi @participant2 ,\r\nThanks for the details, now I am getting more clear on the procedure, but just one more question if you do not mind:\r\n> These parameters are used for mTLS when both client (which is Fluent Bit Forward output plugin running at centos8-1 host) and server (destination, centos8-2) provide certificate.\r\n\r\nHow does server side (centos8-2) verify the client(centos8-1) as there is no such parameter `HOST` in [INPUT] section?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-08-15T13:06:53Z",
+   "body": "> For out_forward, it could be verified for the destination of CN: https://github.com/fluent/fluent-bit/blob/master/src/tls/flb_tls.c#L525-L556 This is because vhost is came from the destination. flb_upstream_create will be created at: Simple: https://github.com/fluent/fluent-bit/blob/master/plugins/out_forward/forward.c#L1069 For HA: https://github.com/fluent/fluent-bit/blob/master/src/flb_upstream_node.c#L171\r\n> \r\n> So, the verification of hostname should be used for the destinations on out_forward plugin.\r\n\r\nThanks @participant1 for the code lines."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-08-15T21:06:21Z",
+   "body": "Hi @reporter,\r\n\r\nI'm not good in mTLS. As far as I know mTLS and as far as I understand Fluent Bit code, the server (centos8-2), when performing verification of client (centos8-1) certificate (in some cases server can skip that verification ignoring certificate provided by client, not sure if it is the case for Fluent Bit Forward input plugin), checks:\r\n\r\n1. Validity dates of certificate.\r\n1. Key usage extension of certificate.\r\n1. Extended key usage.\r\n1. Issuer (CA which issued / signed client certificate should be to among CAs which are known to / trusted by server).\r\n\r\nOptions 1-3 from this list are defined by following part of centos8-1 configuration:\r\n\r\n```text\r\n[OUTPUT]\r\n    ...\r\n    tls                 on\r\n    ...\r\n    tls.crt_file        centos8-1.crt\r\n    tls.key_file        centos8-1.key\r\n```\r\n\r\nThe set of CAs (CA certificates) which are trusted by server (centos8-2) is defined by following part of centos8-2 configuration (I guess so, I never tried it before):\r\n\r\n```text\r\n[INPUT]\r\n    ...\r\n    tls.ca_file         ca.crt\r\n```\r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-08-16T13:55:45Z",
+   "body": "@participant2 Thanks for the reply.\r\n\r\nIt seems this mTLS is based on the ca.crt here, as long as the source (centos8-1) is signed by the same CA as destination (centos8-2),  it will be trusted.\r\n\r\nPlease correct me if there is any misunderstanding on how [INPUT] verifies the [OUTPUT] @participant1 "
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-08-16T15:49:55Z",
+   "body": "Your understanding is correct. Thanks for filing your issue. :)"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-08-17T05:18:14Z",
+   "body": "thanks @participant1 and @participant2 for your patience, really gained a lot by this one."
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "fluent/fluent-bit",
+  "default_branch": "master",
+  "commit_sha": "57c04a5e01d2b4e9d9c4f2cc49c6e8858b93c735",
+  "as_of": "2024-08-01T14:41:21Z",
+  "method": "github_commits_until"
+ },
+ "images": [
+  {
+   "where": "opening",
+   "source_url": "https://github.com/user-attachments/assets/b3152f13-a43a-422e-bfbb-79f63a614067",
+   "file": "gh_fluent_fluent-bit_9152_img0.png"
+  },
+  {
+   "where": "opening",
+   "source_url": "https://github.com/user-attachments/assets/ccad1dd5-1a7a-48e3-9fd4-560cb26fb367",
+   "file": "gh_fluent_fluent-bit_9152_img1.png"
+  },
+  {
+   "where": "c13",
+   "source_url": "https://github.com/user-attachments/assets/387f1687-84d1-47c5-a453-b1e7ee733bf5",
+   "file": "gh_fluent_fluent-bit_9152_img2.png"
+  }
+ ],
+ "slug": "gh_fluent_fluent-bit_9152"
+}

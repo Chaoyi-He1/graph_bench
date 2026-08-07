@@ -1,0 +1,131 @@
+{
+ "repo": "coredns/coredns",
+ "number": 5953,
+ "url": "https://github.com/coredns/coredns/issues/5953",
+ "title": "CoreDNS resiliency with non-compliant upstream ",
+ "state": "closed",
+ "labels": [
+  "enhancement"
+ ],
+ "reporter": "reporter",
+ "created_at": "2023-03-07T19:04:08Z",
+ "closed_at": "2023-10-11T21:11:35Z",
+ "body": "<!-- Please use this template while reporting a bug and provide as much info as possible. Not doing so may result in your bug not being addressed in a timely manner. Thanks!\r\n\r\nIf the matter is security related, please disclose it privately via <email-scrubbed>\r\n-->\r\n\r\n**What happened**:\r\nI'm trying to work through an issue in which a OKD user reported (https://issues.redhat.com/browse/OCPBUGS-6829) CoreDNS failing on upstream/forwarded requests with the failure:\r\n```\r\nCoreDNS logs: [ERROR] plugin/errors: 2 <redacted-host>. AAAA: dns: overflowing header size \r\n```\r\n\r\nThe only way this logic could be getting executed is if the upstream is non-compliant regarding UDP payloads sizes. We specify `bufsize: 512` and it appears the upstream is coming back with more than 512 and not setting the truncated bit. The user is using a Windows 2016 or 2019 AD DC integrated DNS server for upstream DNS.\r\n\r\nI've reproduced this error with 2 CoreDNS binaries: one being a vanilla CoreDNS (first hop/downstream) and another being a hacked CoreDNS (upstream) that doesn't truncate and sends UDP responses larger than UDP payload requested. I \"hacked\" CoreDNS to never truncate by putting a `return` [here](https://github.com/openshift/coredns/blob/9aaa7e0a86b69bafb9f544a0e5cb1873535a8f6b/vendor/github.com/miekg/dns/msg_truncate.go#L50). So it looks like:\r\n_Dig Client --> Vanilla Downstream CoreDNS 1.10.0 --> Upstream Hacked-to-not-truncate CoreDNS 1.10.0_\r\n\r\nIn this reproducer, the chain of events is as follows:\r\n1. Client requests a larger-than-512-byte DNS Record\r\n2. The downstream CoreDNS forwards to the upstream CoreDNS, but the upstream hacked-CoreDNS doesn't truncate it's response\r\n3. Downstream CoreDNS repeatedly fails and tries sending more requests to upstream (in UDP) for 5 seconds straight. The error is always one of the \"overflow\" errors I mentioned above.\r\n4. The request times out after 5 seconds ([hard coded](https://github.com/coredns/coredns/blob/b7279d1f668ad2fe401c254543f9dcbc878b0378/plugin/forward/forward.go#L247)) and the downstream returns the \"overflow\" message that it had been receiving for 5 seconds of non-stop querying\r\n\r\n**What you expected to happen**:\r\nI understand the upstream is non-compliant, but it seems non-compliant server exist in the wild (see https://github.com/coredns/coredns/issues/3941 and https://github.com/coredns/coredns/issues/3305). The user's solution here is to increase `bufsize` (seems a bit arbitrary) or turn on `force_tcp`.\r\n\r\n_My question here is:_ Could CoreDNS retry TCP after a UDP Payload failure automatically? It helplessly retries for 5 seconds, but would it increase resiliency to attempt a TCP retry upon one of these failure cases?\r\n\r\n**How to reproduce it (as minimally and precisely as possible)**:\r\nI talked about creating the reproducer in the **What happened** section.\r\n\r\n**Anything else we need to know?**:\r\nN/A\r\n\r\n**Environment**:\r\n\r\n- the version of CoreDNS:\r\n1.10.0\r\n- Corefile:\r\n```\r\n  Corefile: |\r\n    .:5353 {\r\n        bufsize 512\r\n        errors\r\n        log . {\r\n            class error\r\n        }\r\n        health {\r\n            lameduck 20s\r\n        }\r\n        ready\r\n        kubernetes cluster.local in-addr.arpa ip6.arpa {\r\n            pods insecure\r\n            fallthrough in-addr.arpa ip6.arpa\r\n        }\r\n        prometheus 127.0.0.1:9153\r\n        forward . /etc/resolv.conf {\r\n            policy sequential\r\n        }\r\n        cache 900 {\r\n            denial 9984 30\r\n        }\r\n        reload\r\n    }\r\n```\r\n- logs, if applicable:\r\n```\r\n[ERROR] plugin/errors: 2 <redacted-host>. AAAA: dns: overflowing header size\r\n```\r\n- OS (e.g: `cat /etc/os-release`):\r\n- RHEL 8.7\r\n- Others:\r\n",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2023-03-08T18:46:47Z",
+   "body": ">  Could CoreDNS retry TCP after a UDP Payload failure automatically? \r\n\r\nThe philosophical matter of enabling other misbehaved DNS implementations aside ...\r\n\r\nThis seems reasonable on a first take.  We'd need to define precisely what a \"UDP Payload failure\" is - perhaps just this specific issue (`overflowing header size`).\r\n\r\nAnyone else see any gotchas?"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-03-30T17:23:41Z",
+   "body": "The only case I can think of for now would be an overlarge packet.\r\n\r\nThe thing I don't like about automatically re-querying via TCP is that we'd still be dealing with a UDP response to the client, so we'd have to take the response we received via TCP, truncate it appropriately, and then send it via UDP. The client then has to come back via TCP and get the data again, but at least we'd be able to have it via cache if that's enabled.\r\n\r\nI see two options that could be added on to deal with this in a more efficient way.\r\n\r\n### Manually override buffer size\r\n\r\nFirst, and simpler: add an option to force a minimum buffer size on the request object like the cache plugin used to do, so that users could set it to large enough to handle whatever size their misbehaving DNS server might send over UDP. This falls back into that \"enabling misbehavior\" question, which is why I don't prefer it. We should then take the response, truncate it, and send it back to the client at 512 bytes so that we're giving a compliant response even if the upstream server isn't. This is different from the bufsize plugin because bufsize currently only limits the maximum buffer size but doesn't increase it.\r\n\r\nSuggested implementation:\r\n```\r\nbufsize 4096 {\r\n  force\r\n}\r\n```\r\n\r\nEnd result: we use more memory than 1.10.1 (but potentially less memory than 1.10.0), but shield downstream clients from a misbehaving upstream DNS server without increasing external query counts. The client might have to requery via TCP, but we could serve the response from cache.\r\n\r\n### Utilize eDNS0\r\n\r\nDepending on the upstream server, we might also be able to fix this by add an option in the forward plugin to use eDNS0 on the upstream request if cache is enabled, even if the client doesn't request eDNS0 in the first case. It would have the same behavior as the automatic requery from the client perspective, but it would mean that participant4 won't have to requery the upstream via TCP for a medium length (512<request<1232, assuming default bufsize settings) request even if the client doesn't support eDNS0\r\n \r\nAdditionally, the DNS server I'm working with operates properly if eDNS0 is sent - so if we use eDNS0 on all requests, even if we did eDNS0 with a bufsize of 512, then the problem doesn't show up in the first place. I like this because most of the latency in our end is on the forwarded query. The client having to requery via TCP and get a cached response from participant4 is a minimal amount of overhead compared to making the upstream query in the first place, so getting the full response from upstream in the first request and caching it means the response via TCP will be much faster.\r\n\r\nThis is basically going back to #5366 and solving it another way - that bug was because we always sent eDNS0, which is what I'm proposing here, but we didn't strip it back off and truncate the response to the client.\r\n\r\nSuggested implementation:\r\n```\r\nforward . /etc/resolv.conf {\r\n   force_edns0\r\n}\r\n```\r\n\r\nThoughts, @participant1?"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-03-30T18:50:43Z",
+   "body": "I just realized that providing an option to turn eDNS0 on for all forwarded queries is basically what the old \"always request DNSSEC\" code did - since DNSSEC requires eDNS0, that turned on eDNS0 for every query. Accordingly, can we reenable just that send-eDNS-by-default behavior, which could then respect bufsize, without turning the DNSSEC behavior back on?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-03-30T19:07:01Z",
+   "body": "IIRC, the need to enable edns0 was in itself was the root of several of the problems the DNSSEC cache hack caused.\r\n\r\nI think a better fix would be: in forward, when the response is invalid due to overflow, trim the answer section to size and mark response as truncated, and send it to client. This would cause the client to retry over TCP.\r\n\r\nThe problem with having forward try to short-cut this and do the retry itself over tcp, is that after retrying, it would still have to trim the full response down to the original udp request size when sending the response to the client over udp. The client then sees the truncated response and retries over tcp. So it ends up being more work.\r\n\r\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-03-30T19:15:09Z",
+   "body": "> The thing I don't like about automatically re-querying via TCP is that we'd still be dealing with a UDP response to the client, so we'd have to take the response we received via TCP, truncate it appropriately, and then send it via UDP. The client then has to come back via TCP and get the data again, but at least we'd be able to have it via cache if that's enabled.\r\n\r\nSorry - I just noticed you already said the same thing."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-03-30T19:26:54Z",
+   "body": "> I think a better fix would be: in forward, when the response is invalid due to overflow, trim the answer section to size and mark response as truncated, and send it to client. This would cause the client to retry over TCP.\r\n\r\nActually this doesn't work either.  The entire answer needs to be cached, and truncated appropriately to client spec when serving from cache.  Which means when cache is enabled, we need to set edns buff size to max. Otherwise we'll get truncated answers from cache when answering tcp queries.  Or never write truncated responses to cache ...\r\n\r\nI need to spend some time reviewing what cache and forward actually currently do."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-03-30T19:48:05Z",
+   "body": "> The problem with having forward try to short-cut this and do the retry itself over tcp, is that after retrying, it would still have to trim the full response down to the original udp request size when sending the response to the client over udp. The client then sees the truncated response and retries over tcp. So it ends up being more work.\r\n\r\nSorry for spamming this issue:  My reasoning is flawed here.  The original suggested retry in forward works fine because we would cache the full answer.  cache (should already) trim the answer down to size for udp clients.  \r\n\r\n> The thing I don't like about automatically re-querying via TCP is that ... The client then has to come back via TCP and get the data again...\r\n\r\nIsn't this always required?  Ultimately we have to give a valid answer to a client that has a buff size smaller than the cached answer.  The only way to to that is to truncate the answer.\r\n"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-03-30T20:09:01Z",
+   "body": "On caching: from [RFC1035 section 7.4](https://<redacted-host>/rfc/rfc1035#section-7.4):\r\n> When a response is truncated, and a resolver doesn't know whether it has a complete set, it should not cache a possibly partial set of RRs.\r\n\r\nWhat about this, for simplicity - if the UDP response from the DNS server fails to unmarshall due to an overflow error, we return an empty message with the tc flag set.\r\n\r\nThis avoids having to figure out what maximum buffer size to pass to miekg/dns to make sure we can actually unmarshall the message, since RFC6891 doesn't actually set a maximum UDP message size (it suggests 4096 bytes).\r\n\r\nThis also matches what other large providers do. For example, CloudFlare and Google just send back a response with no answer records and the tc flag set:\r\n\r\n```\r\nroot@participant5:/# dig +ignore +noedns @1.1.1.1 <redacted-host>\r\n\r\n; <<>> DiG 9.18.12-0ubuntu0.22.04.1-Ubuntu <<>> +ignore +noedns @1.1.1.1 <redacted-host>\r\n; (1 server found)\r\n;; global options: +cmd\r\n;; Got answer:\r\n;; ->>HEADER<<- opcode: QUERY, status: NOERROR, id: 10419\r\n;; flags: qr tc rd ra; QUERY: 1, ANSWER: 0, AUTHORITY: 0, ADDITIONAL: 0\r\n\r\n;; QUESTION SECTION:\r\n;<redacted-host>.          IN      A\r\n\r\n;; Query time: 427 msec\r\n;; SERVER: 1.1.1.1#53(1.1.1.1) (UDP)\r\n;; WHEN: Thu Mar 30 20:08:13 UTC 2023\r\n;; MSG SIZE  rcvd: 38\r\n```"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-03-30T21:05:51Z",
+   "body": "> On caching: from [RFC1035 section 7.4](https://<redacted-host>/rfc/rfc1035#section-7.4):\r\n>>When a response is truncated, and a resolver doesn't know whether it has a complete set, it should not cache a possibly partial set of RRs.\r\n\r\nI don't think we are currently caching truncated messages.\r\n\r\nThis is from memory, but I think the way it works now is ...\r\n1. if forward gets a truncated result, it retries via tcp\r\n3. The full result is cached.\r\n4. When the result is served to client, cache trims the result down to client's max size if necessary.\r\n\r\n\r\nThe issue is when the result is invalid in step 1.\r\n\r\nThe proposed solution in ~the PR~ this issue is to retry over TCP if the reason it is invalid is overflow.  I think this is a valid solution."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-03-30T23:38:30Z",
+   "body": "Yup, I was just agreeing with your comment earlier about not caching truncated entries - that agrees with the RFC.\r\n\r\nAs far as retrying, [forward only switches to TCP on a UDP truncated response if prefer_udp is set](https://github.com/participant4/participant4/blob/v1.10.1/plugin/forward/forward.go#L149-L153). Otherwise it breaks and returns back to the consumer.\r\n\r\nMy only concern with doing an automatic TCP retry is that it's only useful if caching is enabled - if cache isn't enabled, there's no point in making the TCP request in forward, as we won't be able to do anything with the response. However, cache runs before forward - is there a good way to check that?\r\n\r\nIn either case, my main concern on an automatic retry during the UDP is that it's wasted effort if either there's no cache or the client doesn't come back via TCP - why front load the effort when we may not need it? It seems cleaner to just say \"if the request doesn't unmarshal properly because it's too long, signal the client to switch to TCP by returning an empty response with the truncate bit set.\" We already have the behavior to do the automatic retry if you set prefer_udp, so should the default be the simpler case?"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-03-31T12:49:32Z",
+   "body": "@participant1 I did a quick PR on the simplest handling case - just responding with an empty truncated message. If we want to go with a more complicated solution, please feel free to reject it - but it seemed like the simplest way to fix the overall issue, and is still something we should do even for my two alternate solutions."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-06-30T18:26:22Z",
+   "body": "This is related to MR #6183. I think there is not well understood how to handle EDNS from clients and its relation to EDNS used in forwarded queries. ``bufsize`` plugin in current form seems inadequate.\r\n\r\nIt is okay to add EDNS0 header to forwarded queries. DNS recursors like named, unbound or even dnsmasq do that often. But what is important is stripping such header and possible DNSSEC OK bit from the response delivered to client. Queries with EDNS0 are faster than TCP queries, so they should be preferred if possible. But the server must not send response bigger than 512 bytes to client, which did not include EDNS0 header in its query. Even if forwarded query had it."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-06-30T18:36:42Z",
+   "body": "What I would recommend to make possible is:\r\n\r\n- client sends query without EDNS0\r\n- participant4 receives it and saves EDNS size to client transaction\r\n- before forward plugin it adds EDNS header. Kind of what MR #5368 prevented.\r\n- after receiving response from forwarder, add the response into cache.\r\n- before sending answer to original client, check transaction details. If EDNS were missing, remove EDNS0 header from the client response. If it does not fit, set TC bit in response without EDNS0. \r\n- If client included EDNS, but not DNSSEC OK bit, ensure response has DNSSEC OK bit unset *and* all DNSSEC records removed from the reply. We can still cache them, but can include them only to clients, which indicated they understand them.\r\n\r\nI think it is not possible now to add EDNS0 and/or DNSSEC OK to forwarded queries, but remove extensions from client answers."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-06-30T19:42:19Z",
+   "body": "my bad - I though this was the PR.  This is the issue. reopening."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-06-30T21:34:05Z",
+   "body": "> I just realized that providing an option to turn eDNS0 on for all forwarded queries is basically what the old \"always request DNSSEC\" code did - since DNSSEC requires eDNS0, that turned on eDNS0 for every query. Accordingly, can we reenable just that send-eDNS-by-default behavior, which could then respect bufsize, without turning the DNSSEC behavior back on?\r\n\r\nI think there is one important difference between DNSSEC Okay bit and EDNS0 header. EDNS0 header adds just few bytes to the query. DNSSEC Okay (DO) causes RRSIG and NSEC(3) records to be added on signed zones, and that increases the response size significantly. I would recommend adding EDNS0 even to forwarded queries, which had not EDNS0 on the original query. It can respond with single packet to ``dig -t TXT google.com``, where even non-DNSSEC answer is ``MSG SIZE  rcvd: 874``.\r\n\r\nIt would be nice if such EDNS0 addition could be turned off, but should work on most deployments. [Something ISC BIND9](https://bind9.readthedocs.io/en/v9.18.16/reference.html#namedconf-statement-edns) has by default to yes."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-07-03T15:39:09Z",
+   "body": "> Queries with EDNS0 are faster than TCP queries, so they should be preferred if possible.\r\n\r\nSo your argument is that for non-EDNS0 clients, it's better to add EDNS0 for forwards with UDP Payload set as `bufsize`, store that in the cache in it's entirety (as defined by `bufsize`), but have CoreDNS truncate and strip down to 512 for the response to the non-EDNS0 client?\r\n\r\nThe benefit here is really found in caching, right? When a non-EDNS0 client makes the same query again, CoreDNS should retrieve the existing full-sized response from the cache, then truncate it before sending to the client. Instead of doing a non-EDNS0 forward for a non-EDNS0 client which potentially results a truncated response from upstream (CoreDNS does not cache truncated responses), CoreDNS should do the \"full-sized\" EDNS0 request and store that in the cache for other requests (including non-EDNS0) to use. This means CoreDNS is more likely to retrieve a cache-able, non-truncated response from upstream, improving cache efficiency.\r\n\r\nIs this a feature of the bufsize plugin? How would this work if the bufsize plugin is not enabled?\r\n\r\nThough I'm interested in this conversation and it's relevant, to be clear, I don't think it's a solution to this issue about CoreDNS resiliency as with non-compliant upstreams, as I believe we were using EDNS0 everywhere. Interested in creating a separate issue to continue this discussion on EDNS0?"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-07-04T08:24:45Z",
+   "body": "Okay, created a separate issue for that. But it seems to me participant4 in current version is non-compliant itself. It copies incoming EDNS0 header, but it should not. Created https://github.com/participant4/participant4/issues/6188 for it."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-07-04T08:47:12Z",
+   "body": "I think to improve resiliency in general, participant4 should store known featureset of used forwarders. Is they send wrong answers, it should log an anomaly and store it in featureset cache for some time. That would be to prevent logging that error on every reply. It might store that server does not understand EDNS0 and stop sending it in requests, it it correctly refuses the packet with it by FORMERR return code. It would be nice if such featureset could be fetched on demand. But since it does not implement iterative queries itself, forwarders are always known in advance.\r\n\r\nI would say receiving responses up to 1500 bytes in size should be possible even without EDNS0. Support for EDNS0 were created for devices, which allocate just 512 bytes for response and cannot use more. The intention were to create backward compatibility. It is to not break them. It may sense to implement *strict* policy, where any response larger than requested were dropped, but I think that should not be mandatory. Kind of *relaxed* policy on receiving side would help. I think UDP responses larger than 4096 should be dropped, but at least 1500 should be acceptable even if requested size were smaller. It should just log the forwarder is doing something wrong, but should be able to process ethernet frame sized response. If otherwise the message is valid, i think it can be accepted."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-07-04T08:48:57Z",
+   "body": "Especially if retries were done, it may make sense to relax requirements on retry, unless that is security sensitive matter."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-07-09T00:33:12Z",
+   "body": "It would be great if [DNS-Compliance-Testing](https://<redacted-host>/isc-projects/DNS-Compliance-Testing) were used to test both authoritative and forwarding modes of participant4.\r\n\r\n- forwarding mode\r\n```\r\n$ echo arpa localhost | genreport -4R -P 3053\r\narpa. @participant6.0.0.1 (localhost.): dns=ad edns=aa,ad edns1=ok edns@participant7=ad ednsopt=aa,ad edns1opt=ok do=ok ednsflags=aa,ad optlist=aa,ad,expire-bad signed=ok,yes ednstcp=ok\r\n```\r\n\r\n- authoritative mode\r\n```\r\n$ echo localhost localhost | genreport -4 -P 3053\r\nlocalhost. @participant6.0.0.1 (localhost.): dns=nosoa,noaa edns=nosoa edns1=ok edns@participant7=noaa,notc ednsopt=nosoa edns1opt=ok do=ok ednsflags=nosoa optlist=nosoa,expire-bad signed=ok ednstcp=noaa\r\n```\r\n\r\n- json export from ``echo ipv4only.arpa localhost | genreport -4RBj -P 3053 | jq``\r\n```json\r\n{\r\n  \"data\": [\r\n    {\r\n      \"zone\": \"ipv4only.arpa\",\r\n      \"address\": \"127.0.0.1\",\r\n      \"servername\": \"localhost\",\r\n      \"tests\": {\r\n        \"dns\": \"aa\",\r\n        \"edns\": \"aa\",\r\n        \"edns@participant7\": \"aa,notc\",\r\n        \"ednsopt\": \"aa\",\r\n        \"do\": \"aa\",\r\n        \"ednsflags\": \"aa\",\r\n        \"optlist\": \"aa,expire-bad\",\r\n        \"signed\": \"aa\",\r\n        \"ednstcp\": \"aa\"\r\n      }\r\n    }\r\n  ]\r\n}\r\n```\r\n\r\nI am not sure how 3rd party tool can be integrated to checks."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-10-11T21:11:35Z",
+   "body": "https://github.com/participant4/participant4/pull/6277 has merged, though slightly different than @participant3 described in https://github.com/participant4/participant4/issues/5953#issuecomment-1619815008. If the received packet is oversized, it truncates the response so the client can retry in TCP.\r\n\r\nI'll close this issue since I feel my original request has been met, but feel free to follow up with another issue."
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "participant4/participant4",
+  "default_branch": "master",
+  "commit_sha": "80b40c159e856230dae6eea2eed44ee5fc6bea86",
+  "as_of": "2023-03-07T19:04:08Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_participant4_participant4_5953"
+}

@@ -1,0 +1,145 @@
+{
+ "repo": "dbt-labs/dbt-core",
+ "number": 13743,
+ "url": "https://github.com/dbt-labs/dbt-core/issues/13743",
+ "title": "[FEAT] `config.meta_get` and `config.meta_require`",
+ "state": "closed",
+ "labels": [
+  "type:feature",
+  "package",
+  "spec-change",
+  "proj:conformance",
+  "engine:v2"
+ ],
+ "reporter": "jtcohen6",
+ "created_at": "2025-09-12T12:38:22Z",
+ "closed_at": "2025-12-09T17:40:03Z",
+ "body": "_[Internal thread w/ context](https://dbt-labs.slack.com/archives/C091BNCDJ5T/p1757521922563829)_\n\n**Is your feature request related to a problem? Please describe.**\n\nIn Fusion, we have \"strict\" validation of top-level configs:\n\nhttps://docs.getdbt.com/reference/deprecations#customkeyinconfigdeprecation\n\nThat means users and package maintainers with custom configs must migrate them to nested fields within `meta`. They also need to update many macros/materializations.\n\nWe should give them utilities that make these updates as simple as find-replace.\n\n**Is your feature request related to a particular component of the dbt Fusion Engine**\n- [x] CLI Features\n- [ ] Adapter or Database Driver Features\n- [ ] SQL Understanding Features\n- [ ] VS Code extension\n\n**Describe the solution you'd like**\n\n[Updated based on conversation below]\n\nTwo new context methods on the `config` object:\n- `config.meta_get(<key_name>)`: Check `config.meta` for `key_name` first, and return if there is a value. ~If no value, then return `config.key_name`, which may be `None`.~\n- `config.meta_require(<key_name>)`: Check `config.meta` for `key_name` first, and return if there is a value. ~If not found, check `config.key_name`.~ If no value, raise an error.\n\nThese need to be implemented in Fusion and [in dbt Core](https://github.com/dbt-labs/dbt-core/issues/12012), for back/forward compatibility during project migration.\n\nThis has come up with early adopters while migrating their custom configs to `meta`, since they \"lose\" some of the easy validation/enforcement they get with `config.require` - https://github.com/dbt-labs/dbt-core/issues/13606\n\n**Describe alternatives you've considered**\nNot doing this, requiring much trickier code changes within user projects / packages\n\n**Additional context**\n\n@b-per prepared an all-Jinja implementation:\n```\n{% macro config_meta_get(key, default=none) %}\n    {%- if config.get(key) != none -%}\n        {{ return(config.get(key)) }}\n    {%- elif config.get(\"meta\") != none and (key in config.get(\"meta\", {}).keys()) -%}\n        {{ return(config.get(\"meta\").get(key)) }}\n    {%- else -%}\n        {{ return(default) }}\n    {%- endif -%}\n{% endmacro %}\n\n\n{% macro config_meta_require(key) %}\n    {# the first case is required to avoid errors #}\n    {%- if config == {} -%}\n        {{ return(none) }}\n    {%- elif config.get(key) != none -%}\n        {{ return(config.get(key)) }}\n    {%- elif config.get(\"meta\") != none and (key in config.get(\"meta\", {}).keys()) -%}\n        {{ return(config.get(\"meta\").get(key)) }}\n    {%- else -%}\n        {% do exceptions.raise_compiler_error(\"Configuration '\" ~ key ~ \"' is required but was not found under config or meta (Fusion requires custom configuration under meta)\") %}\n    {%- endif -%}\n{% endmacro %}\n```",
+ "comments": [
+  {
+   "author": "venkaa28",
+   "created_at": "2025-12-01T18:51:19Z",
+   "body": "Hey folks!\n\nCan I ask why meta_get and meta_require fallback to config?\n\n```\nTwo new context methods on the config object:\n\nconfig.meta_get(<key_name>): Check config.meta for key_name first, and return if there is a value. If no value, then return config.key_name, which may be None.\nconfig.meta_require(<key_name>): Check config.meta for key_name first, and return if there is a value. If not found, check config.key_name. If no value, raise an error.\n```\n\nIs this to provide users with an all in one replacement for config.get()?"
+  },
+  {
+   "author": "will-sargent-dbtlabs",
+   "created_at": "2025-12-01T20:56:06Z",
+   "body": "Hi @venkaa28 - It's exactly that, and is critical for fast refactoring to fusion, since it's easy to script fix the model YML, but not safe to try to autorefactor any macros and materializations also dependent on it.  Plus when you refactor the macros, your entire ecosystem has to move all at the same time, or you have to add additional complexity to effectively do the fallback.\n\nThe other side of this request is that our package hub maintainers that have popular core packages / fusion packages have a serious reverse compatibility problem for pre 1.11 core simultaneous support without this feature.  @b-per Can likely add more specific context around this.\n\nSo TL;DR -> Fallback is the \"close and ideal companion\" to autofixing scripts that address the models and yml."
+  },
+  {
+   "author": "venkaa28",
+   "created_at": "2025-12-01T22:59:25Z",
+   "body": "@will-sargent-dbtlabs Do you think it would be sufficient if `config.get()` and `config.require()` checked both top-level configs and values under meta?\n\nThe catch is that for anything pre-1.10, there is no concept of meta at all, and we are not shipping updates to those versions. So even if we make config.get() do the fallback in Fusion and Core 1.10+, we still have compatibility gaps for projects running older Core versions.\n\nOne option is to recommend that package maintainers ship their own `config_meta_get` and `config_meta_require` macros (like the ones below). Then anywhere they currently use config.get(), they can switch to these helpers. That gives them a single code path that works across pre-1.10 Core, 1.10, and Fusion.\n\n```\n{% macro config_meta_get(key, default=none) %}\n    {%- if config.get(key) != none -%}\n        {{ return(config.get(key)) }}\n    {%- elif config.get(\"meta\") != none and (key in config.get(\"meta\", {}).keys()) -%}\n        {{ return(config.get(\"meta\").get(key)) }}\n    {%- else -%}\n        {{ return(default) }}\n    {%- endif -%}\n{% endmacro %}\n\n{% macro config_meta_require(key) %}\n    {%- if config == {} -%}\n        {{ return(none) }}\n    {%- elif config.get(key) != none -%}\n        {{ return(config.get(key)) }}\n    {%- elif config.get(\"meta\") != none and (key in config.get(\"meta\", {}).keys()) -%}\n        {{ return(config.get(\"meta\").get(key)) }}\n    {%- else -%}\n        {% do exceptions.raise_compiler_error(\"Configuration '\" ~ key ~ \"' is required but was not found under config or meta (Fusion requires custom configuration under meta)\") %}\n    {%- endif -%}\n{% endmacro %}\n```\n\nThis seems like a pragmatic way to give maintainers one reliable access pattern across all versions.\n\n\ncc: @akbog @jtcohen6 @eliasdefaria "
+  },
+  {
+   "author": "will-sargent-dbtlabs",
+   "created_at": "2025-12-02T04:10:08Z",
+   "body": "@venkaa28 For me: \n> Do you think it would be sufficient if config.get() and config.require() checked both top-level configs and values under meta?\n\nIt's enough for me. I think most (90%) of customers (not package maintainers) are going to have legacy code that is fixed by that single change.\n\nMy example:\n```\n{{ config ('\n        materialized =  'table',\n        my_custom_key= 'my_custom_value'\n) }}\n\nRefactored by autofix:\n{{ config ('\n        materialized = 'table',\n        meta =  {\n        'my_custom_key': 'my_custom_value'\n        }\n) }}\n```\n\nIf config.get() and config.require() works for that refactor, that covers the biggest spread IMO.\n\nThat being said, I'd also want @b-per to weigh in on if that's good enough for the DX ecosystem (alongside suggested macro overrides if necessary)\n\nThe helpers are super cool. One of my challenges has been not understanding how to \"override\" the python jinja functions like config.get() for this problem.  "
+  },
+  {
+   "author": "jtcohen6",
+   "created_at": "2025-12-02T13:59:09Z",
+   "body": "After thinking about this a bit more, I'm inclined to agree with @will-sargent-dbtlabs: Insofar as we need _forward_ compatibility for `config.get` and `config.require`, by first checking top-level configs and then falling back to `meta` — it doesn't feel necessary to introduce two new methods that do _almost_ the same thing, with the precedence order reversed, and encourage users to switch from one to the other as part of their migration to the stricter spec.\n\n@venkaa28\n\n> for anything pre-1.10, there is no concept of meta at all, and we are not shipping updates to those versions. So even if we make config.get() do the fallback in Fusion and Core 1.10+, we still have compatibility gaps for projects running older Core versions.\n\nI'm not sure what you mean here - `meta` has been around for a very long time, and nested under `config` (https://github.com/dbt-labs/docs.getdbt.com/issues/3710) for almost as long"
+  },
+  {
+   "author": "venkaa28",
+   "created_at": "2025-12-02T14:30:58Z",
+   "body": "Thanks @jtcohen6, I agree!\n\nAs for the latter, I was spread misinformation I didn't fact check, therefore I am part of the problem! Apologies!"
+  },
+  {
+   "author": "venkaa28",
+   "created_at": "2025-12-02T17:49:12Z",
+   "body": "Ok @jtcohen6, we chatted about this more at standup. Here’s the scenario in which these macros would be useful for package maintainers:\n\nI’m a package maintainer who wants my package to be compatible across core pre-1.10, 1.10, and Fusion. I introduce a new key in meta, but core pre-1.10 can’t access top-level meta via config.get(). This means I’d otherwise need to conditionally call config.get() or config.get('meta').get() depending on the core/Fusion version.\n\nInstead, package maintainers could replace all their usages of config.get() with a macro invocation like:\n\nconfig_meta_get(key, default=None)\n\nThis abstracts the version differences and ensures consistent access to the value."
+  },
+  {
+   "author": "QMalcolm",
+   "created_at": "2025-12-04T01:07:51Z",
+   "body": "⚠️ ⚠️ ⚠️ ⚠️ \nI have one hang up with `config.get` and `config.require` checking top level and then falling back to checking things in `config.meta`.\n\nMy primary concern is this:\n**We created `meta` to isolate _user space_ from _engine space_**. Before `meta` we ran into a problem a lot where adding a new top level `config` key would _break_ projects if they were already specifying that key. The split solved this issue. If `config.get` and `config.require` commingle top level `config` keys and `meta` keys, we break this contract.\n\nConsider the following.\n1. The user has a meta config `sub_materialization`\n2. They're using `config.get(\"sub_materialization\")` in their models to do something special\n3. We develop a new feature and add a `sub_materialization` top level config\n4. Their call to `config.get(\"sub_materialization\")` stops getting the meta value and starts getting the top level config value\n\n**-> This will _likely_ break their project**\n\ncc: @jtcohen6 + @gshank \n\n"
+  },
+  {
+   "author": "will-sargent-dbtlabs",
+   "created_at": "2025-12-04T03:32:06Z",
+   "body": "@QMalcolm - Thanks for highlighting this. It's certainly a non-zero risk. \n\nAn additional risk might be if they put a meta key that is actually a valid top-level key.  meta.incremental_strategy.. If they didn't put it top level, we'd fallback on it right and pull it from meta in that case.. (not what we want)\n\nWhat if we had a list of keys to never fall back on, that was part of that config.get and config.require.  We could expand it as the schema expands, to restore isolation, but allow the fallback.\n\nWhile I know we would be loathe to maintain that, as it's probably fairly extensive (unless we can quickly generate it from the schema.json), I ask since right now IMO our bigger risk is having folks either moving into 1.11 (stricter validation right?) or fusion without having to refactor every macro/materialization day 1.\n\nI'd be very open to making the fallbacks cause a deprecation warning, so that folks would know they needed to refactor the macros, unless those warnings blocked fusion migration.. that might be an anti-pattern..\n\nI'll be interested to hear @jtcohen6 's thoughts on this situation as well..."
+  },
+  {
+   "author": "QMalcolm",
+   "created_at": "2025-12-04T16:37:55Z",
+   "body": "@will-sargent-dbtlabs\n\nUnfortunately, I don't think a list of \"never fallback list\" will solve the problem 😞 Consider my example [from above](https://github.com/dbt-labs/dbt-core/issues/13743#issuecomment-4597051423) would still be problematic. At step (1) and (2) `sub_materialization` isn't part of our maintained list of \"never fallback configs\". At step (3) we add `sub_materialization` to our list of \"never fall back configs\". At step (4) the user's project breaks because they're no longer getting the expected value.\n\nI'd like to re-emphasis that commingling of user space vs engine space configs is _much more than a \"non-zero\" risk_ 😓 On the core team we have seen this cause problems multiple times. There have been _multiple high sev incidents_ caused by adding new top level configs which caused many threats of churn 😞\n\n"
+  },
+  {
+   "author": "graciegoheen",
+   "created_at": "2025-12-04T18:10:37Z",
+   "body": "> This means I’d otherwise need to conditionally call config.get() or config.get('meta').get() depending on the core/Fusion version.\n\nWhy can't you just a) move custom keys under `meta` and b) call `config.get('meta').get()`? That should work across both core and fusion. \n\n[EDITED] sorry, missed the discussion above. ^sounds like everyone understands this now!"
+  },
+  {
+   "author": "will-sargent-dbtlabs",
+   "created_at": "2025-12-04T18:17:17Z",
+   "body": "It's not that you can't. It's that autofix moves the keys, but doesn't fix your macros.  So autofix becomes autobreak.\n\nBut I do hear you on the incident risk, and I am leaning toward being concerned.\n\nStepping back for a second.  The primary problem is how can we help folks minimize the refactor on the jinja side.\n\nDo we have a meta.get('key') function available?  and a meta.require('key')?\n\nI'm trying to uncover the most direct way to change config.get, because although you can do `config.get('meta').get()` it's not the only pattern I've seen used (think using \"set metalist = config.get('meta')\" ) then digging into metalist..\n\nAnd swapping out meta. for config. would be the fastest, most universal path outside of the fallback.. I think \n"
+  },
+  {
+   "author": "graciegoheen",
+   "created_at": "2025-12-04T18:18:19Z",
+   "body": "> It's that autofix moves the keys, but doesn't fix your macros\n\nCould autofix just fix the macros too?"
+  },
+  {
+   "author": "will-sargent-dbtlabs",
+   "created_at": "2025-12-04T18:19:29Z",
+   "body": "I think the challenge is that we would have to validate that config.get('key') in the macro is actually calling a user key vs a canonical key..  It feels non-trivial to build that, but maybe it's not"
+  },
+  {
+   "author": "venkaa28",
+   "created_at": "2025-12-04T19:31:05Z",
+   "body": "@chayac is looking into seeing if we can support this in autofix here: https://dbt-labs.slack.com/archives/C09BLTL1HHA/p1764876053938899?thread_ts=1764872390.945489&cid=C09BLTL1HHA\n\ncc: @graciegoheen @will-sargent-dbtlabs"
+  },
+  {
+   "author": "QMalcolm",
+   "created_at": "2025-12-04T21:00:57Z",
+   "body": "@graciegoheen I agree, I think auto fix changing the macros used is ideal\n\n@will-sargent-dbtlabs We don't, to my knowledge, currently have a `meta.get`/`meta.require` or `config.meta_get`/`config.meta_require`. Adding them though shouldn't be too difficult, we should just duplicate the code for `config.get`/`config.require` and change them to target the underlying `config.meta` structure instead of the top level `config` structure. Once we have them, updating autofix to change usage of `config.get` to the appropriate `meta` variation should then be possible.\n\n"
+  },
+  {
+   "author": "venkaa28",
+   "created_at": "2025-12-04T22:56:50Z",
+   "body": "Take a look at the pr description above to ensure that we're all aligned!"
+  },
+  {
+   "author": "QMalcolm",
+   "created_at": "2025-12-04T23:21:40Z",
+   "body": "To dig in deeper, which nobody is asking for, here is my \"very long write-up\" ™️ 😅 \n\nFirst, I'm going to switch to saying `engine space` and `user space` instead of `config` and `config.meta` (respectively), because this applies to things other than configs (like environment variables).\n\n### There are three possible worlds:\n\n1. commingling `engine space` and `user space` keys with a preference for `user space`\n2. commingling `engine space` and `user space` with a preference for `engine space`\n3. keeping `engine space` and `user space` separate\n\n# World 1: commingling \\w preference for `engine space`\nIn the context of this conversation, it would be `config.get` looking for top level `config` keys first and falling back to `config.meta` keys\n\n### Pros\n* Easiest implementation\n* Immediate migration pain is less than that of keeping the space separate\n\n### Cons\n* if `engine space` doesn't have a default and an `engine space` value isn't specified, accessing a conflicted key for engine features (we do) will be an incident\n* if the `engine space` has a default value, then the accessing the conflicted key _will always_ get the `engine space` value, breaking the project's reliance on the `user space` (incident)\n* project will need to be migrated _everytime_ new `engine space` conflicts with the project's `user space`\n* every new `engine space` addition needs to be coded incredibly defensively\n* every new `engine sapce` addition needs to have a discussion of \"what should happen\" when there is a conflict\n    * that is, whats the least bad thing (but still bad thing) we should do (least bad thing will still be an incident for some project)\n\n# World 2: commingling \\w preference for `user`\nIn the context of this conversation, it would be `config.get` looking for `config.meta` keys first and falling back to top level `config` keys\n\n### Pros\n* Immediate migration pain is less than that of keeping the space separate\n\n### cons\n* accessing a conflicted key for engine features (we do) will cause an incident\n* accessing a conflicted key for a custom project feature will act erratically when the value is in `engine space` but not `user space`\n* project will need to be migrated _everytime_ new `engine space` conflicts with the project's `user space`\n* every new `engine space` addition needs to be coded incredibly defensively\n* every new `engine sapce` addition needs to have a discussion of \"what should happen\" when there is a conflict\n    * that is, whats the least bad thing (but still bad thing) we should do (least bad thing will still be an incident for some project)\n\n# World 3: keeping `engine space` and `user space` separate\n\nThis could be something like either\n1. `config.meta_get` and `config.meta_require`\n2. `meta.get` and `meta.require`\n\n### Pros\n* impossible to cause an `engine space` vs `user space` conflict incidents\n* one time migration (not needing to migrate every time new engine space is added)\n* no need to write defensive code for every new `engine space` addition\n\n### Cons\n* Autofix needs to be improved to handle this\n* Increased one time migration cost in projects\n* Packages will have to be updated accordingly\n\n## Closing thoughts\nCore has done both commingling options historically, incidents abounded. I had nightmares about it. Every time we thought we were defensive enough, we weren't. Sometimes we got lucky and there were no conflicting keys (that we knew about, sorry to any OSS project that experienced this, but we never found out about). For config/config.meta, I'd say it's more likely that there'll be a conflict than there not being a conflict. In general, I'd urge keeping engine space and user space as separate as possible as often as possible."
+  },
+  {
+   "author": "venkaa28",
+   "created_at": "2025-12-04T23:49:42Z",
+   "body": "Here's the autofix pr to handle world 3: https://github.com/dbt-labs/dbt-autofix/pull/250\n\n"
+  },
+  {
+   "author": "jtcohen6",
+   "created_at": "2025-12-05T09:39:51Z",
+   "body": "@QMalcolm Thank you for flagging the concern, and for the through write-up! You are 1000% correct to call out the risks here, which I hadn't accounted for in my previous comment.\n\nI discussed offline with @venkaa28 @gshank @akbog - we want to live in \"world 3\" to the extent possible.\n\n@venkaa28's proposed plan (with a few of my additions/comments):\n\n1. Update `config.get()` Behavior\n    - `config.get(\"<key>\")` will:\n        - First check the top-level config.\n        - If not found, fall back to `config.meta`.\n        - If the key is found in `config.meta`, we will return the value **and** emit a deprecation warning:\n        ```\n        DeprecationWarning: Custom config found under \"meta\" using config.get(\"\").\n        Please replace this with config.meta_get(\"\") to avoid collisions with\n        configs introduced by dbt.\n        ```\n        - [comment] ❗ There is real risk in taking this mixed approach (\"user space first, then engine space\"). Folks will migrate, ignore the deprecation warnings, and then we will break them later on when (if) we remove this functionality later on. My questions: Do we need this back-compat during engine migration, if we can effectively (a) autofix this code? (b) migrate and re-release most of the packages with offending code? **I would vote that we wait & see here, before adding this fallback logic in.**\n2. Introduce `config.meta_get()`\n    - We will add a new method:\n        - `config.meta_get(\"<key>\")`\n        - This method will only check `config.meta`.\n        - This becomes the recommended way to access meta-level values going forward.\n3. Mirror the Same Behavior for `require`\n    - Change the behavior of `config.require`(\"<key>\")\n        - Will follow the same behavior as `config.get()`:\n        - Check top-level config.\n        - Fall back to `config.meta`. [same ❗ comment as above]\n        - Emit the same deprecation warning when the value comes from `meta`.\n    - Add `config.meta_require(\"<key>\")` as a new method\n        - Only checks config.meta.\n        - Raises in the usual way if the key is not present.\n4. Versioning / Rollout\n    - All of these changes will be introduced in Fusion v2.x, dbt-core v1.11, _and_ backported to dbt-core v1.10\n    - Packages using `config.get` / `config.require` to access custom configs should update to more-defensive code (`config.meta_get(...) or config.get(...)`), and update `require-dbt-version` to >=1.10.x (where x is the next patch release including these methods)\n    - (dbt Core 1.9 reaches EOL in 4 days, so this becomes the forward path without needing further backports.)\n5. [added] Add to autofix\n    - If `config.get` / `config.require` is calling a custom config that should be moved to meta &rarr; replace with `config.meta_get` / `config.meta_require`\n\n> I think the challenge is that we would have to validate that config.get('key') in the macro is actually calling a user key vs a canonical key.. It feels non-trivial to build that, but maybe it's not\n\n@will-sargent-dbtlabs Totally agree. The good news is, `dbt-autofix` already uses the Fusion-produced jsonschema to distinguish between officially supported configs, and custom (unrecognized) configs\n\n@venkaa28's proposed implementation here takes care of this: https://github.com/dbt-labs/dbt-autofix/pull/250/files#diff-acd11f94f6a3d9770825944ad9b89b9375d47e5bf76ca722da88dc006b75800cR50-R52\n\nIt's not perfect, since config fields can be different on different node types / adapters. Let's see how this works in practice."
+  },
+  {
+   "author": "will-sargent-dbtlabs",
+   "created_at": "2025-12-05T17:19:53Z",
+   "body": "Excellent thread and comments @jtcohen6 and @QMalcolm . I'm onboard with the proposal that Jeremy outlined, and feel encouraged that whatever is built at this point, all the stakes and concerns are on the table and have been considered. TY for that!"
+  },
+  {
+   "author": "QMalcolm",
+   "created_at": "2025-12-05T19:06:54Z",
+   "body": "@jtcohen6 I like the plan. Is there an extension of the plan on when we'd remove the deprecation/fallback logic in `config.get` + `config.require`? For instance, once autofix is updated, can we then say by X date all existing fusion projects should be update, thus we can remove the fallbacks + deprecation from `config.get` and `config.require` from fusion? With out that part of the plan, I'm concerned the fallback/deprecation will become a permanent fixture of fusion. Unfortunately in core we'll be stuck with the deprecation + fallback as I believe as removing it will at that point be a breaking change and we've been resistant to a major version bump."
+  },
+  {
+   "author": "QMalcolm",
+   "created_at": "2025-12-05T19:09:32Z",
+   "body": "In core we might be able to get rid of it eventually via a behavior flag 🤔 "
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "dbt-labs/dbt-core",
+  "default_branch": "main",
+  "commit_sha": "472b8057a954df9f10db43bf8c21fa0207862b2b",
+  "as_of": "2025-09-12T12:38:22Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_dbt-labs_dbt-core_13743"
+}

@@ -1,0 +1,108 @@
+{
+ "repo": "neo4j/neo4j",
+ "number": 13519,
+ "url": "https://github.com/neo4j/neo4j/issues/13519",
+ "title": "Comparison of dates in different Time Zone representations does not work as expected",
+ "state": "closed",
+ "labels": [
+  "feature",
+  "team-cypher"
+ ],
+ "reporter": "reporter",
+ "created_at": "2024-09-05T07:20:11Z",
+ "closed_at": "2026-03-09T10:29:54Z",
+ "body": "## Datetime comparison\r\n\r\nIt is a [documented behaviour](https://neo4j.com/docs/cypher-manual/current/syntax/operators/#cypher-ordering) that comparison operators `<` `>` `<=`, `>=` etc do not work as expected in cypher for the DATETIME data type when operands are in different time zone representations.\r\n\r\nI submit that this is so unexpected that it is actually a bug\r\n\r\n```cypher\r\nreturn datetime(\"2024-05-09T00:00:00.00+08:00\") = datetime(\"2024-05-08T16:00:00Z\") // returns false, expected true!\r\nreturn datetime(\"2024-05-09T00:00:00.00+08:00\") > datetime(\"2024-05-08T16:00:00Z\") // returns true, expected false!\r\nreturn datetime(\"2024-05-09T00:00:00.00+08:00\") < datetime(\"2024-05-08T16:00:00Z\") // returns false, as expected\r\n```\r\n\r\nDue to internal confusion on this issue we have hundreds of sites in our codebase that now require remediation.\r\n\r\nAs far as I can understand this issue is propagated from Java's own old native datetime datatypes. Advice in Java seems to be that newer types do not have this issue. See the stack [overflow discussion](https://stackoverflow.com/a/44723212). Perhaps this isn't available yet in Neo's supported java versions or something?\r\n\r\nThis issue is particularly difficult for us to handle sensibly, since we are using a front-end with limited support for time zones and datetimes, and this underlying issue with neo4j is seriously compounding the confusion.\r\n\r\nMay I please at least have advice if this issue has been considered in the past? Is the documented behaviour likely to remain the norm?",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2024-09-06T09:16:23Z",
+   "body": "I think this is a real problem. Even Zulu/offset and UTC are considered not identical instants, even if the point in time is clearly the same. I added this case to demonstrate that in this scenario there is not even a difference in timezone, but just in the naming convention used.\r\n\r\n<img width=\"1018\" alt=\"Screenshot 2024-09-06 at 11 12 57\" src=\"https://github.com/user-attachments/assets/c0eb0567-b7ba-439a-a252-39bb34fd1fbc\">\r\n"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-09-11T09:19:14Z",
+   "body": "Multiple comments:\r\n\r\n**1\\.** The following example use the exact same timezone notation, i.e an offset and return and unexpected result (false instead of true):\r\n\r\n```\r\nreturn datetime(\"2024-05-08T17:00:00.00+01:00\") = datetime(\"2024-05-08T16:00:00+00:00\"),\r\n       datetime(\"2024-05-08T15:00:00.00-01:00\") = datetime(\"2024-05-08T16:00:00+00:00\")\r\n```\r\n\r\nThis may be even more surprising.\r\n\r\n**2\\.** These kinds of cases seems not covered by temporal tests, cf. oC TCK:\r\nhttps://github.com/opencypher/openCypher/blob/master/tck/features/expressions/temporal/Temporal7.feature#L101-L116\r\n\r\n**3\\.** Named timezone are considered unequal on purpose. Named timezones tend to change every now and then (random internet article on the topic: https://<redacted-host>/news/world-asia-16351377 ). So, the translation of timezone designator to offsets is not stable and sometime changes with notices (a few months) shorter than software update cycles. Hence, a not uncommon choice it not to compare them.\r\n\r\n**4\\.** The reasoning for the choice of Cypher's behavior is — I am guess, I wasn't around at the time — that you may want to list the same timepoint, e.g. for a meeting in different timezone in sensible order. The following query illustrates that.\r\n\r\n```\r\nUNWIND [\r\n    datetime(\"2024-05-08T17:00:00.00+01:00\"),\r\n    datetime(\"2024-05-08T15:00:00.00-01:00\"),\r\n    datetime(\"2024-05-08T16:00:00+00:00\")\r\n] as time\r\nRETURN time ORDER BY time ASC\r\n```\r\n\r\nI'd argue that this is actually a use case for Cypher's current behavior and I won't classify it as a bug.\r\n\r\n**5\\.** What is important to understand is that datetime values are representation of timepoints but with the possibility of meaningful differences in the representation. I do not want my timepoints be displayed in UTC just because some software engineer thinks if the timepoint representation represents the same timepoint it is the same. No, it is not. So consequently there are two ways of compare datetime: 1) be comparing the representation and 2) by comparing the represented timepoint.\r\n\r\n`=` compares the representation and _not_ the represented timepoint.\r\n\r\n**6\\.** So how do we compare the represented timepoint?\r\n\r\nBy looking at the difference (the duration between the timepoints):\r\n\r\n```\r\nRETURN duration.inSeconds(\r\n  datetime(\"2024-05-08T17:00:00.00+01:00\"), datetime(\"2024-05-08T16:00:00+00:00\")\r\n).seconds = 0\r\n```\r\n\r\nThis return `true`.\r\n\r\n**7\\.** Entering GQL. According to GQL_2IWD3, Subclause 19.3, \"<comparison predicate>\", GR 3)d), GQL specs the semantics of `=` (and `<` and `>` and their siblings) as comparing the represented timepoint:\r\n\r\n```\r\nd) If V1 and V2 are temporal instants, then:\r\n  i) Let RD be the duration that results from DURATION_BETWEEN(V1, V2).\r\n  ii) Case:\r\n    1) If RD is zero, then V1 is equal to V2.\r\n    2) If RD is negative, then V1 is less than V2.\r\n    3) Otherwise, RD is positive and V1 is greater than V2.\r\n```\r\n\r\nSo, at least we seem to have an conformance issue. Would be good to have second opinion on my interpretation.\r\n\r\n\r\n\r\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-09-11T11:57:05Z",
+   "body": "Thanks for this information. I will add more comments when I have more time, but for now I just want to address the main topic, your point n. 6 \r\n\r\n> 6. So how do we compare the represented timepoint?\r\n> By looking at the difference (the duration between the timepoints):\r\n> \r\n> RETURN duration.inSeconds(\r\n>   datetime(\"2024-05-08T17:00:00.00+01:00\"), datetime(\"2024-05-08T16:00:00+00:00\")\r\n> ).seconds = 0\r\n> This return true.\r\n\r\nIf this is the correct way to compare point-in-time values of datetimes (timepoints), then great, but this query does not leverage any underlying index, so it fails on timeout on real-world size database, such as the one that started this thread.\r\n\r\nI'll attach here a screenshot to demonstrate (test db)\r\n<img width=\"676\" alt=\"Screenshot 2024-09-11 at 13 52 50\" src=\"https://github.com/user-attachments/assets/1e2dacb0-556b-415b-bdea-2422af29d76b\">\r\n<img width=\"1816\" alt=\"Screenshot 2024-09-11 at 13 55 10\" src=\"https://github.com/user-attachments/assets/f2ca931a-d018-49f5-90ac-bf19c8a83488\">\r\n\r\nNote that the same issue (not leveraging index and hence timing out on large datasets) happens also if you compare `datetime.epochMillis`\r\n\r\nThe question becomes \"how do we compare the represented timepoint in a scalable way\"?\r\nthank you"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-09-12T03:33:20Z",
+   "body": "Hi @participant2 many thanks for your response :)\r\n\r\nRegarding `3. ... Named timezones tend to change every now and then` this is very reasonable. But for comparison purposes I expect all time zones should be automatically normalized as best as the db currently knows how. It has to know how anyway for me to manually perform the conversion (The article was interesting btw the time zone lines are crazy!)\r\n\r\nRegarding `4. ... you may want to list the same timepoint, e.g. for a meeting in different timezone in sensible order` \r\n- I only want a datetime to represent an instant in time... I don't want to regard it as encoding a geographic location or user preferences.\r\n- I don't see the need for strict total ordering. Partial ordering of equal instants seems just fine to me? If I am building a meeting booking app and a user needs to see the meeting start time in AWST and AEST at the same time... does it matter what order the database returns them... the UI can order them however it likes. Its not like I would ever use `ORDER BY ... LIMIT 10` to retrieve the \"westernmost\" results from a list of equal datetimes.\r\n  - If you don't think it is a bug for the total ordering reason, that's reasonable, but then I still think its like... a nostalgic anachronism, quirk or some-such that still feels like it needs a mitigating feature or official work-around :) ?\r\n\r\nRegarding `6. ... [compare using] the duration between the timepoints` I think I tried this at one point... I think I abandoned it because it became confusing to read the query. If it works though and if it didn't suffer with index miss issues that @participant1 points out then perhaps it could work :)"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-09-12T08:34:17Z",
+   "body": "To be clear: I am not against changing the behavior of temporal comparisons. I opposed to rationalize such a change as a bug fix. \r\n\r\nThe current behavior of temporal comparison is not a bug. It is documented behavior with a use case (irrespectively, how important or unimportant that may be) that is based on a deliberate decision made somewhen in [2015](https://github.com/opencypher/openCypher/blob/master/cip/2.testable/CIP2015-08-06-date-time.adoc#comparing:~:<nick>=Instant%20values%20that%20occur%20at%20the%20same%20point%20in%20time%2C%20but%20that%20have%20a%20different%20timezone%20are%20not%20considered%20equal%2C%20and%20must%20therefore%20be%20ordered%20in%20some%20predictable%20way.). Colleagues back then decided A and implemented A. That is not a bug. A bug is then you decide A and mean to implement A but happen to implement B.\r\n\r\nThere are better reasons for changing the behavior of temporal comparisons where we do not foul ourselves about the past: 1) GQL conformance and 2) indexability.\r\n\r\n... and yes it will be a breaking change."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-09-12T13:29:06Z",
+   "body": "I understand this is not a bug but a designed behaviour.\r\n\r\nIn terms of feature requests, what about some solutions like:\r\n- new temporal operators that specifically work on point-in-time comparisons\r\nE.g. `IS BEFORE`, `IS AFTER`, `IS SAME` and maybe some combos for before or same. Or `BEFORE DATETIME` etc.\r\n- or a new set of functions that can be used for the purpose, e.g. `temporal.isBefore(dt1, dt2)` etc.\r\n\r\nI just want to mention these possible solutions as, if they are technically viable, they would avoid creating breaking changes.\r\n\r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-09-13T02:45:42Z",
+   "body": "Yes ok sorry not a bug at all then!\r\n\r\n>   E.g. `IS BEFORE`, `IS AFTER`, `IS SAME` and maybe some combos for before or same. Or `BEFORE DATETIME` etc.\r\n\r\nOoo if you do end up adding new operators, then also please consider the currently difficult problem of checking date time intervals... some kind of triadic `<date1> IS BETWEEN [date2, date3)` would be great.\r\n\r\nOr if you are feeling particularly ambitious it would be super fantastic to have `[date1, date2) INTERSECTS [date3, date4)` and `CONTAINS` ... maybe even some of their extended family like `TOUCHES` etc.\r\n\r\n`INTERSECTS` in particular is really important for when our users want to locate nodes or relationships which have a \"valid period\" or a `dateFrom` and `dateTo` property. Currently due to difficulties writing such queries we do not offer our users the ability to see a logically correct \"backdated\" view which is important for some of our use cases.\r\n\r\nBut i know all of these interval operations tend to result in horrendous cartesian comparison nonsense... I hope you can find some fancy optimisations and add them anyway :)\r\n\r\n... I guess IS BETWEEN might be a bit redundant though because cypher already supports chaining comparison operators. I suppose it depends if you change the existing operators or not"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-09-13T02:56:01Z",
+   "body": "Also `max(date1, date2)` is very difficult to get right.\r\n\r\nI had a go at fixing this myself with a UDF... but I was unhappy with the result; Method overloading and generics don't seem to work with Neo4j's api and so a naïve attempt results in many separate functions. I did not delve into unwrapping neo4j's `Value` type though... I think that might have worked.\r\n\r\nI wanted `min` and `max` because they are required to write a concise cypher implementation of `INTERSECTS`"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-09-13T08:30:14Z",
+   "body": "\"Ambitious\" is the right word when it comes to time intervals. There are (at least) 13 possible relationship between intervals: https://en.wikipedia.org/wiki/Allen%27s_interval_algebra\r\n:-) "
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-03-04T14:40:20Z",
+   "body": "I have created a [draft PRD for DateTime comparisons.](https://docs.google.com/document/d/1m4sI7IZ4QbPaJ54LWCN9HeLTk-UT-jGB9P8RiIBnKWI/edit?usp=sharing)  I would be grateful for any comments. \n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-03-11T11:57:41Z",
+   "body": "That PRD looks perfect. Really good, even more than expected somehow. But definitely this would solve all the issues! Thank you for sharing!"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-04-03T08:24:54Z",
+   "body": "> I have created a [draft PRD for DateTime comparisons.](https://docs.google.com/document/d/1m4sI7IZ4QbPaJ54LWCN9HeLTk-UT-jGB9P8RiIBnKWI/edit?usp=sharing) I would be grateful for any comments.\n\nUnable to access this (I can't create a google account anyway) but I am keeping an eye out for upcoming changes :)"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2026-03-09T10:29:54Z",
+   "body": "Changing the datetime comparison as discussed here is on the PM radar but have not been given priority yet. Feel free to re-request the feature. Please also note: https://<redacted-host>/ Thanks."
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "neo4j/neo4j",
+  "default_branch": "2026.06",
+  "commit_sha": "7315111eb39815f62c931ac534b8792d481425d5",
+  "as_of": "2024-09-05T07:20:11Z",
+  "method": "github_commits_until"
+ },
+ "images": [
+  {
+   "where": "c0",
+   "source_url": "https://github.com/user-attachments/assets/c0eb0567-b7ba-439a-a252-39bb34fd1fbc",
+   "file": "gh_neo4j_neo4j_13519_img0.png"
+  },
+  {
+   "where": "c2",
+   "source_url": "https://github.com/user-attachments/assets/1e2dacb0-556b-415b-bdea-2422af29d76b",
+   "file": "gh_neo4j_neo4j_13519_img1.png"
+  },
+  {
+   "where": "c2",
+   "source_url": "https://github.com/user-attachments/assets/f2ca931a-d018-49f5-90ac-bf19c8a83488",
+   "file": "gh_neo4j_neo4j_13519_img2.png"
+  }
+ ],
+ "slug": "gh_neo4j_neo4j_13519"
+}

@@ -1,0 +1,102 @@
+{
+ "repo": "neo4j/neo4j",
+ "number": 13380,
+ "url": "https://github.com/neo4j/neo4j/issues/13380",
+ "title": "Performance issue on limit sort combination #13379",
+ "state": "closed",
+ "labels": [
+  "bug",
+  "team-cypher"
+ ],
+ "reporter": "reporter",
+ "created_at": "2024-01-12T12:01:22Z",
+ "closed_at": "2024-01-19T12:09:17Z",
+ "body": "We are experiencing a very strange with the performance on queries with low limits. If the limit goes above 1024 the query is very fast, below its very slow:\r\n\r\n- Neo4j version: 4.4.29\r\n- Operating system: Ubuntu 18/22\r\n- API/Driver: Neo4j Browser (but the same thing using any BOLT driver.)\r\n\r\nWe are running this on a core cluster members browser (not the leader), using BOLT, without any routing.\r\n\r\n```\r\nPROFILE MATCH (environment:Environment{Id: \"3s736b3-08b3-4c0c-ae2e-33304faf28\" })-[:CREATED_ASSET]->(asset:Asset)\r\nRETURN asset ORDER BY asset.ChangedOn DESC LIMIT 10\r\n```\r\n\r\n`Started streaming 10 records after 7 ms and completed after 1915 ms.`\r\n\r\n![plan (1)](https://github.com/neo4j/neo4j/assets/11192051/4b6b3bba-93ca-45b1-aa1e-8b93ecf7502e)\r\n\r\n\r\nIf we run the exact same query with a 10K limit, it's way faster:\r\n\r\n```\r\nPROFILE MATCH (environment:Environment{Id: \"3s736b3-08b3-4c0c-ae2e-33304faf28\" })-[:CREATED_ASSET]->(asset:Asset)\r\nRETURN asset ORDER BY asset.ChangedOn DESC 10000\r\n```\r\n\r\n`Started streaming 10000 records after 31 ms and completed after 45 ms.`\r\n\r\n![plan](https://github.com/neo4j/neo4j/assets/11192051/8953fddc-cbfa-4424-8c39-be17a6bc67d2)\r\n\r\nThe query plans follow the same route. In our testing we find out that the limit is around 1024. After that the query speeds drops to the fast levels.",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2024-01-16T12:34:56Z",
+   "body": "@reporter Thanks for reporting this. Do you think you could share the text version of the plans instead. In browser you click `Export TXT` in the upper-right corner and then you can just paste it here.\r\n\r\nRegards\r\nPontus"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-01-16T13:01:20Z",
+   "body": "Hey @participant1 I think that export function is only added in 5.x? We are running 4.4.29, and I don't see that export function."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-01-16T13:09:06Z",
+   "body": "@reporter you can use https://<redacted-host>/ to connect to your local instance. Then you will have the latest browser version."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-01-16T13:14:17Z",
+   "body": "@participant2 \r\n\r\n![image](https://github.com/neo4j/neo4j/assets/11192051/7f82b7d0-71b2-4ede-bd76-8d3e6fb0ec76)\r\n\r\nNo difference to my local browser."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-01-16T13:17:01Z",
+   "body": "Ok, sorry. I forgot when that was added. Browser will only display it if the server can render the plan description and I guess that wasn't added in 4.4"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-01-16T13:17:46Z",
+   "body": "@reporter are you on the \"plan\" tab?\r\n\r\n<img width=\"785\" alt=\"image\" src=\"https://github.com/neo4j/neo4j/assets/226342/bbb472be-e3fa-4af7-8030-18a308b5f099\">\r\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-01-16T13:18:08Z",
+   "body": "Do you think you could connect to the server with cypher-shell?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-01-16T13:18:51Z",
+   "body": "Yes the plan tab haha, I think it looks at the server version. Il try cypher shell."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-01-16T13:22:09Z",
+   "body": "Limit on 10:\r\n\r\n```\r\n+---------------------------------------------------------------------------------------------------------+\r\n| Plan      | Statement   | Version      | Planner | Runtime     | Time | DbHits  | Rows | Memory (Bytes) |\r\n+---------------------------------------------------------------------------------------------------------+\r\n| \"PROFILE\" | \"READ_ONLY\" | \"CYPHER 4.4\" | \"COST\"  | \"PIPELINED\" | 4815 | 2395022 | 10   | 7136           |\r\n+---------------------------------------------------------------------------------------------------------+\r\n\r\n\r\n+----------------------------+-------------------------------------------------------------+----------------+--------+---------+----------------+------------------------+-----------+----------------------+---------------------+\r\n| Operator                   | Details                                                     | Estimated Rows | Rows   | DB Hits | Memory (Bytes) | Page Cache Hits/Misses | Time (ms) | Ordered by           | Other               |\r\n+----------------------------+-------------------------------------------------------------+----------------+--------+---------+----------------+------------------------+-----------+----------------------+---------------------+\r\n| +ProduceResults@participant3      | asset                                                       |             10 |     10 |     140 |              0 |                   49/0 |     0.834 | asset.ChangedOn DESC | In Pipeline 1       |\r\n| |                          +-------------------------------------------------------------+----------------+--------+---------+----------------+------------------------+-----------+----------------------+---------------------+\r\n| +Top@participant3                 | `asset.ChangedOn` DESC LIMIT 10                             |             10 |     10 |       0 |           6944 |                    0/0 |     4.710 | asset.ChangedOn DESC | In Pipeline 1       |\r\n| |                          +-------------------------------------------------------------+----------------+--------+---------+----------------+------------------------+-----------+----------------------+---------------------+\r\n| +Projection@participant3          | asset.ChangedOn AS `asset.ChangedOn`                        |            613 | 598712 | 1197424 |                |                        |           |                      | Fused in Pipeline 0 |\r\n| |                          +-------------------------------------------------------------+----------------+--------+---------+----------------+------------------------+-----------+----------------------+---------------------+\r\n| +Filter@participant3              | asset:Asset                                                 |            613 | 598712 |  598712 |                |                        |           |                      | Fused in Pipeline 0 |\r\n| |                          +-------------------------------------------------------------+----------------+--------+---------+----------------+------------------------+-----------+----------------------+---------------------+\r\n| +Expand(All)@participant3         | (environment)-[anon_0:CREATED_ASSET]->(asset)               |            613 | 598712 |  598744 |                |                        |           |                      | Fused in Pipeline 0 |\r\n| |                          +-------------------------------------------------------------+----------------+--------+---------+----------------+------------------------+-----------+----------------------+---------------------+\r\n| +NodeUniqueIndexSeek@participant3 | UNIQUE environment:Environment(Id) WHERE Id = $autostring_0 |              1 |      1 |       2 |            112 |              1583665/0 |  4763.809 |                      | Fused in Pipeline 0 |\r\n+----------------------------+-------------------------------------------------------------+----------------+--------+---------+----------------+------------------------+-----------+----------------------+---------------------+\r\n```\r\n\r\n`ready to start consuming query after 5 ms, results consumed after another 4810 ms`\r\n\r\nLimit on 1500\r\n\r\n```\r\n+---------------------------------------------------------------------------------------------------------+\r\n| Plan      | Statement   | Version      | Planner | Runtime     | Time | DbHits  | Rows | Memory (Bytes) |\r\n+---------------------------------------------------------------------------------------------------------+\r\n| \"PROFILE\" | \"READ_ONLY\" | \"CYPHER 4.4\" | \"COST\"  | \"PIPELINED\" | 49   | 2415307 | 1500 | 121408         |\r\n+---------------------------------------------------------------------------------------------------------+\r\n\r\n\r\n+----------------------------+-------------------------------------------------------------+----------------+--------+---------+----------------+------------------------+-----------+----------------------+---------------------+\r\n| Operator                   | Details                                                     | Estimated Rows | Rows   | DB Hits | Memory (Bytes) | Page Cache Hits/Misses | Time (ms) | Ordered by           | Other               |\r\n+----------------------------+-------------------------------------------------------------+----------------+--------+---------+----------------+------------------------+-----------+----------------------+---------------------+\r\n| +ProduceResults@participant3      | asset                                                       |            613 |   1500 |   20425 |              0 |                 7026/0 |   126.664 | asset.ChangedOn DESC | In Pipeline 1       |\r\n| |                          +-------------------------------------------------------------+----------------+--------+---------+----------------+------------------------+-----------+----------------------+---------------------+\r\n| +Top@participant3                 | `asset.ChangedOn` DESC LIMIT 1500                           |            613 |   1500 |       0 |         121216 |                    0/0 |     5.907 | asset.ChangedOn DESC | In Pipeline 1       |\r\n| |                          +-------------------------------------------------------------+----------------+--------+---------+----------------+------------------------+-----------+----------------------+---------------------+\r\n| +Projection@participant3          | asset.ChangedOn AS `asset.ChangedOn`                        |            613 | 598712 | 1197424 |                |                        |           |                      | Fused in Pipeline 0 |\r\n| |                          +-------------------------------------------------------------+----------------+--------+---------+----------------+------------------------+-----------+----------------------+---------------------+\r\n| +Filter@participant3              | asset:Asset                                                 |            613 | 598712 |  598712 |                |                        |           |                      | Fused in Pipeline 0 |\r\n| |                          +-------------------------------------------------------------+----------------+--------+---------+----------------+------------------------+-----------+----------------------+---------------------+\r\n| +Expand(All)@participant3         | (environment)-[anon_0:CREATED_ASSET]->(asset)               |            613 | 598712 |  598744 |                |                        |           |                      | Fused in Pipeline 0 |\r\n| |                          +-------------------------------------------------------------+----------------+--------+---------+----------------+------------------------+-----------+----------------------+---------------------+\r\n| +NodeUniqueIndexSeek@participant3 | UNIQUE environment:Environment(Id) WHERE Id = $autostring_0 |              1 |      1 |       2 |            112 |              1583665/0 |  4733.602 |                      | Fused in Pipeline 0 |\r\n+----------------------------+-------------------------------------------------------------+----------------+--------+---------+----------------+------------------------+-----------+----------------------+---------------------+\r\n```\r\n\r\n`ready to start consuming query after 5 ms, results consumed after another 44 ms`\r\n\r\nThe dataset of our test run is about 500k items.\r\n\r\n\r\n\r\n\r\n\r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-01-16T13:24:05Z",
+   "body": "My first feeling would be that the metric returned is just wrong. But thats hard to really measure.  "
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-01-16T13:40:44Z",
+   "body": "> My first feeling would be that the metric returned is just wrong. But thats hard to really measure.\r\n\r\nWhich metric do you mean? The `results consumed after another 44ms` part?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-01-16T13:45:07Z",
+   "body": "Yes, because if you look at the time column, it looks like the limit 10 is just a bit slower on the first part. But maybe im reading it wrong."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-01-17T08:25:52Z",
+   "body": "No I think you are completely right. I have been able to reproduce this surprising behaviour, will get back to you when I have understood better what is going on."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-01-17T14:02:35Z",
+   "body": "Hi again,\r\nI have looked at it closer now and it is (just) an issue with the metric being returned. I have done some benchmarking and the query actually gets faster with a lower limit. However, when the used limit exceeds 1000 the value presented in browser and cypher-shell is wrong. If you instead look in query.log you will see the actual time we did spend on the query. \r\n\r\nWe will still make sure to fix so that browser and cypher-shell will present the correct value."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-01-19T12:09:17Z",
+   "body": "We have now merged a fix which will go out with the next release of 4.4, 5.x versions doesn't have this problem.\r\n\r\nThanks again for reporting this issue!\r\n\r\nRegards,\r\nPontus"
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "neo4j/neo4j",
+  "default_branch": "2026.06",
+  "commit_sha": "c3f51a8f1850818b6c2a5811cf6ef03b35b005eb",
+  "as_of": "2024-01-12T12:01:22Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_neo4j_neo4j_13380"
+}

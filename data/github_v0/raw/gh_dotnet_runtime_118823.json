@@ -1,0 +1,318 @@
+{
+ "repo": "dotnet/runtime",
+ "number": 118823,
+ "url": "https://github.com/dotnet/runtime/issues/118823",
+ "title": "New crash handler in macOS?",
+ "state": "closed",
+ "labels": [
+  "os-mac-os-x",
+  "area-ExceptionHandling-coreclr"
+ ],
+ "reporter": "reporter",
+ "created_at": "2025-08-17T17:48:44Z",
+ "closed_at": "2025-11-20T03:46:31Z",
+ "body": "This experience seems to be new. I wrote a test app with an intentional crash scenario to test something. This is what I saw. Not a problem, just (A) is this new?, and (B) FYI.\n\n<img width=\"1025\" height=\"746\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/df45e7da-81a8-45f8-8434-a2f906091ee1\" />",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2025-08-17T20:06:14Z",
+   "body": "This looks like the Swift crash handler. https://<redacted-host>/blog/swift-5.9-backtraces/\n\nThe post goes on to say that the debugger is off by default for macOS, maybe they turned it on by default in macOS 26.\n\nIf we don't like it I suppose we could set environment variable SWIFT_BACKTRACE to `enable=no` on start up, if the environment variable is unset. That way folks can turn it on if they want."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-08-17T20:13:06Z",
+   "body": "From [Apple's docs](https://github.com/swiftlang/swift/blob/main/docs/Backtracing.rst):\n\n> Note that the runtime will not install its signal handlers for a signal if it finds that there is already a handler for that signal. Similarly if something else has already configured an alternate signal stack, it will leave that stack alone.\n\nThis is interesting and I wonder if Apple's exception handling will collide with our own, since it mentions configuring alternate stacks.\n\ncc @participant1 \n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-08-18T17:06:15Z",
+   "body": "@participant2 @participant7 "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-08-18T17:33:46Z",
+   "body": "FYI: I am now one beta build back. Another came out (I think) last week. I'm in the middle of a project and have been delaying upgrading until I get to a clean spot (and can push my changes). It's _possible_ that the beheavior changes in the next build. perhaps someone else has that installed."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-08-18T17:38:27Z",
+   "body": "For kicks, this is the code I was running: https://gist.github.com/reporter/d5f8cf2b6fb0fce45a336a387c3858ff"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-08-18T21:43:26Z",
+   "body": "I can reproduce this on Preview 7. Any second change managed exception causes it. A simple 1-line program:\n\n```C#\nthrow new Exception(\"hello!\");\n```\n\nWill invoke the Swift debugger.\n\nThis is with .NET 10 preview 7 and macOS 26 preview 7. I am not using a debug build of the runtime.\n\nDoing `SWIFT_BACKTRACE=\"enable=no\" dotnet run` does indeed disable the swift backtrace handler."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-08-18T21:51:32Z",
+   "body": "@participant3 / @participant9 Where in the product would we go about disabling this by default? I presume we'd need to introduce our own ENV var to disable us disabling it too."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-08-18T23:08:46Z",
+   "body": "> Where in the product would we go about disabling this by default?\n\nI don't know how easy this is to do by environment variable. This needs to be done very early in application startup - before the managed `Main`. I can't disable it programmatically from my own program."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-08-18T23:36:22Z",
+   "body": "FYI: I believe this is ship-stopper issue."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-08-18T23:38:08Z",
+   "body": "The documentation in the Swift repo says https://github.com/swiftlang/swift/blob/main/docs/Backtracing.rst#macos : \"The backtracer is not active by default on macOS.\". Is there any public documentation about the defaults changing in macOS 26?\n\nWe should have a discussion with somebody from Apple first before we do anything.\n\nI expect that .NET is not the only environment affected by this. Can you check what the experience is like for unhandled exceptions in other languages on the latest macOS preview?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-08-18T23:59:53Z",
+   "body": "> Is there any public documentation about the defaults changing in macOS 26?\n\nI don't see any.\n\n> Can you check what the experience is like for unhandled exceptions in other languages on the latest macOS preview?\n\nA standard C program and ruby do not exhibit this. e.g. for Ruby:\n\n```ruby\nProcess.kill('ABRT', Process.pid)\n```\n\nand for C\n\n```c\n#include <stdlib.h>\n\nint main(void) {\n    abort();\n    return 1;\n}\n```\n\nWill cause a SIGABRT but the Swift backtrace handler will not kick in. A NULL dereference won't do it either.\n\nIf I had to guess \"why\", it's because neither ruby nor my test C app link the Swift runtime. The .NET runtime does link the Swift runtime, and I suspect when the Swift runtime is loaded it installs its signal handlers."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-08-19T00:02:04Z",
+   "body": "@participant2 suggested that \"debug entitlement\" could another angle."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-08-19T00:35:51Z",
+   "body": "Additional data point - I can repro with the macOS Beta released today (25A5346a) and .NET 10 RC1."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-08-19T01:32:18Z",
+   "body": "Okay. I did some digging and it apparently has nothing to do with macOS 26. This is a regressing in .NET 10 and affects all macOS versions.\n\nThis is the issue occurring on a non-beta macOS 15.6.\n\n<img width=\"1423\" height=\"593\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/32e2e4c0-a324-416d-8170-bfb0403dd271\" />\n\nBisecting."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-08-19T01:33:04Z",
+   "body": "As an additional point to \"This is new in .NET 10\", I can _not_ reproduce with .NET 8 or .NET 9 on macOS 26 beta."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2025-08-19T01:35:23Z",
+   "body": "> I don't know how easy this is to do by environment variable. This needs to be done very early in application startup - before the managed `Main`.\n\nPresumably the corehost could set it before the Swift runtime gets loaded?\n\n> [@participant2](https://github.com/participant2) suggested that \"debug entitlement\" could another angle.\n\nI think it's enabled by default if the debug entitlement is set and the app is a console app.\n\n> Okay. I did some digging and it apparently has nothing to do with macOS 26. This is a regressing in .NET 10 and affects all macOS versions.\n\nThat's interesting. I was wondering about that since the code in the Swift runtime exists there for about 2 years (https://github.com/swiftlang/swift/blob/46677a53f5bbdf4e9d04725985a5ddd5aff0f399/stdlib/public/runtime/Backtrace.cpp#L326).\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-08-19T02:04:56Z",
+   "body": "~Regression is somewhere between .NET 10 preview 6 and .NET 10 preview 7.~\n\nUnfortunately git bisect is being a little difficult because the tags are not decedents."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-08-19T03:06:16Z",
+   "body": "Related?\n\n- https://github.com/dotnet/runtime/pull/118120\n- https://github.com/dotnet/diagnostics/pull/5530\n\nI noticed those changes were backported to servicing. If this is the issue, then the backports are a concern."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2025-08-19T10:49:52Z",
+   "body": "> Related?\n\nNo. Already happens at e9dd250942d329658df303ca4bf9a8e42ac4c9fc before the PRs above were merged.\n\nUPD: Happens locally at 4afdf63044be77d9256a0a62adc0a3f61f343b7f (last commit on `main` on Apr 30, 2025). That's very long time before the Preview 6 snap. However, I confirmed that the official builds of P6 don't exhibit the behavior and official builds of P7 do. Was there some Xcode version bump on the build machines between P6 and P7?\n\nUPD2: The build tool versions look identical on the downloaded binaries:\n```\n-- .NET 10 Preview 6\n      cmd LC_BUILD_VERSION\n  cmdsize 32\n platform 1\n    minos 12.0\n      sdk 14.5\n   ntools 1\n     tool 3\n  version 1053.12\n\n-- .NET 10 Preview 7\n      cmd LC_BUILD_VERSION\n  cmdsize 32\n platform 1\n    minos 12.0\n      sdk 14.5\n   ntools 1\n     tool 3\n  version 1053.12\n```"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2025-08-19T12:46:44Z",
+   "body": "I built the `v10.0.0-preview.6.25358.103` tag of dotnet/runtime locally with `./build.sh clr+libs+libs.pretest` (ie. Debug build) and run `./artifacts/bin/testhost/net10.0-osx-Debug-arm64/dotnet ~/extest/bin/Debug/net10.0/extest.dll`. It ends with the Swift debugger running.\n\nRunning the same executable with the downloaded SDK - `~/Downloads/dotnet-sdk-10.0.100-preview.6.25358.103-osx-arm64/dotnet ~/extest/bin/Debug/net10.0/extest.dll` - doesn't end up in the Swift debugger.\n\nIt seems like bisecting this is not going to work."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-08-19T13:13:50Z",
+   "body": "@participant5 I wonder if it's the bootstrapped SDK that is used to build the runtime itself.\n\nI recall somewhere we added entitlement preserving. I wonder if the testhost is getting new entitlements.\n\nCan you compare the entitlements of the official builds of p6 and p7? (I will when I get back in front of a computer)"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2025-08-19T13:24:05Z",
+   "body": "I already compared the entitlements of P6 and P7 official builds and they were identical."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-08-19T14:01:38Z",
+   "body": "I checked out the `v9.0.7` tag and built it locally and it _still_ reproduces. Using\n\n```C#\nSystem.Console.WriteLine(System.Runtime.InteropServices.RuntimeInformation.FrameworkDescription);\nthrow new System.Exception(\"Hi\");\n```\n\n<img width=\"1065\" height=\"255\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/ac9150c6-0e24-4a44-b20a-11357538f238\" />\n\nI think it is fair to say this is caused by something external."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2025-08-19T14:03:01Z",
+   "body": "> I think it is fair to say this is caused by something external.\n\nAgreed. It suddenly stopped happening to me even on .NET 10 P7."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-08-19T14:16:29Z",
+   "body": "Does Apple OSes have a crash reporting system that phones home like [Windows Error Reporting](https://learn.microsoft.com/en-us/troubleshoot/windows-client/system-management-components/windows-error-reporting-diagnostics-enablement-guidance)? Windows Error Reporting sends back instructions what to tell user. For example, it can recommend installing a graphics driver patch or ask a question. If Apple has one of these too and the backend is misbehaving, it can explain what we are seeing. "
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-08-19T14:22:11Z",
+   "body": "> Does Apple OSes have a crash reporting system that phones home like [Windows Error Reporting](https://learn.microsoft.com/en-us/troubleshoot/windows-client/system-management-components/windows-error-reporting-diagnostics-enablement-guidance)? Windows Error Reporting sends back instructions what to tell user.\n\nIt does. But I don't see that being invoked here.\n\n>  If Apple has one of these too and the backend is misbehaving, it can explain what we are seeing\n\nPerhaps. It would be difficult to explain why it does not happen on p6, but does happen on p7. But also happens on p6 (or any other build) when built locally.\n"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2025-08-19T14:51:39Z",
+   "body": "> Agreed. It suddenly stopped happening to me even on .NET 10 P7.\n\nI tried to force enable the support by `SWIFT_BACKTRACE=\"enable=yes,interactive=yes\"` and now it prints \n`swift runtime: backtrace-on-crash is not supported for privileged executables.`\n\nSuddenly the very same .NET 10 Preview 7 executable is treated as privileged.\n\nI even tried deleting it and extracting everything from scratch, same result. I didn't use the machine today for anything else but this experiment.\n\nSo, magically it started to get different result from this [opaque check](https://github.com/swiftlang/swift/blob/46677a53f5bbdf4e9d04725985a5ddd5aff0f399/stdlib/public/runtime/Backtrace.cpp#L287-L298)."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2025-08-19T15:05:09Z",
+   "body": "CSOps returns `PID: 37570 -> Code Signing Status: 0x22011305 FLAGS: ; CS_VALID ; CS_GET_TASK_ALLOW ; CS_HARD ; CS_KILL ; CS_ENFORCEMENT ; CS_RUNTIME ; CS_NO_UNTRUSTED_HELPERS ; CS_SIGNED` for .NET 10 P7 where I do **NOT** get the backtrace.\n\nOn a local runtime build I get `PID: 37581 -> Code Signing Status: 0x22000205 FLAGS: ; CS_VALID ; CS_GET_TASK_ALLOW ; CS_KILL ; CS_NO_UNTRUSTED_HELPERS ; CS_SIGNED`\n\nThe differrence is `CS_HARD ; CS_KILL ; CS_RUNTIME` and `CS_RUNTIME` would cause the Swift backtrace to be disabled. Normally I would expect the flag to be present only when [hardened runtime](https://developer.apple.com/documentation/security/hardened-runtime?language=objc) is enabled. I don't think the dotnet host itself normally enables hardened runtime though."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-08-19T15:17:34Z",
+   "body": "Potentially related? https://github.com/dotnet/runtime/pull/116476/\n\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-09-04T22:42:00Z",
+   "body": "I finally upgraded my machine. It is now on Tahoe Beta 9. I still see the same crash handler. I'm on .NET 10 P7. I also tried with a nightly RC2 branch build. Same thing."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-09-05T00:16:45Z",
+   "body": "@reporter we believe this is unrelated to macOS 26. It repos on Sequoia with .NET 10P6+. Something changed in the build but no one has nailed down the exact cause."
+  },
+  {
+   "author": "participant6",
+   "created_at": "2025-09-05T09:15:52Z",
+   "body": "> Normally I would expect the flag to be present only when [hardened runtime](https://developer.apple.com/documentation/security/hardened-runtime?language=objc) is enabled. I don't think the dotnet host itself normally enables hardened runtime though.\n\nWe do sign the `dotnet` executable with hardened runtime in official builds: https://github.com/dotnet/runtime/blob/ed7ab3a12075cac5cdcb0daa18110796c74d48df/eng/Signing.props#L42-L44"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-09-05T14:58:07Z",
+   "body": "I think we're [past | at] the point where we need to drive this to ground. We're going to need to do some experiments (likely with signing) to root cause this difference. We're very close to release, as you all know. I'll ask for something to take this on."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-09-05T15:15:36Z",
+   "body": "Why isn't this issue showing up in CI?"
+  },
+  {
+   "author": "participant7",
+   "created_at": "2025-09-05T15:18:19Z",
+   "body": "> \n> We do sign the `dotnet` executable with hardened runtime in official builds:\n> \n> [runtime/eng/Signing.props](https://github.com/dotnet/runtime/blob/ed7ab3a12075cac5cdcb0daa18110796c74d48df/eng/Signing.props#L42-L44)\n\nFrom the \"hey, why not department\", can we run the official build on an x64 mac and see if there ends up being any difference? In fixing an unrelated debugger issue, I found what I can only amount to toolchain differences on arm64 where after trying a reasonable set of things, only cross building on x64 worked. "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-09-05T15:21:30Z",
+   "body": "\"Why not department\" is definitely welcome. Claritying question ... do we need to run through signing/notarization to get full confirmation? Perhaps that's what you mean by \"Official build\"."
+  },
+  {
+   "author": "participant7",
+   "created_at": "2025-09-05T15:35:34Z",
+   "body": "> \"Why not department\" is definitely welcome. Claritying question ... do we need to run through signing/notarization to get full confirmation? Perhaps that's what you mean by \"Official build\".\n\nYeah, basically switch the pool to x64 and re-run the entire product build."
+  },
+  {
+   "author": "participant6",
+   "created_at": "2025-09-05T16:01:36Z",
+   "body": "I can reproduce this with `dotnet run` but not if I run the app directly with `dotnet bin/Debug/net10.0/app.dll`.\n\nProbably because of the TTY checks in https://github.com/swiftlang/swift/blob/aa3a0756f435a06b57b068972b64c3a3110ce2b4/stdlib/public/runtime/Backtrace.cpp#L355-L357 and https://github.com/swiftlang/swift/blob/aa3a0756f435a06b57b068972b64c3a3110ce2b4/stdlib/public/runtime/Backtrace.cpp#L406-L408\n\nIt also works if I do e.g. `dotnet run | echo`"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-09-05T16:05:11Z",
+   "body": "> Why isn't this issue showing up in CI?\n\nAs @participant6 pointed out, the Swift runtime automatically disables its backtrace handler when it doesn't detect a TTY (unless you force it to be on), and in CI I don't believe there is an active TTY."
+  },
+  {
+   "author": "participant6",
+   "created_at": "2025-09-05T16:16:50Z",
+   "body": "so maybe this was always happening and something changed in how dotnet run runs the app?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-09-05T16:20:04Z",
+   "body": "> so maybe this was always happening\n\nNo, because if you install .NET 10 Preview 5 it doesn't reproduce. It does in P6."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-09-05T16:21:54Z",
+   "body": "> something changed in how dotnet run runs the app?\n\nOh I see. You are suggesting that maybe the host was set up in such a way that Swift thought there was no TTY.\n\nThat's possible.\n\n@participant5 point out some differences with runtime hardening as well that could be the culprit."
+  },
+  {
+   "author": "participant7",
+   "created_at": "2025-09-06T11:20:45Z",
+   "body": "> From the \"hey, why not department\", can we run the official build on an x64 mac and see if there ends up being any difference? In fixing an unrelated debugger issue, I found what I can only amount to toolchain differences on arm64 where after trying a reasonable set of things, only cross building on x64 worked.\n\nI used a cross built runtime / host and it still crashed, so we can rule that out.\n\nSetting an env variable in the host seems like a viable workaround. Any preference or other suggestions?"
+  },
+  {
+   "author": "participant7",
+   "created_at": "2025-09-06T18:05:51Z",
+   "body": "I threw up a PR to start the discussion about the best way to band-aid this. Feel free to make suggestions / push commits."
+  },
+  {
+   "author": "participant7",
+   "created_at": "2025-09-10T20:05:39Z",
+   "body": "We pinged Apple about this and the swift backtrace handler running was an intentional change. The guidance they provided is to either have a dummy signal handler that just returns or set the `SWIFT_BACKTRACE` env variable to `enable=no`. They did say it was important to note that the environment variable is only checked on process startup (when the static initializers for the swift runtime execute). \n\nFor our case, it does not seem like there's any harm in using the environment variable. "
+  },
+  {
+   "author": "participant8",
+   "created_at": "2025-09-10T20:26:07Z",
+   "body": "> For our case, it does not seem like there's any harm in using the environment variable.\n\nOne noticeable issue would be custom hosting scenarios like Unity, since they'd need to set the variable themselves since dotnet might only be loaded later on in program lifetime."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-09-10T21:14:11Z",
+   "body": "> One noticeable issue would be custom hosting scenarios like Unity, since they'd need to set the variable themselves since dotnet might only be loaded later on in program lifetime.\n\nRegardless of environment variable or signal handler, it seems to me it needs to be something to host does. The host can set the environment variable (early) or it can set the signal handler. If the runtime attempts to set the signal handler or environment variable then it might be too late - the swift runtime will have already set up `BacktraceInitializer`."
+  },
+  {
+   "author": "participant9",
+   "created_at": "2025-09-22T16:22:36Z",
+   "body": "This should be mitigated by https://github.com/dotnet/runtime/pull/119920, but I don't know if we want to do something else for .NET 11."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-09-22T16:27:49Z",
+   "body": "> something else for .NET 11.\n\nDuplicate or related to https://github.com/dotnet/runtime/issues/113707"
+  },
+  {
+   "author": "participant10",
+   "created_at": "2025-11-20T03:37:25Z",
+   "body": "So, has this issue been fixed in the latest .NET 10 version? I have currently found that Avalonia .NET 10 applications cannot be captured by global exception handlers when they crash, and I'm not sure if this is caused by the same reason."
+  },
+  {
+   "author": "participant9",
+   "created_at": "2025-11-20T03:46:31Z",
+   "body": "@participant10 The behavior in .NET 10 is the same as in .NET 9, so it should be fixed in that sense."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-11-20T04:36:53Z",
+   "body": "> I have currently found that Avalonia .NET 10 applications cannot be captured by global exception handlers\n\nYou may want to create a new issue about this with details. It is not clear what you mean by \"global exception handlers\"."
+  },
+  {
+   "author": "participant10",
+   "created_at": "2025-11-20T05:17:29Z",
+   "body": "> > I have currently found that Avalonia .NET 10 applications cannot be captured by global exception handlers\n> \n> You may want to create a new issue about this with details. It is not clear what you mean by \"global exception handlers\".\n\nAppDomain.CurrentDomain.UnhandledException\nTaskScheduler.UnobservedTaskException\nI mean, these two events stopped working on macOS."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-11-20T06:01:47Z",
+   "body": "Open an issue on this with repro steps and the behavior that you are seeing."
+  },
+  {
+   "author": "participant10",
+   "created_at": "2025-11-20T06:03:09Z",
+   "body": "ok"
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "dotnet/runtime",
+  "default_branch": "main",
+  "commit_sha": "58d1c2e3e9bc76a4a9e02af75eeba210800f54eb",
+  "as_of": "2025-08-17T17:48:44Z",
+  "method": "github_commits_until"
+ },
+ "images": [
+  {
+   "where": "opening",
+   "source_url": "https://github.com/user-attachments/assets/df45e7da-81a8-45f8-8434-a2f906091ee1",
+   "file": "gh_dotnet_runtime_118823_img0.png"
+  },
+  {
+   "where": "c13",
+   "source_url": "https://github.com/user-attachments/assets/32e2e4c0-a324-416d-8170-bfb0403dd271",
+   "file": "gh_dotnet_runtime_118823_img1.png"
+  },
+  {
+   "where": "c22",
+   "source_url": "https://github.com/user-attachments/assets/ac9150c6-0e24-4a44-b20a-11357538f238",
+   "file": "gh_dotnet_runtime_118823_img2.png"
+  }
+ ],
+ "slug": "gh_dotnet_runtime_118823"
+}

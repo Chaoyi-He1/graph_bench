@@ -9,35 +9,31 @@
 
 ```mermaid
 flowchart LR
-    N0["<b>N0 ASOF JOIN out-of-memory report</b><br/><small>info: 3</small>"]
-    N1["<b>N1 spilling and memory limit measured</b><br/><small>info: 5</small>"]
-    N2_x["<b>N2_x decimal conversion aftermath</b><br/><small>info: 6</small>"]
-    N3["<b>N3 arg_max workaround confirmed</b><br/><small>info: 8</small>"]
-    N3_lateral_x["<b>N3_lateral_x lateral-join rewrite aftermath</b><br/><small>info: 7</small>"]
-    N4["<b>N4 small-probe optimization has a scaling cutoff</b><br/><small>info: 11</small>"]
-    N5["<b>N5 regular-plan paging behavior measured</b><br/><small>info: 12</small>"]
-    N_terminal["<b>terminal ASOF memory issue resolved on 1.5 development build</b><br/><small>info: 17</small>"]
-    N0 -.->|"❓ sixteen_gb_vm_default_temp_spill_still_oom"| N1
+    N0["<b>N0 ASOF JOIN out-of-memory report</b><br/><small>info: 4</small>"]
+    N1["<b>N1 available memory established</b><br/><small>info: 5</small>"]
+    N2_x["<b>N2_x spilling and memory-limit aftermath</b><br/><small>info: 7</small>"]
+    N3_x["<b>N3_x narrower-column aftermath</b><br/><small>info: 9</small>"]
+    N4["<b>N4 arg_max workaround measured</b><br/><small>info: 10</small>"]
+    N5_x["<b>N5_x small-probe optimization does not scale</b><br/><small>info: 14</small>"]
+    N_terminal["<b>terminal ASOF memory issue resolved for reproduced workloads</b><br/><small>info: 18</small>"]
+    N0 -.->|"❓ machine_has_16gb_ram"| N1
     linkStyle 0 stroke:#3b82f6,stroke-width:2px
-    N1 ==>|"💥 blind: Reduce the materialized and sorted row width by replacing the price and quantity `DOUBLE` columns with narrower `DECIMAL` types."| N2_x
+    N1 ==>|"💥 blind: Rely on DuckDB spilling the ASOF operation to an explicitly configured temporary directory and constrain the buffer manager with a memory limit."| N2_x
     linkStyle 1 stroke:#ef4444,stroke-width:2px
-    N2_x ==>|"⚡ Use an `arg_max` aggregation rewrite as a practical workaround for this query shape, placing the small transaction-time table on the inner side of a nested-loop inequality join."| N3
-    linkStyle 2 stroke:#f97316,stroke-width:2px
-    N3 ==>|"⚡ Install a current main build containing the alternate native ASOF plan for very small probe tables and retest the original query."| N4
-    linkStyle 3 stroke:#f97316,stroke-width:2px
-    N4 -.->|"❓ expanded_probe_completes_in_1611_seconds_with_5gb_and_temp_directory"| N5
-    linkStyle 4 stroke:#3b82f6,stroke-width:2px
-    N5 ==>|"⚡ Upgrade to the latest DuckDB 1.5 development build containing the newer ASOF implementation, which reduces memory use and scans sorted data in parallel at finer granularity; verify both the original and expanded probe inputs before declaring the memory issue resolved."| N_terminal
+    N2_x ==>|"💥 blind: Reduce the ASOF working-set size by replacing DOUBLE price and quantity columns with narrower DECIMAL types."| N3_x
+    linkStyle 2 stroke:#ef4444,stroke-width:2px
+    N3_x -.->|"❓ arg_max_rewrite_completes_in_under_21_seconds"| N4
+    linkStyle 3 stroke:#3b82f6,stroke-width:2px
+    N4 ==>|"💥 blind: Install a build containing the alternate nested-loop ASOF plan for very small probe tables and rerun the original ASOF query."| N5_x
+    linkStyle 4 stroke:#ef4444,stroke-width:2px
+    N5_x ==>|"⚡ Use a build containing the later ASOF sorting, memory-usage, and parallel-scan improvements, then verify both the original small probe and the larger probe that exceeded the nested-loop cutoff."| N_terminal
     linkStyle 5 stroke:#f97316,stroke-width:2px
-    N2_x ==>|"💥 blind: Rewrite the `ASOF JOIN` as a `LATERAL` correlated subquery that picks the most recent price at or before each transaction time."| N3_lateral_x
-    linkStyle 6 stroke:#ef4444,stroke-width:2px
     class N0 start
     class N1 normal
     class N2_x normal
-    class N3 normal
-    class N3_lateral_x normal
+    class N3_x normal
     class N4 normal
-    class N5 normal
+    class N5_x normal
     class N_terminal terminal
     classDef start fill:#fee2e2,stroke:#b91c1c,color:#000
     classDef terminal fill:#dcfce7,stroke:#15803d,color:#000
@@ -46,65 +42,46 @@ flowchart LR
 
 ## Opening (body)
 
-> DuckDB runs out of memory while executing the `ASOF JOIN` query in `select_binance_transaction_times_and_prices.sql`. I provided an archive containing the scripts, SQL query, and transaction-time CSV needed to download and import the 2022 BTCUSDT trade history and reproduce the failure. I am using the DuckDB CLI, version v0.8.2-dev1764 07b0b0a2a4, on Ubuntu Server 22.04.
+> DuckDB runs out of memory while executing the `ASOF JOIN` query in `select_binance_transaction_times_and_prices.sql`. I provided an archive containing scripts to download BTCUSDT trades for 2022, import them into `binance.duckdb`, and run the query against the transaction times. I am using the DuckDB CLI on Ubuntu Server 22.04 with v0.8.2-dev1764 07b0b0a2a4.
 
 ## Satisfaction conditions
 
-1. Must identify the original resource cause: the regular ASOF implementation materialized, uncompressed, copied, and sorted the large price side, while the inequality-only case had limited parallelism; spilling or lowering `memory_limit` alone did not remove that cost.
-2. Must distinguish the small-probe nested-loop optimization from the general fix: it works very well for the original roughly two-dozen-row probe but becomes impractical above its roughly 32–64-row cutoff, as demonstrated by the 240-row case.
-3. Must not present conversion from `DOUBLE` to `DECIMAL` as the complete fix: it reduced database size by about 25%, but the native query still exhausted temporary disk space.
-4. The `arg_max` rewrite may be offered as a successful workaround for this restricted query shape, but the native resolution is to move to a current build containing the reworked ASOF implementation, which uses less memory and scans the sorted data in parallel at a much finer granularity.
-5. Diagnosis and recommendation must be grounded in the collected spill, memory-limit, small-probe, and 240-row benchmark results rather than inferred from the opening OOM alone.
-6. Must ask the reporter to verify a build containing the ASOF changes and treat the memory issue as resolved only after the reporter confirms that both the original and 240-row probe queries complete without OOM.
+1. Must identify the final accepted cause of the original resource problem: the regular inequality-only ASOF path incurred a very large sorting working set and insufficiently parallel processing; the small-probe nested-loop plan addressed only probe tables of a few dozen rows.
+2. Diagnosis must be grounded in the observed evidence: spilling and a 12 GB memory limit did not prevent OOM, narrower DECIMAL storage still exhausted disk, the small-probe plan handled the original probe but failed or became extremely slow at 240 rows, and the later ASOF implementation completed the 240-row workload without OOM.
+3. Must recommend using a build containing the later ASOF memory-reduction and parallel sorted-scan improvements, and must ask the reporter to verify both the small probe and a probe above the nested-loop cutoff before declaring the memory issue resolved.
+4. Must not present an explicit temporary directory, a lower memory limit, or narrower DECIMAL columns as the complete fix; each was insufficient for the original regular ASOF execution path.
+5. Must not generalize the nested-loop small-probe optimization to larger probe tables: the reporter's 240-row case falsified that direction as a general solution.
+6. The `arg_max` rewrite may be offered as a workload-specific workaround, but resolution of this issue requires the original ASOF query to complete on the reporter's larger reproduced workload.
+7. The later price-correctness discrepancy is a separate problem and must not replace or invalidate the confirmed memory-usage resolution.
 
 ## Edges
 
 | edge | type | gates / info | payload |
 |---|---|---|---|
-| `e1_N0__N1` | clarification_only | asks: sixteen_gb_vm_default_temp_spill_still_oom | The virtual machine has 16 GB of memory. DuckDB already creates `binance.duckdb.tmp` and fills it with many la |
-| `e2_N1__N2_x` | solution_only **BLIND** | req_info: asof_join_runs_out_of_memory, sixteen_gb_vm_default_temp_spill_still_oom<br>elements: suggests_narrower_decimal_storage_for_numeric_columns | Reduce the materialized and sorted row width by replacing the price and quantity `DOUBLE` columns with narrower `DECIMAL` types. |
-| `e3_N2_x__N3` | solution_only | req_info: asof_join_runs_out_of_memory, decimal_columns_reduce_database_size_but_asof_exhausts_disk, sixteen_gb_vm_default_temp_spill_still_oom<br>elements: rewrites_asof_as_inequality_join_plus_arg_max, keeps_small_transaction_time_table_as_probe_side | Use an `arg_max` aggregation rewrite as a practical workaround for this query shape, placing the small transaction-time table on the inner side of a nested-loop inequality join. |
-| `e4_N3__N4` | solution_only | req_info: arg_max_rewrite_completes_in_about_twenty_one_seconds, sixteen_gb_vm_default_temp_spill_still_oom<br>elements: uses_native_small_probe_asof_plan, asks_user_to_verify_on_a_build_containing_the_change | Install a current main build containing the alternate native ASOF plan for very small probe tables and retest the original query. |
-| `e5_N4__N5` | clarification_only | asks: expanded_probe_completes_in_1611_seconds_with_5gb_and_temp_directory | I set `memory_limit` to 5 GB and `temp_directory` to the directory where I ran the CLI. The 240-row query comp |
-| `e6_N5__N_terminal` | solution_only | req_info: asof_join_runs_out_of_memory, original_small_probe_asof_completes_under_thirty_two_seconds_at_45mb, expanded_240_row_probe_ooms_with_small_probe_era_build, sixteen_gb_vm_default_temp_spill_still_oom, expanded_probe_completes_in_1611_seconds_with_5gb_and_temp_directory<br>elements: recommends_a_current_build_with_the_reworked_asof_implementation, identifies_sorting_uncompressed_materialized_data_and_limited_parallelism_as_the_original_bottleneck, mentions_fine_grained_parallel_processing_or_equivalent_as_part_of_the_fix, asks_user_to_verify_on_a_build_containing_the_fix, verifies_both_small_and_expanded_probe_cases_before_resolution | Upgrade to the latest DuckDB 1.5 development build containing the newer ASOF implementation, which reduces memory use and scans sorted data in parallel at finer granularity; verify both the original and expanded probe inputs before declaring the memory issue resolved. |
-| `e7_N2_x__N3_lateral_x` | solution_only **BLIND** | req_info: asof_join_runs_out_of_memory, decimal_columns_reduce_database_size_but_asof_exhausts_disk, sixteen_gb_vm_default_temp_spill_still_oom<br>elements: rewrites_asof_as_a_lateral_correlated_subquery | Rewrite the `ASOF JOIN` as a `LATERAL` correlated subquery that picks the most recent price at or before each transaction time. |
+| `e1_N0__N1` | clarification_only | asks: machine_has_16gb_ram | The virtual machine where I run the query has 16 GB of memory. |
+| `e2_N1__N2_x` | solution_only **BLIND** | req_info: machine_has_16gb_ram<br>elements: configures_a_temp_directory_for_spilling, sets_a_memory_limit_below_available_ram | Rely on DuckDB spilling the ASOF operation to an explicitly configured temporary directory and constrain the buffer manager with a memory limit. |
+| `e3_N2_x__N3_x` | solution_only **BLIND** | req_info: asof_join_oom_on_binance_dataset, default_temp_directory_fills_before_oom<br>elements: recommends_narrower_decimal_types_for_numeric_columns | Reduce the ASOF working-set size by replacing DOUBLE price and quantity columns with narrower DECIMAL types. |
+| `e4_N3_x__N4` | clarification_only | asks: arg_max_rewrite_completes_in_under_21_seconds | The `arg_max` solution ran in just under 21 seconds in my Ubuntu 24.04 virtual machine. |
+| `e5_N4__N5_x` | solution_only **BLIND** | req_info: asof_join_oom_on_binance_dataset, arg_max_rewrite_completes_in_under_21_seconds<br>elements: uses_the_alternate_plan_only_for_very_small_probe_tables, retests_the_original_asof_query | Install a build containing the alternate nested-loop ASOF plan for very small probe tables and rerun the original ASOF query. |
+| `e6_N5_x__N_terminal` | solution_only | req_info: asof_join_oom_on_binance_dataset, machine_has_16gb_ram, default_temp_directory_fills_before_oom, decimal_schema_query_exhausts_disk, arg_max_rewrite_completes_in_under_21_seconds, small_probe_build_240_rows_oom, large_probe_with_5gb_and_spill_takes_1611_seconds<br>elements: identifies_sorting_and_limited_parallelism_as_the_main_regular_asof_bottlenecks, recommends_a_build_with_the_later_asof_memory_and_parallelism_improvements, distinguishes_the_small_probe_nested_loop_plan_from_the_regular_large_probe_plan, asks_user_to_verify_both_small_and_above_threshold_probe_workloads_on_a_build_containing_the_fix | Use a build containing the later ASOF sorting, memory-usage, and parallel-scan improvements, then verify both the original small probe and the larger probe that exceeded the nested-loop cutoff. |
 
 ## Nodes
 
 | node | terminal | volunteered | images | symptoms |
 |---|---|---|---|---|
-| `N0` |  | 1 | 0 | DuckDB runs out of memory while executing my BTCUSDT `ASOF JOIN` query. |
-| `N1` |  | 1 | 0 | On my 16 GB virtual machine, DuckDB creates `binance.duckdb.tmp` and fills it with many large files, but the query still runs out of memory  |
-| `N2_x` |  | 1 | 0 | After converting price and quantity columns from `DOUBLE` to `DECIMAL`, `binance.duckdb` is about 25% smaller, but the `ASOF JOIN` runs out  |
-| `N3` |  | 1 | 0 | The `arg_max` rewrite completes in just under 21 seconds on my newer Ubuntu virtual machine, while the native `ASOF JOIN` remains the resour |
-| `N3_lateral_x` |  | 1 | 0 | Running an adapted version of my ASOF join query that instead uses a lateral join, DuckDB v1.1.2-dev38 unfortunately runs out of temporary d |
-| `N4` |  | 2 | 0 | With v1.3.0-dev1112, the original small-probe `ASOF JOIN` completes in just under 32 seconds even with a 45 MB memory limit. When I expand t |
-| `N5` |  | 0 | 0 | With a 5 GB memory limit and the temporary directory set to the current directory, the 240-row probe query completes, but averages about 161 |
-| `N_terminal` | ✓ | 2 | 0 | With DuckDB v1.5.0-dev2458, the 240-row `ASOF JOIN` completes without an out-of-memory exception in about 88 seconds on average. The origina |
+| `N0` |  | 1 | 0 | DuckDB runs out of memory while executing my ASOF JOIN over the imported 2022 BTCUSDT trade history and transaction-times CSV. |
+| `N1` |  | 0 | 0 | The ASOF JOIN runs on a virtual machine with 16 GB of memory and exits after exhausting memory. |
+| `N2_x` |  | 2 | 0 | DuckDB creates `binance.duckdb.tmp` and fills it with many large files, but the process still runs out of memory and dies. The same query st |
+| `N3_x` |  | 2 | 0 | After changing the price and quantity columns from DOUBLE to DECIMAL, `binance.duckdb` is about 25% smaller, but the ASOF JOIN runs out of d |
+| `N4` |  | 0 | 0 | The proposed `arg_max` rewrite completes in just under 21 seconds on my Ubuntu virtual machine. |
+| `N5_x` |  | 4 | 0 | On the development build with the small-probe plan, the original ASOF JOIN completes in just under 32 seconds and even runs with a 45 MB mem |
+| `N_terminal` | ✓ | 1 | 0 | With the latest development build, my 240-row ASOF JOIN completes without an out-of-memory exception in an average of about 88 seconds. The  |
 
 ## Machine review (audit pass, adversarially verified)
 
-Auditor verdict: **minor_issues** · 2 of 3 findings survived independent refutation.
+Auditor verdict: **n/a** · 0 of 0 findings survived independent refutation.
 
-_The case is a 2.5-year DuckDB ASOF JOIN out-of-memory saga: spilling/memory_limit did not help, a DOUBLE→DECIMAL narrowing shrank the DB but then exhausted disk, an arg_max/nested-loop rewrite worked as a workaround, a small-probe native plan fixed the original 21-row probe but blew up at 240 rows, and the real fix was the 1.5-era ASOF rewrite (lower-memory sort + fine-grained parallel sorted scans), verified by the reporter at v1.5.0-dev2458. The graph is a faithful and unusually well-sequenced rendering of that arc: every node symptom, every reveal number (16 GB, 12 GB, 25%, 21 s, 32 s / 45 MB, 240 rows, 1610.677 s, 88 s) is traceable to a specific comment, the single blind path (DECIMAL) is correctly labeled, and the root cause matches the maintainer's own profiling. Defects found are fidelity-level, not scoring-inverting: one engineer-inferred plan fact is carried in hard required_info, and two approaches the thread explicitly falsified/rejected (lateral join, sorted-input hint) are not modeled as blind paths._
-
-### Confirmed findings
-
-- [ ] 🟡 **fabricated_blind_path** (low) — `graph.edges (missing blind edge out of N3 for the LATERAL-join rewrite)`
-  - claim: The reporter tried a LATERAL-join formulation of the ASOF join — the other obvious rewrite an agent would propose alongside arg_max — and it failed, but the graph contains no blind path for it.
-  - thread evidence: c21 (reporter): "Running an adapted version of my ASOF join query that instead uses a lateral join, DuckDB v1.1.2-dev38 (45559f5eeb) unfortunately runs out of temporary disk space 'memory'." (full LATERAL query quoted in that comment).
-  - suggested fix: Model a sibling blind solution edge from N3 (lateral-join rewrite, approach_keywords lateral_join/correlated_subquery/order_by_limit_1) landing on an aftermath node whose symptoms report the temporary-disk exhaustion on v1.1.2-dev38.
-  - verifier: Confirmed against c21: in the same comment where the reporter reports the arg_max rewrite ran 'in just under 21 s', he also reports running an adapted LATERAL/ORDER BY ... LIMIT 1 formulation on DuckDB v1.1.2-dev38 (45559f5eeb) that 'unfortunately runs out of temporary disk space', with the full query quoted. Unlike finding 1 this is textbook blind-path material: an attempt actually executed by th
-- [ ] 🟡 **required_but_ungettable** (low) — `e4_N3__N4.solution.required_info.L2[0] and e6_N5__N_terminal.solution.required_info.L2[0] — "arg_max_rewrite_uses_small_probe_nested_loop"`
-  - claim: A fact the graph itself declares to be engineer inference (why the arg_max rewrite works: it becomes a nested-loop join with the small table inside) is carried as hard required_info on two later solutions, even though the simulated user never states it — no clarification asks for it, it is not in N0.info_state, and it is not in any node's volunteered_info.
-  - thread evidence: The fact originates only in the maintainer's own plan analysis, c17: "The reason this is so effective is that it converts the join into a nested loop join with the small table on the inside" (followed by the physical plan). The reporter's only report back is c21: "your solution using arg_max ran in just under 21 s" — he never describes the plan. The graph agrees: e3 lists this id under info_inferred_by_engineer with inference_hint "The reporter only supplied the observed runtime."
-  - suggested fix: Drop the id from e4 and e6 required_info.L2 and list it in each edge's info_inferred_by_engineer instead (as e3 already does). Runtime grounding happens to pass via N3/N5 info_state, so this is a semantic cleanup rather than a scoring blocker.
-  - verifier: Every factual assertion checks out. 'arg_max_rewrite_uses_small_probe_nested_loop' sits in e4.solution.required_info.L2 and e6.solution.required_info.L2; the only clarification info_ids in the whole graph are sixteen_gb_vm_default_temp_spill_still_oom (e1) and expanded_probe_completes_in_1611_seconds_with_5gb_and_temp_directory (e5); N0.info_state is the three-item seed; and no node lists it in vo
-
-### Refuted claims (auditor was wrong — do not act on these)
-
-- ~~fabricated_blind_path~~: The thread's most-repeated user proposal — requiring/hinting that the reference table is already sorted so the sort can be skipped — was explicitly rejected twice by the maintainer, but the graph models no blind path for
-  - why refuted: The quotes are verbatim-accurate (c11/c12, c28/c29, plus c23 'In the future we hope to be able to leverage existing ordering metadata'), and it is true the graph never mentions ordering hints. But this does not meet the blind-path definition. is_known_blind_path marks an attempt ACTUALLY FALSIFIED in the thread (tried,
+__
 
 
 ## Review checklist

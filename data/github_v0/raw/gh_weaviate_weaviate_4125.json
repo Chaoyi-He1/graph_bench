@@ -1,0 +1,86 @@
+{
+ "repo": "weaviate/weaviate",
+ "number": 4125,
+ "url": "https://github.com/weaviate/weaviate/issues/4125",
+ "title": "BM25 Index Corruption / BM25 not crash-resistant",
+ "state": "closed",
+ "labels": [
+  "bug"
+ ],
+ "reporter": "reporter",
+ "created_at": "2024-02-02T13:05:00Z",
+ "closed_at": "2024-09-13T13:33:25Z",
+ "body": "### How to reproduce this bug?\n\nNot known yet - working on reproduction. Few independent sightings\n\n### What is the expected behavior?\n\nBM25 index is crash-resistant\n\n### What is the actual behavior?\n\nUsers occasionally see panics like the following:\r\n\r\n```\r\npanic: runtime error: index out of range [16] with length 16\r\n\r\ngoroutine 50113 [running]:\r\ngithub.com/weaviate/weaviate/adapters/repos/db/inverted.(*BM25Searcher).createTerm(0xc09dd078c0, 0x413b3f1f00000000, {0x0, 0x0}, {0xc002f08edd, 0xe}, {0xc002a2ef00, 0xe, 0x10?}, 0xc03bb94fc0?, ...)\r\n\t/go/src/github.com/weaviate/weaviate/adapters/repos/db/inverted/bm25_searcher.go:431 +0x126e\r\ngithub.com/weaviate/weaviate/adapters/repos/db/inverted.(*BM25Searcher).wand.func1()\r\n```\n\n### Supporting information\n\nWe are aware and investigating. If you have a reliable way to reproduce this (from scratch), please do let us know.\n\n### Server Version\n\nSpotted on 1.22.x and 1.23.x\n\n### Code of Conduct\n\n- [X] I have read and agree to the Weaviate's [Contributor Guide](https://weaviate.io/developers/contributor-guide) and [Code of Conduct](https://weaviate.io/service/code-of-conduct)",
+ "comments": [
+  {
+   "author": "reporter",
+   "created_at": "2024-02-02T13:09:40Z",
+   "body": "## Known Mitigation techniques\r\n\r\n### Multi-Tenancy\r\n\r\nIf MT, the bug typically only affects a single or very few tenants. Here, the easiest would be to reinsert the entire tenant (using the Cursor API): Export all objects for the tenant. Delete the tenant, recreate the tenant, reinsert the data.\r\n\r\n### Single-Tenancy\r\n\r\nEssentially, the same mitigation as for MT (whole collection instead of tenant), but it may not always be feasible due to the size. If possible, restore a backup from a point before the issue occurred.\r\n\r\n## Known workarounds\r\n\r\n### Pure Vector Search instead of Hybrid\r\n\r\nThe issue is isolated to BM25 indexing. If you are using Hybrid Search and running into this issue, one option could be to temporarily use pure vector search. "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-02-03T08:49:50Z",
+   "body": "Possibly related: https://github.com/weaviate/weaviate/issues/3548"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-02-03T10:20:27Z",
+   "body": "We are optimistic that we can provide a fix soon. Some updates:\r\n\r\n* We have successfully reproduced this starting with a clean instance for the first this morning\r\n* We have a first candidate for a patch, if we run our reproducing scripts with the patched version, no corruption occurs anymore\r\n* We also fairly confident that we can apply a patch that will automatically mitigate this for already corrupted clusters, it would then simply skip corrupted elements, but still allow a search on valid elements. \r\n    * This is only meant as an emergency fix, since the corruption itself is fairly unpredictable, a better way would be to reingest corrupt tenants and collections once the patch is live. "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-02-03T19:09:16Z",
+   "body": "## Checklist for Rollout\r\n\r\n### Before Release\r\n* [ ] fix root cause so no new corruptions can appear (in progress by @participant5)\r\n    * [ ] make sure fix does don't discard entire WALs where some writes have already been ack'ed to the user (@participant5 has ideas how to do this)\r\n    * [x] validate again that fix does not lead to new corruptions when crashes occur during batch delete. _Update Feb 4: This can now be done automatically on CI using the new chaos pipeline (see below)._\r\n* [x] fix handling of already corrupted datasets (@participant6 and @participant7 have context here. The assumption is that an incorrect pre-allocation is the culprit for the out-of-range panic)\r\n    * [x] validate using the existing reproduction script or using data dump of an already corrupt setup \r\n* [x] in https://github.com/weaviate/weaviate/pull/4100 we added panic-handling to BM25. However, as part of the investigation we have found out that this does not cover all code paths. This only covers the \"BM25\" (single prop) path, but if you take the \"BM25F\" path panics are not handled yet. Todo: also handle panics on other code path. \r\n\r\n### Release\r\n* [x] release as `v1.23.x` patch\r\n* [x] release as `v1.22.x` patch\r\n    *  if porting to both releases is a lot of effort, prefer `v1.23.x` and release `v1.22.x` later, so clusters already running the latest version can be patched first\r\n* [x] align internally (WCS/SRE) that all commercial clusters get patched immediately\r\n* [x] align with the DevRel team to tell the community to patch their cluster immediately \r\n\r\n### Can happen after initial release\r\n* [x] turn the current reproduction scripts for the BM25 corruption into an automated chaos pipeline\r\n    * the difficulty here is that the crash needs to happen at the right moment. One idea could be to make the import script also be the killer script. Then when the `start delete cycle` phase happens, concurrently sleep for a short random time period, then kill the script.\r\n    * Update Feb 4: The pipeline is now available here: https://github.com/weaviate/weaviate-chaos-engineering/pull/172\r\n    * [x] TODO: merge pipeline into `main`. Can only be done once a fix is available, so it will be green.\r\n * [x] investigate sighting of `WARN[0007] Skipping object in BM25: object with id 36557 has a length of 0 bytes.  action=bm25_search class=Book shard=qpxiJ3I5BbV6`. \r\n     * The current theory is that this is just because there is no transactional guarantee between the object store and the inverted index. This could simply mean that the object was already deleted in the object store, but not yet in the inverted index. If correct, then this is not a big issue and could be rectified through a lazy repair\r\n     * [x] (maybe) lazily repair stale inverted index entry if obj is already deleted\r\n * [ ] investigate if other issues that were spotted as part of this investigation (e.g. #4128) are also fixed by the current changes. If not, plan for fixing those"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-02-04T13:07:01Z",
+   "body": "Update: A chaos pipeline that reproduces the issue fully automatically (starting with an empty instance) is now available: https://github.com/weaviate/weaviate-chaos-engineering/pull/172"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-02-07T15:36:56Z",
+   "body": "Hello @reporter \r\nThis is an important bug for us that holds us back from moving to the v4 client.\r\nDo you have any new estimate on when this fix would be released? Thank you."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-02-12T08:40:25Z",
+   "body": "@participant7 Could you tell me if this bug was fully fixed with your PR? "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-02-12T13:48:27Z",
+   "body": "> This is an important bug for us that holds us back from moving to the v4 client.\r\n> Do you have any new estimate on when this fix would be released? Thank you.\r\n\r\nThis should not have any relation to the v4 client. \r\n\r\n> @participant7 Could you tell me if this bug was fully fixed with your PR?\r\n\r\nIt can mitigate it in many scenarios. I wouldn't call it \"fully fixed\" because more crash-safety improvements are coming. But it can't hurt to try if it fixes all issues for you already. \r\n\r\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-02-12T13:49:56Z",
+   "body": "@reporter Thank you, I will test it out soon.\r\nWe only saw this happening as soon as we refactored our code to the v4 client though.\r\n\r\nEdit: did not see it happen again, thanks."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-04-23T12:32:26Z",
+   "body": "Is there any update on this issue? [This comment](https://github.com/weaviate/weaviate/issues/4125#issuecomment-1925256564) made is sound like a fix was in sight but there haven't been any recent updates."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-05-23T11:42:42Z",
+   "body": "https://github.com/weaviate/weaviate/issues/4262 -> addresses `(maybe) lazily repair stale inverted index entry if obj is already deleted`"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-09-13T13:33:25Z",
+   "body": "I think this is fixed - will close. Please reopen if something is missing"
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "weaviate/weaviate",
+  "default_branch": "main",
+  "commit_sha": "192abf0c71d9a2d1a39b233ba374167343014d59",
+  "as_of": "2024-02-02T13:05:00Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_weaviate_weaviate_4125"
+}

@@ -1,6 +1,6 @@
 # Review: gh_vllm-project_vllm_2248
 
-**Recent vLLM versions report no available memory for cache blocks on models that fit with vLLM 0.2.4**
+**Recent vLLMs ask for too much memory: ValueError: No available memory for the cache blocks**
 
 - source: https://github.com/vllm-project/vllm/issues/2248
 - kind: LLM draft (needs review)
@@ -9,27 +9,23 @@
 
 ```mermaid
 flowchart LR
-    N0["<b>N0 cache-block regression reported</b><br/><small>info: 5</small>"]
-    N1["<b>N1 dedicated-GPU regression confirmed</b><br/><small>info: 8</small>"]
-    N2["<b>N2 profiling measurements collected</b><br/><small>info: 10</small>"]
-    N3_x["<b>N3_x profiling-revert aftermath</b><br/><small>info: 11</small>"]
-    N4["<b>N4 eager mode and shared-GPU behavior verified</b><br/><small>info: 13</small>"]
-    N_terminal["<b>terminal resolved</b><br/><small>info: 13</small>"]
-    N0 -.->|"❓ four_a10g_case_uses_clean_dedicated_gpus, single_70b_sharded_model_is_primary_failure, vllm_024_runs_same_workload_with_headroom"| N1
+    N0["<b>N0 cache-block startup failures reported</b><br/><small>info: 6</small>"]
+    N1["<b>N1 clean multi-GPU regression established</b><br/><small>info: 10</small>"]
+    N2["<b>N2 profiling memory measurements collected</b><br/><small>info: 13</small>"]
+    N2_x["<b>N2_x profiling revert aftermath</b><br/><small>info: 15</small>"]
+    N_terminal["<b>terminal reporter-confirmed eager-mode workaround</b><br/><small>info: 16</small>"]
+    N0 -.->|"❓ four_a10g_gpus_are_clean"| N1
     linkStyle 0 stroke:#3b82f6,stroke-width:2px
-    N1 -.->|"❓ profile_run_free_memory_drops_from_22gb_to_026gb"| N2
+    N1 -.->|"❓ profile_run_reduces_free_memory_from_22gb_to_0_26gb"| N2
     linkStyle 1 stroke:#3b82f6,stroke-width:2px
-    N2 ==>|"💥 blind: Revert PR 2031 and restore the pre-0.2.5 torch-only peak-memory calculation so startup allocates cache blocks as it did in vLLM 0.2.4."| N3_x
+    N2 ==>|"💥 blind: Revert the newer GPU-memory profiling calculation so cache sizing again uses the older torch-allocation-based peak measurement."| N2_x
     linkStyle 2 stroke:#ef4444,stroke-width:2px
-    N3_x -.->|"❓ enforce_eager_allows_four_a10g_70b_awq_to_run"| N4
-    linkStyle 3 stroke:#3b82f6,stroke-width:2px
-    N4 ==>|"⚡ Keep the corrected memory accounting and drop the extra CUDA graph capture footprint that vLLM enables by default from 0.2.6 onward, by running the four-A10G deployment with --enforce-eager; treat shared-GPU instances separately by starting them sequentially and making each later gpu_memory_utilization value cumulative with memory already occupied."| N_terminal
-    linkStyle 4 stroke:#f97316,stroke-width:2px
+    N2_x ==>|"⚡ Keep the complete GPU-memory accounting rather than the unsafe local revert, and run the affected four-A10G 70B AWQ deployment with eager execution enforced to avoid the extra non-eager startup memory overhead."| N_terminal
+    linkStyle 3 stroke:#f97316,stroke-width:2px
     class N0 start
     class N1 normal
     class N2 normal
-    class N3_x normal
-    class N4 normal
+    class N2_x normal
     class N_terminal terminal
     classDef start fill:#fee2e2,stroke:#b91c1c,color:#000
     classDef terminal fill:#dcfce7,stroke:#15803d,color:#000
@@ -38,37 +34,34 @@ flowchart LR
 
 ## Opening (body)
 
-> Since vLLM 0.2.5, I can no longer run a Llama 2 70B 4-bit AWQ model on 4 A10G GPUs even though it worked with older vLLM versions; I hit this with docker images built on cuda 11.8 with vllm 0.2.5 or 0.2.6. I also see similar problems when starting two 7B models on one 80GB A100. For example, two instances can start when the first uses gpu_memory_utilization=0.4 and the second uses 0.6, but setting the second to 0.4 raises "No available memory for the cache blocks. Try increasing gpu_memory_utilization" despite GPU memory still being available.
+> Since vLLM 0.2.5, I can no longer run a 4-bit AWQ Llama 2 70B model on four A10G GPUs, although older vLLM versions work. I also see problems when starting two 7B models on one A100 80GB GPU. For example, the second 7B model starts with gpu-memory-utilization 0.6 but fails at 0.4 with `ValueError: No available memory for the cache blocks`, even though substantial GPU memory appears to remain. The two model configurations use maximum model lengths and maximum batched-token counts of 8192 and 4096.
 
 ## Satisfaction conditions
 
-1. Must identify the clean multi-GPU failure as a startup cache-profiling/memory-accounting regression that begins in vLLM 0.2.5: the newer total-minus-free accounting charges tensor-parallel/profile-run fragmentation and non-torch allocations against the budget, so the four-A10G 70B AWQ case is left with zero cache blocks. The extra CUDA graph capture footprint is an additional consumer only from vLLM 0.2.6 onward, where graph capture is on by default; it must not be offered as the mechanism for the original 0.2.5 break.
-2. The diagnosis must be grounded in the version comparison, clean dedicated GPUs, the raw free-memory drop around profile_run, and the successful --enforce-eager test.
-3. Must recommend --enforce-eager for the reporter's four-A10G 70B AWQ deployment and verify both startup and the representative long-context workload.
-4. Must not recommend reverting PR 2031 or restoring the old torch-only peak-memory calculation as the final fix, because that bypassed the cache-block error but produced GPU OOM on the same long-context query.
-5. Must distinguish the shared-GPU case: start instances sequentially and set a later instance's gpu_memory_utilization cumulatively to account for memory already occupied, rather than assigning both instances the same independent fraction.
-6. Must treat the issue as resolved only after the reporter verifies the deployment behavior.
+1. Must identify the accepted primary diagnosis at the level established by the thread: cache initialization measures a profiling/non-eager execution peak that leaves no safely calculated KV-cache blocks on the clean multi-GPU large-model setup; this is not evidence that the model weights themselves became larger.
+2. Must recommend enforcing eager execution for the reporter's four-A10G 70B AWQ deployment, thereby avoiding the extra non-eager startup memory overhead.
+3. Must ground the recommendation in the clean-GPU version regression and the measured drop in free memory across the profiling pass, rather than treating the visible cache-block error as proof that the GPUs are genuinely full.
+4. Must not recommend retaining the local profiling revert as the final fix: it removed the cache-block message but caused GPU OOM on the same long-context workload, and the newer accounting includes real non-torch allocations.
+5. Must ask the reporter to verify both successful startup and the original workload with eager execution before treating the issue as resolved.
 
 ## Edges
 
 | edge | type | gates / info | payload |
 |---|---|---|---|
-| `e1_N0__N1` | clarification_only | asks: four_a10g_case_uses_clean_dedicated_gpus, single_70b_sharded_model_is_primary_failure, vllm_024_runs_same_workload_with_headroom | The four A10G GPUs are clean. Nothing else is using them. / The primary issue is one 70B AWQ model sharded across the four A10Gs. Forget the two-model case for now: that  / vLLM 0.2.4 and lower work perfectly on the same four A10Gs, leave plenty of room, and have handled heavy use f |
-| `e2_N1__N2` | clarification_only | asks: profile_run_free_memory_drops_from_22gb_to_026gb | On my 70B BF16 test across eight A100 40GB GPUs, I see about 22GB free per GPU before model_runner.profile_run |
-| `e3_N2__N3_x` | solution_only **BLIND** | req_info: vllm_024_runs_same_workload_with_headroom, profile_run_free_memory_drops_from_22gb_to_026gb<br>elements: reverts_pr_2031_or_restores_old_peak_memory_calculation | Revert PR 2031 and restore the pre-0.2.5 torch-only peak-memory calculation so startup allocates cache blocks as it did in vLLM 0.2.4. |
-| `e4_N3_x__N4` | clarification_only | asks: enforce_eager_allows_four_a10g_70b_awq_to_run | Adding --enforce-eager works for my four-A10G 70B AWQ setup. The model starts and runs instead of failing with |
-| `e5_N4__N_terminal` | solution_only | req_info: single_70b_sharded_model_is_primary_failure, vllm_024_runs_same_workload_with_headroom, shared_gpu_instances_work_when_started_sequentially_with_cumulative_utilization, four_a10g_case_uses_clean_dedicated_gpus, profile_run_free_memory_drops_from_22gb_to_026gb, enforce_eager_allows_four_a10g_70b_awq_to_run, reverting_pr2031_avoids_cache_error_but_long_query_ooms<br>elements: uses_enforce_eager_for_the_four_a10g_70b_awq_case, does_not_revert_pr_2031_as_the_final_fix, distinguishes_clean_multi_gpu_case_from_shared_gpu_instances, starts_shared_gpu_instances_sequentially_with_cumulative_utilization, asks_user_to_verify_startup_and_the_long_context_workload | Keep the corrected memory accounting and drop the extra CUDA graph capture footprint that vLLM enables by default from 0.2.6 onward, by running the four-A10G deployment with --enforce-eager; treat shared-GPU instances separately by starting them sequentially and making each later gpu_memory_utilization value cumulative with memory already occupied. |
+| `e1_N0__N1` | clarification_only | asks: four_a10g_gpus_are_clean | The four A10G GPUs are clean. Nothing else is running on them. |
+| `e2_N1__N2` | clarification_only | asks: profile_run_reduces_free_memory_from_22gb_to_0_26gb | On my affected 70B deployment, I logged about 22 GB free on each 40 GB GPU before `profile_run()`. Immediately |
+| `e3_N2__N2_x` | solution_only **BLIND** | req_info: large_awq_model_stopped_fitting_since_vllm_0_2_5, four_a10g_gpus_are_clean, profile_run_reduces_free_memory_from_22gb_to_0_26gb<br>elements: recommends_reverting_the_newer_memory_profiling_calculation | Revert the newer GPU-memory profiling calculation so cache sizing again uses the older torch-allocation-based peak measurement. |
+| `e4_N2_x__N_terminal` | solution_only | req_info: large_awq_model_stopped_fitting_since_vllm_0_2_5, vllm_0_2_4_handles_same_long_running_workload, revert_avoids_cache_blocks_error_but_long_context_query_ooms, primary_failure_is_single_model_sharded_across_gpus, four_a10g_gpus_are_clean, profile_run_reduces_free_memory_from_22gb_to_0_26gb<br>elements: adds_the_enforce_eager_flag, does_not_keep_the_unsafe_profiling_revert, explains_that_eager_execution_avoids_extra_non_eager_startup_memory_overhead, asks_the_user_to_verify_startup_and_the_original_workload | Keep the complete GPU-memory accounting rather than the unsafe local revert, and run the affected four-A10G 70B AWQ deployment with eager execution enforced to avoid the extra non-eager startup memory overhead. |
 
 ## Nodes
 
 | node | terminal | volunteered | images | symptoms |
 |---|---|---|---|---|
-| `N0` |  | 1 | 0 | Since vLLM 0.2.5, my Llama 2 70B 4-bit AWQ deployment no longer starts on four A10G GPUs even though it worked with older vLLM. When I start |
-| `N1` |  | 2 | 0 | A single sharded 70B AWQ model fails to start with vLLM 0.2.5 or later on four otherwise-empty A10G GPUs. The same model and GPUs run normal |
-| `N2` |  | 1 | 0 | The large tensor-parallel model still reaches zero available GPU cache blocks during startup. |
-| `N3_x` |  | 1 | 0 | With PR 2031 temporarily reverted, the server gets past the cache-block check, but the same long-context query ends in a GPU out-of-memory e |
-| `N4` |  | 1 | 0 | The 70B AWQ model starts and runs on my four A10G GPUs when I add --enforce-eager. For two 7B servers sharing one GPU, I can start them sequ |
-| `N_terminal` | ✓ | 0 | 0 | --enforce-eager works to solve this issue for my 4*A10G 70B AWQ deployment. Both 7B services can run on the shared GPU when they are started |
+| `N0` |  | 1 | 0 | Since vLLM 0.2.5, my Llama 2 70B 4-bit AWQ deployment no longer starts on four A10G GPUs, although it worked with older vLLM. When I put two |
+| `N1` |  | 3 | 0 | The single 70B AWQ model still cannot start across four otherwise empty A10G GPUs on vLLM 0.2.5 or newer. The same deployment starts on vLLM |
+| `N2` |  | 2 | 0 | On an affected large tensor-parallel deployment, I see about 22 GB free per GPU before the profiling forward pass and only about 0.26 GB fre |
+| `N2_x` |  | 2 | 0 | After I reverted the newer memory-profiling change, the cache-block startup message no longer appeared, but the same long-context query ran  |
+| `N_terminal` | ✓ | 1 | 0 | With eager execution enforced, my 70B AWQ model starts successfully across the four A10G GPUs without the no-cache-blocks error. |
 
 ## Machine review (audit pass, adversarially verified)
 

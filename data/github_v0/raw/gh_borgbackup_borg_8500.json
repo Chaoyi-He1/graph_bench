@@ -1,0 +1,149 @@
+{
+ "repo": "borgbackup/borg",
+ "number": 8500,
+ "url": "https://github.com/borgbackup/borg/issues/8500",
+ "title": "Promote `check --repair --undelete-archives` to a separate and safe `undelete` command",
+ "state": "closed",
+ "labels": [],
+ "reporter": "reporter",
+ "created_at": "2024-10-30T12:22:24Z",
+ "closed_at": "2024-11-06T14:44:52Z",
+ "body": "From an user's perspective (can't say anything code-wise) it would be great to promote the potentially lossy `borg check --repair --undelete-archives` of Borg 2 to a separate and safe `borg undelete` command. The reason is that the split of `borg delete` (resp. `borg prune`) and `borg compact` kinda hints for a safe way to undelete an archive before compaction, but `borg check --repair` is associated with warnings for good reason and could do additional harm.\r\n\r\nI'm indecisive about the default action of `borg undelete`: Either to undelete all archives by default, or to rather just list the archives Borg can undelete - and if not the latter, how to do that otherwise. If not the default action, undeleting all archives could require an `--all` option. If not the default action, listing the archives Borg can undelete could either require the `--dry-run --list` options, or something like `borg list --consider-deleted` (similar to the old `borg list --consider-checkpoints` we no longer need, i.e. *also* listing deleted archives with `borg list`) or `borg list --deleted` (i.e. then listing deleted archives *only*). In any case `borg undelete` should also accept the usual options to match archives, especially including the `[NAME]` argument and `-a/--match-archives` options.\r\n\r\nRelated question: Does `borg check --repair --undelete-archives` undelete checkpoints? Is there even a difference between a checkpoint and a deleted/pruned archive before compaction? If there's no difference, this could imply the need for such a distinction with `borg undelete`.\r\n\r\nThis is also helpful for, but not limited to attack scenarios with `--append-only`.\r\n\r\nRelated question: Borg 2.0.0b10+ no longer creates a `transactions` file in `--append-only`, because users are expected to use `borg check --repair --undelete-archives` instead now, correct? If true, the docs are outdated in this regard: https://borgbackup.readthedocs.io/en/master/usage/notes.html#append-only-mode-forbid-compaction\r\n\r\nFrom 682aedba5030e90b8a78488c89dceda7d7a0e91b I made the (possibly wrong, so please correct me otherwise) assumption that `borg check --repair --undelete-archives` might find more archives to undelete if the repo also happens to be corrupted. This should be documented in `borg undelete`, so that a user might want to run `borg check` (and possibly `borg check --repair` if any corruption is found; `borg check --verify-data` isn't really indicated, right?) before `borg undelete`.",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2024-10-30T12:45:03Z",
+   "body": "Good idea, got me thinking...\r\n\r\n- borg delete/prune could, rather than killing the entry in `archives/`, move it to `archives-deleted/`, so that we don't lose the knowledge about what objects are (\"deleted\") archive metadata objects.\r\n- or even use the \"soft deletion\" feature of borgstore.\r\n- borg undelete could then very easily list whatever is a candidate for undeletion. the current implementation in borg check is slow (goes over all objects in the repository) and rather a side-effect if it finds an archive object that has no entry in `archives/` directory (we can then either kill the object or make an entry pointing to it).\r\n- borg compact would empty `archives-deleted/` (because anything not referenced from `archives/` will be gone anyway)\r\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-10-30T12:53:46Z",
+   "body": "To your questions:\r\n- there are no checkpoint archives anymore (this was a concept needed by borg 1.x due to the way it works, but is not needed anymore because borg2 works very differently, giving the same or even better benefits)\r\n- currently, there is also no implementation of `append-only` - this only works in a safe-against-attacks way if there is a separate server-side borg process (which is not the case for file:, sftp:, rclone: repos)\r\n- there are no transactions anymore. it is just \"first write objects, then write references to these objects\".\r\n- borg check undeletion: it would find all archives that still have an archive metadata object in the repo (even if there is no pointer to it in `archives/`)"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-10-30T14:56:41Z",
+   "body": "https://github.com/borgbackup/borg/issues/8500#issuecomment-2447023505 sounds excellent :+1:\r\n\r\nConsidering this, I assume that if it's indeed implemented this way, that `borg check --repair --undelete-archives` could still be useful in corruption scenarios (in case of lost or corrupted archive metadata to be more precise)? We could then have `borg undelete` as safe \"undo command\" for `borg delete` and `borg prune`, and `borg check --repair --undelete-archives` for corruption scenarios. Thinking about this, it might then be a good idea to limit `borg check --repair --undelete-archives` to such corruption scenarios, i.e. explicitly *excluding* the archives `borg undelete` would undelete from `borg check --repair --undelete-archives` (which should then be documented of course). This could then even allow for dropping `--undelete-archives` and rather make it the default with `--repair`.\r\n\r\n> there are no checkpoint archives anymore (this was a concept needed by borg 1.x due to the way it works, but is not needed anymore because borg2 works very differently, giving the same or even better benefits)\r\n\r\nEven though borg2 isn't creating checkpoint archives, `borg create` still is writing data continuously and if it's aborted for whatever reason, the data written remains in the repo, right? It stays there \"unreferenced\" until it's either picked up by a following `borg create`, or deleted by `borg compact`, correct?\r\n\r\nThat's why I was asking myself whether it might be picked up by `borg check --repair --undelete-archives`. From your explanation I now assume it won't. Is there any way to pick it up? This could justify to keep `--undelete-archives` as separate option even beyond the mentioned consolidation of options above. Like \"try to safe whatever possible, even if it's just a fraction of the original\".\r\n\r\n> currently, there is also no implementation of `append-only` - this only works in a safe-against-attacks way if there is a separate server-side borg process (which is not the case for file:, sftp:, rclone: repos)\r\n\r\nOh, okay, didn't know that. But `borg serve --append-only` is still working and safe, right?\r\n\r\nTo be honest, `borg init --append-only` (resp. `borg repo-create` now) always kinda confused me, because as you said, it never was possible to implement this in a safe-against-attacks way without `borg serve`, because an attacker could always just modify the data on the filesystem... I thus feel like loosing it for anything except `borg serve` is no big loss.\r\n\r\nAnyways, I mostly noted this in regards to the docs still mentioning transactions. Shall I open a PR to update the docs accordingly? Are there plans to re-add `borg repo-create --append-only`, or shall I remove it from the docs when I'm at it?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-10-30T16:02:22Z",
+   "body": "> Even though borg2 isn't creating checkpoint archives, borg create still is writing data continuously and if it's aborted for whatever reason, the data written remains in the repo, right? It stays there \"unreferenced\" until it's either picked up by a following borg create, or deleted by borg compact, correct?\r\n\r\nExactly!\r\n\r\n> That's why I was asking myself whether it might be picked up by borg check --repair --undelete-archives. From your explanation I now assume it won't. \r\n\r\nThe main archive metadata object will be written AFTER the archive metadata stream. If it is there already (even if not pointed to by an entry in `archives/`), it could be found by `borg check --repair --undelete-archives`. If it is not there, we just have a lot of unreferenced objects (content data as well as archive metadata stream objects) that either a future `borg create` might reference or `borg compact` will discard.\r\n\r\n> But borg serve --append-only is still working and safe, right?\r\n\r\nNo. There are no transactions anymore and also no segment files that get appended.\r\n\r\nBut `borg serve` is at least an existing server-side agent that could be used as a starting point for new \"append-only\" and quota implementations (or in general: anything that needs to be enforced server-side).\r\n\r\nOTOH, I am not too happy with `borg serve` and that RPC protocol, so not sure how that will be at the end. "
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-10-30T16:04:19Z",
+   "body": "About the docs: guess we should update that when we actually reimplemented that stuff. Or when releasing borg2, whatever comes first."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-10-30T16:33:28Z",
+   "body": "Got it, thanks! :+1:\r\n\r\nAbout the docs: If you've made a decision about how to go forward with `--append-only`, let me know, I'll happily update the docs accordingly then.\r\n\r\n> The main archive metadata object will be written AFTER the archive metadata stream. If it is there already (even if not pointed to by an entry in archives/), it could be found by borg check --repair --undelete-archives. If it is not there, we just have a lot of unreferenced objects (content data as well as archive metadata stream objects) that either a future borg create might reference or borg compact will discard.\r\n\r\nJust as a scenario and to give possible inspiration: Is it possible to implement this in a way that any continuously written data can be picked up by `borg check --repair --undelete-archives` no matter what (e.g. by writing the archive metadata object earlier)? I'm thinking about practically getting borg1's \"checkpoint archives\" back, just different. If it's not possible, not reasonable, or would require noticeable effort, don't even consider this a suggestion, it just popped into my mind and would give rather minor benefits in very limited data recovery scenarios, thus hardly worth any trouble :<nick>: "
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-10-30T18:29:43Z",
+   "body": "I'ld prefer to rather not have something like checkpoint archives:\r\n- they are not needed for speeding up a subsequent `borg create` (that works towards finishing transfer / creating a valid and complete archive). this assumes that `borg compact` is not running in between, which should be no problem (just run it once a month/week/quarter or so and it usually won't interfere).\r\n- they make cli and code more complex (one always needs to decide whether to consider them or not)\r\n- they make borg check slower (as for a complete check, they also would need to get checked)\r\n- if archive creation tends to be problematic due to long runtime and unstable connection, just running the backup more frequently usually reduces the amount of data that has to get transferred. so the result are more completed archives / more tries to get a completed one."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-11-02T14:32:41Z",
+   "body": "@reporter Working on this in PR #8515.\r\n\r\nI first implemented `borg list --deleted` but then noticed that there should be `borg undelete --dry-run --list` anyway (and realized that users really should first use that anyway, before accidentally undeleting too much or the wrong stuff), so I am considering now whether to remove the `--deleted` option again from `borg list`.\r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-11-02T15:18:33Z",
+   "body": "#8515 looks great! :<nick>:\r\n\r\nI'm not sure about what the best solution might be, too. On one hand you're absolutely right, to learn what archives can be undeleted `--dry-run --list` is sufficient. On the other hand, `borg repo-list` is more powerful due to `--format` and `--json` (which is especially useful for 3rd-party tools). Even though I don't like the `--deleted` option much (it kinda feels \"hacky\"), I'd consider it advantageous over just `--dry-run --list`.\r\n\r\nAn use case for `borg repo-list --deleted` that just popped into my mind is to predict on how much space `borg compact` will free: Unless something else went wrong, adding up all soft-deleted archives should give us a pretty good estimate, right?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-11-02T16:25:09Z",
+   "body": "Hmm, right, so I'll keep `borg list --deleted`.\r\n\r\nHow much space is freed by compact is hard to predict, adding up the \"unique chunks sizes\" would give the minimum amount, but it could be also more.\r\n\r\nAlso, quite some stats are reduced in borg2 because they can't be implemented easily due to how it works (and in general, they were a PITA and not always useful).\r\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-11-02T18:05:39Z",
+   "body": "`borg check --repair --undelete-archives` can now work a bit differently also:\r\n\r\nUsually we either have a normal `archives/` directory entry or (for deleted archives) a soft-deleted directory entry.\r\n\r\nThat repair command will now only create new directory entries if it finds an archive metadata chunk and neither of these directory entries exist. That can only be the case if the entry has been \"lost\" somehow.\r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-11-02T18:39:34Z",
+   "body": "> Hmm, right, so I'll keep borg list --deleted.\r\n\r\n:+1:\r\n\r\n> How much space is freed by compact is hard to predict, adding up the \"unique chunks sizes\" would give the minimum amount, but it could be also more.\r\n\r\nI see, thanks for the explanation\r\n\r\n> That repair command will now only create new directory entries if it finds an archive metadata chunk and neither of these directory entries exist. That can only be the case if the entry has been \"lost\" somehow.\r\n\r\nLooks great :+1:\r\n\r\nJust checked the corresponding docs and considering that we now have soft-deleted archives I'd like to bring up the question whether `borg check --repair --undelete-archives` should bring the archives it (re-)discovers back as regular (\"non-deleted\") archives, or as soft-deleted archives. Since users can't choose what to recover and since these archives didn't appear in `borg repo-list` before and would have been wiped with `borg compact`, I believe that they should rather be marked as soft-deleted, allowing users to recover them with `borg undelete` in a second step if they actually want some of the archives back. This needs documentation of course.\r\n\r\nBy the way, `borg check` (without `--repair` and `--undelete-archives`) would finish with a non-zero exit code if it finds data that could be recovered with `borg check --repair --undelete-archives`, right? Because right now my scripts would happily run `borg compact` if `borg check` succeeds with exit code 0 :<nick>: "
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-11-02T19:01:36Z",
+   "body": "I also thought about whether to use not-deleted or soft-deleted, but I think it should be not-deleted because this only happens in case of corruption (losing files / objects under `archives/` in the store).\r\n\r\nThe expectation of `check --repair` is that it fixes corruption. It will emit a warning for every archive it adds an entry for into the directory. So in case it adds anything back that should be deleted rather, the user could either delete it manually or let prune do it, following the given rules as always and soft-deleting the pruned archives again.\r\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-11-02T19:05:03Z",
+   "body": "About the error code: have to check that, but guess it does not even check that because the option won't be given.\r\n\r\nFix will be in PR:\r\n- support --undelete-archives with and without --repair\r\n- when given without --repair, it will detect and report (via rc) inconsistencies\r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-11-02T22:03:30Z",
+   "body": "> support --undelete-archives with and without --repair\r\n\r\nGreat, thanks! :+1:\r\n\r\nIs there a significant penalty (e.g. extra time required or extra resource usage) with `--undelete-archives` (with and without `--repair`)? If not, what do you think about removing `--undelete-archives` (again, both with and without `--repair`) and always perform these steps? With `borg undelete` in mind it's limited to corruption scenarios now and people will run `--repair` manually anyway and therefore notice recovered archives (this IMHO also being the reason why it's no big deal either way to recover lost archives as regular or soft-deleted archives).\r\n\r\nBecause right now I kinda want to *always* run `borg check` with `--undelete-archives` :<nick>: "
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-11-02T23:13:10Z",
+   "body": "It depends.\r\n\r\nSee #8517 - but if one does not use --verify-data, it would currently need to do a full repo scan searching for archive metadata. I optimized it a bit by only loading the metadata for most chunks, but this is a major effort nevertheless.\r\n\r\nGuess `borg check` might need a major redesign (#8518) to optimize it for doing less scans over everything.\r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-11-03T00:57:42Z",
+   "body": "Hmmm... :<nick>: \r\n\r\nOkay, so running with `--undelete-archives` by default isn't feasible, just as with `--verify-data`. Even though any optimization is very much appreciated, if it requires reading all (or most) data of the repo, it is expected to take many hours. In any case, I expect borg2 to be a game-changer in this regard, because `transfer` allows me to split some of my large repos into multiple smaller repos that can be checked independently.\r\n\r\nThe reason I'm asking is the following: Could `compact` \"accidentally\" nuke chunks that could have been saved by `check --repair --undelete-archives`? If true, it means that, as a user, I should make sure that there are no lost archives in the repo before running `compact`.\r\n1. Is `compact` safe in this regard (i.e. it never deletes chunks that could have been saved by `check --repair --undelete-archives`, i.e. chunks dangling due to corruption, not due to `prune` or `delete`),\r\n2. or can I make it safe by running either just `check` first,\r\n3. or do I have to run `check --undelete-archives` first?\r\n\r\nIf no. 3, can we somehow add a \"quick\" safeguard to `borg check` (without `--undelete-archives`) that can detect such cases fast (e.g. with some looser checks and telling the user to run with `--undelete-archives` again)?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-11-03T09:54:21Z",
+   "body": "compact will remove all chunks that are not referenced. to find references, the code only follows the not-deleted entries in the archives directory.\r\n\r\nit won't follow soft-deleted entries and it can't follow non-existing entries.\r\n\r\nso, by your definition from previous post, it is only \"safe\" if you run `borg check --undelete-archives [--repair]` first.\r\n\r\nbut i think that would be investing a lot of ressources into fighting a unlikely archives directory corruption. if your archives directory would become corrupted, i guess you can notice it:\r\n- you could check the archives count using `borg repo-list` - if that is way less than expected (e.g. because directory is empty), maybe don't run `borg compact`.\r\n- maybe that would just crash if it gets crap from there, didn't try that yet."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-11-03T11:04:57Z",
+   "body": "Hmmm... :<nick>: I feel like that this is a bit problematic. Or would this happen with borg1 as well and I just didn't understand it?\r\n\r\nJust like how a user could check the archive count (manually truly is no option, but I guess I could write something to calculate which archives to expect, would be a good safeguard in general, even though that's no small effort also considering that some backups are skipped from time to times), could Borg somehow calculate an expected number of unreferenced chunks and compare that to the actual number of unreferenced chunks and yield a warning if they differ (with pure `check`)?\r\n\r\nI don't know Borg's code in this regard, so please excuse me if that is silly to ask, rather take it as an inspiration: I currently explain `compact` to myself that it iterates all chunks and if `compact` finds chunks that aren't referenced by any not-deleted archives, it marks them for actual deletion (\"compaction\"). If that's more or less how it actually works, could we add the same logic to `check` (without `--undelete-archives`; `compact` is pretty fast, so I figure that this wouldn't be unreasonable) as well, but instead of looking for references to not-deleted archives only, to also look for references to soft-deleted archives (we couldn't do this before, but now we can)? Shouldn't this leave us with the number of chunks that are *likely* (or definitely?) unreferenced due to some corruption? Are there any other scenarios (i.e. other than `prune` and `delete` soft-deleting archives) in which chunks can get unreferenced? If yes, what are these scenarios and could Borg somehow account for these as well? If that's not possible or reasonable, are such unaccounted dangling chunks an \"everyday encounter\", or rather rare? Because if it's rather rare, `check` could emit a warning (maybe opt-in with another option, so that users are aware that this might yield false positives) and tell the user to run with `--undelete-archives` again. That would leave manual intervention to a minimum."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-11-03T11:17:07Z",
+   "body": "borg 1.x uses the manifest chunk instead of the borg2 archives directory.\r\n\r\nthe manifest could be lost and recreating it also involved scanning the whole repo for archive metadata. maybe losing the manifest in borg 1.x was even a bit more likely because that object was read-modified-written at each backup.\r\n\r\nborg2 does no refcounting anymore. what borg compact does is:\r\n- build the set of **existing** objects in the repo\r\n- iterate over all non-deleted archives, reads their metadata stream (with all files, content chunk references) and computes the set of **used** (referenced) objects in the repo.\r\n- deletes every object that exists but is **not used**.\r\n\r\nDoing it like that was the design goal of borg2 compact. It not only frees space for deleted archives, it also cleans up any crap that could exist due to interrupted backups, source files that were skipped in the middle due to an I/O error, or other malfunctions.\r\n\r\nDue to that (more or less expected) crap, it is not possible to compute a precise expected number of object deletions."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-11-03T11:41:57Z",
+   "body": "About borg check (archives part):\r\n\r\nyes, it could theoretically also check the soft-deleted archives in the same way as the not-deleted archives. It would just take longer and it would check stuff that the next borg compact then gets rid of anyway.\r\n\r\nIn a simple setup, one already can do something equivalent: just do create, check, prune/delete, compact in this order (check before delete).\r\n\r\nprune/delete is super-simple in borg2, it just soft-deletes the entries in archives/ and delegates cleanup to compact.\r\n\r\nAbout other unreferenced chunks: yes, they can exist quite regularly: interrupted backups, src file I/O errors.\r\n\r\nborg 1.x check warned when finding such \"orphan chunks\", but maybe it did more bad than good, scaring users about stuff that is either expected (because they ctrl-c-ed or killed something) or something they already got a better error msg for (if a src file could not be read).\r\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-11-03T11:43:39Z",
+   "body": "borg1.x had some quite complex code that tried to avoid some of these orphans and I was quite happy I could get rid of that. :-)"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-11-03T16:28:11Z",
+   "body": "I see. Thank you for the explanation :+1: Makes very much sense and is absolutely reasonable. Too bad that there seems to be no viable \"integrated\" solution to this. I'll think about how a `list` \"sanity check\" could look like and whether the (presumably rather small) chance of loosing data this way is worth the effort. \r\n\r\nI also just did a review in #8515. Looks great :<nick>: "
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-11-03T16:41:02Z",
+   "body": "```\r\nborg repo-list --short | wc -l\r\n```\r\nAnd then check it is a minimum value, > 0 (or whatever your minimum would be).\r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-11-03T19:04:22Z",
+   "body": "Great idea :+1: Depending on the retention policy the number of archives might never decrease significantly intentionally, so by remembering the previous number of archives this might really be that easy (i.e. e.g. `min_archives = previous_number_of_archives - 3`). I'll look into it. Thanks!"
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "borgbackup/borg",
+  "default_branch": "master",
+  "commit_sha": "1fa2b9a1a0b747eb904783d754b966a31ffabf63",
+  "as_of": "2024-10-30T12:22:24Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_borgbackup_borg_8500"
+}

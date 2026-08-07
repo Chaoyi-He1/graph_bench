@@ -1,6 +1,6 @@
 # Review: gh_home-assistant_core_61551
 
-**Tibber Energy dashboard shows large negative consumption around midnight**
+**Tibber Energy dashboard records large negative consumption around midnight**
 
 - source: https://github.com/home-assistant/core/issues/61551
 - kind: LLM draft (needs review)
@@ -10,24 +10,34 @@
 ```mermaid
 flowchart LR
     N0["<b>N0 negative midnight consumption reported</b><br/><small>info: 5</small>"]
-    N1["<b>N1 Tibber reset pattern established</b><br/><small>info: 10</small>"]
-    N2_x["<b>N2_x ordinary update aftermath</b><br/><small>info: 11</small>"]
-    N3["<b>N3 local rollover patch installed</b><br/><small>info: 15</small>"]
-    N4["<b>N4 rollover behavior verified</b><br/><small>info: 17</small>"]
-    N_terminal["<b>terminal resolved</b><br/><small>info: 17</small>"]
-    N0 -.->|"❓ tibber_accumulated_consumption_used_as_energy_source, accumulated_sensor_rises_then_resets_near_midnight, negative_value_approximately_previous_day_total"| N1
+    N1["<b>N1 Tibber daily-reset pattern established</b><br/><small>info: 9</small>"]
+    N2["<b>N2 metadata regression identified</b><br/><small>info: 10</small>"]
+    N2_x["<b>N2_x last-meter workaround aftermath</b><br/><small>info: 10</small>"]
+    N2b["<b>N2b workaround rejected and metadata regression identified</b><br/><small>info: 11</small>"]
+    N3["<b>N3 candidate reset-marker patch installed</b><br/><small>info: 16</small>"]
+    N4["<b>N4 candidate fix verified across midnight</b><br/><small>info: 18</small>"]
+    N_terminal["<b>terminal Tibber midnight statistics resolved</b><br/><small>info: 18</small>"]
+    N0 -.->|"❓ tibber_accumulated_consumption_used_as_energy_source, source_sensor_rises_during_day_and_resets_daily, negative_value_repeats_each_midnight_without_update, negative_entry_approximately_previous_day_total"| N1
     linkStyle 0 stroke:#3b82f6,stroke-width:2px
-    N1 ==>|"💥 blind: Treat the issue as already corrected by an ordinary Home Assistant 2021.12 patch update and ask the user to update without confirming that the build contains the Tibber rollover fix."| N2_x
-    linkStyle 1 stroke:#ef4444,stroke-width:2px
-    N2_x ==>|"⚡ Keep the Tibber accumulated-consumption entities as total sensors, but make their real daily rollover explicit by setting last_reset when the accumulated value decreases around midnight; retain ordinary within-day decreases as corrections rather than meter resets."| N3
-    linkStyle 2 stroke:#f97316,stroke-width:2px
-    N3 -.->|"❓ patched_component_crossed_midnight_without_negative_spike"| N4
+    N1 -.->|"❓ accumulated_sensor_changed_from_total_increasing_to_total"| N2
+    linkStyle 1 stroke:#3b82f6,stroke-width:2px
+    N1 ==>|"💥 blind: Replace the Tibber accumulated-consumption entity in the Energy dashboard with the last-meter-consumption entity."| N2_x
+    linkStyle 2 stroke:#ef4444,stroke-width:2px
+    N2_x -.->|"❓ accumulated_sensor_changed_from_total_increasing_to_total"| N2b
     linkStyle 3 stroke:#3b82f6,stroke-width:2px
-    N4 ==>|"⚡ Ship the verified Tibber rollover handling so accumulated-consumption sensors declare their actual daily reset through last_reset while preserving ordinary hourly corrections, then ask the user to verify a build containing that fix before declaring the issue resolved."| N_terminal
+    N2 ==>|"⚡ Keep Tibber accumulated consumption as a total that permits corrections, but record the genuine daily cycle boundary when the value drops during the midnight hour."| N3
     linkStyle 4 stroke:#f97316,stroke-width:2px
+    N2b ==>|"⚡ Return to the Tibber accumulated-consumption source and apply reset-boundary handling instead of relying on the unavailable or time-shifted replacement sensor."| N3
+    linkStyle 5 stroke:#f97316,stroke-width:2px
+    N3 -.->|"❓ patched_accumulated_sensor_crossed_midnight_without_negative_entry, patched_daily_total_matches_midnight_accumulated_value"| N4
+    linkStyle 6 stroke:#3b82f6,stroke-width:2px
+    N4 ==>|"⚡ Adopt the verified Tibber reset-boundary handling so accumulated consumption remains usable by the Energy dashboard without interpreting its daily reset as negative usage."| N_terminal
+    linkStyle 7 stroke:#f97316,stroke-width:2px
     class N0 start
     class N1 normal
+    class N2 normal
     class N2_x normal
+    class N2b normal
     class N3 normal
     class N4 normal
     class N_terminal terminal
@@ -38,36 +48,41 @@ flowchart LR
 
 ## Opening (body)
 
-> After updating to Home Assistant 2021.12.0 late last night, my Energy dashboard shows large negative consumption around midnight for all my meters. I have no energy production, so this is clearly wrong. It happens on both a Supervised installation and an OS installation. The last working Core version was 2021.11.5, and I cannot see anything useful in the logs.
+> After updating to Home Assistant 2021.12.0 late last night, my Energy dashboard shows large negative consumption around midnight for all my meters. I have no energy production, so this is clearly wrong. It happens on both a Supervised installation and a Home Assistant OS installation. The last working Core version was 2021.11.5, and I cannot see anything useful in the logs.
 
 ## Satisfaction conditions
 
-1. Must identify the root cause: Tibber accumulated-consumption is a daily-resetting total that can also receive smaller within-day corrections; after its state class changed to total without a usable last_reset boundary, the midnight reset was accumulated as a large negative delta.
-2. The diagnosis must be grounded in the collected evidence: the dashboard drop coincides with the Tibber sensor reset, approximately equals the previous day's total, repeats without another update, and disappears when the candidate rollover handling is tested across midnight.
-3. The fix must preserve the Tibber accumulated-consumption entity for Energy, use last_reset to mark the genuine daily rollover, and avoid treating ordinary hourly corrections as new meter cycles.
-4. Must not claim that an ordinary 2021.12 patch update resolves the issue unless the installed build is known to contain the Tibber rollover fix; that move was falsified in the thread.
-5. Must ask the user to verify a Home Assistant build containing the fix through a midnight rollover before declaring the issue resolved.
+1. Must identify the accepted root cause: after Tibber accumulated consumption changed from total_increasing to total, its daily reset lacked the reset-boundary handling needed by Energy statistics, so the midnight drop was counted as negative consumption approximately equal to the prior day's total.
+2. Must preserve total-style semantics rather than simply force the sensor back to strictly increasing behavior, because the Tibber accumulated value can receive ordinary downward corrections as well as its daily reset.
+3. The fix must record the genuine daily reset boundary for Tibber accumulated consumption and production while keeping the original accumulated-consumption sensor usable in the Energy dashboard.
+4. Must not present sensor.last_meter_consumption_xxx as the general fix: it is unavailable on some Tibber setups and can produce approximately one-hour-shifted hourly values.
+5. Must ground resolution in an affected user's overnight verification: no negative entry appears at midnight and the completed Energy total matches the accumulated-consumption value.
 
 ## Edges
 
 | edge | type | gates / info | payload |
 |---|---|---|---|
-| `e1_N0__N1` | clarification_only | asks: tibber_accumulated_consumption_used_as_energy_source, accumulated_sensor_rises_then_resets_near_midnight, negative_value_approximately_previous_day_total | I'm using Tibber data, specifically sensor.accumulated_consumption_xxx, as the Energy dashboard input. Other a / The accumulated-consumption sensor rises steadily during the day and resets around midnight. My two meters do  / The incorrect negative amount is approximately the previous day's total. For example, about 17 kWh of usage is |
-| `e2_N1__N2_x` | solution_only **BLIND** | req_info: negative_energy_consumption_around_midnight_after_2021_12_0, tibber_accumulated_consumption_used_as_energy_source<br>elements: recommends_an_ordinary_update_without_confirming_the_tibber_fix_is_present | Treat the issue as already corrected by an ordinary Home Assistant 2021.12 patch update and ask the user to update without confirming that the build contains the Tibber rollover fix. |
-| `e3_N2_x__N3` | solution_only | req_info: negative_energy_consumption_around_midnight_after_2021_12_0, tibber_accumulated_consumption_used_as_energy_source, accumulated_sensor_rises_then_resets_near_midnight, negative_value_approximately_previous_day_total<br>elements: keeps_the_tibber_accumulated_sensor_usable_in_energy, adds_last_reset_handling_for_the_real_daily_rollover, distinguishes_midnight_reset_from_within_day_corrections | Keep the Tibber accumulated-consumption entities as total sensors, but make their real daily rollover explicit by setting last_reset when the accumulated value decreases around midnight; retain ordinary within-day decreases as corrections rather than meter resets. |
-| `e4_N3__N4` | clarification_only | asks: patched_component_crossed_midnight_without_negative_spike | Midnight passed without incident. I did not get the large negative value. There was the one bump when I first  |
-| `e5_N4__N_terminal` | solution_only | req_info: negative_energy_consumption_around_midnight_after_2021_12_0, tibber_accumulated_consumption_used_as_energy_source, accumulated_sensor_rises_then_resets_near_midnight, negative_value_approximately_previous_day_total, patched_component_crossed_midnight_without_negative_spike<br>elements: identifies_missing_reset_boundary_as_the_cause_of_the_negative_delta, uses_last_reset_for_the_actual_tibber_daily_rollover, does_not_treat_normal_hourly_corrections_as_meter_resets, asks_user_to_verify_on_a_build_containing_the_fix | Ship the verified Tibber rollover handling so accumulated-consumption sensors declare their actual daily reset through last_reset while preserving ordinary hourly corrections, then ask the user to verify a build containing that fix before declaring the issue resolved. |
+| `e1_N0__N1` | clarification_only | asks: tibber_accumulated_consumption_used_as_energy_source, source_sensor_rises_during_day_and_resets_daily, negative_value_repeats_each_midnight_without_update, negative_entry_approximately_previous_day_total | I'm using Tibber data, specifically sensor.accumulated_consumption_xxx, as the Energy dashboard input. Other a / The accumulated-consumption sensor rises through the day and starts over around midnight. It is not showing ac / I updated at about 22:30 on 11 December, but the large negative value repeated around the next midnight withou / The incorrect negative amount is approximately the previous day's total consumption; for example, about 17 kWh |
+| `e2_N1__N2` | clarification_only | asks: accumulated_sensor_changed_from_total_increasing_to_total | The linked change replaced total_increasing with total for Tibber accumulated consumption and production. Befo |
+| `e3_N1__N2_x` | solution_only **BLIND** | req_info: tibber_accumulated_consumption_used_as_energy_source, source_sensor_rises_during_day_and_resets_daily<br>elements: recommends_last_meter_consumption_as_replacement | Replace the Tibber accumulated-consumption entity in the Energy dashboard with the last-meter-consumption entity. |
+| `e4_N2_x__N2b` | clarification_only | asks: accumulated_sensor_changed_from_total_increasing_to_total | The accumulated-consumption entity changed from total_increasing to total in 2021.12. |
+| `e5_N2__N3` | solution_only | req_info: tibber_accumulated_consumption_used_as_energy_source, source_sensor_rises_during_day_and_resets_daily, negative_entry_approximately_previous_day_total, accumulated_sensor_changed_from_total_increasing_to_total<br>elements: keeps_total_semantics_for_non_strict_accumulated_values, records_the_real_daily_reset_boundary, asks_for_an_overnight_test | Keep Tibber accumulated consumption as a total that permits corrections, but record the genuine daily cycle boundary when the value drops during the midnight hour. |
+| `e6_N2b__N3` | solution_only | req_info: tibber_accumulated_consumption_used_as_energy_source, last_meter_consumption_avoids_negative_but_is_unavailable_or_time_shifted, source_sensor_rises_during_day_and_resets_daily, accumulated_sensor_changed_from_total_increasing_to_total<br>elements: returns_to_accumulated_consumption, records_the_real_daily_reset_boundary, does_not_rely_on_last_meter_consumption | Return to the Tibber accumulated-consumption source and apply reset-boundary handling instead of relying on the unavailable or time-shifted replacement sensor. |
+| `e7_N3__N4` | clarification_only | asks: patched_accumulated_sensor_crossed_midnight_without_negative_entry, patched_daily_total_matches_midnight_accumulated_value | Midnight passed without incident. Apart from the one initial bump after I introduced the patch, there was no l / The Energy dashboard total for the completed day is exactly the Tibber Pulse accumulated-consumption value at  |
+| `e8_N4__N_terminal` | solution_only | req_info: tibber_accumulated_consumption_used_as_energy_source, source_sensor_rises_during_day_and_resets_daily, negative_entry_approximately_previous_day_total, accumulated_sensor_changed_from_total_increasing_to_total, patched_accumulated_sensor_crossed_midnight_without_negative_entry, patched_daily_total_matches_midnight_accumulated_value<br>elements: identifies_missing_daily_reset_boundary_as_cause_of_negative_delta, retains_total_semantics_because_values_can_receive_corrections, ships_the_reset_boundary_handling_verified_across_midnight, does_not_replace_the_source_with_last_meter_consumption | Adopt the verified Tibber reset-boundary handling so accumulated consumption remains usable by the Energy dashboard without interpreting its daily reset as negative usage. |
 
 ## Nodes
 
 | node | terminal | volunteered | images | symptoms |
 |---|---|---|---|---|
-| `N0` |  | 0 | 0 | After updating to Home Assistant 2021.12.0, all my Energy dashboard meters show large negative consumption around midnight even though I hav |
-| `N1` |  | 2 | 0 | The Tibber accumulated-consumption sensor rises during the day, but the Energy dashboard records a large negative value when that sensor res |
-| `N2_x` |  | 1 | 0 | After updating to Home Assistant 2021.12.2, the Energy dashboard still records the same large negative Tibber consumption around midnight. |
-| `N3` |  | 2 | 2 | Immediately after I patched the Tibber component and restarted Home Assistant, the Energy dashboard showed one unusually large positive cons |
-| `N4` |  | 1 | 0 | With the patched Tibber component, midnight passed without the large negative consumption value. Apart from the one-time peak when the patch |
-| `N_terminal` | ✓ | 0 | 0 | After installing and verifying a Home Assistant build containing the Tibber rollover fix, accumulated consumption crosses midnight without a |
+| `N0` |  | 0 | 0 | After updating to Home Assistant 2021.12.0, all my meters show large negative consumption around midnight even though I have no energy produ |
+| `N1` |  | 0 | 0 | The Energy dashboard records a large negative entry around each midnight while my Tibber accumulated-consumption sensor rises during the day |
+| `N2` |  | 0 | 0 | The Tibber accumulated-consumption value starts a new daily cycle around midnight, and the Energy dashboard records a negative amount approx |
+| `N2_x` |  | 1 | 2 | Using the last-meter-consumption sensor removes the negative value on a setup where that sensor exists, but the hourly consumption is shifte |
+| `N2b` |  | 0 | 0 | The replacement sensor does not provide a satisfactory Energy dashboard: it is unavailable on some systems and its hourly values can appear  |
+| `N3` |  | 4 | 2 | After applying the Tibber patch and restarting Home Assistant, the first hour shows a large positive consumption spike. Later hours look nor |
+| `N4` |  | 0 | 2 | With the patched Tibber integration, midnight passes without the large negative consumption entry. The completed daily Energy total matches  |
+| `N_terminal` | ✓ | 0 | 0 | The Tibber accumulated-consumption sensor crosses midnight without creating a large negative Energy entry, and the daily total remains corre |
 
 ## Machine review (audit pass, adversarially verified)
 

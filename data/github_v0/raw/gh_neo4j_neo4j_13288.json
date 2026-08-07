@@ -1,0 +1,122 @@
+{
+ "repo": "neo4j/neo4j",
+ "number": 13288,
+ "url": "https://github.com/neo4j/neo4j/issues/13288",
+ "title": "Weird query performance - optimize query execution",
+ "state": "closed",
+ "labels": [
+  "bug",
+  "team-cypher"
+ ],
+ "reporter": "reporter",
+ "created_at": "2023-09-04T07:19:27Z",
+ "closed_at": "2023-11-09T11:08:32Z",
+ "body": "Most resent Neo4j AuraDB\r\n\r\nI found that Neo4j executes some simple queries in a very strange way. E.g. the most simple case:\r\n```\r\nMATCH p=(a)-[*]->(b:LABEL3) WHERE b.property = 'test'\r\n    and (a:LABEL1 OR a:LABEL2)\r\nRETURN p\r\n```\r\n\r\nwill filter all labels first and make a Cartesian product -> this is far from optimal. (and will almost never finish on huge graphs)\r\n\r\n\r\nInstead of \r\n```\r\nMATCH p=(a)-[*]->(b:LABEL3) WHERE b.property = 'test'\r\nRETURN p\r\n```\r\n\r\nThis will filter on the target node and return all paths. This is executed in an instant.\r\n\r\nNeo4j should consider moving the \"Filter\" clause to the end of the execution plan in this case.\r\nThe current workaround is using the second query and filtering the labels in my own code (after I got the result), as the first query will execute forever. ",
+ "comments": [
+  {
+   "author": "reporter",
+   "created_at": "2023-09-04T08:09:28Z",
+   "body": "In addition:\r\n`MATCH p=(a)-[*]->(b:LABEL3) WHERE b.property = 'test'\r\n    and (a:LABEL1 OR a:LABEL2)\r\nRETURN p LIMIT 25`\r\nWith a limit clause, it does exactly what is proposed above. \r\n\r\nSo there is an issue as soon as a certain threshold is reached and it starts using a way less efficient cartesian product. "
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-09-04T08:40:47Z",
+   "body": "Hello @reporter, \r\n\r\nThank you for reaching out to us and reporting this issue. \r\n\r\nThe query planner will generate many different ways of solving the same query, and will perform a cost-based comparison between each of these ways. In order to do this, it looks at the operators in each query (cartesian product, filter, etc) as well as statistics about the current state of the database which will contain information such as how many nodes of label LABEL1 exist on disk.\r\n\r\nIt could well be that based on the statistics of the current of the database, the plan with the cartesian product is the most optimal. Such a plan might indeed scale poorly if the state of the database was to significantly change, but the database is able to detect such scenarios and would force a the query to be recompiled (the new plan would probably not contain a cartesian product).\r\n\r\nGenerally speaking, cartesian product may be cheap to execute if one or both sides of the cartesian product have very few records which might be the case if the right and left hand side operators of the cartesian product are very selective (eg NodeByLabelScan).\r\n\r\nIf you would like to pursue this issue further, then would you mind please prefixing your queries with `debug=printcostcomparisons` and sending us the output you see in your `neo4j.log` file? I will then ask a team member to have a look and get back to you.\r\n\r\n```\r\nCYPHER debug=printcostcomparisons\r\nEXPLAIN\r\nMATCH p=(a)-[*]->(b:LABEL3) \r\nWHERE b.property = 'test'\r\n      AND a:LABEL1 OR a:LABEL2\r\nRETURN p\r\n```\r\n\r\nHope you have a nice day"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-09-04T09:09:25Z",
+   "body": "Hi thanks for the fast response. I would do so if I could: the issue is I'm currently on Aura Free (so I'm not able to provide the logs)\r\n![image](https://github.com/neo4j/neo4j/assets/66625570/3133bf02-2496-4e29-83ef-bf5271c8f484)\r\n\r\n\r\n In the meantime I surprisingly found that\r\n`MATCH p=(b:LABEL3)<-[*]-(a) WHERE b.property = 'test'\r\n    and (a:LABEL1 OR a:LABEL2)\r\nRETURN p`\r\ndoes execute while \r\n\r\n`MATCH p=(a)-[*]->(b:LABEL3) WHERE b.property = 'test'\r\n    and (a:LABEL1 OR a:LABEL2)\r\nRETURN p`\r\nwill loop forever. the execution plan is identical (so still with Cartesian product). The only difference is that a and b positions are exchanged in the execution graph which should not impact the performance at all.\r\n(I know AxB≠BxA but in the Neo4j case above it's basically a bijective cartesian product)\r\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-09-05T08:34:55Z",
+   "body": "Sorry, I forgot that on Neo4j Aura Free the logs are not available. Neo4j can be downloaded and installed locally via this link https://neo4j.com/download/. Installing the software would give you full control over your database. If you would like to build a reproducible case that you think will yield a poor plan, then I'd invite you to give us some seed data and send us the logged cost comparisons.\r\n\r\nIf I populate this seed data:\r\n\r\n```\r\nUNWIND range(0, 100000) AS i\r\nCREATE (:LABEL1)-[:FOO]->(:LABEL3 { property: 'test' })\r\n```\r\n\r\nFollowed by your original query:\r\n\r\n```\r\nEXPLAIN\r\nMATCH p=(a)-[*]->(b:LABEL3) \r\nWHERE b.property = 'test'\r\n      AND a:LABEL1 OR a:LABEL2\r\nRETURN p\r\n```\r\n\r\nThen I get the following plan which does not contain a CartesianProduct.\r\n\r\n![plan](https://github.com/neo4j/neo4j/assets/9439499/327b083d-a420-44c6-9248-6fd30a2bad42)\r\n\r\n_PS. Different machine might get different plans, because producing a logical plan is not entirely deterministic. But generally speaking for a database with lots of data, plans containing CartesianProduct should be rarer._\r\n\r\n**Other issue**\r\n\r\nI tried to replicate this issue but was not able to. For me, using the seed data I use above, both queries complete without hanging. Not sure what is happening on your end but if you are able to provide us with a reproducible case then we would be able to investigate further. If this is an avenue you'd like to explore then it might be better to separate this issue into another Github Issue to focus each conversation on a single problem.\r\n\r\n```\r\nMATCH p=(b:LABEL3)<-[*]-(a) \r\nWHERE b.property = 'test' \r\n  AND (a:LABEL1 OR a:LABEL2) \r\nRETURN COUNT(*)\r\n// 100001\r\n\r\nMATCH p=(a)-[*]->(b:LABEL3)\r\nWHERE b.property = 'test'\r\n  AND (a:LABEL1 OR a:LABEL2)\r\nRETURN COUNT(*)\r\n// 100001\r\n```\r\n\r\nI hope these answers were helpful 🙇 \r\n"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-09-28T15:31:33Z",
+   "body": "Hi @reporter,\r\n\r\nWe have not heard from you in the last 3 weeks, so I will assume that Daniel's last comment helped you solve the problem and I will therefore close the issue.\r\n\r\nShould you still face the same problem and found a way to replicate it, please feel free to reopen this issue or create a new one.\r\n\r\nRegards,\r\n\r\nArne"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-09-29T06:05:55Z",
+   "body": "Hi, @participant2 haven't had time to create a minimum example and at least one way of CQL did work. I've just checked that the problem still occurs. This does not work:\r\n`MATCH p=(a)-[*]->(b:LABEL3) WHERE b.property = 'test' and (a:LABEL1 OR a:LABEL2) RETURN p`\r\n\r\nHere is an anonymized form of the (real) execution plan:\r\n![image](https://github.com/neo4j/neo4j/assets/66625570/a65cfeff-6ca2-4c48-add1-f2195a4e87c4)\r\n\r\n\r\nwhile this does (within seconds):\r\n`MATCH p=(b:LABEL3)<-[*]-(a) WHERE b.property = 'test' and (a:LABEL1 OR a:LABEL2) RETURN p`\r\nAnonymized execution plan:\r\n![image](https://github.com/neo4j/neo4j/assets/66625570/d987cd06-d98d-4e2a-b595-4f5eda780b63)\r\n\r\nYou can see it's basically the same but interchanged. So I don't get why this is such a huge difference as it's interchangeable and the Neo4j query-optimizer should find the optimal execution (which isn't the case)\r\n\r\nSo Neo4j should probably consider this as Query-Optimizer Bug\r\n\r\n"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-09-29T06:56:49Z",
+   "body": "Hi @reporter,\r\n\r\nI would assume that the two plans perform the same. Could you therefore not only attach the output from `EXPLAIN` but also from `PROFILE`, so that we can see what is taking long? Also, it would be great if you could attach that in text format. You can find an option to export as TXT here:\r\n![image](https://github.com/neo4j/neo4j/assets/79841228/f30937e3-b47e-4d33-9ab4-53ad28436016)\r\n\r\nAnd to be able to reproduce what plans are generated on your side, please also provide the output from `CALL db.stats.retrieve('GRAPH COUNTS')`, which will give us the relevant meta-data about your database.\r\n\r\nCheers,\r\n\r\nArne"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-10-18T14:52:23Z",
+   "body": "Hi @reporter,\r\n\r\nThis issue has been idle for another few weeks. Does the comment I made make sense to you? Is this still on your agenda?\r\n\r\nIf you are still experiencing this issue, it would be great if you can attach the information we need to look into this. Otherwise, we would like to close this issue and you can open a new one once you have the data ready."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-10-19T06:08:40Z",
+   "body": "Hi @participant2 yes it totally makes sense. I am very sorry it's taking this long but I haven't found time to work on the ticket. (I'll add the `Profile` in the upcoming week)\r\n\r\n-> especially first query takes forever (never finished on the full dataset while the second did), so I have to investigate to what extent I can reduce the data so it will finish and create a profile that shows the problem"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-10-26T06:38:59Z",
+   "body": "@participant2 Finally I was able to run the Profile. (I had to go down to \"limit 40\" so the problematic plan did run)\r\nIt clearly shows in the TXT file what's going on in the wrongly executed query. (again I anonymized the labels keeping everything else intact)\r\n[working_plan.txt](https://github.com/neo4j/neo4j/files/13173740/working_plan.txt)\r\n[problem_plan.txt](https://github.com/neo4j/neo4j/files/13173741/problem_plan.txt)\r\n\r\n \r\n\r\nUnfortunately, I'm not able to run \r\n`CALL db.stats.retrieve('GRAPH COUNTS')`\r\non Neo4j Aura Free (seems this Admin Call doesn't work there due to permissions)\r\nbut maybe this is what you want to see (the DB is far from full):\r\n![2023-10-26_08-25](https://github.com/neo4j/neo4j/assets/66625570/bf60fff2-01b3-43a2-91e2-d7626485308c)\r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-10-26T07:04:01Z",
+   "body": "Just that you know what I mean with \"it clearly shows the problem\":\r\n\r\nI mean step ID 4 in both files \r\nwhile on the **working plan** the CartesioanProduct is constantly 5000\r\non the **problematic plan** the row numbers are exploding the higher the limit is set\r\n\r\n(e.g. switching the limit from 40 to 41 is enough to see this)\r\n[working_plan_limit41.txt](https://github.com/neo4j/neo4j/files/13174020/working_plan_limit41.txt)\r\n[problem_plan_limit41.txt](https://github.com/neo4j/neo4j/files/13174021/problem_plan_limit41.txt)\r\n\r\n(more than 41 is not possible on the problem plan and less than 40 doesn't show the problem as it's a different \"linear\" execution plan without cartesian product)"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-10-26T15:36:31Z",
+   "body": "Hi @reporter,\r\n\r\nThank you for coming back to this and sorry that retrieval of the graph counts is not available in Aura Free. I can see two topics in this issue, so I will address them individually:\r\n\r\n## Order of the Cartesian product\r\n\r\nIt looks to me like there are far fewer relationships we need to traverse from `t` for finding the paths. This could for example be because `u` is more connected than `t` such as in this simplified sketch:\r\n![Untitled graph(2)](https://github.com/neo4j/neo4j/assets/79841228/c5b3b897-a08d-423d-86d0-3f1f9ea7cb44)\r\n\r\nThat should explain why one plan performs a lot better than the other.\r\n\r\n## Getting a linear plan\r\n\r\nIn the original post, you wrote that\r\n\r\n```Cypher\r\nMATCH p=(a)-[*]->(b:LABEL3) WHERE b.property = 'test'\r\nRETURN p\r\n```\r\n\r\nperforms better as it produces a linear plan and does not use a Cartesian product.\r\n\r\nUsually, it helps giving the planner more information on the relationships, such as applying relationship types. That way, it may become better at estimating when a Cartesian product is preferable to a linear plan.\r\n\r\nIn case, you cannot make it work, you can \"force\" the planner by introducing a `WITH * SKIP 0` to separate the parts of the query which should be solved first and which after that:\r\n\r\n```Cypher\r\nMATCH p=(a)-[*]->(b:LABEL3) WHERE b.property = 'test'\r\nWITH * SKIP 0 WHERE a:LABEL1|LABEL2\r\nRETURN p\r\n```\r\n\r\nThis should lead to a linear plan.\r\n\r\n## Conclusion\r\n\r\nWithout looking at your data in more detail, there is not much more I can help you tweak the query. But I hope this will provide you with the necessary tools you need to get the performance that you want.\r\n\r\nLet me know if there is more I can help you with."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-10-27T07:13:01Z",
+   "body": "Wow thanks for our response the \r\n`WITH * SKIP 0 WHERE a:LABEL1|LABEL2`\r\ndid the trick. \r\n\r\nthis is a huge difference the \"problem\" query now executes in milliseconds and even the \"working\" query is now faster.\r\npretty interesting the query optimizer doesn't plan this way and isn't using this path.\r\n\r\nbeside this, I would also say even if:\r\n> It looks to me like there are far fewer relationships we need to traverse from t for finding the paths. \r\n\r\nthis should be automatically recognized by the query optimizer (neo4j internally).\r\nso it automatically selects the optimal execution plan (e.g. query in one or another direction depending on what is more efficient)\r\n\r\n**so although we have a workaround now, I still think this needs to be properly addressed**:\r\nAs any Neo4j User wants the same and most optimal query performance (no matter which direction he writes the query - as they are interchangeable and it's the query optimizers job to find the best/fastest path)\r\n"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-10-30T14:08:15Z",
+   "body": "Hi @reporter,\r\n\r\nGood to hear that this solved your issue. I do agree that in general, the perfect plan should be chosen.\r\n\r\nHowever, there are cases, where we have too little information on the pattern that the user is looking for to generate an appropriate plan. Keeping track on all possible patterns is equivalent to caching the database: For each pair of `u` and `t` we would need to remember how many paths there are of a certain kind between the two.\r\n\r\nTo investigate whether we could have been smarter in this particular case, we would the graph counts that I mentioned earlier. I understand that this is not possible for you to produce via the procedure. But if we should investigate, maybe you could send me the details from:\r\n\r\n```\r\nCOUNT { () }\r\n```\r\n\r\n```\r\nMATCH (n)\r\nUNWIND labels(n) AS label\r\nRETURN label, count(*)\r\n```\r\n\r\n```\r\nMATCH ()-[r]->()\r\nRETURN type(r), count(*)\r\n```\r\n\r\n```\r\nMATCH (a)-[r]->()\r\nUNWIND labels(a) AS label\r\nWITH label, type(r) as relType\r\nRETURN [label, relType], count(*);\r\n```\r\n\r\n```\r\nMATCH ()-[r]->(a)\r\nUNWIND labels(a) AS label\r\nWITH label, type(r) as relType\r\nRETURN [relType, label], count(*);\r\n```\r\n\r\nThat might give us enough clues about what the optimizer's decisions are in your case."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-10-31T07:45:44Z",
+   "body": "Hi @participant2 here a consistently anonymised version of the outputs the above queries:\r\n\r\n`COUNT { () }` <- doesn't exist \r\nyou mean \r\n`MATCH () RETURN count(*) as count` ?\r\nit's `6857`\r\n\r\n\r\n```\r\nMATCH (n)\r\nUNWIND labels(n) AS label\r\nRETURN label, count(*)\r\n```\r\n[counts.csv](https://github.com/neo4j/neo4j/files/13213334/counts.csv)\r\n\r\n```\r\nMATCH ()-[r]->()\r\nRETURN type(r), count(*)\r\n```\r\n[relations.csv](https://github.com/neo4j/neo4j/files/13213373/relations.csv)\r\n\r\n```\r\nMATCH (a)-[r]->()\r\nUNWIND labels(a) AS label\r\nWITH label, type(r) as relType\r\nRETURN [label, relType], count(*);\r\n```\r\n[label_rel.csv](https://github.com/neo4j/neo4j/files/13213406/label_rel.csv)\r\n\r\n\r\n```\r\nMATCH ()-[r]->(a)\r\nUNWIND labels(a) AS label\r\nWITH label, type(r) as relType\r\nRETURN [relType, label], count(*);\r\n```\r\n[rel_label.csv](https://github.com/neo4j/neo4j/files/13213447/rel_label.csv)\r\n\r\n"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-10-31T16:18:41Z",
+   "body": "Hi @reporter,\r\n\r\nSorry, with `COUNT { () }` I meant `RETURN COUNT { () }` but the alternative you provided is equivalent.\r\n\r\nI took note of your stats and will do some investigation on them.\r\n\r\nRegards,\r\n\r\nArne"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-11-06T14:15:00Z",
+   "body": "Hi @reporter,\r\n\r\nI have now registered your suggestion to pick the direction of expansion of VarExpand(Into) as a feature request. When discussing it, it was noted by the others that we do not have a lot of information in this case, so that we have a lot of uncertainty. I added your example to the feature request and we will consider it for future development.\r\n\r\nLet me know if there is anything else I can do for you in this case. Otherwise, I will close this issue for now.\r\n\r\nRegards,\r\n\r\nArne"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-11-07T13:06:54Z",
+   "body": "Thanks @participant2 we can also do a call or share more detailed information with Neo4j itself if you want to get rid of any uncertainties. \r\n(we just don't want to share too much information about the DB Setup on a public repo)"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-11-07T13:54:39Z",
+   "body": "That is fine. The uncertainties I meant are due to the query not containing a relationship type and that we do not cache more structural information to estimate the var-length relationship very well."
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "neo4j/neo4j",
+  "default_branch": "2026.06",
+  "commit_sha": "63a4c50a84de61546eea93352422154460ee053f",
+  "as_of": "2023-09-04T07:19:27Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_neo4j_neo4j_13288"
+}

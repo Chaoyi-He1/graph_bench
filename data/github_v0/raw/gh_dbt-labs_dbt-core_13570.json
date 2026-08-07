@@ -1,0 +1,134 @@
+{
+ "repo": "dbt-labs/dbt-core",
+ "number": 13570,
+ "url": "https://github.com/dbt-labs/dbt-core/issues/13570",
+ "title": "[BUG] Failed to resolve function `json_value` in BigQuery",
+ "state": "closed",
+ "labels": [
+  "type:bug",
+  "adapter:bigquery",
+  "status:triage",
+  "status:needs-repro",
+  "discrepancy",
+  "area:adapters",
+  "area:static-analysis",
+  "engine:v2"
+ ],
+ "reporter": "tlfbrito",
+ "created_at": "2025-08-08T22:44:03Z",
+ "closed_at": "2026-01-09T01:30:58Z",
+ "body": "**Describe the bug**\nI'm getting the following error using dbt fusion:\n\n```\nerror: dbt0209: Failed to resolve function json_value: Argument type mismatch: actual: (STRUCT<_col0 JSON>, STRING); candidates: (JSON, STRING); (JSON).\n```\n\n**What version of dbt Fusion is this bug in? (find out by running `dbt --version`)**\n2.0.0-beta.61\n\n**Is this a discrepancy between the dbt Fusion Engine and dbt Core? Check one.**\n- [x] YES\n- [ ] NO\n\n**To Reproduce**\n1. Open [this workspace](https://github.com/dbt-labs/scratch/tree/main/repros/fusion-536)\n2. Follow the instructions in the README\n\nOr:\n\nUse dbt funsion with bigquery adaptor and use the `json_value` function in dbt model.\n\n**Operating System and CPU Type (please complete the following information):**\n* Mac\n* ARM?\n",
+ "comments": [
+  {
+   "author": "jasonlin45",
+   "created_at": "2025-08-14T14:59:33Z",
+   "body": "This looks to be an issue with our SQL understanding - @vgapeyev could you take a look? It looks like JSON_VALUE is documented to take JSON and json String for the input. "
+  },
+  {
+   "author": "jasonlin45",
+   "created_at": "2025-08-14T14:59:56Z",
+   "body": "@tlfbrito if you could share the model where you are using this, that would be very helpful! "
+  },
+  {
+   "author": "tlfbrito",
+   "created_at": "2025-08-14T22:58:06Z",
+   "body": "> [@tlfbrito](https://github.com/tlfbrito) if you could share the model where you are using this, that would be very helpful!\n\nI've this issue in a few models one example is:\n\n```sql\n...\nselect\n    establishment_id,\n    json_value(addr, '$.id') as address_id,\n    json_value(addr, '$.city') as address_city,\n    json_value(addr, '$.type') as address_type,\n    json_value(addr, '$.country') as address_country,\n    json_value(addr, '$.address_line_1') as address_line_1,\n    json_value(addr, '$.district') as address_district\nfrom renamed\n```\n\nIt seems related with the use of the BQ function: [json_value()](https://cloud.google.com/bigquery/docs/reference/standard-sql/json_functions#json_value)"
+  },
+  {
+   "author": "dbeatty10",
+   "created_at": "2025-08-24T01:22:35Z",
+   "body": "@jasonlin45 I put a minimal reproducible example in [this workspace](https://github.com/dbt-labs/scratch/tree/main/repros/fusion-536)."
+  },
+  {
+   "author": "douglasnorrgard",
+   "created_at": "2025-08-25T14:51:39Z",
+   "body": "I am experiencing this as well!"
+  },
+  {
+   "author": "vgapeyev",
+   "created_at": "2025-08-26T18:10:44Z",
+   "body": "@dbeatty10 , thank you for the SQL-only [repro](https://github.com/dbt-labs/scratch/tree/main/repros/fusion-536):\n\n```\nwith renamed as (\n  select \n    1 as establishment_id,\n    struct(json '{\"id\": \"12345\", \"city\": \"New York\"}' as _col0) as addr\n)\n\nselect\n    establishment_id,\n    json_value(addr, '$.id') as address_id\nfrom renamed\n```\nPassing this SQL directly to BigQuery gives:\n```\nNo matching signature for function JSON_VALUE Argument types: STRUCT<_col0 JSON>, STRING \nSignature: JSON_VALUE(STRING, [STRING]) Argument 1: Unable to coerce type STRUCT<_col0 JSON> to expected type STRING \nSignature: JSON_VALUE(JSON, [STRING]) Argument 1: Unable to coerce type STRUCT<_col0 JSON> to expected type JSON \nat [9:5]\n```\nwhich is expected per the [doc](https://cloud.google.com/bigquery/docs/reference/standard-sql/json_functions#json_value), which only lists the overloads `JSON_VALUE(JSON [, STRING])` and `JSON_VALUE(STRING [, STRING])`, not `JSON_VALUE(STRUCT [, STRING])`. \n\nFor this to be accepted in dbt-core, it must be mangling SQL before passing it to BigQuery.  We might need to call upon someone with more product-level understanding to judge whether this feature should be supported in dbt-fusion?  @graciegoheen? @eliasdefaria?\nAnd then, how? Somewhere within the BigQuery adapter?  In sdf-frontend (\"SQL understanding\") we strive for strict fidelity to the reference dialects. "
+  },
+  {
+   "author": "eliasdefaria",
+   "created_at": "2025-09-05T11:07:30Z",
+   "body": "Just seeing this -\n\n@vgapeyev the reason dbt core does not flag this error is b/c its compile is not actually checking anything about the SQL. Hence it will not flag the invalid SQL present in the repro.\n\nHowever, I'm guessing this was just a problem with our repro. @tlfbrito can you try again with the latest version and let us know if the compile still fails? I imagine you confirmed this query runs in BigQuery. If it still fails, we need to update the repro.\n\nThanks y'all!"
+  },
+  {
+   "author": "tlfbrito",
+   "created_at": "2025-09-05T13:03:36Z",
+   "body": "@eliasdefaria it works now for json_value() with the new `2.0.0-preview.8` version.\n\nI'm still having another issue on the `date()` function:\n`Failed to resolve function date: Argument type mismatch: actual: (TIMESTAMP); candidates: (INT64, INT64, INT64); ($1); (TIMESTAMP, STRING); (DATE).`"
+  },
+  {
+   "author": "eliasdefaria",
+   "created_at": "2025-09-05T13:12:30Z",
+   "body": "@tlfbrito Awesome to hear the fix came in for `json_value`. Would you mind sharing a snippet of the SQL you're using for `date()`?"
+  },
+  {
+   "author": "tlfbrito",
+   "created_at": "2025-09-05T13:25:46Z",
+   "body": "> [@tlfbrito](https://github.com/tlfbrito) Awesome to hear the fix came in for `json_value`. Would you mind sharing a snippet of the SQL you're using for `date()`?\n\n```sql\nwith source as (\n      select * from {{ .... }}\n      where (start_at <= end_at or end_at is null) and _sdc_deleted_at is null\n)\n\nselect\n    id as enrollment_id,\n    subscription_id,\n    employee_id,\n    active as enrollment_active,\n    inserted_at,\n    updated_at,\n    date(start_at) as enrollment_start_at,\n    date(end_at) as enrollment_end_at\nfrom source\n```\n\nThe two `date()` call give the following compile error:\n`dbt0209: Failed to resolve function date: Argument type mismatch: actual: (TIMESTAMP); candidates: (INT64, INT64, INT64); ($1); (TIMESTAMP, STRING); (DATE).`"
+  },
+  {
+   "author": "tlfbrito",
+   "created_at": "2025-09-05T13:32:50Z",
+   "body": "> [@tlfbrito](https://github.com/tlfbrito) Awesome to hear the fix came in for `json_value`. Would you mind sharing a snippet of the SQL you're using for `date()`?\n\nSorry to confirm I still get `dbt0209: Failed to resolve function json_value: Argument type mismatch: actual: (STRUCT<_col0 STRING>, STRING); candidates: ($1); ($1, STRING)` for some json_value functions."
+  },
+  {
+   "author": "eliasdefaria",
+   "created_at": "2025-10-09T17:19:26Z",
+   "body": "Hey @tlfbrito! Just followed up on this to try with your repro and it no longer reproduces in `2.0.0-preview.41`. Can  you update and try again? Thanks for your patience!"
+  },
+  {
+   "author": "tlfbrito",
+   "created_at": "2025-10-09T21:19:21Z",
+   "body": "> Hey [@tlfbrito](https://github.com/tlfbrito)! Just followed up on this to try with your repro and it no longer reproduces in `2.0.0-preview.41`. Can you update and try again? Thanks for your patience!\n\nHi @eliasdefaria , I've tried with `2.0.0-preview.44` and I still get the following errors on dbf compile:\n\n> dbt0209: Failed to resolve function json_value: Argument type mismatch: actual: (STRUCT<_col0 STRING>, STRING); candidates: ($1); ($1, STRING).\n\n\nThe model as the following code:\n\n```\nselect\n       ...\n        json_value(address, '$.id') as address_id,\n        json_value(address, '$.type') as address_type,\n        json_value(address, '$.country') as address_country,\n        json_value(address, '$.district') as address_district,\n        json_value(address, '$.city') as address_city,\n        json_value(address, '$.zipcode') as address_zipcode,\n        json_value(address, '$.address_line_1') as address_line_1,\n        json_value(address, '$.address_line_2') as address_line_2\n    from renamed\n```"
+  },
+  {
+   "author": "vgapeyev",
+   "created_at": "2025-10-10T22:36:15Z",
+   "body": "@tlfbrito please check whether the corresponding SQL is accepted by BigQuery itself. As I posted on Aug 26 above, a query exercising this situation was not accepted by BigQuery. \n\nAlso, is it possible that the intent is to call `json_value(address._col0, ...)`?  That should work.\n\n@eliasdefaria is the issue only that dbt-core and fusion disagree on this query?  In case itself BigQuery does not accept it, I believe our principle is that fusion should not match dbt-core behavior. "
+  },
+  {
+   "author": "eliasdefaria",
+   "created_at": "2025-10-11T00:02:17Z",
+   "body": "Yep that's right @vgapeyev! dbt core doesn't do any SQL validation, and we are intending to emulate BigQuery's compiler here so if BigQuery fails to compile this then our emulation is correct"
+  },
+  {
+   "author": "b-per",
+   "created_at": "2025-10-11T15:55:06Z",
+   "body": "FYI, I just tried to run the repro project from Doug with dbt Core and even if compile doesn't raise an issue, running the model fails:\n\n```\n15:53:11  1 of 1 ERROR creating sql view model analytics.minimal_repro ................... [ERROR in 2.94s]\n15:53:11  \n15:53:11  Finished running 1 view model in 0 hours 0 minutes and 9.22 seconds (9.22s).\n15:53:11  \n15:53:11  Completed with 1 error, 0 partial successes, and 0 warnings:\n15:53:11  \n15:53:11  Failure in model minimal_repro (models/minimal_repro.sql)\n15:53:11    Database Error in model minimal_repro (models/minimal_repro.sql)\n  No matching signature for function JSON_VALUE\n    Argument types: STRUCT<_col0 JSON>, STRING\n    Signature: JSON_VALUE(STRING, [STRING])\n      Argument 1: Unable to coerce type STRUCT<_col0 JSON> to expected type STRING\n    Signature: JSON_VALUE(JSON, [STRING])\n      Argument 1: Unable to coerce type STRUCT<_col0 JSON> to expected type JSON at [17:5]\n  compiled code at target/run/fusion_536_reprex/models/minimal_repro.sql\n```"
+  },
+  {
+   "author": "tlfbrito",
+   "created_at": "2025-10-11T17:27:31Z",
+   "body": "> [@tlfbrito](https://github.com/tlfbrito) please check whether the corresponding SQL is accepted by BigQuery itself. As I posted on Aug 26 above, a query exercising this situation was not accepted by BigQuery.\n> \n> Also, is it possible that the intent is to call `json_value(address._col0, ...)`? That should work.\n> \n> [@eliasdefaria](https://github.com/eliasdefaria) is the issue only that dbt-core and fusion disagree on this query? In case itself BigQuery does not accept it, I believe our principle is that fusion should not match dbt-core behavior.\n\nOf course is accepted by BigQuery, documentation is available here: https://cloud.google.com/bigquery/docs/reference/standard-sql/json_functions#json_value\n\nQuery runs without any issue BQ:\n<img width=\"793\" height=\"621\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/385ae9a6-d285-4d47-a525-7be4488427cb\" />"
+  },
+  {
+   "author": "dbeatty10",
+   "created_at": "2025-10-11T23:15:24Z",
+   "body": "> FYI, I just tried to run the repro project from Doug with dbt Core and even if compile doesn't raise an issue, running the model fails:\n> ...\n\n@b-per Thanks catching that bug in the repro I added 😅\n\n@tlfbrito We've tried quite a few things but have not been able to reproduce the bug you are reporting regarding `json_value` in 2.0.0-preview.44.\n\nCould you try clearing out your `target` directory to make sure that there's no old cached items messing things up? And re-running with 2.0.0-preview.44 and see if it still gives you that error?\n\nAssuming it still gives an error, can you try tweaking the self-contained example below to get it to fail for you?\n\nHere's something that I tried, but it worked without issues:\n\n```\n{{ config(materialized='table') }}\n\nwith renamed as (\n  select \n    1 as establishment_id,\n    '{\"id\": \"12345\", \"type\": \"home\", \"country\": \"US\", \"district\": \"NY\", \"city\": \"New York\", \"zipcode\": \"10001\", \"address_line_1\": \"123 Main St\", \"address_line_2\": \"Apt 4B\"}' as address\n)\n\nselect\n    establishment_id,\n    json_value(address, '$.id') as address_id,\n    json_value(address, '$.type') as address_type,\n    json_value(address, '$.country') as address_country,\n    json_value(address, '$.district') as address_district,\n    json_value(address, '$.city') as address_city,\n    json_value(address, '$.zipcode') as address_zipcode,\n    json_value(address, '$.address_line_1') as address_line_1,\n    json_value(address, '$.address_line_2') as address_line_2\nfrom renamed\n```"
+  },
+  {
+   "author": "tlfbrito",
+   "created_at": "2025-10-12T22:34:54Z",
+   "body": "@dbeatty10 After clearing the target/ folder, the number of error with:\n`error: dbt0209: Failed to resolve function json_value: Argument type mismatch: actual: (STRUCT<_col0 JSON>, STRING); candidates: ($1); ($1, STRING).` has reduced substantially. I only get a few cases for cases like the following model:\n\n```sql\nwith source as (\n    select\n        company_id,\n        company_name,\n        company_inserted_at,\n        market_country_code,\n        company_kyb_status,\n        json_query_array(company_documents) as company_documents\n    from {{ ref('dim_companies') }}\n),\n\nrenamed as (\n    select\n        s.company_id,\n        s.company_name,\n        s.company_inserted_at,\n        s.market_country_code,\n        s.company_kyb_status,\n        doc as document -- noqa: RF02\n    from source as s, s.company_documents as doc\n)\n\nselect\n    company_id,\n    company_name,\n    company_inserted_at,\n    market_country_code,\n    company_kyb_status,\n    json_value(document, '$.id') as document_id,\n    json_value(document, '$.name') as document_name,\n    json_value(document, '$.slug') as document_slug,\n    json_value(document, '$.allowed_to') as document_allowed_to,\n    json_value(document, '$.original_name') as document_original_name\nfrom renamed\n```\n\nI believe, this could be due to the `from source as s, s.company_documents as doc` (implicit unnest of `company_documents`), when I use explicit `unnest()` on `company_documents` the error `dbt0209` on json_value() disappears."
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "dbt-labs/dbt-core",
+  "default_branch": "main",
+  "commit_sha": "64b58ec628fec40fe4e35be427eb37a999da0630",
+  "as_of": "2025-08-08T22:44:03Z",
+  "method": "github_commits_until"
+ },
+ "images": [
+  {
+   "where": "c16",
+   "source_url": "https://github.com/user-attachments/assets/385ae9a6-d285-4d47-a525-7be4488427cb",
+   "file": "gh_dbt-labs_dbt-core_13570_img0.png"
+  }
+ ],
+ "slug": "gh_dbt-labs_dbt-core_13570"
+}

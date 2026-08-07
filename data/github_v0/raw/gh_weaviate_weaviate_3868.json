@@ -1,0 +1,142 @@
+{
+ "repo": "weaviate/weaviate",
+ "number": 3868,
+ "url": "https://github.com/weaviate/weaviate/issues/3868",
+ "title": "NearVector Search Returns Non-Existing Objects",
+ "state": "closed",
+ "labels": [
+  "bug",
+  "community"
+ ],
+ "reporter": "reporter",
+ "created_at": "2023-12-07T09:22:56Z",
+ "closed_at": "2026-03-31T19:14:53Z",
+ "body": "### How to reproduce this bug?\n\nUnfortunately I cannot tell how to reproduce this generally.\r\nIn my setup however, I noticed that search with `nearVector` returns objects, which are not existing anymore. They existed formerly, but were deleted already some while ago.\n\n### What is the expected behavior?\n\nWhen starting a search using `nearVector`, e.g. \r\n```\r\n{\r\n\tGet {\r\n\t\tKnowledgeStoreObject(\r\n\t\t\tnearVector: {\r\n\t\t\t\tvector: [ <- 1536 -> ] -> shortened\r\n\t\t\t}\r\n\t\t\tlimit: 10\r\n\t\t) {\r\n\t\t\ttext\r\n\t\t\tcleanser_version\r\n\t\t\t_additional {\r\n\t\t\t\tid\r\n\t\t\t}\r\n\t\t}\r\n\t}\r\n}\r\n```\r\nEach resulting object has to be present in the store. When retrieving an object from the result set by ID using REST API the object has to be retrieved. Searching with `where` filter for certain unique properties (like `cleanser_version` in my case) of those objects should retrieve these objects.\n\n### What is the actual behavior?\n\nIn my search I get several objects back which exist, and others which were already deleted some while ago.\r\nI can detect those objects which were already deleted, by custom property `cleanser_version`: All entries should have value `2`, as all entries with value `1` have already been deleted.\r\nSearch result (shortened):\r\n```\r\n{\r\n\t\"data\": {\r\n\t\t\"Get\": {\r\n\t\t\t\"KnowledgeStoreObject\": [\r\n\t\t\t\t{\r\n\t\t\t\t\t\"_additional\": {\r\n\t\t\t\t\t\t\"id\": \"d3a5fb05-ce87-4aff-938f-84513192702d\"\r\n\t\t\t\t\t},\r\n\t\t\t\t\t\"cleanser_version\": 2,\r\n\t\t\t\t\t\"text\": \"{\\\"Header 1\\\":\\\"Available Plans in the Kyma Environment\\\"}\\nDepending on your global account type, you have access to a different plan that specifies the cluster parameters for the Kyma environment.\\n\"\r\n\t\t\t\t},\r\n\t\t\t\t{\r\n\t\t\t\t\t\"_additional\": {\r\n\t\t\t\t\t\t\"id\": \"d9391d4d-4520-475a-a43b-9cdfe8745eb3\"\r\n\t\t\t\t\t},\r\n\t\t\t\t\t\"cleanser_version\": 1,\r\n\t\t\t\t\t\"text\": \"{\\\"Header 1\\\":\\\"Available Plans in the Kyma Environment\\\"}\\nDepending on your global account type, you have access to a different plan that specifies the cluster parameters for the Kyma environment.\\n\"\r\n\t\t\t\t},\r\n\t\t\t]\r\n\t\t}\r\n\t}\r\n}\r\n```\r\nQuerying for suspicious result objects via REST API (e.g. `<baseUrl>/v1/objects/d9391d4d-4520-475a-a43b-9cdfe8745eb3`) returns\r\n```\r\n{\r\n\t\"error\": [\r\n\t\t{\r\n\t\t\t\"message\": \"no object with id 'd9391d4d-4520-475a-a43b-9cdfe8745eb3'\"\r\n\t\t}\r\n\t]\r\n}\r\n(which is expected, as the object was deleted)\r\n\r\n```\r\nSearching for unique properties via `where` filter, e.g.\r\n```\r\n{\r\n\tGet {\r\n\t\tKnowledgeStoreObject(\r\n\t\t\twhere: {\r\n\t\t\t\tpath: [\"cleanser_version\"]\r\n\t\t\t\toperator: Equal\r\n\t\t\t\tvalueNumber: 1\r\n\t\t\t}\r\n\t\t) {\r\n\t\t\t_additional {\r\n\t\t\t\tid\r\n\t\t\t}\r\n\t\t\ttext\r\n\t\t\tcleanser_version\r\n\t\t}\r\n\t}\r\n}\r\n```\r\ndoes not return any object. (Whereas searching for value `2` returns all objects...). Again, this is expected, as the object was deleted.\r\n\r\nWhat is not expected is, that the deleted objects show up in the result set...\r\n\r\nI expect that the search index is somewhat corrupted. How to rebuild it?\n\n### Supporting information\n\nWeaviate version: 1.21.2\r\nReplica count: 1\r\n\n\n### Server Version\n\n1.21.2\n\n### Code of Conduct\n\n- [X] I have read and agree to the Weaviate's [Contributor Guide](https://weaviate.io/developers/contributor-guide) and [Code of Conduct](https://weaviate.io/service/code-of-conduct)",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2023-12-09T14:37:34Z",
+   "body": "Hi!\r\n\r\nIs this a multi node deployment? \r\nWere you able to reproduce this in latest 1.22.6 version?\r\n\r\nThanks!"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-12-14T20:54:29Z",
+   "body": "No, as written in the description, I run with a replica count of 1. So the inconsistency does not come from a sync issue between different nodes.\r\nOur setup is that we run a nightly job scanning our data sources, checking if anything changed and then replace entries in the store, when the according source has changed. So there are nightly some deletions and some additions. This is probably where the search index is updated and where some inconsistency was introduced.\r\nOur data base is not big at all. In total we have around 25000 entries in the vector store, and each night approx. 20 of them are replaced. Occasionally we have to replace all entries, when we e.g. update some processing step in our data ingestion pipeline. Also then, the entries are replaced sequentially: first deleting some entries (all chunks which belong to a certain document), then add some new entries (updated chunks from the document), then the same for the next document, and the next, until all documents were processed. We do not even issue parallel request to the instance in this setup...\r\n\r\nRegarding reproducibility:\r\nAs stability is key for our system, for the moment we decided to switch to a working mode, where we rebuild the complete vector database from scratch at each run on a separate instance, and then do a transport of a backup of the freshly filled system to our productive instance.\r\nWith that of course the issue is not reproducible anymore.\r\nHowever, as a full run (with all the necessary preprocessing steps and embedding calculations) takes several hours, we want to switch back to the mode of updating only changed entries on the live system.\r\nHowever, this will be tested next year. I'll update this issue with my findings, if and how I can reproduce the problem."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-05-13T11:20:52Z",
+   "body": "/bounty $300"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-05-14T16:33:44Z",
+   "body": "/attempt \n\n<div id=\"algora-attempt\" />\n\n| [Algora profile](https://<redacted-host>/@/Rutik7066) | Completed bounties | Tech | Active attempts | Options |\n| --- | --- | --- | --- | --- |\n| @participant18 | 8 bounties from 6 projects | <div align=\"center\">Go, Rust, <br />TypeScript & more</div> | <div align=\"center\"></div> | [Cancel attempt](https://<redacted-host>/api/bounties/clw4vi1dw000jl80chrso8ej0/cancel-attempt) |"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-05-16T19:47:47Z",
+   "body": "@participant2  are we facing this issue with only GraphQL? "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-05-17T06:34:41Z",
+   "body": "Hey bounty hunter 😏,\r\nyes, I only used GraphQL. However, until now I was not yet able to reproduce the issue, even when we switched back to nightly updates of our data base. Still I'm missing a concept of how to reproduce the issue or even detect the issue if not by accident..."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-10-20T05:35:22Z",
+   "body": "/attempt #3868\r\n\n\n<div id=\"algora-attempt\" />\n\n<details>\n  <summary>Options</summary>\n  <ul>\n    <li>\n      <a href=\"https://<redacted-host>/api/bounties/clw4vi1dw000jl80chrso8ej0/cancel-attempt\">\n        Cancel my attempt\n      </a>\n    </li>\n  </ul>\n</details>"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2024-12-16T12:47:20Z",
+   "body": "/attempt #3868\n\n<div id=\"algora-attempt\" />\n\n<details>\n  <summary>Options</summary>\n  <ul>\n    <li>\n      <a href=\"https://<redacted-host>/api/bounties/clw4vi1dw000jl80chrso8ej0/cancel-attempt\">\n        Cancel my attempt\n      </a>\n    </li>\n  </ul>\n</details>"
+  },
+  {
+   "author": "participant6",
+   "created_at": "2025-08-07T19:10:31Z",
+   "body": "is this still open ?"
+  },
+  {
+   "author": "participant7",
+   "created_at": "2025-09-22T16:10:46Z",
+   "body": "@participant2 is this still open?\n"
+  },
+  {
+   "author": "participant8",
+   "created_at": "2025-11-13T22:32:08Z",
+   "body": "@reporter Is this issue still open to work ? Thanks!"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-11-14T07:34:32Z",
+   "body": "Please see my last comment https://github.com/weaviate/weaviate/issues/3868#issuecomment-2116851961, over a year ago.\nSince then I don't use Weaviate anymore, and if nobody else is able to reproduce the issue, it can be closed from my point of view."
+  },
+  {
+   "author": "participant9",
+   "created_at": "2026-03-02T05:40:23Z",
+   "body": "/attempt #3868"
+  },
+  {
+   "author": "participant10",
+   "created_at": "2026-03-05T21:28:18Z",
+   "body": "Hi! I'd like to investigate this issue.\n\nBefore starting, could someone confirm whether this bug is still reproducible on the latest Weaviate version? If yes, I can work on a fix and submit a PR."
+  },
+  {
+   "author": "participant11",
+   "created_at": "2026-03-09T12:08:07Z",
+   "body": "/attempt #3868"
+  },
+  {
+   "author": "participant12",
+   "created_at": "2026-03-11T20:04:29Z",
+   "body": "/attempt #3868\n\nHere is my proposed implementation plan to resolve the tombstone leakage during unfiltered `nearVector` searches:\n\n**1. Root Cause Analysis**\nThe issue occurs because pure, unfiltered `nearVector` searches bypass the inverted index allow-list phase. During the layer-zero HNSW graph traversal, the algorithm evaluates purely on mathematical vector distance and fails to check the logical deletion status (tombstones) of the `docID`s. This allows deleted objects to enter the candidate priority heap before the background cleanup cycle executes.\n\n**2. Proposed Fix in HNSW Traversal**\n\n* Modify the graph traversal loop within `adapters/repos/db/vector/hnsw` (e.g., inside `neighbor_connections.go` or `search.go`).\n* Introduce a lightweight verification step: before adding a `docID` to the dynamic candidate list (`ef`), check if it exists in the active tombstone tracker (`h.tombstones`).\n* If the node is flagged as deleted, skip it (`continue`) to prevent it from propagating to the final result set.\n\n**3. Performance Optimization**\n\n* Injecting checks into the distance calculation hot-path risks severe performance degradation. I will ensure the tombstone verification leverages low-level, concurrent-safe data structures (like an atomic bitset) to avoid read-lock contention.\n* I will verify there are zero performance regressions using the core benchmark suite (`test/run.sh --benchmark-only`).\n\n**4. Quality Assurance (Test Pyramid)**\n\n* **Unit Tests:** Add tests within the `hnsw` package verifying that mock tombstoned IDs are natively excluded from the search result array.\n* **Integration Tests:** Create a test spinning up an LSM store and HNSW index, validating that a logically deleted node is immediately dropped by `SearchByVector`.\n* **Journey Tests:** Implement an end-to-end black-box test in `test/acceptance` asserting that a REST/GraphQL `nearVector` query executed immediately after a DELETE operation accurately excludes the removed object."
+  },
+  {
+   "author": "participant12",
+   "created_at": "2026-03-15T02:47:44Z",
+   "body": "/claim #3868 -> PR:  https://github.com/weaviate/weaviate/pull/10767"
+  },
+  {
+   "author": "participant13",
+   "created_at": "2026-03-19T12:55:04Z",
+   "body": "/attempt #3868"
+  },
+  {
+   "author": "participant14",
+   "created_at": "2026-03-20T21:05:49Z",
+   "body": "Hi maintainers — I can take this bug fix. Plan: (1) add minimal repro test for deleted-object ghost hits in nearVector, (2) identify stale candidate path, (3) submit targeted fix + regression tests. If there is a preferred area/files to patch, I’ll align before implementation."
+  },
+  {
+   "author": "participant15",
+   "created_at": "2026-03-21T12:03:30Z",
+   "body": "/attempt #10822 "
+  },
+  {
+   "author": "participant16",
+   "created_at": "2026-03-23T19:26:03Z",
+   "body": "Hi @participant2 @participant1,\n\nI'm interested in fixing this bug, but I notice:\n1. The original reporter couldn't consistently reproduce this\n2. There are 2 recent PRs already submitted (#10767, #10822)\n\nBefore I invest time:\n- Is this bounty still active?\n- Will you review the existing PRs soon, or should I submit a new one?\n- Is there a reliable reproduction method now?\n\nThanks!"
+  },
+  {
+   "author": "participant17",
+   "created_at": "2026-03-26T15:03:19Z",
+   "body": "I have successfully reproduced this \"Ghost Object\" issue in v1.27.0.\n\nUsing a script to force a delay in HNSW cleanup (cleanup_interval_seconds=600), I can consistently retrieve deleted objects via near_vector immediately after deletion.\n\nReproduction Proof (v1.27.0):\n\nAction: Ingest 150 objects -> Delete all IDs -> Search immediately.\n\nResult: ❌ SUCCESS! FOUND 15 GHOSTS.\n\nExample Ghost ID: de10581e-99f2-495f-b832-061804d0aaeb\n\nIt appears to be a race condition where the HNSW index retains the vector until the next cleanup cycle, even if the object is gone from the store. I'm happy to submit a PR with a validation check to resolve this.\n\n/attempt #3868 "
+  },
+  {
+   "author": "participant1",
+   "created_at": "2026-03-31T19:14:53Z",
+   "body": "Hi! This bounty is no longer active. Sorry. Closing as this is no longer reproducible on latest version."
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "weaviate/weaviate",
+  "default_branch": "main",
+  "commit_sha": "9df969ff5e4f73399c63aef40a9ff271daeb17ca",
+  "as_of": "2023-12-07T09:22:56Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_weaviate_weaviate_3868"
+}

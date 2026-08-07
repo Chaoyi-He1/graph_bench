@@ -1,0 +1,210 @@
+{
+ "repo": "tmux/tmux",
+ "number": 4494,
+ "url": "https://github.com/tmux/tmux/issues/4494",
+ "title": "Color 243 of 256-color palette is invisible in 8-color terminal",
+ "state": "closed",
+ "labels": [],
+ "reporter": "reporter",
+ "created_at": "2025-04-28T05:20:19Z",
+ "closed_at": "2025-05-01T08:24:05Z",
+ "body": "Steps to reproduce: in Linux virtual console (`TERM==\"linux\"`) run\n```\n$ echo -e \"Hello \\e[38;5;243mWorld\\e[0m.\"\n```\nThe word `World` appears black on black, i.e. invisible.\n\n[This commit](https://github.com/tmux/tmux/commit/37ad1e2f6da31ba8bf09865fccddec61addaad24) doesn't seem to fix the issue anymore. \n\nI tried to debug why it doesn't work with current code backported from obsd repo. It's weird but it looks like now [tty_attributes()](https://github.com/tmux/tmux/blob/36fba4cc54d543bec74a08597b89a019cb6edde3/tty.c#L2690) and subsequent [tty_check_fg()](https://github.com/tmux/tmux/blob/36fba4cc54d543bec74a08597b89a019cb6edde3/tty.c#L2845) aren't invoked at all.",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2025-04-28T06:33:05Z",
+   "body": "Logs?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-04-28T07:17:30Z",
+   "body": "> Logs?\n\nLogs from what? Sorry, I metioned the commit but forgot to link PR which used to fix the issue. It is here: https://github.com/tmux/tmux/pull/4322\nIt used to fix the issue. Now it doesn't anymore."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-04-28T07:18:56Z",
+   "body": "Logs from reproducing the issue in tmux?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-04-28T07:20:39Z",
+   "body": "https://github.com/tmux/tmux/blob/master/.github/CONTRIBUTING.md#how-do-i-get-logs-from-tmux\n\nI don't think anything has changed in tmux for this so it's most likely something in your config has changed."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-04-28T11:35:50Z",
+   "body": "[tmux-logs.tar.gz](https://github.com/user-attachments/files/19939107/tmux-logs.tar.gz)\n```\n$ uname -sp && tmux -V && echo $TERM\nLinux unknown\ntmux next-3.6\nlinux\n```\nTERM inside of tmux is `tmux-256color`"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-04-28T11:41:18Z",
+   "body": "I was wrong regarding not invoked tty_attibutes(). Probably I ran wrong binary at that time. Will try to debug again."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-04-28T11:53:02Z",
+   "body": "Looks like the background is not 0, it is 8 (default). tmux doesn't know the default is black. When you tested before were you explicitly setting the background to black? It works if I do this:\n~~~~\nprintf 'Hello \\033[38;5;243m\\033[40mWorld\\033[0m\\n'"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-04-28T12:00:20Z",
+   "body": "Seems I figured out why it doesn't work. Now `gc->bg` is 8, not 0. Let me test and prepare PR."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-04-28T12:01:14Z",
+   "body": "You can't just assume that 8 is black though."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-04-28T12:06:02Z",
+   "body": "> When you tested before were you explicitly setting the background to black? \n\nYep, seems in the past background explicitly was set to black in shell profile or somewhere else. Now I have default setup."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-04-28T12:06:26Z",
+   "body": "I'm not sure there is a way to do this. I was going to suggest assuming that the default background is black if default colours are not supported... but `TERM=linux` has both `AX` and `op`, so it *does* support default colours.\n\nLooks like it doesn't respond to the palette query sequences either."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-04-28T12:34:05Z",
+   "body": "As I noted in the [original post](https://<redacted-host>/viewtopic.php?pid=2218759#p2218394), this is the coincidence of several factors:\n1. linux always sets TERM to `linux` (even if it is actually true color framebuffer).\n2. pacman uses color 243 for \"faint\" shade.\n3. tmux maps color 243 to 8 if underlying terminal is not in 256 color mode first.\n5. tmux maps color 8 to 0 if terminal supports only 8 colors according to terminfo."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-04-28T12:45:22Z",
+   "body": "243 should be mapped to 0 (black) not 8 (default). Where do you see it end up as colour 8?\n\nThe problem here is that the default background is black and tmux does not know this in order to change the foreground colour to white like it does when you explicitly set a black background."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-04-28T12:56:55Z",
+   "body": "> 243 should be mapped to 0 (black) not 8 (default). \n\nEm, \"default\" color in terms of ECMA-48 is `39`. In terms of attributes, color 8 is regular \"dark grey\", isn't it?\n\n> Where do you see it end up as colour 8?\n\n[colour.c:392](https://github.com/tmux/tmux/blob/f367e3a6c8761328b2233067b301909bb096d6fc/colour.c#L392), 4th element in last row.\n\n> The problem here is that the default background is black and tmux does not know this in order to change the foreground colour to white like it does when you explicitly set a black background.\n\nDoes \"default color\" apply to cell attribute?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-04-28T13:18:39Z",
+   "body": "That 8 is only for the return value from `colour_256to16` and means \"bright black\" - it doesn't have any meaning beyond that. You can see in `tty_check_bg` this is converted immediately into one of tmux's actual colour representations - either 90 (\"bright black\") or 0 (\"black\").\n\nBut that's not what is happening here, and if I check the colours after `tty_check_bg` returns the colour is 8, which means default. If it was black it would be 90 or 0 and if it was the 256-colour-palette colour 8 it would be `COLOUR_FLAG_256|8` (`0x1000008`).\n\nThat's why tmux is sending this to the terminal:\n~~~~\n1745839641.728486 /dev/tty1: Hello\n1745839641.728515 /dev/tty1: \\033[30m\n1745839641.728524 /dev/tty1: World\n~~~~\nIt only changes the foreground colour to black (`\\033[30m`) because the background is already the default colour so does not need to be changed.\n\nWhereas if you add `\\033[40m` to explicitly use black background instead of default, tmux will change the background too (and use a white foreground because now it can tell that foreground and background are both black):\n~~~~\n1745846170.614866 /dev/ttys007: Hello\n1745846170.614936 /dev/ttys007: \\033[37m\n1745846170.614959 /dev/ttys007: \\033[40m\n1745846170.614981 /dev/ttys007: World\n~~~~\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-04-28T14:38:51Z",
+   "body": "So it seems it doesn't make sense to check background at all. At least tty_check_fg() behavior should not depend on whether it is called before tty_check_bg() or after.\n\nI propose this PR https://github.com/tmux/tmux/pull/4495. Tested in linux virtual console with TERM=linux which has default black background and in xterm with TERM=xterm which has default white background. In both cases foreground color 243 is visible."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-04-28T14:43:03Z",
+   "body": "This is no good because it will just reverse the problem, so:\n~~~~\nprintf '\\033[47m\\033[38;5;243maaa\\033[0m\\n'\n~~~~\nWill be white on white when it should be black on white."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-04-28T15:16:49Z",
+   "body": "> it will just reverse the problem\n\nThat's true for linux terminal. But why does it look ok in 8-color xterm?\n![Image](https://github.com/user-attachments/assets/b1635d48-874d-4536-be90-ae7220998478)\n\nHowever, how often software set white background explicitly?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-04-28T15:19:44Z",
+   "body": "Are you sure tmux isn't detecting 256 colours in xterm itself?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-04-28T15:22:40Z",
+   "body": "> Are you sure tmux isn't detecting 256 colours in xterm itself?\n\nI'm not sure, may be it does. But `tput colors` reports `8`."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-04-28T15:32:44Z",
+   "body": "Try `tools/256colors2.pl` inside tmux and see if you see the colours or if they are mapped to 8 or 16."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-04-28T15:56:47Z",
+   "body": "> Try `tools/256colors2.pl` inside tmux and see if you see the colours or if they are mapped to 8 or 16.\n\nIt displays full 6x6x6 color cube. So it means that tmux detects xterm is actually 256-color despite `$TERM` is `xterm`.\n\nBy the way, in linux virtual console \n```\nprintf '\\033[47m\\033[38;5;243maaa\\033[0m\\n'\n```\nis \"white on white\" even without tmux."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-04-28T16:04:13Z",
+   "body": "I expect it is white on white without tmux because the default foreground is white and the SGR 38;5 sequence does nothing, not because the Linux console is mapping colour 243 to white.\n\nI don't think we should replace one problem with another. Converting black-on-black or white-on-white to white-on-black or black-on-white is OK because it is obvious that nobody will want them, but we can't change all blacks into whites. We would need to know whether the default is black or white in order to make the correct decision.\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-04-28T17:09:19Z",
+   "body": "> I expect it is white on white without tmux because the default foreground is white \n\nBut `033[38;5;243` changes foreground to 243 which is \"shoehorned into 16 basic colors\" ([sic](https://man7.org/linux/man-pages/man4/console_codes.4.html)), foreground is not default anymore.\n\n>  and the SGR 38;5 sequence does nothing, not because the Linux console is mapping colour 243 to white.\n\nLinux console maps 243 to RGB 0x767676 [here](https://github.com/torvalds/linux/blob/f15d97df5afae16f40ecef942031235d1c6ba14f/drivers/tty/vt/vt.c#L1591) which turns into 7 with normal intensity [here](https://github.com/torvalds/linux/blob/f15d97df5afae16f40ecef942031235d1c6ba14f/drivers/tty/vt/vt.c#L1612). \n\n> Converting black-on-black or white-on-white to white-on-black or black-on-white is OK because it is obvious that nobody will want them, but we can't change all blacks into whites. \n\nWe don't change all blacks into whites. We change \"something gray\" into white instead of black in 8-color terminal. I don't know 8-color terminals with default white background (except, probably, ZX Spectrum :) ).\n\n> We would need to know whether the default is black or white in order to make the correct decision.\n\nI think heuristic is overhead here. \"Something gray\" must be mapped either into black or white when terminal can't display grey."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-04-28T17:22:35Z",
+   "body": "If you want tmux to send 256 colours to Linux console and let it take care of it then you can configure it to do that.\n\nIf you don't, tmux will do the mapping and if the default background is black any colours that are mapped to black will be invisible and if the background is white any colours that are mapped to white will be invisible.\n\n243 is closer to black so it is mapped to black and there are other greys closer to white that are mapped to white. If we make them all black or all white they will be wrong for someone.\n\nI'm OK with automatically fixing obviously useless combinations like black-on-black and white-on-white but your change will make all greys white to to fix your particular problem and that is not OK.\n\nThe reason the default **background** (not the default foreground) matters is because if tmux knew whether it was black or white it could do the same automatic fix it does for when it knows the background is black."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-04-28T19:02:20Z",
+   "body": "> 243 is closer to black so it is mapped to black and there are other greys closer to white that are mapped to white. \n\nHuman eye sensitivity to brightness is not linear. One step between black and next grade looks more contrast than one step between white and previous grade. Mapping should take this into account, especially when converting to binary.\n\n>  your change will make all greys white to to fix your particular problem and that is not OK.\n\nNot all. 232..239 are still mapped to black (0)."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-04-28T19:05:37Z",
+   "body": "No, your change makes every bright black foreground returned from `colour_256to16` white and we are not going to do that."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-04-28T19:07:31Z",
+   "body": "If you disagree with the mappings you need to change `colour_256to16` but you will need to show your reasoning."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-04-28T19:24:49Z",
+   "body": ">232..239 are still mapped to black (0).\n\nTypo, 232..237.\n\n> No, your change makes every bright black foreground returned from `colour_256to16`\n\n`colour_256to16()` returns 0 for 232..237, right? How it will go under `if (gc->fg & 8)` ? \n\n> If you disagree with the mappings you need to change colour_256to16\n\nMapping to **16** is ok. The problem arises with subsequent mapping 16 (4 grades) to 8 (2 grades)."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-04-28T19:29:43Z",
+   "body": "Whichever way we go 16->8 (change bright black to black or to white) will be wrong for one of the two background colours."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-04-29T04:33:40Z",
+   "body": "Well, it's up to you whether to fix this issue or not. However, if PR https://github.com/tmux/tmux/pull/4495 is rejected, then https://github.com/tmux/tmux/commit/37ad1e2f6da31ba8bf09865fccddec61addaad24 should be reverted as well, I think."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-04-29T04:53:42Z",
+   "body": "I don't think you understand the difference between the two changes.\n\n37ad1e2 is converting black-on-black to white-on-black. This is always a good idea because black-on-black is never visible. This is an improvement for everyone.\n\nYour new change is converting black-on-default to white-on-default. This is a good idea for you with a black background, but it is worse for anyone with a white background. So it fixes one case by breaking another. This is not an improvement.\n\nSo we are not going to make your change. If you want to do something about this there needs to be a better way, and I have suggested a few areas to look at:\n\n- Work out what default background colour the terminal has. Maybe the Linux terminal has way to tell tmux? Or we could add a custom terminal capability to say. If tmux knew the background colour it could be sure that changing black-on-default to white-on-default would be the right thing to do.\n\n- Adjust the colour mappings. You are right that vision is not linear, so is the mapping of greys to six black, six bright-black, six white, six bright-white correct? It you tweaked them maybe your problem would be fixed. What do other terminals do?\n\nThe other things I would look at it I was you:\n\n- Does the Linux console really have no bright colours and no bold?\n\n- Can you just run the problem application with 8 or 16 colours (`TERM=tmux` or a custom terminfo entry) so this isn't an issue for it?\n\n- Or you could just keep a local change to tmux."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-04-29T06:29:23Z",
+   "body": "> I don't think you understand the difference between the two changes.\n\nI understand. I don't like two things there: \n- it's behavior relies on the order of `tty_check_fg()` / `tty_check_bg()` invocation\n- it works only if application set background explicitly.\n\nIt was my misunderstanding of grid cell fields meaning.\n\n> [37ad1e2](https://github.com/tmux/tmux/commit/37ad1e2f6da31ba8bf09865fccddec61addaad24) is converting black-on-black to white-on-black. This is always a good idea because black-on-black is never visible. This is an improvement for everyone.\n\nIn this case it is incomplete. It should also convert white-on-white into black-on-white.\nHowever, if an application explicitly set black-on-black or white-on-white, no conversion should be performed, I believe.\n\n>     * Work out what default background colour the terminal has. Maybe the Linux terminal has way to tell tmux? Or we could add a custom terminal capability to say. If tmux knew the background colour it could be sure that changing black-on-default to white-on-default would be the right thing to do.\n\nI searched but didn't found relevant escape sequences or mentions in standards. Some software use `COLORFGBG` environment variable to detect \"dark\" or \"light\" scheme. However, it should be set by user and it is not standartized.\n\n>     * Adjust the colour mappings. You are right that vision is not linear, so is the mapping of greys to six black, six bright-black, six white, six bright-white correct? It you tweaked them maybe your problem would be fixed. What do other terminals do?\n\nGNU screen is displaying 243 as dark grey in linux terminal. I didn't research how they do this. However, GNU screen has many other issues.\n\n>     * Does the Linux console really have no bright colours and no bold?\n\nIt has. Displaying bold as bright in terminal implementation is ok, as for me, but not the reverse. Applications should not assume that bold will always be treated as bright by terminal. However, many software do so. \n\nThe problem would not arise if applications honor termcaps and don't assume that any terminal is 256-color capable. Unfortunately there are more and more such software. Some guys even put emojis into their official man pages.\n\n>     * Can you just run the problem application with 8 or 16 colours (`TERM=tmux` or a custom terminfo entry) so this isn't an issue for it?\n\nPersonally I don't like agglomerations like\n```\ncase ${TERM} in\n  bla-bla-bla*) ... ;;\n```\nor similar constructions in shell profiles or aliases. \n\n>     * Or you could just keep a local change to tmux.\n\nI already worked around the issue with\n```\nset -sa terminal-overrides \"linux:colors=256\"\n```\nin `tmux.conf` and added this into my personal long list of tips, tricks and workarounds.\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-04-29T07:25:07Z",
+   "body": "OK it would be good to do white-on-white as well if we keep black-on-black but otherwise it seems like you have an acceptable workaround so I don't think we need to do anything else unless you want to add terminfo capabilities meaning \"default background is black\" or \"white\", but TBH I doubt anyone else would use them so it seems a bit overkill."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-05-01T08:24:05Z",
+   "body": "I added a check for white-on-white as well and tidied the code up a bit, please test once it makes it to GitHub (should be later today or tomorrow). Thanks!"
+  },
+  {
+   "author": "github-actions[bot]",
+   "created_at": "2025-06-01T00:32:12Z",
+   "body": "This issue has been automatically locked since there has not been any recent activity after it was closed."
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "tmux/tmux",
+  "default_branch": "master",
+  "commit_sha": "36fba4cc54d543bec74a08597b89a019cb6edde3",
+  "as_of": "2025-04-28T05:20:19Z",
+  "method": "github_commits_until"
+ },
+ "images": [
+  {
+   "where": "c17",
+   "source_url": "https://github.com/user-attachments/assets/b1635d48-874d-4536-be90-ae7220998478",
+   "file": "gh_tmux_tmux_4494_img0.png"
+  }
+ ],
+ "slug": "gh_tmux_tmux_4494"
+}

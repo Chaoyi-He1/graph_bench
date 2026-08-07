@@ -1,0 +1,107 @@
+{
+ "repo": "syncthing/syncthing",
+ "number": 9033,
+ "url": "https://github.com/syncthing/syncthing/issues/9033",
+ "title": "Github API rate limit response preventing automatic upgrades",
+ "state": "closed",
+ "labels": [
+  "build",
+  "frozen-due-to-age"
+ ],
+ "reporter": "reporter",
+ "created_at": "2023-08-09T14:02:31Z",
+ "closed_at": "2023-08-09T19:01:26Z",
+ "body": "Versions:  Various - as old as 1.25.0 to current\r\nOS: Windows\r\n\r\nProblem:  This has been an ongoing issue for me where I have multiple Windows machines that refuse to automatically update which forces me to download the latest binary manually and copy it into my syncthing directory.  The error is always \"Automatic upgrade: zip: not a valid zip file\".  I disabled Windows Defender as a first troubleshooting step but that did not resolve the issue.\r\n\r\nI decided to take it upon myself to add some debugging code and build an older version of syncthing so the automatic upgrade triggers when I start it.  Here is an excerpt from the result:\r\n\r\n```\r\n[IDMZY] 2023/08/09 08:44:00 INFO: Automatic upgrade (current \"v1.23.6-dirty\" < latest \"v1.23.7\")\r\n### start my logging changes\r\n[IDMZY] 2023/08/09 08:44:00 INFO: loading \"https://api.github.com/repos/syncthing/syncthing/releases/assets/120749509\"\r\n[IDMZY] 2023/08/09 08:44:00 INFO: readZip is short debug: 279 bytes\r\n[IDMZY] 2023/08/09 08:44:00 INFO: dump: {\"message\":\"API rate limit exceeded for 24.243.x.x. (But here's the good news: Authenticated requests get a higher rate limit. Check out the documentation for more details.)\",\"documentation_url\":\"https://docs.github.com/rest/overview/resources-in-the-rest-api#rate-limiting\"}\r\n### end my logging changes\r\n[IDMZY] 2023/08/09 08:44:00 WARNING: Automatic upgrade: zip: not a valid zip file\r\n```\r\n\r\nSo, it looks like a rate limit error is being returned by Github when syncthing attempts the fetch but the relevant code is assuming the result is always a valid zip file.\r\n\r\nThe problem(s) as I see it:\r\n\r\n1) I have a moderately large swarm with 5 machines behind that 24.243.x.x address.  Syncthing appears to aggressively query that API endpoint repeatedly every time it connects to a peer and the peer reports it is running a later version.\r\n2) \"not a valid zip file\" is not really a useful error to report to the user.  Syncthing should verify that the result of that fetch is actually a zip file before feeding it to readZip.\r\n\r\nWhat happened:\r\nAutomatic upgrades don't work reliably for me.\r\n\r\nWhat should happen:\r\nAutomatic upgrades should Just Work(tm).",
+ "comments": [
+  {
+   "author": "reporter",
+   "created_at": "2023-08-09T15:04:30Z",
+   "body": "Unsurprisingly, I also have a few Linux instances behind that same IP that report:\r\n` WARNING: Automatic upgrade: gzip: invalid header`\r\n\r\nI don't usually notice those since they are headless instances.\r\n\r\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-08-09T15:17:38Z",
+   "body": "The limit is 60 requests per hour for unauthenticated access. This shouldn't be a problem when using just Syncthing (unless you've got 60+ devices that all check for updates at the same time…). Do you (or anyone else under the same IP address) use other software that also utilises the GitHub API?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-08-09T15:18:21Z",
+   "body": "Curl request from a host behind that IP address.  Looking at the x- headers the rate limit appears to be 60 requests per interval and the x-ratelimit-reset timestamp should be respected.\r\n\r\n```\r\ncurl -i 'https://api.github.com/repos/syncthing/syncthing/releases/assets/120749509'\r\n\r\nHTTP/2 403\r\ndate: Wed, 09 Aug 2023 15:15:49 GMT\r\nserver: Varnish\r\nstrict-transport-security: max-age=31536000; includeSubdomains; preload\r\nx-content-type-options: nosniff\r\nx-frame-options: deny\r\nx-xss-protection: 1; mode=block\r\ncontent-security-policy: default-src 'none'; style-src 'unsafe-inline'\r\naccess-control-allow-origin: *\r\naccess-control-expose-headers: ETag, Link, Location, Retry-After, X-GitHub-OTP, X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Reset, X-RateLimit-Used, X-RateLimit-Resource, X-OAuth-Scopes, X-Accepted-OAuth-Scopes, X-Poll-Interval, X-GitHub-Media-Type, Deprecation, Sunset\r\ncontent-type: application/json; charset=utf-8\r\nreferrer-policy: origin-when-cross-origin, strict-origin-when-cross-origin\r\nx-github-media-type: github.v3; format=json\r\nx-ratelimit-limit: 60\r\nx-ratelimit-remaining: 0\r\nx-ratelimit-reset: 1691595851\r\nx-ratelimit-resource: core\r\nx-ratelimit-used: 60\r\ncontent-length: 279\r\nx-github-request-id: 8626:43F9:2F48691:5FF0540:64D3ADA4\r\n\r\n{\"message\":\"API rate limit exceeded for 24.243.x.x. (But here's the good news: Authenticated requests get a higher rate limit. Check out the documentation for more details.)\",\"documentation_url\":\"https://docs.github.com/rest/overview/resources-in-the-rest-api#rate-limiting\"}\r\n```"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-08-09T15:22:23Z",
+   "body": "> The limit is 60 requests per hour for unauthenticated access. This shouldn't be a problem when using just Syncthing (unless you've got 60+ devices that all check for updates at the same time…). Do you (or anyone else under the same IP address) use other software that also utilises the GitHub API?\r\n\r\nI have 7 instances total behind that IP and it appears that syncthing is making a request to api.github.com every time it connects to a peer and that peer reports a later version than the local version which quickly burns through that 60 limit.\r\n\r\nI am also a pretend software developer by trade so it is entirely possible that other things running on my home network besides syncthing are trying to utilize the Github API as a makeshift CDN and are contributing to that.  However, syncthing is the only thing I am currently aware of that is having a problem.\r\n\r\nRegardless, it appears that syncthing both misinterprets the rate limit response as a valid response and does not respect the x-ratelimit-reset header."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-08-09T15:29:10Z",
+   "body": "If I spent some time to work up a PR that makes syncthing pay attention to the http response code and honor the x-ratelimit headers would it be accepted?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-08-09T15:50:39Z",
+   "body": "Some more information, this is the log (irrelevant entries removed) from a single instance of syncthing v1.23.6 running on a linux host that was repeatedly attempting to update in response to remote peers reporting they were on the newer v1.23.7 version:\r\n\r\n```\r\nAug 09 06:13:32 nebula rc.local[1078]: [DXNJM] 2023/08/09 06:13:32 WARNING: Automatic upgrade: gzip: invalid header\r\nAug 09 06:13:35 nebula rc.local[1078]: [DXNJM] 2023/08/09 06:13:35 WARNING: Automatic upgrade: gzip: invalid header\r\nAug 09 06:14:43 nebula rc.local[1078]: [DXNJM] 2023/08/09 06:14:43 WARNING: Automatic upgrade: gzip: invalid header\r\nAug 09 06:14:46 nebula rc.local[1078]: [DXNJM] 2023/08/09 06:14:46 WARNING: Automatic upgrade: gzip: invalid header\r\nAug 09 06:18:43 nebula rc.local[1078]: [DXNJM] 2023/08/09 06:18:43 WARNING: Automatic upgrade: gzip: invalid header\r\nAug 09 06:20:56 nebula rc.local[1078]: [DXNJM] 2023/08/09 06:20:56 WARNING: Automatic upgrade: gzip: invalid header\r\nAug 09 06:21:17 nebula rc.local[1078]: [DXNJM] 2023/08/09 06:21:17 WARNING: Automatic upgrade: gzip: invalid header\r\n```"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-08-09T16:35:59Z",
+   "body": "To be clear, this is not the upgrade check, it's the actual upgrade download. The upgrade check, which happens somewhat frequently (for example every time a newer machine connects to us) goes to <redacted-host> which is our own server, with caching, entirely sidestepping the github API limits.\r\n\r\nHowever, when an upgrade is deemed possible and necessary the asset is downloaded from the GitHub release, which is what happens here (and gets rejected). I suspect think that's a fairly unusual situation, as it is literally one \"API request\" (actually zip/tar.gz download) per released version.\r\n\r\nEven with your cluster of five machines, Syncthing would normally cause _five_ such API requests, in total, per month. But if they fail, they will of course be retried at some point. So, I don't think it's fair to say we trigger the limit in question. Things will however fail to work if you're already over it."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-08-09T17:15:04Z",
+   "body": "@participant2 Thanks for the clarification.  However, after digging into this and looking at network traffic I have not identified anything else that would be interacting with api.github.com repeatedly and exhausting that rate limit that isn't traceable to syncthing.  I agree that there is a non-zero chance that syncthing is an innocent bystander but I haven't identified another culprit yet and I don't run any software that utilizes the GH API that I'm aware of.  I'll continue to look for something else though.\r\n\r\nAlso, it's not a cluster of 5 machines - it is a cluster of about 10-15 or so devices (not all of which are continuously connected) with only half of them behind this NAT gateway.  I'm not sure if that changes the situation at all.\r\n\r\nRegardless, no matter what is going on I feel that checking the http status code and honoring the x-rate-limit flag should be a good improvement to consider.\r\n\r\n\r\n\r\n"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-08-09T17:33:12Z",
+   "body": "Is Githubs container registry subject to the same ratelimit?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-08-09T17:35:43Z",
+   "body": "Actually, I may have a lead on another culprit - was looking for traffic sent to 140.82.114.3 when I really needed to be looking at 140.82/16.\r\n\r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-08-09T18:05:02Z",
+   "body": "Alright, for future generations that come after me.  I have a Raspberry Pi that I send to people to help diagnose network issues remotely so they can hold their ISPs accountable.  Part of the software stack running on it includes telegraf which is configured to collect tcp/icmp response telemetry against a variety of public and semi-public remote hosts.\r\n\r\nOne of those public hosts happens to be `api.github.com` and it appears that even a simple HEAD request to https://api.github.com/ counts against the hourly quota now.  So - I think it is safe to say that syncthing was (mostly) an innocent bystander but it does contribute to the problem slightly by accessing assets hosted on GH via the api.\r\n\r\nSo, while technically not-a-bug - I think syncthing's behavior could be improved by:\r\n\r\n1) paying attention to http status codes when fetching remote resources and logging a meaningful error message on failure\r\n2) if a rate limit response is returned, honor the x-ratelimit-rest header instead of continuing to make requests and log the message so it is clear to the user what is happening\r\n\r\nPotential feature request?  Should I go post this in the forum?\r\n1) Provide a mechanism for configuring and using personal GH tokens to fetch GH resources since they have a much more generous rate limit\r\n\r\nIf nothing else - a FAQ entry would be nice.\r\n"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-08-09T18:13:04Z",
+   "body": "The status should be properly logged. But i think the retry-after handling is a bit of an overkill here."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-08-09T18:22:44Z",
+   "body": "I won't pretend to have fully internalized syncthing's code base at this point but is it really overkill to have a map with a host and retry-after entry in it to check before making the http call?  I would think that honoring the remote host's request that the client wait to retry the call is being a good netizen but maybe my scenario was enough of a corner case that it isn't worth the effort."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-08-09T18:43:09Z",
+   "body": "I think this can be resolved more simply by resolving the URL used one step further, IIRC the url seem above mostly results in a redirect, which we could do already in the upgrade server before serving the response. "
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-08-09T19:02:45Z",
+   "body": "There, no requests towards the api.github.com domain. I think that should solve it."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-08-09T19:13:37Z",
+   "body": "Indeed.  Thanks for all the effort you and everyone else put into this project."
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "syncthing/syncthing",
+  "default_branch": "main",
+  "commit_sha": "8dfec6983b37b5cba48636ea548de752245c7f46",
+  "as_of": "2023-08-09T14:02:31Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_syncthing_syncthing_9033"
+}

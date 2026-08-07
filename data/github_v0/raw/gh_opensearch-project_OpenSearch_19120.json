@@ -1,0 +1,334 @@
+{
+ "repo": "opensearch-project/OpenSearch",
+ "number": 19120,
+ "url": "https://github.com/opensearch-project/OpenSearch/issues/19120",
+ "title": "[BUG] (v3.2.0) `_cat/nodes` API shows negative values in cpu stats",
+ "state": "closed",
+ "labels": [
+  "bug",
+  "Clients",
+  "v3.8.0"
+ ],
+ "reporter": "reporter",
+ "created_at": "2025-08-21T11:42:55Z",
+ "closed_at": "2026-06-11T02:11:33Z",
+ "body": "### Describe the bug\n\nI ran into the below issue in 3.2.0 version that cpu usages could be negative and the same value (-1)\n\n```\n$ curl \"https://<redacted-host>/_cat/nodes?v\" -ku admin:test\n\nip             heap.percent ram.percent cpu load_1m load_5m load_15m node.role node.roles      cluster_manager name\n10.251.175.203           38          60  -1    0.44    0.41     0.49 m         cluster_manager *               dev-opensearch-test-250821-master-1\n10.251.117.144           20          60  -1    0.58    0.54     0.60 m         cluster_manager -               dev-opensearch-test-250821-master-0\n10.251.225.190           67          90  -1    1.79    1.14     1.03 di        data,ingest     -               dev-opensearch-test-250821-data-0\n10.251.143.196           24          60  -1    0.40    0.68     0.61 m         cluster_manager -               dev-opensearch-test-250821-master-2\n```\n\n### Related component\n\nClients\n\n### To Reproduce\n\n1. deploy opensearch cluster using 3.2.0 version\n2. After your cluster runs successfully, `curl \"https://<redacted-host>/_cat/nodes?v\" -ku admin:test`\n3. It also happens wrongly when you try `_cluster/stats` API\n\n### Expected behavior\n\n.\n\n### Additional Details\n\n**Plugins**\nI just added the prometheus-exporter plugin by building new Docker image\n```\nFROM <redacted-host>/library/opensearchproject/opensearch:3.2.0\n\nCOPY prometheus-exporter-3.2.0.0.zip /tmp/\nRUN ./bin/opensearch-plugin install file:/tmp/prometheus-exporter-3.2.0.0.zip\n```\n\n**Host/Environment (please complete the following information):**\n - OS: All hosts are worker nodes of kubernetes v1.31.4 and based on RHEL 8.10 (4.18.0 kernel)\n - Version: OpenSearch 3.2.0\n\n**Additional context**\n- Air-gapped environment but I believe it doesn't matter with this issue.\n",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2025-08-21T15:57:16Z",
+   "body": "To help triage, I followed the steps but **without** installing the prometheus exporter plugin, and I was unable to reproduce. \n\n* OS: Mac (Sequoia 15.6) \n* Version: 3.2.0 Docker Image\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-08-21T22:56:24Z",
+   "body": "Hi @participant1 ,\nI will check if it is able to reproduce this issue with the new cluster without prometheus-exporter. Thanks!"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-08-23T07:34:04Z",
+   "body": "@participant1 , \nThe below experiment is implemented using **docker compose (macOS Sequoia 15.6.1)** and there seem to have no issue as you mentioned. (even deploying with prometheus-exporter) \n\nI will investigate further in our Kubernetes environment (RHEL 8.10, 4.18.0 kernel) to see if the issue is reproducible only in that environment.\n\n---\n### 3.2.0 WITHOUT prometheus-exporter\n```                                         \n➜  OPENSEARCH_VERSION=3.2.0 docker compose up --remove-orphans -d                 \n[+] Running 14/14\n ✔ Network osb_opensearch-net                Created     0.0s \n...\n ✔ Container opensearch-dashboards       Started     2.7s \n\n➜  curl \"https://localhost:9200/_cat/nodes?v\" -ku admin:userStrongPassword123!            \nip         heap.percent ram.percent cpu load_1m load_5m load_15m node.role node.roles      cluster_manager name\n172.20.0.3           80         100  15    0.57    3.11     4.03 m         cluster_manager *               opensearch-clustermanager-2\n172.20.0.7           53          84  13    0.57    3.11     4.03 di        data,ingest     -               opensearch-data-2\n172.20.0.6           78         100  14    0.57    3.11     4.03 m         cluster_manager -               opensearch-clustermanager-3\n172.20.0.5           51         100  15    0.57    3.11     4.03 m         cluster_manager -               opensearch-clustermanager-1\n172.20.0.8           72         100  15    0.57    3.11     4.03 -         -               -               opensearch-coordinating-1\n172.20.0.4           36          85  13    0.57    3.11     4.03 di        data,ingest     -               opensearch-data-1\n\n➜  curl \"https://localhost:9200/_cat/plugins\" -ku admin:userStrongPassword123! | grep prom\n  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current\n                                 Dload  Upload   Total   Spent    Left  Speed\n100 11388  100 11388    0     0  31082      0 --:--:-- --:--:-- --:--:-- 31114\n\n➜  curl \"https://localhost:9200/_prometheus/metrics\" -ku admin:userStrongPassword123!     \n{\"error\":\"no handler found for uri [/_prometheus/metrics] and method [GET]\"}% \n```\n\n### 3.2.0 WITH prometheus-exporter\n```\n➜  vi docker-compose.yaml                                         \n➜  OPENSEARCH_VERSION=3.2.0-plugins docker compose up --remove-orphans -d    \n[+] Running 14/14\n ✔ Network osb_opensearch-net                Created                                                                      0.1s \n...\n ✔ Container opensearch-clustermanager-2     Started                                                                      2.8s \n\n➜  curl \"https://localhost:9200/_cat/nodes?v\" -ku admin:userStrongPassword123!\nip         heap.percent ram.percent cpu load_1m load_5m load_15m node.role node.roles      cluster_manager name\n172.19.0.6           39          84  10   11.54    7.56     5.13 di        data,ingest     -               opensearch-data-2\n172.19.0.8           65         100  10   11.54    7.56     5.13 m         cluster_manager *               opensearch-clustermanager-3\n172.19.0.3           41         100  11   11.54    7.56     5.13 m         cluster_manager -               opensearch-clustermanager-2\n172.19.0.5           70          84  10   11.54    7.56     5.13 di        data,ingest     -               opensearch-data-1\n172.19.0.2           49         100  10   11.54    7.56     5.13 -         -               -               opensearch-coordinating-1\n172.19.0.4           71         100  10   11.54    7.56     5.13 m         cluster_manager -               opensearch-clustermanager-1\n\n➜  curl \"https://localhost:9200/_cat/plugins\" -ku admin:userStrongPassword123! | grep prom\n  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current\n                                 Dload  Upload   Total   Spent    Left  Speed\n100 11826  100 11826    0     0   229k      0 --:--:-- --:--:-- --:--:--  230k\nopensearch-data-2           prometheus-exporter                  3.2.0.0\nopensearch-clustermanager-3 prometheus-exporter                  3.2.0.0\nopensearch-clustermanager-2 prometheus-exporter                  3.2.0.0\nopensearch-data-1           prometheus-exporter                  3.2.0.0\nopensearch-coordinating-1   prometheus-exporter                  3.2.0.0\nopensearch-clustermanager-1 prometheus-exporter                  3.2.0.0\n\n➜  curl \"https://localhost:9200/_prometheus/metrics\" -ku admin:userStrongPassword123!            \n# HELP opensearch_indices_search_fetch_count Count of search fetches\n# TYPE opensearch_indices_search_fetch_count gauge\nopensearch_indices_search_fetch_count{cluster=\"opensearch-cluster-1\",node=\"opensearch-coordinating-1\",nodeid=\"VynhGKiwRTi4efeE1KE_SQ\",} 0.0\n# HELP opensearch_indices_percolate_time_seconds Time spent while percolating\n# TYPE opensearch_indices_percolate_time_seconds gauge\n# HELP opensearch_threadpool_tasks_number Number of tasks in thread pool\n# TYPE opensearch_threadpool_tasks_number gauge\nopensearch_threadpool_tasks_number{cluster=\"opensearch-cluster-1\",node=\"opensearch-coordinating-1\",nodeid=\"VynhGKiwRTi4efeE1KE_SQ\",name=\"remote_recovery\",type=\"queue\",} 0.0\nopensearch_threadpool_tasks_number{cluster=\"opensearch-cluster-1\",node=\"opensearch-coordinating-1\",nodeid=\"VynhGKiwRTi4efeE1KE_SQ\",name=\"opensearch_workflow\",type=\"queue\",} 0.0\nopensearch_threadpool_tasks_number{cluster=\"opensearch-cluster-1\",node=\"opensearch-coordinating-1\",nodeid=\"VynhGKiwRTi4efeE1KE_SQ\",name=\"generic\",type=\"queue\",} 0.0\n...\n\n```"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-08-25T04:41:17Z",
+   "body": "The below experiment was implemented in Ubuntu 20.04 (Focal) (CPU Usage is `-1`) (NOT K8s environment)\n\n```\n$ cat /etc/os-release\nNAME=\"Ubuntu\"\nVERSION=\"20.04 LTS (Focal Fossa)\"\n...\n\n$ uname -a\nLinux {hostname} 5.10.16.3-microsoft-standard-WSL2 #1 SMP Fri Apr 2 22:23:49 UTC 2021 x86_64 x86_64 x86_64 GNU/Linux\n```\n---\n\n```\n$ docker image ls | grep opensearch\nopensearchproject/opensearch               3.2.0-plugins     87eb1dcb000c   4 days ago     1.45GB\nopensearchproject/opensearch               3.2.0             b6dde07329e6   11 days ago    1.45GB\nopensearchproject/opensearch-dashboards    3.2.0             5d4f6d03853f   11 days ago    1.69GB\nopensearchproject/opensearch-operator      2.8.0             a57c19e886bf   2 months ago   73.3MB\n\n$ docker run -d -p 9200:9200 -p 9600:9600 opensearchproject/opensearch:3.2.0 \\\n  -e \"discovery.type=single-node\" \\\n  -e \"OPENSEARCH_INITIAL_ADMIN_PASSWORD=strongUserPassword1!\"\n\n$ curl \"https://localhost:9200/_cat/nodes?v\" -ku admin:strongUserPassword1!\nip         heap.percent ram.percent cpu load_1m load_5m load_15m node.role node.roles                                        cluster_manager name\n172.17.0.2           62          42  -1    0.03    0.13     0.10 dimr      cluster_manager,data,ingest,remote_cluster_client *               4b8ab8dace73\n```"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-09-01T12:19:44Z",
+   "body": "It seems @participant14 just has the same issue with mine : https://github.com/opensearch-project/opensearch-prometheus-exporter/issues/386"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-09-10T08:30:27Z",
+   "body": "I have the same thing deploying with the Kubernetes operator\n\nhttps://github.com/opensearch-project/opensearch-k8s-operator\n\n<img width=\"740\" height=\"442\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/9a1a6193-5023-43ba-bb3f-472db2505b1c\" />\n\nand running the command\n`GET _cat/nodes?v=true&s=cpu:desc`\n\n```\nip           heap.percent ram.percent cpu load_1m load_5m load_15m node.role node.roles           cluster_manager name\n10.244.5.210           29          97  -1    1.18    1.08     1.22 dm        cluster_manager,data -               opensearch-cluster-masters-1\n10.244.2.104           48         100  -1    1.17    1.00     0.96 dm        cluster_manager,data *               opensearch-cluster-masters-2\n10.244.3.107           42          94  -1    1.80    1.05     0.82 dm        cluster_manager,data -               opensearch-cluster-masters-0\n10.244.2.105           69          99  -1    1.17    1.00     0.96 dm        cluster_manager,data -               opensearch-cluster-masters-4\n10.244.7.39            31         100  -1    0.32    0.43     0.69 dm        cluster_manager,data -               opensearch-cluster-masters-3\n10.244.6.156           25          84  -1    1.52    2.22     1.53 dm        cluster_manager,data -               opensearch-cluster-masters-5\n```\n\nwhich uses these images\n\ndocker.io/opensearchproject/opensearch:3.2.0"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-09-15T16:22:25Z",
+   "body": "[Catch All Triage](https://github.com/opensearch-project/.github/blob/main/TRIAGING.md) - [1](https://github.com/participant3) [2](https://github.com/participant5)"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-09-29T01:45:29Z",
+   "body": "@participant3 @participant5 Hi,\nActually I didn't attend the triage meeting so would you be available to get back to this Issue if someone will take a look into this CPU metric problem?"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-11-18T12:59:09Z",
+   "body": "Any update on this? It is crucial for our monitoring to get the proper cpu usage. I am using 3.3.2\n\nEven if we use the internal nodes/stats it gives a negative `-1`\n\n```\nGET /_nodes/stats/os,process?human&pretty\n```\nThis is our output\n```json\n\"os\": {\n        \"timestamp\": 1763470630966,\n        \"cpu\": {\n          \"percent\": -1,\n          \"load_average\": {\n            \"1m\": 1.67,\n            \"5m\": 1.24,\n            \"15m\": 1.36\n          }\n        },\n        \"mem\": {\n          \"total\": \"125.5gb\",\n          \"total_in_bytes\": 134820294656,\n          \"free\": \"472.5mb\",\n          \"free_in_bytes\": 495480832,\n          \"used\": \"125gb\",\n          \"used_in_bytes\": 134324813824,\n          \"free_percent\": 0,\n          \"used_percent\": 100\n        },\n        \"swap\": {\n          \"total\": \"3.9gb\",\n          \"total_in_bytes\": 4294963200,\n          \"free\": \"853.2mb\",\n          \"free_in_bytes\": 894705664,\n          \"used\": \"3.1gb\",\n          \"used_in_bytes\": 3400257536\n        },\n        \"cgroup\": {\n          \"cpuacct\": {\n            \"control_group\": \"/\",\n            \"usage_nanos\": 1385193963381144\n          },\n          \"cpu\": {\n            \"control_group\": \"/\",\n            \"cfs_period_micros\": 100000,\n            \"cfs_quota_micros\": -1,\n            \"stat\": {\n              \"number_of_elapsed_periods\": 0,\n              \"number_of_times_throttled\": 0,\n              \"time_throttled_nanos\": 0\n            }\n          },\n          \"memory\": {\n            \"control_group\": \"/system.slice/opensearch.service\",\n            \"limit_in_bytes\": \"9223372036854771712\",\n            \"usage_in_bytes\": \"128936591360\"\n          }\n        }\n      },\n      \"process\": {\n        \"timestamp\": 1763470630967,\n        \"open_file_descriptors\": 12477,\n        \"max_file_descriptors\": 1048576,\n        \"cpu\": {\n          \"percent\": -1,\n          \"total\": \"2.6d\",\n          \"total_in_millis\": 231113240\n        },\n        \"mem\": {\n          \"total_virtual\": \"10.4tb\",\n          \"total_virtual_in_bytes\": 11525761384448\n        }\n      }\n```"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2025-11-18T23:12:00Z",
+   "body": "I'm not able to reproduce this on Ubuntu 24.04.3 running the tarball or the docker image. In all cases I get non-negative value.\n\nHere is the code in question:\n\nhttps://github.com/opensearch-project/OpenSearch/blob/631bed420a92e0e44cf15e26e89184146be67258/server/src/main/java/org/opensearch/monitor/os/OsProbe.java#L239-L241\n\nTo summarize, it uses reflection to invoke `com.sun.management.OperatingSystemMXBean#getCpuLoad`. It does have a couple fallback paths to return -1 in case that class or method is not available at runtime.\n\n@participant15 I believe you have some experience in this area. Any idea what might be going on here?"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2025-11-18T23:14:29Z",
+   "body": "@reporter I noticed you're using the Windows Subsystem for Linux based on that `uname -a` output. Maybe that is the common denominator here? @participant4 @participant2 Are you also using WSL?"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-11-18T23:19:02Z",
+   "body": "@participant5 Hi, we are using RHEL 8, which seems the common denominator for me and @reporter. Same kernel as described on top. OpenSearch is installed as rpm and runs with systemd."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-11-19T10:06:55Z",
+   "body": "We are hosted on AKS using the OpenSearch Operator to deploy the docker images\n\nAKS Nodes are running: Ubuntu 22.04.5 LTS\nOpenSearch Operator Image: opensearchproject/opensearch-operator:2.8.0\nOpenSearch Image: docker.io/opensearchproject/opensearch:3.2.0\nOpenSearch Dashboards: docker.io/opensearchproject/opensearch-dashboards:3.2.0\n\nGranted i need to update to 3.3.0\n\nmy prometheus export config is\n\n```\n    monitoring:\n      enable: true # Enable or disable the monitoring plugin\n      labels: # The labels add for ServiceMonitor\n        release: monitoring-prometheus-stack\n      scrapeInterval: 30s # The scrape interval for Prometheus\n      pluginUrl: https://github.com/opensearch-project/opensearch-prometheus-exporter/releases/download/3.2.0.0/prometheus-exporter-3.2.0.0.zip # Optional, custom URL for the monitoring plugin\n      tlsConfig: # Optional, use this to override the tlsConfig of the generated ServiceMonitor, only the following provided options can be set currently\n        serverName: \"<redacted-host>\"\n        insecureSkipVerify: true # The operator currently does not allow configuring the ServiceMonitor with certificates, so this needs to be set\n```\n\nhope this helps to diagnose the issue.\n"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-11-19T10:29:29Z",
+   "body": "More details on my environment\n\n```bash\n$:~> uname -a\nLinux <redacted-server> 4.18.0-553.81.1.el8_10.x86_64 #1 SMP Thu Oct 16 14:01:33 EDT 2025 x86_64 x86_64 x86_64 GNU/Linuxca\n$:~> cat /etc/redhat-release\nRed Hat Enterprise Linux release 8.10 (Ootpa)\n```\n\nChecking java\n\n```bash\n$:~> /usr/share/opensearch/jdk/bin/java --version\nopenjdk 24.0.2 2025-07-15\nOpenJDK Runtime Environment Temurin-24.0.2+12 (build 24.0.2+12)\nOpenJDK 64-Bit Server VM Temurin-24.0.2+12 (build 24.0.2+12, mixed mode, sharing)\n```\n\nThe OpenSearch process run as systemd\n\n```bash\n$:~> ps -Af | grep opensearch\nopensea+ 2806193       1  0 Nov17 ?        00:19:38 /usr/share/opensearch/jdk/bin/java -Xshare:auto -Dopensearch.networkaddress.cache.ttl=60 -Dopensearch.networkaddress.cache.negative.ttl=10 -XX:+AlwaysPreTouch -Xss1m -Djava.awt.headless=true -Dfile.encoding=UTF-8 -Djna.nosys=true -XX:-OmitStackTraceInFastThrow -XX:+ShowCodeDetailsInExceptionMessages -Dio.netty.noUnsafe=true -Dio.netty.noKeySetOptimization=true -Dio.netty.recycler.maxCapacityPerThread=0 -Dio.netty.allocator.numDirectArenas=0 -Dlog4j.shutdownHookEnabled=false -Dlog4j2.disable.jmx=true -Djava.locale.providers=SPI,CLDR -Xms4g -Xmx4g -XX:+UseG1GC -XX:G1ReservePercent=25 -XX:InitiatingHeapOccupancyPercent=30 -Djava.io.tmpdir=/tmp/opensearch-6257675517575735211 -Xlog:gc*,gc+age=trace,safepoint:file=/var/log/opensearch/gc.log:utctime,pid,tags:filecount=32,filesize=64m --add-modules=jdk.incubator.vector -javaagent:agent/opensearch-agent.jar --add-opens=java.base/java.nio=org.apache.arrow.memory.core,ALL-UNNAMED -Dorg.apache.lucene.store.MMapDirectory.sharedArenaMaxPermits=1 -XX:MaxDirectMemorySize=2147483648 -Dopensearch.path.home=/usr/share/opensearch -Dopensearch.path.conf=/etc/opensearch -Dopensearch.distribution.type=rpm -Dopensearch.bundled_jdk=true -cp /usr/share/opensearch/lib/* org.opensearch.bootstrap.OpenSearch -p /var/run/opensearch/opensearch.pid --quiet\n```\n\nA small Java Test app\n\n```java\nimport java.lang.management.ManagementFactory;\nimport java.lang.management.OperatingSystemMXBean;\nimport java.lang.reflect.Method;\nimport org.opensearch.monitor.os.OsProbe;\n\npublic class DiagnosticCpuLoadSampler {\n    public static void main(String[] args) throws Exception {\n        // Use the same OpenSearch-based Adaptive Probe\n        OsProbe osProbe = OsProbe.getInstance();\n\n        int samples = 6;\n        double min = Double.POSITIVE_INFINITY;\n        double max = Double.NEGATIVE_INFINITY;\n        double sum = 0.0;\n\n        for (int i = 1; i <= samples; i++) {\n            short cpuPercent = osProbe.getSystemCpuPercent();\n            double value = cpuPercent < 0 ? 0.0 : cpuPercent / 100.0; // 0.0 - 1.0\n            System.out.printf(\"cpu: %d %n\", cpuPercent);\n\n            System.out.printf(\"sample %d: %.4f%n\", i, value);\n\n            if (value < min) min = value;\n            if (value > max) max = value;\n            sum += value;\n\n            try { Thread.sleep(10000); } catch (InterruptedException ignore) {}\n        }\n\n        double avg = sum / Math.max(1, samples);\n        System.out.printf(\"Summary: samples=%d, min=%.4f, max=%.4f, avg=%.4f%n\",\n                samples, min, max, avg);\n        System.out.printf(\"Summary (percent): min=%.2f%%, max=%.2f%%, avg=%.2f%%%n\",\n                min * 100, max * 100, avg * 100);\n    }\n}\n```\n\nRun\n\n```bash\n$:~> /usr/share/opensearch/jdk/bin/javac -cp \"/usr/share/opensearch/lib/*\" DiagnosticCpuLoadSampler.java\n$:~> /usr/share/opensearch/jdk/bin/java -cp \"/usr/share/opensearch/lib/*\" DiagnosticCpuLoadSampler.java\ncpu: 4\nsample 1: 0.0400\ncpu: 2\nsample 2: 0.0200\ncpu: 2\nsample 3: 0.0200\ncpu: 2\nsample 4: 0.0200\ncpu: 2\nsample 5: 0.0200\ncpu: 2\nsample 6: 0.0200\nSummary: samples=6, min=0.0200, max=0.0400, avg=0.0233\nSummary (percent): min=2.00%, max=4.00%, avg=2.33%\n```\n\nWe also have a prometheus-elasticsearch-exporter running, but I fail to see how it relates to the negative value problem."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2025-11-19T17:42:41Z",
+   "body": "The method used [here](https://github.com/opensearch-project/OpenSearch/blob/631bed420a92e0e44cf15e26e89184146be67258/server/src/main/java/org/opensearch/monitor/os/OsProbe.java#L97) was changed from `getSystemCpuLoad` to `getCpuLoad` in PR #18322. @participant11 do you have additional context on this particular change?"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2025-11-19T20:14:28Z",
+   "body": "To answer my own question, `getSystemCpuLoad` has been deprecated since Java 14 in favor of `getCpuLoad`, but the [implementation requirements](https://<redacted-host>/en/java/javase/25/docs/api/jdk.management/com/sun/management/OperatingSystemMXBean.html#getSystemCpuLoad()) state that the methods must return the same value.\n\n@participant4 So your test Java app using the OpenSearch utiilities is able to return the correct values? However, OpenSearch itself is running under systemd. We have recently updated the [systemd configuration](https://github.com/opensearch-project/OpenSearch/blob/646f937f886c58eccbb45b96a97df9ca1305ecf5/distribution/packages/src/common/systemd/opensearch.service) to improve the security posture. @participant16 @participant7 could that systemd configuration be the issue here?"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2025-11-19T21:03:34Z",
+   "body": "No luck reproducing this with systemd on Ubuntu. However, I believe it's plausible that some OSes may be trying to read `/proc/stat` to get the CPU info and that might be blocked by the systemd configuration."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2025-11-20T01:26:04Z",
+   "body": "@participant4 Could you re-run your test program with strace to see if it is trying to read `/proc/stat`?\n\n```\nstrace -e trace=open,openat,read /usr/share/opensearch/jdk/bin/java -cp \"/usr/share/opensearch/lib/*\"  DiagnosticCpuLoadSampler.java | grep proc\n```"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-11-20T07:56:29Z",
+   "body": "@participant4 @participant5 The hosts for running opensearch clusters are based on Kubernetes worker nodes.\nAlmost same environment with @participant4 's.\n```\n$ uname -a\nLinux ick8sosp01w001 4.18.0-553.34.1.el8_10.x86_64 #1 SMP Mon Dec 16 04:25:43 EST 2024 x86_64 x86_64 x86_64 GNU/Linux\n\n$ cat /etc/redhat-release\nRed Hat Enterprise Linux release 8.10 (Ootpa)\n```"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2025-11-20T21:09:53Z",
+   "body": "I have not found an environment where I can reproduce this to get to a definitive cause. The leading theory I have is that in some environments the JDK is attempting to read `/proc/stat` and that is being blocked by the systemd configuration. The main datapoint supporting that is that @participant4 wrote a test Java program using the OpenSearch utilities that was able to get a valid CPU value, but the OpenSearch process is returning -1.\n\nFor anyone following along that is seeing this error, one test you can do is replace\n\n```\nReadOnlyPaths=/proc/self/mountinfo /proc/diskstats\n```\n\nwith\n\n```\nReadOnlyPaths=/proc/self/mountinfo /proc/diskstats /proc/stat\n```\n\nin the systemd configuration to add permissions to read /proc/stat. On my Ubuntu test machine this file was located at `/usr/lib/systemd/system/opensearch.service`."
+  },
+  {
+   "author": "participant6",
+   "created_at": "2025-11-20T23:05:35Z",
+   "body": "If this is really also happening on docker/kube, then try to \n```\nsecurityContext:\n  privileged: true\n```\n\nmay able to show correct values?"
+  },
+  {
+   "author": "participant6",
+   "created_at": "2025-11-20T23:07:28Z",
+   "body": "Just reproduce this on AL2 by simply running the docker container:\n\n```\n% docker run -it -d -p 9200:9200 -p 9600:9600 -e \"discovery.type=single-node\" -e \"OPENSEARCH_INITIAL_ADMIN_PASSWORD=myStrongPassword123\" opensearchproject/opensearch:3.3.2\n\n% curl \"https://localhost:9200/_cat/nodes?v=true\" -ku admin:myStrongPassword123\nip         heap.percent ram.percent cpu load_1m load_5m load_15m node.role node.roles                                        cluster_manager name\n<>           44          99  -1    0.57    0.34     0.18 dimr      cluster_manager,data,ingest,remote_cluster_client *               3429153cd8de\n```"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-11-20T23:21:16Z",
+   "body": "@participant5 the output of the command\n\n```bash\nme@test:~> strace -e trace=open,openat,read /usr/share/opensearch/jdk/bin/java -cp \"/usr/share/opensearch/lib/*\"  DiagnosticCpuLoadSampler.java | grep proc\nopenat(AT_FDCWD, \"/usr/share/opensearch/jdk/bin/glibc-hwcaps/x86-64-v3/libjli.so\", O_RDONLY|O_CLOEXEC) = -1 ENOENT (No such file or directory)\nopenat(AT_FDCWD, \"/usr/share/opensearch/jdk/bin/glibc-hwcaps/x86-64-v2/libjli.so\", O_RDONLY|O_CLOEXEC) = -1 ENOENT (No such file or directory)\nopenat(AT_FDCWD, \"/usr/share/opensearch/jdk/bin/tls/haswell/x86_64/libjli.so\", O_RDONLY|O_CLOEXEC) = -1 ENOENT (No such file or directory)\nopenat(AT_FDCWD, \"/usr/share/opensearch/jdk/bin/tls/haswell/libjli.so\", O_RDONLY|O_CLOEXEC) = -1 ENOENT (No such file or directory)\nopenat(AT_FDCWD, \"/usr/share/opensearch/jdk/bin/tls/x86_64/libjli.so\", O_RDONLY|O_CLOEXEC) = -1 ENOENT (No such file or directory)\nopenat(AT_FDCWD, \"/usr/share/opensearch/jdk/bin/tls/libjli.so\", O_RDONLY|O_CLOEXEC) = -1 ENOENT (No such file or directory)\nopenat(AT_FDCWD, \"/usr/share/opensearch/jdk/bin/haswell/x86_64/libjli.so\", O_RDONLY|O_CLOEXEC) = -1 ENOENT (No such file or directory)\nopenat(AT_FDCWD, \"/usr/share/opensearch/jdk/bin/haswell/libjli.so\", O_RDONLY|O_CLOEXEC) = -1 ENOENT (No such file or directory)\nopenat(AT_FDCWD, \"/usr/share/opensearch/jdk/bin/x86_64/libjli.so\", O_RDONLY|O_CLOEXEC) = -1 ENOENT (No such file or directory)\nopenat(AT_FDCWD, \"/usr/share/opensearch/jdk/bin/libjli.so\", O_RDONLY|O_CLOEXEC) = -1 ENOENT (No such file or directory)\nopenat(AT_FDCWD, \"/usr/share/opensearch/jdk/bin/../lib/glibc-hwcaps/x86-64-v3/libjli.so\", O_RDONLY|O_CLOEXEC) = -1 ENOENT (No such file or directory)\nopenat(AT_FDCWD, \"/usr/share/opensearch/jdk/bin/../lib/glibc-hwcaps/x86-64-v2/libjli.so\", O_RDONLY|O_CLOEXEC) = -1 ENOENT (No such file or directory)\nopenat(AT_FDCWD, \"/usr/share/opensearch/jdk/bin/../lib/tls/haswell/x86_64/libjli.so\", O_RDONLY|O_CLOEXEC) = -1 ENOENT (No such file or directory)\nopenat(AT_FDCWD, \"/usr/share/opensearch/jdk/bin/../lib/tls/haswell/libjli.so\", O_RDONLY|O_CLOEXEC) = -1 ENOENT (No such file or directory)\nopenat(AT_FDCWD, \"/usr/share/opensearch/jdk/bin/../lib/tls/x86_64/libjli.so\", O_RDONLY|O_CLOEXEC) = -1 ENOENT (No such file or directory)\nopenat(AT_FDCWD, \"/usr/share/opensearch/jdk/bin/../lib/tls/libjli.so\", O_RDONLY|O_CLOEXEC) = -1 ENOENT (No such file or directory)\nopenat(AT_FDCWD, \"/usr/share/opensearch/jdk/bin/../lib/haswell/x86_64/libjli.so\", O_RDONLY|O_CLOEXEC) = -1 ENOENT (No such file or directory)\nopenat(AT_FDCWD, \"/usr/share/opensearch/jdk/bin/../lib/haswell/libjli.so\", O_RDONLY|O_CLOEXEC) = -1 ENOENT (No such file or directory)\nopenat(AT_FDCWD, \"/usr/share/opensearch/jdk/bin/../lib/x86_64/libjli.so\", O_RDONLY|O_CLOEXEC) = -1 ENOENT (No such file or directory)\nopenat(AT_FDCWD, \"/usr/share/opensearch/jdk/bin/../lib/libjli.so\", O_RDONLY|O_CLOEXEC) = 3\nread(3, \"\\177ELF\\2\\1\\1\\0\\0\\0\\0\\0\\0\\0\\0\\0\\3\\0>\\0\\1\\0\\0\\0\\0\\0\\0\\0\\0\\0\\0\\0\"..., 832) = 832\nopenat(AT_FDCWD, \"/usr/share/opensearch/jdk/bin/libdl.so.2\", O_RDONLY|O_CLOEXEC) = -1 ENOENT (No such file or directory)\nopenat(AT_FDCWD, \"/usr/share/opensearch/jdk/bin/../lib/libdl.so.2\", O_RDONLY|O_CLOEXEC) = -1 ENOENT (No such file or directory)\nopenat(AT_FDCWD, \"/etc/ld.so.cache\", O_RDONLY|O_CLOEXEC) = 3\nopenat(AT_FDCWD, \"/lib64/libdl.so.2\", O_RDONLY|O_CLOEXEC) = 3\nread(3, \"\\177ELF\\2\\1\\1\\0\\0\\0\\0\\0\\0\\0\\0\\0\\3\\0>\\0\\1\\0\\0\\0p\\16\\0\\0\\0\\0\\0\\0\"..., 832) = 832\nopenat(AT_FDCWD, \"/usr/share/opensearch/jdk/bin/libpthread.so.0\", O_RDONLY|O_CLOEXEC) = -1 ENOENT (No such file or directory)\nopenat(AT_FDCWD, \"/usr/share/opensearch/jdk/bin/../lib/libpthread.so.0\", O_RDONLY|O_CLOEXEC) = -1 ENOENT (No such file or directory)\nopenat(AT_FDCWD, \"/lib64/libpthread.so.0\", O_RDONLY|O_CLOEXEC) = 3\nread(3, \"\\177ELF\\2\\1\\1\\0\\0\\0\\0\\0\\0\\0\\0\\0\\3\\0>\\0\\1\\0\\0\\0\\360n\\0\\0\\0\\0\\0\\0\"..., 832) = 832\nopenat(AT_FDCWD, \"/usr/share/opensearch/jdk/bin/libc.so.6\", O_RDONLY|O_CLOEXEC) = -1 ENOENT (No such file or directory)\nopenat(AT_FDCWD, \"/usr/share/opensearch/jdk/bin/../lib/libc.so.6\", O_RDONLY|O_CLOEXEC) = -1 ENOENT (No such file or directory)\nopenat(AT_FDCWD, \"/lib64/libc.so.6\", O_RDONLY|O_CLOEXEC) = 3\nread(3, \"\\177ELF\\2\\1\\1\\3\\0\\0\\0\\0\\0\\0\\0\\0\\3\\0>\\0\\1\\0\\0\\0\\300\\250\\3\\0\\0\\0\\0\\0\"..., 832) = 832\nread(3, \"\\4\\0\\0\\0\\20\\0\\0\\0\\5\\0\\0\\0GNU\\0\\2\\0\\0\\300\\4\\0\\0\\0\\3\\0\\0\\0\\0\\0\\0\\0\", 32) = 32\nopenat(AT_FDCWD, \"/usr/share/opensearch/jdk/lib/jvm.cfg\", O_RDONLY) = 3\nread(3, \"-server KNOWN\\n-client IGNORE\\n\", 4096) = 29\nread(3, \"\", 4096)                       = 0\nopenat(AT_FDCWD, \"/usr/share/opensearch/jdk/lib/server/libjvm.so\", O_RDONLY|O_CLOEXEC) = 3\nread(3, \"\\177ELF\\2\\1\\1\\0\\0\\0\\0\\0\\0\\0\\0\\0\\3\\0>\\0\\1\\0\\0\\0\\0\\0\\0\\0\\0\\0\\0\\0\"..., 832) = 832\nopenat(AT_FDCWD, \"/usr/share/opensearch/jdk/bin/librt.so.1\", O_RDONLY|O_CLOEXEC) = -1 ENOENT (No such file or directory)\nopenat(AT_FDCWD, \"/usr/share/opensearch/jdk/bin/../lib/librt.so.1\", O_RDONLY|O_CLOEXEC) = -1 ENOENT (No such file or directory)\nopenat(AT_FDCWD, \"/etc/ld.so.cache\", O_RDONLY|O_CLOEXEC) = 3\nopenat(AT_FDCWD, \"/lib64/librt.so.1\", O_RDONLY|O_CLOEXEC) = 3\nread(3, \"\\177ELF\\2\\1\\1\\0\\0\\0\\0\\0\\0\\0\\0\\0\\3\\0>\\0\\1\\0\\0\\0000$\\0\\0\\0\\0\\0\\0\"..., 832) = 832\nopenat(AT_FDCWD, \"/usr/share/opensearch/jdk/bin/libm.so.6\", O_RDONLY|O_CLOEXEC) = -1 ENOENT (No such file or directory)\nopenat(AT_FDCWD, \"/usr/share/opensearch/jdk/bin/../lib/libm.so.6\", O_RDONLY|O_CLOEXEC) = -1 ENOENT (No such file or directory)\nopenat(AT_FDCWD, \"/lib64/libm.so.6\", O_RDONLY|O_CLOEXEC) = 3\nread(3, \"\\177ELF\\2\\1\\1\\3\\0\\0\\0\\0\\0\\0\\0\\0\\3\\0>\\0\\1\\0\\0\\0 \\305\\0\\0\\0\\0\\0\\0\"..., 832) = 832\nopenat(AT_FDCWD, \"/usr/share/opensearch/lib/\", O_RDONLY|O_NONBLOCK|O_CLOEXEC|O_DIRECTORY) = 3\n+++ exited with 0 +++\n```"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-11-20T23:32:44Z",
+   "body": "I tried the suggestion of @participant5 \n\n```bash\nvi /usr/lib/systemd/system/opensearch.service\n```\nchange line to\n\n```\n# grep ReadOnlyPath /usr/lib/systemd/system/opensearch.service\nReadOnlyPaths=-/etc/os-release -/usr/lib/os-release -/etc/system-release\nReadOnlyPaths=/proc/self/mountinfo /proc/diskstats /proc/stat\nReadOnlyPaths=/proc/self/cgroup /sys/fs/cgroup/cpu /sys/fs/cgroup/cpu/-\nReadOnlyPaths=/sys/fs/cgroup/cpuacct /sys/fs/cgroup/cpuacct/- /sys/fs/cgroup/memory /sys/fs/cgroup/memory/-\nReadOnlyPaths=/sys/fs/cgroup/system.slice/-\n```\n\nreload and restart\n```bash\n# systemctl daemon-reload\n# systemctl restart opensearch\n```\n\ncheck cpu usage\n\n```bash\ncurl -s https://localhost:9200/_cat/nodes?v --cert admin.pem --key admin-key.pem | grep mynode\n10.153.224.8            11          98  -1    5.36    2.11     1.11 m         cluster_manager                   -               mynode\n```"
+  },
+  {
+   "author": "participant6",
+   "created_at": "2025-11-20T23:44:53Z",
+   "body": "Hi @participant4 since I can reproduce it in docker I dont think it is related to systemd anymore tho.\n\n"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-11-20T23:58:24Z",
+   "body": "I use a tarball and a naked lab machine\n\n```\ncurl localhost:9200/_cat/nodes?v\nip             heap.percent ram.percent cpu load_1m load_5m load_15m node.role node.roles                                        cluster_manager name\n10.153.104.128           25          82  -1    1.57    1.08     0.85 dimr      cluster_manager,data,ingest,remote_cluster_client *               mylab01\n```\nOS and kernel identical\n```\nme@participant17:~> uname -a\nLinux mylab01 4.18.0-553.81.1.el8_10.x86_64 #1 SMP Thu Oct 16 14:01:33 EDT 2025 x86_64 x86_64 x86_64 GNU/Linux\nme@participant17:~> cat /etc/redhat-release\nRed Hat Enterprise Linux release 8.10 (Ootpa)\n```\n\n```\nbin/opensearch -V\nWARNING: Using incubator modules: jdk.incubator.vector\nWARNING: Unknown module: org.apache.arrow.memory.core specified to --add-opens\nWARNING: A terminally deprecated method in sun.misc.Unsafe has been called\nWARNING: sun.misc.Unsafe::objectFieldOffset has been called by net.bytebuddy.dynamic.loading.ClassInjector$UsingUnsafe$Dispatcher$CreationAction\nWARNING: Please consider reporting this to the maintainers of class net.bytebuddy.dynamic.loading.ClassInjector$UsingUnsafe$Dispatcher$CreationAction\nWARNING: sun.misc.Unsafe::objectFieldOffset will be removed in a future release\nVersion: 3.3.2, Build: tar/6564992150e26aaa62d4522a220dfff5188aeb88/2025-10-29T22:24:07.450919802Z, JVM: 24.0.2\n```"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-11-21T00:01:44Z",
+   "body": "> Hi [@participant4](https://github.com/participant4) since I can reproduce it in docker I dont think it is related to systemd anymore tho.\n\nWe also have Docker containers running on our production and they all report -1."
+  },
+  {
+   "author": "participant7",
+   "created_at": "2025-11-21T03:51:09Z",
+   "body": "worth checking if the problem exists in 3.0 / 3.1 as well. if it doesn't it may also further rule out ```systemd```'s involvement. "
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-11-21T10:09:42Z",
+   "body": "For 3.1.0\n\n```bash\ndocker run -it -d -p 9200:9200 -p 9600:9600  \\\n  -e \"discovery.type=single-node\" \\\n  -e \"OPENSEARCH_INITIAL_ADMIN_PASSWORD=myStrongPassword123\"  \\\n opensearchproject/opensearch:3.1.0\n```\n\nThe result is\n\n```bash\ncurl -k \"https://localhost:9200/_cat/nodes?v=true&format=json&pretty\" -u admin:myStrongPassword123\n[\n  {\n    \"ip\" : \"172.17.0.3\",\n    \"heap.percent\" : \"17\",\n    \"ram.percent\" : \"65\",\n    \"cpu\" : \"45\",\n    \"load_1m\" : \"11.49\",\n    \"load_5m\" : \"41.01\",\n    \"load_15m\" : \"36.74\",\n    \"node.role\" : \"dimr\",\n    \"node.roles\" : \"cluster_manager,data,ingest,remote_cluster_client\",\n    \"cluster_manager\" : \"*\",\n    \"name\" : \"2f4d2f01e137\"\n  }\n]\n```\n\nUsed the tarball 3.1.0\n```bash\nwget https://<redacted-host>/releases/bundle/opensearch/3.1.0/opensearch-3.1.0-linux-x64.tar.gz\n```\nAfter config and disabling security\n```bash\ncurl \"localhost:9200/_cat/nodes?v=true&format=json&pretty\"\n[\n  {\n    \"ip\" : \"10.255.255.254\",\n    \"heap.percent\" : \"28\",\n    \"ram.percent\" : \"16\",\n    \"cpu\" : \"0\",\n    \"load_1m\" : \"0.36\",\n    \"load_5m\" : \"0.31\",\n    \"load_15m\" : \"0.12\",\n    \"node.role\" : \"dimr\",\n    \"node.roles\" : \"cluster_manager,data,ingest,remote_cluster_client\",\n    \"cluster_manager\" : \"*\",\n    \"name\" : \"rhel8-4711\"\n  }\n]\n```\n\nOnly difference I can spot is \n* 3.1.0 = Java 21\n* 3..2.0 = Java 24\n* 3.3.2 = Java 24"
+  },
+  {
+   "author": "participant7",
+   "created_at": "2025-11-21T10:53:56Z",
+   "body": "Ok so its not ```systemd``` , the new ```systemd``` configs has been since 3.0.\n\n@participant8  did we see somewhat similar problems with the SAP plugin with the JavaAgent + JDK-24 ?"
+  },
+  {
+   "author": "participant7",
+   "created_at": "2025-11-21T10:58:22Z",
+   "body": "@participant4  one more thing that could be helpful: Is it possible for you to run with 3.2.0 with JDK-21. That will help us to narrow down if its related to JDK & JavaAgent . \n\n\"The JavaAgent i am talking about here allows [file](https://github.com/opensearch-project/OpenSearch/blob/main/libs/agent-sm/agent/src/main/java/org/opensearch/javaagent/FileInterceptor.java) access based on security policies\". \n\ne.g allows load averages:  https://github.com/opensearch-project/OpenSearch/blob/c4b12cf1c06aeec461e7b144d4c506fbf295c0a4/server/src/main/resources/org/opensearch/bootstrap/security.policy#L219\n"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-11-21T16:40:34Z",
+   "body": "Fetch releases\n```\nwget https://<redacted-host>/releases/bundle/opensearch/3.1.0/opensearch-3.1.0-linux-x64.tar.gz\nwget https://<redacted-host>/releases/bundle/opensearch/3.2.0/opensearch-3.2.0-linux-x64.tar.gz\n```\n\nUnpack\n```\ntar -xzf opensearch-3.1.0-linux-x64.tar.gz\ntar -xzf opensearch-3.2.0-linux-x64.tar.gz\n```\n\nUse Java 21 from release 3.1.0\n```\nexport OPENSEARCH_JAVA_HOME=/var/fo/labs/offline/opensearch-poc/opensearch-3.1.0/jdk\n\n[2025-11-21T17:34:23,318][WARN ][stderr                   ] [participant4] Nov 21, 2025 5:34:23 PM org.opensearch.javaagent.bootstrap.AgentPolicy setPolicy\n[2025-11-21T17:34:23,321][WARN ][stderr                   ] [participant4] INFO: Policy attached successfully: org.opensearch.bootstrap.OpenSearchPolicy@participant18\n[2025-11-21T17:34:23,337][INFO ][o.o.n.Node               ] [participant4] version[3.2.0], pid[2329063], build[tar/6adc0bf476e1624190564d7fbe4aba00ccf49ad8/2025-08-12T03:55:01.226522683Z], OS[Linux/4.18.0-553.81.1.el8_10.x86_64/amd64], JVM[Eclipse Adoptium/OpenJDK 64-Bit Server VM/21.0.7/21.0.7+6-LTS]\n[2025-11-21T17:34:23,338][INFO ][o.o.n.Node               ] [participant4] JVM home [/var/fo/labs/offline/opensearch-poc/opensearch-3.1.0/jdk], using bundled JDK/JRE [false]\n```\n\n```bash\ncurl \"localhost:9200/\"\n{\n  \"name\" : \"participant4\",\n  \"cluster_name\" : \"opensearch\",\n  \"cluster_uuid\" : \"T6HNkhsFRS25LXu50FlROw\",\n  \"version\" : {\n    \"distribution\" : \"opensearch\",\n    \"number\" : \"3.2.0\",\n    \"build_type\" : \"tar\",\n    \"build_hash\" : \"6adc0bf476e1624190564d7fbe4aba00ccf49ad8\",\n    \"build_date\" : \"2025-08-12T03:55:01.226522683Z\",\n    \"build_snapshot\" : false,\n    \"lucene_version\" : \"10.2.2\",\n    \"minimum_wire_compatibility_version\" : \"2.19.0\",\n    \"minimum_index_compatibility_version\" : \"2.0.0\"\n  },\n  \"tagline\" : \"The OpenSearch Project: https://opensearch.org/\"\n}\n```\n\n```\ncurl \"http://localhost:9200/_cat/nodes?v=true&pretty\"\nip             heap.percent ram.percent cpu load_1m load_5m load_15m node.role node.roles                                        cluster_manager name\n10.153.104.128           56          57   3    0.44    0.65     1.20 dimr      cluster_manager,data,ingest,remote_cluster_client *               participant4\n```\n\nWith the bundled JDK\n\n```\ncurl \"http://localhost:9200/_cat/nodes?v=true&pretty\"\nip             heap.percent ram.percent cpu load_1m load_5m load_15m node.role node.roles                                        cluster_manager name\n10.153.104.128           46          57  -1    1.74    0.87     1.38 dimr      cluster_manager,data,ingest,remote_cluster_client *               participant4\n```\n\nOpenSearch v3.2.0 and Java 21, result was not `-1`"
+  },
+  {
+   "author": "participant7",
+   "created_at": "2025-11-21T17:33:53Z",
+   "body": "thanks, this is useful. it does look like the Java agent with JDK-24 being the culprit. I'll look at an another similar issue that Craig was working with and try to correlate things."
+  },
+  {
+   "author": "participant8",
+   "created_at": "2025-11-21T17:58:11Z",
+   "body": "> thanks, this is useful. it does look like the Java agent with JDK-24 being the culprit. I'll look at an another similar issue that Craig was working with and try to correlate things.\n\nWhat's in the node logs. Do you see any SecurityExceptions? Something like:\n\n```\nCaused by: java.lang.SecurityException: Denied OPEN (read) access to file: /usr/share/fonts/opentype/mathjax/MathJax_Fraktur-Regular.otf, domain: ProtectionDomain  (file:/home/<user>/.gradle/caches/modules-2/files-2.1/org.apache.tika/tika-parser-microsoft-module/3.2.2/41ff68abccde91ab17d7b181eb7a5fccf16e8b5c/tika-parser-microsoft-module-3.2.2.jar <no signer certificates>)\n jdk.internal.loader.ClassLoaders$AppClassLoader@participant19\n <no principals>\n java.security.Permissions@participant20 (\n)\n```"
+  },
+  {
+   "author": "participant7",
+   "created_at": "2025-11-21T18:03:05Z",
+   "body": "[2] Eats the exception log message and returns -1\n\n[1] https://github.com/opensearch-project/OpenSearch/blob/main/server/src/main/java/org/opensearch/monitor/os/OsProbe.java#L240\n\n[2] https://github.com/opensearch-project/OpenSearch/blob/main/server/src/main/java/org/opensearch/monitor/Probes.java#L52"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2025-11-21T19:08:49Z",
+   "body": "@participant7 I setup a reproduction on an AL2 host and modified the code to throw exceptions instead of swallowing them and I think this is the cause:\n\n```\nCaused by: java.lang.SecurityException: Denied OPEN (read) access to file: /sys/fs/cgroup/cpu,cpuacct/cpu.cfs_quota_us, domain: ProtectionDomain  (file:/home/<user>/opensearch-3.3.2/lib/opensearch-cli-3.3.2.jar <no signer certificates>)\n jdk.internal.loader.ClassLoaders$AppClassLoader@participant21\n <no principals>\n java.security.Permissions@participant22 ()\n\tat java.base/java.nio.channels.FileChannel.open(FileChannel.java:347) ~[?:?]\n\tat java.base/java.nio.file.Files.lines(Files.java:3738) ~[?:?]\n\tat java.base/java.nio.file.Files.lines(Files.java:3829) ~[?:?]\n\tat java.base/jdk.internal.platform.CgroupSubsystemController.getStringValue(CgroupSubsystemController.java:66) ~[?:?]\n\tat java.base/jdk.internal.platform.CgroupSubsystemController.getLongValue(CgroupSubsystemController.java:125) ~[?:?]\n\tat java.base/jdk.internal.platform.cgroupv1.CgroupV1Subsystem.getLongValue(CgroupV1Subsystem.java:190) ~[?:?]\n\tat java.base/jdk.internal.platform.cgroupv1.CgroupV1Subsystem.getCpuQuota(CgroupV1Subsystem.java:242) ~[?:?]\n\tat java.base/jdk.internal.platform.CgroupMetrics.getCpuQuota(CgroupMetrics.java:75) ~[?:?]\n\tat jdk.management@24.0.2/<redacted-host>.OperatingSystemImpl$ContainerCpuTicks.getContainerCpuLoad(OperatingSystemImpl.java:85) ~[?:?]\n\tat jdk.management@24.0.2/<redacted-host>.OperatingSystemImpl.getCpuLoad(OperatingSystemImpl.java:264) ~[?:?]\n\tat java.base/jdk.internal.reflect.DirectMethodHandleAccessor.invoke(DirectMethodHandleAccessor.java:104) ~[?:?]\n\tat java.base/java.lang.reflect.Method.invoke(Method.java:565) ~[?:?]\n\tat org.opensearch.monitor.Probes.getLoadAndScaleToPercent(Probes.java:47) ~[opensearch-3.3.2.jar:3.3.2]\n\tat org.opensearch.monitor.os.OsProbe.getSystemCpuPercent(OsProbe.java:240) ~[opensearch-3.3.2.jar:3.3.2]\n\tat org.opensearch.monitor.os.OsProbe.osStats(OsProbe.java:692) ~[opensearch-3.3.2.jar:3.3.2]\n\tat org.opensearch.monitor.os.OsService.<init>(OsService.java:71) ~[opensearch-3.3.2.jar:3.3.2]\n\tat org.opensearch.monitor.MonitorService.<init>(MonitorService.java:62) ~[opensearch-3.3.2.jar:3.3.2]\n\tat org.opensearch.node.Node.<init>(Node.java:1036) ~[opensearch-3.3.2.jar:3.3.2]\n\tat org.opensearch.node.Node.<init>(Node.java:483) ~[opensearch-3.3.2.jar:3.3.2]\n\tat org.opensearch.bootstrap.Bootstrap$5.<init>(Bootstrap.java:249) ~[opensearch-3.3.2.jar:3.3.2]\n\tat org.opensearch.bootstrap.Bootstrap.setup(Bootstrap.java:249) ~[opensearch-3.3.2.jar:3.3.2]\n\tat org.opensearch.bootstrap.Bootstrap.init(Bootstrap.java:411) ~[opensearch-3.3.2.jar:3.3.2]\n\tat org.opensearch.bootstrap.OpenSearch.init(OpenSearch.java:168) ~[opensearch-3.3.2.jar:3.3.2]\n\t... 6 more\n```"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2025-11-21T19:18:58Z",
+   "body": "I also verified this is an issue with JDK 24+. My modified code can start successfully with JDK 21."
+  },
+  {
+   "author": "participant7",
+   "created_at": "2025-11-21T19:19:41Z",
+   "body": "thanks @participant5 \n\nwas chatting with Criag offline and i think we'll have to follow something similar to https://github.com/opensearch-project/OpenSearch/pull/19683 \n\nAllowlisting a few knowns which were previously (before JDK-24) allowlisted  in JDK's protection domain.\n\n\"jdk.internal.platform\", \"jdk.internal.platform.cgroupv1\", \"jdk.internal.platform.cgroupv2\", \"<redacted-host>\", \"com.sun.management\""
+  },
+  {
+   "author": "participant8",
+   "created_at": "2025-11-21T20:07:13Z",
+   "body": "I'll have to compile a list of Github issues I've seen with JDK >= 24. Basically the JDK has been removing a bunch of internal calls to AccessController.doPrivileged and it may manifest as these errors.\n\nIMO The solution is to put these grants generically in the security.policy file which essentially mimics JDK behavior where the access is implicit and does not need to be explicitly granted."
+  },
+  {
+   "author": "participant9",
+   "created_at": "2025-11-26T19:59:06Z",
+   "body": "Just to add another data point: I'm running into this same issue with OpenSearch 3.3.2 deployed on Kubernetes (1.33.2) nodes running Rocky Linux 8.7 (kernel version: 4.18.0-425.3.1.el8.x86_64).   In my case, I noticed the odd CPU value in my Grafana dashboard backed by metric data obtained via the (external/non-plugin) [Elasticsearch Exporter](https://github.com/prometheus-community/elasticsearch_exporter).  I'm glad to see that the cause and a probable solution have been identified.  I hope it can be fixed in time for the upcoming 3.4 release."
+  },
+  {
+   "author": "participant8",
+   "created_at": "2025-11-26T20:36:45Z",
+   "body": "@participant5 interestingly we already give permission to read on `/sys/fs/cgroup/cpu/-` and `/sys/fs/cgroup/cpuacct/-`: https://github.com/opensearch-project/OpenSearch/blob/main/server/src/main/resources/org/opensearch/bootstrap/security.policy#L238-L243\n\nI think we either need to grant at one level up `/sys/fs/cgroup/-` or figure out why the FileInterceptor in the java agent cannot handle `/sys/fs/cgroup/cpu,cpuacct/cpu.cfs_quota_us`"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2025-11-26T22:54:51Z",
+   "body": "> interestingly we already give permission to read on /sys/fs/cgroup/cpu/- and /sys/fs/cgroup/cpuacct/-\n\n@participant8 I think we should give permission to `/sys/fs/cgroup/cpu,cpuacct/-`. A cursory look into this suggests this is the structure you'll see when the cpu and cpuacct groups are mounted together, which is common."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2025-11-26T23:17:37Z",
+   "body": "@participant8 I opened #20108 which has the changes that allowed the CPU reporting to work correctly on an AL2 host where it was previously failing. I feel like we're playing whack-a-mole here though..."
+  },
+  {
+   "author": "participant8",
+   "created_at": "2025-11-26T23:32:18Z",
+   "body": "> @participant8 I opened #20108 which has the changes that allowed the CPU reporting to work correctly on an AL2 host where it was previously failing. I feel like we're playing whack-a-mole here though...\n\nYes, unfortunately the JDK used to give implicit permission in many instances and it's now being revealed since the JDK is removing calls to AccessController.doPrivileged. @participant11 any idea how we can be more systematic about giving access to files the JDK previously had implicit access to "
+  },
+  {
+   "author": "participant10",
+   "created_at": "2026-06-05T16:18:21Z",
+   "body": "@participant8: could you please re-open this issue? the bug still exists in 3.6.0, i.e. your fix was not enough\n\ni'm running in a container (specifically: based on RHEL 9.8) on kubernetes (specifically: OpenShift 4.x, based on kubernetes 1.33.6) with JDK 25.\n\nsee this analysis from @participant12: https://github.com/opensearch-project/opensearch-prometheus-exporter/issues/386#issuecomment-4452174018\n\n\n```\n# standard OpenSearch 3.6.0 (min distribution)\n$ curl http://localhost:9200\n{\n  \"name\" : \"test-opensearch-0\",\n  \"cluster_name\" : \"test-opensearch\",\n  \"cluster_uuid\" : \"HkF7ITcfS7yNGwjWRhPrKw\",\n  \"version\" : {\n    \"distribution\" : \"opensearch\",\n    \"number\" : \"3.6.0\",\n    \"build_type\" : \"tar\",\n    \"build_hash\" : \"4ca747d8d47f80162db323019357447126732e35\",\n    \"build_date\" : \"2026-04-04T06:02:43.418927856Z\",\n    \"build_snapshot\" : false,\n    \"lucene_version\" : \"10.4.0\",\n    \"minimum_wire_compatibility_version\" : \"2.19.0\",\n    \"minimum_index_compatibility_version\" : \"2.0.0\"\n  },\n  \"tagline\" : \"The OpenSearch Project: https://opensearch.org/\"\n}\n\n\n# note the -1 for CPU\n$ curl http://localhost:9200/_cat/nodes?v\nip           heap.percent ram.percent cpu load_1m load_5m load_15m node.role node.roles                                        cluster_manager name\n1.2.3.4                38         100  -1    5.84    4.80     4.71 dimr      cluster_manager,data,ingest,remote_cluster_client *               test-opensearch-0\n\n# problem also leaks to prometheus plugin\n$ curl http://localhost:9200/_prometheus/metrics | grep cpu_percent\n# HELP opensearch_process_cpu_percent CPU percentage used by ES process\n# TYPE opensearch_process_cpu_percent gauge\nopensearch_process_cpu_percent{cluster=\"test-opensearch\",node=\"test-opensearch-0\",nodeid=\"7Riz48lMTsWUEyIdES4qUg\",} -1.0\n# HELP opensearch_os_cpu_percent CPU usage in percent\n# TYPE opensearch_os_cpu_percent gauge\nopensearch_os_cpu_percent{cluster=\"test-opensearch\",node=\"test-opensearch-0\",nodeid=\"7Riz48lMTsWUEyIdES4qUg\",} -1.0\n```"
+  },
+  {
+   "author": "participant8",
+   "created_at": "2026-06-05T16:34:04Z",
+   "body": "@participant10 re-opened. Thank you for the analysis."
+  },
+  {
+   "author": "participant11",
+   "created_at": "2026-06-05T16:48:37Z",
+   "body": "> Yes, unfortunately the JDK used to give implicit permission in many instances and it's now being revealed since the JDK is removing calls to AccessController.doPrivileged. [@participant11](https://github.com/participant11) any idea how we can be more systematic about giving access to files the JDK previously had implicit access to\n\n@participant8 sincere appoligies, I completely missed that comment, I think we could elevate these into `BootstrapCheck` and hint early on if some container specific stats (CPU/mem/...) could not be accessed, wdyt? Thanks!"
+  },
+  {
+   "author": "participant8",
+   "created_at": "2026-06-05T19:40:21Z",
+   "body": "> @participant8 sincere appoligies, I completely missed that comment, I think we could elevate these into BootstrapCheck and hint early on if some container specific stats (CPU/mem/...) could not be accessed, wdyt? Thanks!\n\nYea I think that makes sense. Currently this is a pain to debug since its platform dependent and we are swallowing any errors here so its not entirely obvious what the java agent is rejecting and it manifests as negative value for cpu stats."
+  },
+  {
+   "author": "participant11",
+   "created_at": "2026-06-05T19:50:28Z",
+   "body": "I could take a look, should have some time over the weekend (please feel to assign the issue to me if you feel so), thanks!"
+  },
+  {
+   "author": "participant11",
+   "created_at": "2026-06-08T00:52:10Z",
+   "body": "@participant8 @participant10 @participant5  Spent some time looking into the issue, there are two things to mention:\n - the way OpenSearch fetches CPU stats (for CPU load in particular), is using `<redacted-host>.OperatingSystemImpl::getCpuLoad`\n - the `OperatingSystemImpl::getCpuLoad` may return -1 if perf counters are disabled fe (or any other reason), this is documented https://<redacted-host>/en/java/javase/21/docs/api/jdk.management/com/sun/management/OperatingSystemMXBean.html#getCpuLoad()\n\nSo in general, -1 is (unfortunately) the value we could get. Now, the solution(s) to it:\n - on bootstrap, we could do a check to report such issue earlier (but do not fail the bootstrap procedure)\n - document that on some systems JVM may not report getCpuLoad() correctly, so `-1` will be returned\n - also, we don't log any exception in this case, we could do this once on bootstrap only\n\nThoughts? Thanks folks!\n\n"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2026-06-08T16:03:33Z",
+   "body": "@participant11 I think logging an exception once on startup would be helpful, assuming it would give some indication as to why the service isn't able to get a valid CPU stat value."
+  },
+  {
+   "author": "participant12",
+   "created_at": "2026-06-08T16:34:01Z",
+   "body": "Is it possible to add a fallback to legacy method \"getSystemCpuLoad\", in my test it worked fine.\n\n```\nimport java.lang.management.ManagementFactory;\n\npublic class CpuTest {\n    public static void main(String[] args) {\n        System.out.println(\"=== JVM CPU Metric Debugger (Java 25 / Temurin) ===\");\n        \n        // Grab standard platform bean\n        java.lang.management.OperatingSystemMXBean standardBean = ManagementFactory.getOperatingSystemMXBean();\n        \n        // Cast to the Extended management MXBean explicitly for full access\n        if (standardBean instanceof com.sun.management.OperatingSystemMXBean extendedBean) {\n            System.out.printf(\"%-30s: %.4f\\n\", \"System CPU Load (Legacy)\", extendedBean.getSystemCpuLoad());\n            System.out.printf(\"%-30s: %.4f\\n\", \"Cpu Load (Modern)\", extendedBean.getCpuLoad());\n            System.out.printf(\"%-30s: %.4f\\n\", \"Process CPU Load\", extendedBean.getProcessCpuLoad());\n            System.out.printf(\"%-30s: %d\\n\", \"Available Processors\", extendedBean.getAvailableProcessors());\n        } else {\n            System.out.println(\"Error: MXBean is not an instance of com.sun.management.OperatingSystemMXBean\");\n        }\n    }\n}\n```\n\nResults:\n```\n=== JVM CPU Metric Debugger (Java 25 / Temurin) ===\nSystem CPU Load (Legacy)      : 0.0068\nCpu Load (Modern)             : 0.0000\nProcess CPU Load              : 0.0000\nAvailable Processors          : 6\n```"
+  },
+  {
+   "author": "participant11",
+   "created_at": "2026-06-08T16:47:16Z",
+   "body": "@participant12 I am really confused, the `getSystemCpuLoad` just calls `getCpuLoad`, are you saying that `getSystemCpuLoad` works and `getCpuLoad` does not ?\n\n```\n    @Deprecated(since=\"14\")\n    public default double getSystemCpuLoad() { return getCpuLoad(); }\n```"
+  },
+  {
+   "author": "participant12",
+   "created_at": "2026-06-08T17:47:45Z",
+   "body": "Hi @participant11, that's exactly what seems to be, check the following screenshot from a pod with opensearch:3.6.0 image.\n```\nName:             opensearch-hq-np-os-data-1\nNamespace:        opensearch-stg\nNode:             node-8eb9fa-k8s/172.10.17.23\nStart Time:       Tue, 02 Jun 2026 15:00:07 -0500\nLabels:           <redacted-host>/component=opensearch-hq-np-os-data\n                  <redacted-host>/instance=opensearch-data\n                  <redacted-host>/managed-by=Helm\n                  <redacted-host>/name=opensearch\n                  <redacted-host>/version=3.6.0\n                  <redacted-host>/pod-index=1\n                  controller-revision-hash=opensearch-hq-np-os-data-7885d67cf7\n                  helm.sh/chart=opensearch-3.6.0\n                  <redacted-host>/pod-name=opensearch-hq-np-os-data-1\n.....\nContainers:\n  opensearch:\n    Container ID:  containerd://5fb97889574058fc9ac26e0491f8b6f24696a36c99b88cab7cf87e5fa2ae7b06\n    Image:         opensearchproject/opensearch:3.6.0\n    Image ID:      sha256:5958e534d4dbc4406b00bc237c9cf38641c042fc8f2c2cddd1e943bbb7d6814f\n    Ports:         9200/TCP (http), 9300/TCP (transport), 9600/TCP (metrics)\n    Host Ports:    0/TCP (http), 0/TCP (transport), 0/TCP (metrics)\n    Command:\n      sh\n      -c\n      #!/usr/bin/env bash\n      set -euo pipefail\n      ./bin/opensearch-plugin install -b https://github.com/opensearch-project/opensearch-prometheus-exporter/releases/download/3.6.0.0/prometheus-exporter-3.6.0.0.zip\n      \n      bash opensearch-docker-entrypoint.sh\n```\nResults:\n<img width=\"1141\" height=\"674\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/c29954f9-1f4a-4f91-ae75-dffdde15f1bc\" />\n\nAs you can see \n`extendedBean.getSystemCpuLoad()` is returning `0.0030`\n`extendedBean.getCpuLoad` is returning `0.0000`, that's seems to be the root cause for the value \"-1\".\n\nIf you need more details about the test or environment please feel free to ask for it."
+  },
+  {
+   "author": "participant11",
+   "created_at": "2026-06-08T21:29:14Z",
+   "body": "> Hi [@participant11](https://github.com/participant11), that's exactly what seems to be, check the following screenshot from a pod with opensearch:3.6.0 image.\n\nThanks @participant12, could you please check / share if there are any exception in the logs referencing `/proc/` file system? Thank you\n\nPS: The value of `0.0` on first invocation is \"known\" issue (see please https://<redacted-host>/browse/JDK-8338904)\n\n> The recent period of observation is implementation-specific, and\n typically relates to the duration since the last call made to this\n method. For the very first invocation, the recent period of observation\n is undefined.\n\n\nI suspect in your test, if you switch getSystemCpuLoad() / getCpuLoad(), you will see a reverse picture: getSystemCpuLoad()  will return zero, and  getCpuLoad() won't (0.0 is actually fine, -1 is not)"
+  },
+  {
+   "author": "participant12",
+   "created_at": "2026-06-08T23:09:54Z",
+   "body": "Hi @participant11 ,\nYou were absolutely right about the JDK behavior.\n\n1. Log Findings\nI checked the logs in /usr/share/opensearch/logs/ and there are no exceptions referencing /proc/. The only error present is an unrelated ClassNotFoundException for org.opensearch.performanceanalyzer.PerformanceAnalyzerApp.\n\n```\nError: Could not find or load main class org.opensearch.performanceanalyzer.PerformanceAnalyzerApp\nCaused by: java.lang.ClassNotFoundException: org.opensearch.performanceanalyzer.PerformanceAnalyzerApp\n```\n\n2. Swapped JVM Test\nI updated my test class to switch the order of the calls then waiting 2 seconds and execute again, and the results perfectly inverted just as you suspected, confirming the JDK-8338904 behavior:\n\n<img width=\"1089\" height=\"715\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/a438a28c-def4-44f9-95cf-0272489bf4b0\" />\n\n3. Next steps\n\nWhile this explains why a 0.0 might appear depending on the order of invocation, the JVM test is successfully returning valid floats. It never returns -1.\n\nHowever, the OpenSearch API `/_nodes/_local/stats/os` is still reporting `\"percent\" : -1`. Since the underlying JVM OperatingSystemMXBean is clearly able to read the CPU load without failing, is it possible that OpenSearch's OS stats probe is explicitly converting 0.0 (or extremely low values) to -1, or perhaps catching a different silent exception when it polls these metrics?\n\nIf the assumption is ok, is it possible to do a \"warm-up call\": during the initialization phase of the OpenSearch node (specifically within its OS stats probe or metrics service), it should make a single and discarded \"dummy\" call to getCpuLoad() in order to establish the initial baseline for the JVM, ensuring that the first actual metric scrape by Prometheus or a user receives a valid calculation based on a defined time period.\n\nHere is the complete output for `/_nodes/_local/stats/os`   [os-stats.json](https://github.com/user-attachments/files/28728893/os-stats.json)"
+  },
+  {
+   "author": "participant11",
+   "created_at": "2026-06-09T00:22:11Z",
+   "body": "> However, the OpenSearch API `/_nodes/_local/stats/os` is still reporting `\"percent\" : -1`. Since the underlying JVM OperatingSystemMXBean is clearly able to read the CPU load without failing, is it possible that OpenSearch's OS stats probe is explicitly converting 0.0 (or extremely low values) to -1, or perhaps catching a different silent exception when it polls these metrics?\n\nThanks @participant12 , yes, we will add both the warm call and also will try to capture and log any exceptions early on, it should help us to troubleshoot the problem. It is very likely related to some security checks we are still missing. Thank you."
+  },
+  {
+   "author": "participant13",
+   "created_at": "2026-07-08T08:49:44Z",
+   "body": "@participant5 https://github.com/opensearch-project/OpenSearch/pull/22408 seems to fix this issue for us.  Can I get a stamp"
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "opensearch-project/OpenSearch",
+  "default_branch": "main",
+  "commit_sha": "c9eb7fbfa0da3186711b77d100ca152929f440c9",
+  "as_of": "2025-08-21T11:42:55Z",
+  "method": "github_commits_until"
+ },
+ "images": [
+  {
+   "where": "c5",
+   "source_url": "https://github.com/user-attachments/assets/9a1a6193-5023-43ba-bb3f-472db2505b1c",
+   "file": "gh_opensearch-project_OpenSearch_19120_img0.png"
+  },
+  {
+   "where": "c53",
+   "source_url": "https://github.com/user-attachments/assets/c29954f9-1f4a-4f91-ae75-dffdde15f1bc",
+   "file": "gh_opensearch-project_OpenSearch_19120_img1.png"
+  },
+  {
+   "where": "c55",
+   "source_url": "https://github.com/user-attachments/assets/a438a28c-def4-44f9-95cf-0272489bf4b0",
+   "file": "gh_opensearch-project_OpenSearch_19120_img2.png"
+  }
+ ],
+ "slug": "gh_opensearch-project_OpenSearch_19120"
+}

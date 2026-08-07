@@ -1,0 +1,276 @@
+{
+ "repo": "langchain-ai/langchain",
+ "number": 35803,
+ "url": "https://github.com/langchain-ai/langchain/issues/35803",
+ "title": "OWASP Agentic AI Security Assessment -- LangChain Experimental",
+ "state": "closed",
+ "labels": [
+  "external"
+ ],
+ "reporter": "reporter",
+ "created_at": "2026-03-12T21:25:42Z",
+ "closed_at": "2026-04-29T10:02:24Z",
+ "body": "### OWASP Agentic AI Top 10 -- Security Assessment\n\nHi team,\n\nWe conducted an OWASP Agentic AI Top 10 (2025) assessment of 27 popular AI agent frameworks as part of ongoing agentic security research. This assessment was performed via **static analysis of public source code only** -- no systems were accessed or tested remotely.\n\n---\n\n#### Assessment Results -- LangChain (Experimental)\n\n| Check | OWASP ID | Severity | Detail |\n|-------|----------|----------|--------|\n| Unsafe Execution | AA-03 | CRITICAL | `exec()` and `eval()` in Python REPL tool |\n| Injection Pattern | AA-02 | CRITICAL | LLM-generated code executed directly in host process |\n| Excessive Permissions | AA-04 | MEDIUM | High-risk permissions: execute |\n| Inadequate Sandboxing | AA-09 | HIGH | No process isolation for code execution |\n\n**Risk Score: 73/100 (FAIL)**\n\n---\n\n#### Published CVEs Referenced\n\nThis is not a new disclosure. These are all previously published:\n\n| CVE | Detail |\n|-----|--------|\n| CVE-2023-29374 | Code injection via LLM output |\n| CVE-2023-36258 | Code injection in PALChain |\n| CVE-2023-39631 | Arbitrary code execution |\n| CVE-2023-44467 | Code injection via prompt |\n\n---\n\n#### Why This Matters\n\nLangChain is one of the most widely used AI agent frameworks. While the dangerous patterns are primarily in `langchain-experimental`, the Python REPL tool and code execution utilities use `exec()` and `eval()` to run LLM-generated code directly in the host process. For users building production AI agents, these patterns represent a significant attack surface documented in 4 published CVEs.\n\nWe recognise that `langchain-experimental` carries an explicit warning about its nature. This assessment is intended to help users who may be deploying these components in production understand the associated risks mapped to the OWASP Agentic AI Top 10.\n\n---\n\n#### Agent Security Gates\n\nAs part of this research, we have built an open agent security assessment at **[agentsign.dev](https://agentsign.dev)** where developers and security teams can:\n\n- **Scan any AI agent** against the OWASP Agentic AI Top 10 (free, no account required)\n- **Get an identity and trust score** for agents before deploying to production\n- **Gate agent execution** via API -- block agents that fail security checks\n\nOut of 27 agents assessed, 17 passed and 10 failed. Full results available on the platform.\n\n---\n\n#### Context\n\nWe are not claiming to have discovered these vulnerabilities -- all CVEs referenced above were reported by their original researchers. This assessment maps existing known issues to the OWASP Agentic AI Top 10 framework.\n\nHappy to discuss any of these findings.\n\n**Raza Sharif**\nFounder, CyberSecAI Ltd\n[agentsign.dev](https://agentsign.dev)",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2026-03-13T06:42:52Z",
+   "body": "Hi! Thanks for sharing this assessment.\n\nFrom what I understand, the concern is mainly around the use of `exec()` / `eval()` in the Python REPL tool within the `langchain-experimental` module, where LLM-generated code may end up being executed directly in the host process. That could allow arbitrary code execution if the tool is used in an unsafe environment or with untrusted inputs.\n\nSince this module is marked experimental, I assume the current behavior might be intentional for flexibility, but it does raise the OWASP concerns you highlighted (unsafe execution, sandboxing, permissions).\n\nI'd be interested in helping explore possible mitigations or guardrails (for example safer execution wrappers, sandboxing options, or stronger warnings in documentation).\n\nBefore I dig deeper:\n• Are there specific mitigation directions the maintainers would consider acceptable?\n• Would a PR that adds optional sandboxing or safer execution modes be useful?\n• Are there particular success criteria you’d want to see for a fix?\n\nHappy to investigate further if this would be a helpful contribution.\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-03-13T09:59:21Z",
+   "body": "Hi @participant1 -- thanks for the thoughtful response and willingness to contribute.\n\nYou've summarised the core concern accurately. The primary risk surface is `exec()` / `eval()` in `langchain_experimental.utilities.python.PythonREPL` and related tools where LLM-generated code executes directly in the host process with full access to the Python runtime, filesystem, network, and any credentials in the environment.\n\n### Mitigation Directions\n\nFrom our assessment (mapped to OWASP Agentic AI Top 10), here are the concrete mitigation layers we'd consider meaningful:\n\n**1. Process Isolation (AA-09 -- Inadequate Sandboxing)**\n- Execute LLM-generated code in a subprocess with restricted permissions (`seccomp`, `AppArmor`, or at minimum `subprocess` with `preexec_fn` dropping capabilities)\n- Alternatively, integrate with existing sandbox runtimes like [E2B](https://e2b.dev), [gVisor](https://gvisor.dev), or Docker-based isolation\n- A `SandboxedPythonREPL` class that wraps execution in an isolated environment would be a strong addition\n\n**2. Input Validation and AST Filtering (AA-03 -- Unsafe Code Execution)**\n- Pre-parse generated code via Python's `ast` module before execution\n- Block or flag dangerous patterns: `import os`, `import subprocess`, `open()` on sensitive paths, `__import__`, `eval()` within generated code, network calls\n- This doesn't replace sandboxing but adds defence-in-depth\n\n**3. Permission Scoping (AA-04 -- Excessive Permissions)**\n- Introduce an explicit permission model: `PythonREPL(allow_imports=[\"pandas\", \"numpy\"], deny_imports=[\"os\", \"subprocess\", \"shutil\"])`\n- Default-deny for dangerous modules, opt-in for safe ones\n- This is the pattern used by several frameworks that passed our assessment (e.g., Google ADK's tool permission model)\n\n**4. Timeout and Resource Limits**\n- Enforce execution timeouts (prevent infinite loops from LLM-generated code)\n- Memory limits via `resource.setrlimit()` on Unix systems\n- These are basic but currently absent\n\n**5. Documentation and Warnings (Quick Win)**\n- Stronger warnings in the `PythonREPL` docstring and README specifically referencing the 4 published CVEs\n- A \"Security Considerations\" section in the experimental module docs\n- Clear guidance: \"Do not use `PythonREPL` in production without sandboxing\"\n\n### Success Criteria\n\nFrom an OWASP Agentic AI compliance perspective, a fix would move LangChain from FAIL to WARN or PASS if:\n\n1. **Default-safe**: Out of the box, code execution is sandboxed or requires explicit opt-in to unsafe mode\n2. **Defence-in-depth**: At least two mitigation layers (e.g., AST filtering + process isolation)\n3. **Documented risk**: Users who bypass safeguards do so explicitly, not accidentally\n\n### Our Registry\n\nWe track these assessments publicly at [<redacted-host>](https://<redacted-host>) -- LangChain's status would be updated if mitigations are merged. We also provide a free [GitHub Action](https://github.com/reporter/agentsign-action) that scans agent code against these same OWASP rules on every PR, which could be useful for validating any changes.\n\n### Suggested Approach\n\nIf you're looking to contribute, I'd suggest starting with **option 2 (AST filtering)** as it's the lowest-friction change that doesn't require external dependencies. A `SafePythonREPL` class that pre-validates code against a configurable blocklist before calling `exec()` would be a meaningful first step.\n\nHappy to review or provide feedback on any PR. This is exactly the kind of community-driven security improvement the ecosystem needs.\n\n**Raza Sharif**\nFounder, CyberSecAI Ltd\n[agentsign.dev](https://agentsign.dev) · [<redacted-host>](https://<redacted-host>)"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2026-03-13T12:54:18Z",
+   "body": "Can I please be assigned to this issue to me ? That should allow my \nPR to stay open and move into the review queue ?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-03-13T14:10:32Z",
+   "body": "We cannot assign issues (not maintainers), but we fully support your contribution. A LangChain maintainer would need to assign you.\n\nIf you are working on a PR, the mitigations we outlined above map directly to the OWASP Agentic AI controls. The highest-impact change would be a SandboxedPythonREPL wrapper in langchain-experimental -- even if opt-in initially, it gives users a secure path.\n\nHappy to review your PR from a security perspective if that would help."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2026-03-13T14:26:50Z",
+   "body": "Hi @langchain-ai/core-maintainers — I've implemented the AST Filtering mitigation (OWASP AA-03) discussed in this issue and submitted PR #35828. The PR was auto-closed because I'm not yet assigned to this issue.\n\nCould a maintainer please assign me to this issue so the PR can be reopened? The implementation includes:\n- `SafePythonREPL` class with AST-based pre-validation\n- Configurable blocklists for dangerous imports and function calls\n- `mode=\"block\"` (default) and `mode=\"warn\"` for defence-in-depth\n\n\nHappy to make any changes based on your feedback. Thank you!"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-03-13T14:36:49Z",
+   "body": "Great work @participant1! The AST-based pre-validation approach is exactly what this issue needed -- blocking dangerous imports and calls at the syntax level before execution is the right defence-in-depth layer.\n\nThe configurable blocklist + block/warn modes give teams flexibility to adopt incrementally without breaking existing workflows.\n\n@langchain-ai/core-maintainers -- would be great to get participant1 assigned so PR #35828 can be reopened. Happy to review the security aspects if useful."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2026-03-13T15:08:24Z",
+   "body": "@participant13 – Thank you so much for the thoughtful feedback and validation. Your guidance on starting with AST filtering as the foundational layer was instrumental—it's gratifying to see that approach land well.  😀"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-03-13T17:49:18Z",
+   "body": "Thanks Aditya -- your AST filtering work is solid and exactly the right foundation.\n\nWanted to share that the assessment work here led to building **MCPS (MCP Secure)** -- a cryptographic security layer for the Model Context Protocol. It adds agent passports, message signing, tool integrity verification, replay protection, and trust levels (L0-L4).\n\nWe've now scanned 39 agent frameworks against the OWASP Agentic AI Top 10:\n- **13 FAIL** (AutoGPT, Open Interpreter, MetaGPT, Browser Use...)\n- **17 WARN** (LangChain, CrewAI, AutoGen, n8n...)\n- **9 PASS** (Anthropic SDK, Vercel AI SDK, LlamaIndex...)\n\nFull scan results: https://mcp-secure.dev/#registry\n\nThe SDK is MIT licensed:\n```\nnpm install mcp-secure\npip install mcp-secure\n```\n\nYour AST filtering addresses AA-03 at the code level. MCPS addresses it at the protocol level -- signed messages, verified identities, tamper-proof tool definitions. Together they'd cover most of the OWASP Agentic AI Top 10.\n\nSpec: https://github.com/reporter/mcps/blob/main/SPEC.md\nLanding page: https://mcp-secure.dev"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2026-03-13T21:18:07Z",
+   "body": "Great initiative bringing OWASP standards to the agentic AI space. The challenge with agent security is that static analysis and pre-deployment testing only catch what you can predict. In production, agents chain tool calls, escalate permissions, and make decisions in ways no test suite anticipated.\n\nWe've been working on this problem at AgentShield (useagentshield.com) — runtime risk scoring on every agent action as it happens. It integrates via LangChain callbacks so you get real-time visibility into what agents actually do in production, not just what they should do.\n\nThe OWASP framework + runtime monitoring would be a strong combination for production agent security."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-03-13T21:24:30Z",
+   "body": "Thanks @participant2 — agreed, static analysis and pre-deployment verification only cover one side of the problem. Runtime visibility into what agents actually do in production is the missing piece.\n\nMCPS is focused on the transport/identity layer — cryptographic proof of *who* is calling, message integrity, and tool authenticity. Runtime risk scoring on *what* agents do once authenticated is a complementary layer that closes the loop.\n\nThe combination makes sense: MCPS ensures the agent is who it claims to be and the tool definitions haven't been tampered with, then runtime monitoring catches unexpected behaviour patterns during execution. Different layers, both necessary.\n\nWill take a look at AgentShield — the LangChain callback integration is a smart approach for adoption."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2026-03-13T21:33:29Z",
+   "body": "Thanks @reporter — really well put. The MCPS layer (who is calling + tool integrity) combined with runtime behavior monitoring (what they do once authenticated) creates a complete security model. Identity without behavior monitoring leaves a gap, and vice versa.\n\nIf you want to test the LangChain integration, the docs are at useagentshield.com/docs — takes about 2 minutes to set up. Would be great to get your feedback, especially from someone thinking deeply about the security stack.\n\nHappy to collaborate on how MCPS and runtime monitoring could work together as complementary layers."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-03-13T21:41:15Z",
+   "body": "@participant2 appreciate it. That framing is exactly right — identity without behavior monitoring leaves a gap, and behavior monitoring without verified identity means you can't trust the attribution.\n\nI'll check out the docs and test the LangChain callback integration. Interested to see how it handles tool call chains — that's where the risk compounds.\n\nOn the collaboration front: the natural integration point would be AgentShield verifying the MCPS passport as part of the callback chain before scoring actions. That way runtime decisions are anchored to a cryptographically verified identity, not just a session token. Happy to sketch out what that interface looks like if you're interested.\n\nFor anyone following this thread — the MCPS spec and reference implementation are at [mcp-secure.dev](https://mcp-secure.dev). Zero dependencies, MIT licensed."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2026-03-13T22:05:42Z",
+   "body": "That integration point makes a lot of sense. Verifying the MCPS passport as part of the callback chain before scoring actions would mean every risk score in AgentShield is anchored to a verified identity rather than a self-reported session. That's a meaningful upgrade for enterprise trust.\n\nWould love to see your sketch of the interface. If you want to share it here or open a discussion on our repo, happy to iterate on it. On our side, the callback pipeline already has a middleware pattern where verification steps can run before risk analysis, so the integration point should be clean.\n\nLooking forward to your feedback on the LangChain integration once you test it."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-03-13T22:28:41Z",
+   "body": "@participant2 thanks -- that middleware pattern sounds like a clean fit.\n\nHere is a rough sketch of how MCPS passport verification could slot into the AgentShield callback chain:\n\n```js\n// AgentShield callback middleware (before risk scoring)\nasync function verifyIdentity(event) {\n  const passport = event.metadata?.mcps_passport;\n  if (!passport) return { verified: false, agent_id: null };\n\n  const { valid, passport: parsed } = mcps.verifyPassport(passport);\n  if (!valid) return { verified: false, agent_id: null };\n\n  // Anchor all downstream risk scores to verified identity\n  event.verified_agent_id = parsed.agent_id;\n  event.trust_level = parsed.trust_level;\n  return { verified: true, agent_id: parsed.agent_id };\n}\n```\n\nKey points:\n- Runs before risk analysis -- every score is anchored to a cryptographically verified agent_id\n- No self-reported sessions -- identity comes from the signed passport (ECDSA P-256)\n- Trust level from the passport can inform risk thresholds (L0-L4 maps to different scoring baselines)\n- Stateless -- AgentShield just calls `verifyPassport()`, no need to manage keys\n\nThe npm package is `mcp-secure` (v1.0.2) if you want to test against it. Happy to iterate on the interface shape if the callback pipeline needs it structured differently.\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-03-13T23:35:50Z",
+   "body": "Also published a LangChain-specific integration package for this: `pip install langchain-mcps` -- wraps the callback handler and middleware pattern shown above into a drop-in LangChain integration.\n\nRepo: [github.com/reporter/langchain-mcps](https://github.com/reporter/langchain-mcps)\n\nSupports `BaseCallbackHandler` (verify on chain/tool/agent start) and a `with_mcps()` wrapper for any Runnable. 18 tests passing."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2026-03-14T03:04:40Z",
+   "body": "You went from a rough sketch to a published LangChain integration package with tests in a few hours. The interface is clean — the stateless verifyPassport() approach fits perfectly with our callback pipeline since we don't want to manage key state on our side.\n\nThe trust level mapping (L0-L4 to different scoring baselines) is a smart touch. Right now our risk scoring uses the same thresholds regardless of the agent's identity, but adjusting baselines based on verified trust level would make the scoring much more nuanced. A newly created agent with L0 trust should absolutely trigger on actions that an L4 agent handles routinely.\n\nI'll test against langchain-mcps this week and share feedback on how the callback handler meshes with our existing LangChain integration. The with_mcps() wrapper for Runnables is exactly the pattern our users would expect.\n\nReally solid work. This is shaping up to be a strong integration story."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-03-14T08:00:54Z",
+   "body": "Really appreciate you taking the time to dig into the implementation, participant2. Means a lot coming from someone building in the runtime monitoring space -- you see the sharp edges that spec authors miss.\n\nThe trust level baseline idea is something we've been thinking about deeply. You nailed the core insight: an L0 agent spinning up for the first time and an L4 agent with a full audit trail shouldn't trigger the same thresholds. Identity should *inform* risk scoring, not just gate access. We're working on some refinements there that I think you'll find interesting.\n\nThe `with_mcps()` wrapper was a deliberate design choice -- we wanted MCPS to feel like a native part of the LangChain composition model, not something bolted on as an afterthought. If it fits naturally into your existing callback pipeline, that tells us we got the abstraction right.\n\nKeen to hear how testing goes on your side. If you hit any friction points with the callback handler or want to bounce ideas around on the scoring integration, happy to jump on a call. The intersection of runtime monitoring and cryptographic identity is exactly where this space needs to go."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2026-03-14T15:21:39Z",
+   "body": "Thanks, Raza. Building the integration was the best way to stress-test the spec — when you're wiring trust levels into a live risk scoring engine, you quickly find the edge cases that don't show up in docs alone.\n\nThe scoring refinements sound great. Right now we're using trust level as a weighted component (10% of the overall risk score), but I've been thinking about whether L3/L4 agents should also get different alert thresholds — not just a score boost, but actually adjusting how aggressively the system flags their output. Would be curious to see where you land on that.\n\nThe with_mcps() composability worked well in practice. Our LangChain callback handler picks it up cleanly without any special wiring, which validated the design.\n\nHappy to share what we find as more agents start sending passports in production. Async works best for me — feel free to open an issue or DM anytime if you want to discuss the scoring integration further."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2026-03-14T15:28:20Z",
+   "body": "Great assessment. For teams that need to ship today while these architectural issues are addressed, here's a practical mitigation layer you can drop in:\n\n**AA-02 (Injection Pattern):** Scan inputs before they reach the agent loop:\n\n```python\nfrom prompt_shield import PromptScanner\n\nscanner = PromptScanner(threshold=\"MEDIUM\")\n\n# Wrap as a LangChain Runnable pre-filter\nfrom langchain_core.runnables import RunnableLambda\n\ndef injection_gate(query: str) -> str:\n    result = scanner.scan(query)\n    if not result.is_safe:\n        raise ValueError(f\"Blocked: {result.severity} risk — {[m['name'] for m in result.matches]}\")\n    return query\n\n# Insert before your agent\nchain = RunnableLambda(injection_gate) | agent_executor\n```\n\n**AA-02 + AA-03 (Code execution):** Scan LLM-generated code before `exec()`:\n\n```python\nfrom prompt_shield import OutputScanner\n\noutput_scanner = OutputScanner()\n\ndef scan_generated_code(code: str) -> str:\n    result = output_scanner.scan(code)\n    if not result.is_safe:\n        raise ValueError(f\"Dangerous code pattern: {[f.message for f in result.findings]}\")\n    return code\n```\n\nThis catches `eval()`, `os.system()`, `subprocess(shell=True)`, `pickle.load()`, and unsafe YAML — the exact patterns in the CVEs listed above.\n\n75 regex patterns, <1ms, zero dependencies: `pip install ai-injection-guard`\n\nNot a replacement for proper sandboxing (AA-09), but significantly reduces the attack surface for the injection vectors (AA-02/AA-03) while architectural fixes are in progress."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-03-14T15:40:36Z",
+   "body": "Thanks @participant2 -- the alert threshold idea is sharp. We have been thinking along similar lines.\n\nOur current direction: L3/L4 agents should get relaxed alert thresholds (fewer false positives) but stricter anomaly detection. The reasoning is that a high-trust agent doing something unexpected is a stronger signal than a low-trust agent doing the same thing. So the threshold adjusts both ways -- less noise for routine operations, but faster escalation when behaviour deviates from baseline.\n\nPractically, that could look like:\n\n- L0-L1: alert on everything, block on high-severity\n- L2: alert on medium+, block on critical\n- L3: alert on anomaly deviation only, block on critical\n- L4: alert on anomaly deviation only, no auto-block (human review)\n\nThe key insight is that trust level should influence the _type_ of monitoring, not just the sensitivity. Regex pattern matching (like the comment below suggests) is useful at L0-L1 where you do not know the agent. At L3-L4 you care more about behavioural drift than known-bad patterns.\n\nGood to hear `with_mcps()` worked cleanly with your callback handler. That composability was a deliberate design choice -- the security layer should never require rewiring the agent pipeline.\n\nWill keep you posted as the scoring model evolves. Likewise happy to async -- GitHub issues or DM works."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-03-14T15:40:53Z",
+   "body": "@participant3 regex-based input scanning is a useful first-pass filter for known patterns at the content layer.\n\nWorth noting this operates at a different level than what the thread is building towards. MCPS handles cryptographic identity and message integrity at the protocol level -- verifying _who_ sent a message, whether it was tampered with in transit, and whether the calling agent is trusted. Pattern matching catches known-bad payloads in content.\n\nDefence in depth means you want both: identity verification at the transport layer (MCPS) and content inspection at the application layer (scanners). They are complementary."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2026-03-15T08:41:03Z",
+   "body": "For anyone implementing OWASP Agentic AI protections, check out ClawGuard (https://github.com/participant4/clawguard) — open-source security framework with 285+ threat patterns covering all ASI01-ASI10 categories. Includes prompt injection detection (25+ patterns, multilingual), PII sanitizer (100% local), and intent-action mismatch detection. 229 tests passing."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2026-03-15T11:23:40Z",
+   "body": "## 🦞 PromptShield for OWASP Agentic AI Security\n\nThis aligns perfectly with what we built for PromptShield — a runtime security gateway for AI agents.\n\n### OWASP Top 10 Coverage\n| OWASP Risk | PromptShield Mitigation |\n|------------|------------------------|\n| 🛡️ Prompt Injection | Semantic analysis + jailbreak detection |\n| 🛡️ Data Leakage | System prompt leak prevention |\n| 🛡️ Hallucination | Trusted KB injection (auto-validates facts) |\n| 🛡️ Tool Misuse | Pre-execution safety checks |\n\n### Integration with LangChain Experimental\n```python\nfrom langchain_experimental.security import PromptShield  # Proposed\n\nshield = PromptShield(api_url=\"http://8.130.44.168/shield\")\nagent = initialize_agent(tools, llm, memory=shield)  # Auto-validates all prompts\n```\n\nWould love to collaborate on incorporating this into the OWASP assessment framework! 📊"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-03-15T11:44:46Z",
+   "body": "@participant14 runtime prompt scanning is useful at the content layer, but it cannot solve the fundamental problem this thread is addressing: **agents have no identity**.\n\nConsider what happens in a multi-agent system without cryptographic identity:\n\n**1. Attribution is impossible**\nIf Agent A calls `tools/execute` and the call is malicious, who do you blame? Without a signed identity credential attached to every message, your runtime gateway sees an anonymous request. It can scan the content for injection patterns, but it cannot answer the most basic security question: *who sent this?*\n\n**2. Prompt scanning doesn't prevent impersonation**\nAgent A can forge messages claiming to be Agent B. No amount of semantic analysis catches this because the *content* is legitimate -- it's the *sender* that's fraudulent. This is the equivalent of HTTPS without certificates: you can inspect the payload all day, but you have no idea who you're talking to.\n\n**3. Tool poisoning bypasses content-layer defences entirely**\nOWASP MCP03 (Tool Poisoning) works by tampering with tool definitions at the schema level -- injecting hidden instructions into tool descriptions that the LLM reads as trusted context. This isn't a prompt injection pattern that a scanner would flag. The tool *definition itself* is the attack vector. The only defence is cryptographic integrity verification of tool schemas before the LLM ever sees them.\n\n**4. Runtime gateways need a trust anchor**\nEven if PromptShield detects a suspicious action, what does it do with that signal? Block it? Allow it? The decision depends on *who* the agent is, *what trust level* it holds, and *whether that trust has been revoked*. Without a verified identity to anchor decisions to, you're making access control decisions about anonymous entities.\n\nThis is why MCPS exists at a different layer:\n\n| Layer | What it answers | Technology |\n|-------|----------------|------------|\n| **Identity** (MCPS) | *Who* is calling? Are they verified? Has their trust been revoked? | ECDSA P-256 passports, signed envelopes |\n| **Integrity** (MCPS) | Has this message or tool definition been tampered with? | Per-message signing, nonce + timestamp replay protection |\n| **Content** (PromptShield et al.) | Does this input contain injection patterns? | Semantic analysis, pattern matching |\n\nContent scanning without identity is like having a firewall that inspects packets but doesn't know the source IP. Identity without content scanning is like having certificates but no payload inspection. Both layers are needed -- but identity is the foundation that content-layer tools need to be effective.\n\nThe MCPS spec is published as an IETF Internet-Draft ([draft-sharif-mcps-secure-mcp](https://datatracker.ietf.org/doc/draft-sharif-mcps-secure-mcp/)) and is designed to work alongside runtime tools, not replace them. The trust level system (L0-L4) gives runtime gateways exactly the identity signal they need to make informed decisions.\n\nIf you're interested in how the layers compose, the LangChain integration package (`pip install langchain-mcps`) already provides the callback handler pattern that @participant2 and I discussed upthread. A runtime scanner could consume the MCPS-verified identity to anchor its risk scoring -- that would be a meaningful integration."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-03-15T21:33:19Z",
+   "body": "@participant1 @participant2 — quick one for both of you.\n\nWe are submitting MCPS to the OpenSSF (Linux Foundation) and LFAI & Data Foundation as a sandbox project. Both foundations require multiple maintainers from separate organisations.\n\nGiven the depth of your contributions to the security model in this thread — Aditya on the AST filtering foundation and Jairo on the trust-level alert threshold design — I'd like to formally invite you both as **contributors** to the MCPS project.\n\nWhat this means:\n- Listed as a project contributor on the OpenSSF and LFAI applications\n- Commit access to the MCPS repos (spec, SDK, scanner)\n- Co-authorship on the IETF Internet-Draft updates if you want it\n- No obligation — contribute what you can, when you can\n\nThe repos:\n- **MCPS spec + SDK**: https://github.com/reporter/mcps\n- **MCP SDK fork**: https://github.com/reporter/agentsign-mcp-sdk\n- **Security scanner**: https://github.com/reporter/mcps-audit\n\nIf you're interested, drop me a message here or email <email-scrubbed> and I'll add you."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2026-03-16T04:18:00Z",
+   "body": "@reporter Thank you for the invitation — I'm honored to be included alongside the MCPS project's foundation submissions.\n\nI'd be happy to accept contributor access. AgentShield already implements MCPS trust levels and alert thresholds based on L0-L4, so contributing back to the spec aligns naturally with what we're building.\n\nLooking forward to collaborating on the repos and the IETF draft in the future."
+  },
+  {
+   "author": "participant6",
+   "created_at": "2026-03-16T08:07:12Z",
+   "body": "Interesting report. The OWASP framework for agentic AI is still evolving, and real-world assessments like this help sharpen the categories.\n\nOne thing that's been underemphasized in the agentic AI security conversation: the supply chain risk from AI-generated code itself. Traditional supply chain security focuses on known-vulnerable packages (CVEs), but AI agents introduce a new class of risk — they can generate imports for packages that don't exist on any registry, or reference APIs that have been deprecated/removed.\n\nThis isn't a theoretical concern. We see it regularly in production: an AI agent generates code that compiles and passes tests (because imports are mocked or never exercised in test paths), but crashes at runtime because the package simply doesn't exist. No CVE scanner or SCA tool catches this — they look for known vulnerabilities in known packages, not hallucinated dependencies.\n\nAdding a registry validation step to the CI pipeline (checking that every import actually resolves) is a low-cost, deterministic defense that complements the OWASP framework's focus on prompt injection and tool poisoning.\n\nnpx @opencodereview/cli scan . --sla L1"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-03-16T09:14:25Z",
+   "body": "MCPS (MCP Secure) addresses the [OWASP MCP Top 10](https://owasp.org/www-project-mcp-top-10/) at the protocol level — tool poisoning detection via hash-pinned ECDSA signatures, replay protection via nonce binding, message integrity via per-message signing, and agent identity via cryptographic passports. 180 security tests across 19 attack categories, zero dependencies. Published as an [IETF Internet-Draft](https://datatracker.ietf.org/doc/draft-sharif-mcps-secure-mcp/). npm: `mcp-secure` | [github.com/reporter/mcps](https://github.com/reporter/mcps)"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2026-03-16T11:42:49Z",
+   "body": "@participant16, following up on the supply chain risk discussion — while registry validation (e.g., `npx @opencodereview/cli scan`) is essential for catching hallucinated imports, it's only half the defense.\\n\\nThe other half is **prompt-level content scanning**, which catches attacks that bypass import validation entirely:\\n- `{{system}}` role switches in user input → hijacks LLM behavior without any package import  \\n- XML/JSON escape sequences (`<script>`) → executed at render time, not compile time  \\n- Unicode homoglyphs (`ａｄｍｉｎ`) → evades ASCII-only tokenizers  \\n\\nPromptShield v2.0's `paranoid` preset detects all three with cryptographic signing and evasion testing. Example:  \\n→ [ISSUE-TEMPLATE-INJECTION](https://raw.githubusercontent.com/participant14/promptshield/main/gists/published/ISSUE-TEMPLATE-INJECTION.md)  \\n→ [INITIAL-COMMIT-BYPASS](https://raw.githubusercontent.com/participant14/promptshield/main/gists/published/INITIAL-COMMIT-BYPASS.md)  \\n\\nTogether, registry validation + prompt scanning forms a complete supply chain security layer for agentic AI."
+  },
+  {
+   "author": "participant7",
+   "created_at": "2026-03-16T15:32:45Z",
+   "body": "Thank you for the clarification\r\n\r\nOn Mon, Mar 16, 2026, 4:43 AM participant14 ***@***.***>\r\nwrote:\r\n\r\n> *participant14* left a comment (langchain-ai/langchain#35803)\r\n> <https://github.com/langchain-ai/langchain/issues/35803#issuecomment-4067061414>\r\n>\r\n> @participant16, following up on the supply chain risk discussion —\r\n> while registry validation (e.g., npx @opencodereview/cli scan) is\r\n> essential for catching hallucinated imports, it's only half the\r\n> defense.\\n\\nThe other half is *prompt-level content scanning*, which\r\n> catches attacks that bypass import validation entirely:\\n- {{system}}\r\n> role switches in user input → hijacks LLM behavior without any package\r\n> import \\n- XML/JSON escape sequences (<script>) → executed at render\r\n> time, not compile time \\n- Unicode homoglyphs (ａｄｍｉｎ) → evades ASCII-only\r\n> tokenizers \\n\\nPromptShield v2.0's paranoid preset detects all three with\r\n> cryptographic signing and evasion testing. Example: \\n→\r\n> ISSUE-TEMPLATE-INJECTION\r\n> <https://raw.githubusercontent.com/participant14/promptshield/main/gists/published/ISSUE-TEMPLATE-INJECTION.md>\r\n> \\n→ INITIAL-COMMIT-BYPASS\r\n> <https://raw.githubusercontent.com/participant14/promptshield/main/gists/published/INITIAL-COMMIT-BYPASS.md>\r\n> \\n\\nTogether, registry validation + prompt scanning forms a complete supply\r\n> chain security layer for agentic AI.\r\n>\r\n> —\r\n> Reply to this email directly, view it on GitHub\r\n> <https://github.com/langchain-ai/langchain/issues/35803#issuecomment-4067061414>,\r\n> or unsubscribe\r\n> <https://github.com/notifications/unsubscribe-auth/B7ZXUCKU5ACMMFVPS4IUJD34Q7SFJAVCNFSM6AAAAACWQGU5QCVHI2DSMVQWIX3LMV43OSLTON2WKQ3PNVWWK3TUHM2DANRXGA3DCNBRGQ>\r\n> .\r\n> You are receiving this because you are subscribed to this thread.Message\r\n> ID: ***@***.***>\r\n>\r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-03-16T18:07:42Z",
+   "body": "@participant2 -- before we set up contributor access, could you share a link to the AgentShield repo or docs? Would love to see the L0-L4 implementation so we can make sure the integration points align before onboarding. Drop me an email at <email-scrubbed> with a link to the codebase."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2026-03-16T18:20:50Z",
+   "body": "Sure! The L0-L4 implementation is documented here: useagentshield.com/docs — see the MCPS section with the trust level threshold table.\n\nIf you need to see the specific implementation code, I can share a snippet of the apply_trust_threshold() function directly. The repo itself is private for now"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-03-16T19:04:42Z",
+   "body": "@participant2 -- thanks for sharing the docs. Good to see the L0-L4 trust level integration on useagentshield.com.\n\nI've set up contributor access for you on the MCPS repo. To get started:\n\n1. Fork the repo and submit PRs against main -- all changes need review approval before merge\n2. A good first contribution would be a small one -- docs improvement, test addition, or a usage example from your AgentShield integration\n3. No direct pushes to main -- everything goes through PR review\n\nPlease provide an email address so we can chat outside of git if needed.\n\nWelcome aboard."
+  },
+  {
+   "author": "participant8",
+   "created_at": "2026-03-23T10:34:56Z",
+   "body": "Just to add to the discussion, though you are probably aware of it: Pydantic is working on [Monty](https://github.com/pydantic/monty) which is a Python interpreter written in Rust that restricts access to filesystem, network, etc. by design."
+  },
+  {
+   "author": "participant7",
+   "created_at": "2026-03-23T11:59:18Z",
+   "body": "Oh that’s interesting, I hadn’t looked into Monty much—sounds like a solid\r\napproach for sandboxing.\r\n\r\nOn Mon, Mar 23, 2026, 3:35 AM Pawel Kotowski ***@***.***>\r\nwrote:\r\n\r\n> *participant8* left a comment (langchain-ai/langchain#35803)\r\n> <https://github.com/langchain-ai/langchain/issues/35803#issuecomment-4109602530>\r\n>\r\n> Just to add to the discussion, though you are probably aware of it:\r\n> Pydantic is working on Monty <https://github.com/pydantic/monty> which is\r\n> a Python interpreter written in Rust that restricts access to filesystem,\r\n> network, etc. by design.\r\n>\r\n> —\r\n> Reply to this email directly, view it on GitHub\r\n> <https://github.com/langchain-ai/langchain/issues/35803?email_source=notifications&email_token=B7ZXUCPSJL5QCBK5GBZTO4T4SEHORA5CNFSNUABFM5UWIORPF5TWS5BNNB2WEL2JONZXKZKDN5WW2ZLOOQXTIMJQHE3DAMRVGMYKM4TFMFZW63VHMNXW23LFNZ2KKZLWMVXHJLDGN5XXIZLSL5RWY2LDNM#issuecomment-4109602530>,\r\n> or unsubscribe\r\n> <https://github.com/notifications/unsubscribe-auth/B7ZXUCI4KYWYD3SZLGFA4ZL4SEHORAVCNFSM6AAAAACWQGU5QCVHI2DSMVQWIX3LMV43OSLTON2WKQ3PNVWWK3TUHM2DCMBZGYYDENJTGA>\r\n> .\r\n> You are receiving this because you commented.Message ID:\r\n> ***@***.***>\r\n>\r\n"
+  },
+  {
+   "author": "participant9",
+   "created_at": "2026-03-25T17:23:14Z",
+   "body": "<!-- a2abench-source-resolution:cmmpna56300eu1401qodbbcg4 -->\nA2ABench has an accepted answer for this imported thread.\n- Thread: https://a2abench-api.web.app/q/cmmpna56300eu1401qodbbcg4\n- Accepted at: 2026-03-25T17:22:57.719Z\n- Accepted answer agent: `ai village`\n- Answer preview: \"No matching threads were found for this query.\""
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-03-28T16:32:09Z",
+   "body": "For OWASP-aligned MCP security testing, we built [cybersecify](https://<redacted-host>) — 8 security tools covering the OWASP MCP Top 10.\n\nScans any MCP server for: auth bypass, command injection, SSRF, tool poisoning, rug pulls, unsigned messages, replay attacks, rate limiting. Also checks tool call arguments for injection patterns (prompt injection, SQL injection, path traversal) and audits package dependencies for CVEs.\n\n```\nnpx cybersecify\n```\n\n*\"Scan my LangChain MCP server for OWASP issues\"*\n\nThe [OWASP MCP Security Cheat Sheet](https://<redacted-host>/cheatsheets/MCP_Security_Cheat_Sheet.html) covers the security requirements relevant to this assessment."
+  },
+  {
+   "author": "participant10",
+   "created_at": "2026-03-28T17:12:40Z",
+   "body": "Great assessment. The OWASP Agentic AI Top 10 patterns here highlight a critical structural gap: these vulnerabilities become exponentially more dangerous in **multi-agent, cross-org scenarios**.\n\nConsider: Agent A (Org X) calls a LangChain tool on Agent B (Org Y) via MCP. If Agent B has unsafe execution (AA-03), the blast radius now extends across organizational boundaries. The 4 CVEs listed all assume a single-org attack surface — but production agentic systems are increasingly federated.\n\n**The missing layer: cross-org agent identity verification.**\n\nWhen Agent A requests code execution on Agent B's infrastructure, Agent B needs to answer:\n1. Is Agent A who it claims to be? (Not just an OAuth token — a verifiable identity)\n2. What is Agent A's trust history? (Has it triggered security incidents before?)\n3. Who authorized Agent A to make this request? (Delegation chain)\n\nNone of the 4 OWASP checks address this because they assume agents operate within a single trust boundary. In production, they don't.\n\nWe've been building tooling for this at [AgentFolio](https://agentfolio.bot) — verifiable agent identity + trust scores that can be checked at runtime before granting execution permissions. The [agentfolio-mcp-server](https://www.npmjs.com/package/agentfolio-mcp-server) provides identity lookups that could integrate with LangChain's security middleware.\n\nWould be interested to see OWASP add a cross-org identity check to the Agentic AI assessment framework. The attack surface isn't just within frameworks — it's between them."
+  },
+  {
+   "author": "participant11",
+   "created_at": "2026-04-30T11:50:35Z",
+   "body": "Strong assessment — the OWASP Agentic AI Top 10 highlights exactly why runtime controls are now table stakes.\n\nOne critical gap that still shows up across these frameworks (including LangChain) is the intent gap: even with good scoping and policy layers, there's often no cryptographic proof that a specific tool call or action matches the user's real-time intent.\n\nThis is where verifiable intent + per-action cryptographic enforcement closes the loop cleanly. Every high-stakes execution gets a tamper-proof, user/hardware-bound approval record (aligned with standards like Mastercard Verifiable Intent). It turns \"the agent is allowed to do this\" into \"the user explicitly authorized this action right now.\"\n\nAdding this layer on top of the OWASP mitigations would move a lot of these frameworks from WARN/PARTIAL to solid production-ready status."
+  },
+  {
+   "author": "participant12",
+   "created_at": "2026-05-07T18:26:11Z",
+   "body": "Good framing. One gap I keep seeing in these assessments: most OWASP categories assume you can inspect the agent's state at decision time, but in practice the reasoning is ephemeral. By the time something goes wrong, the context window that produced the decision is already gone. Audit logs capture inputs and outputs but miss the intermediate reasoning chain that actually determined the action. This makes categories like prompt injection and decision manipulation really hard to verify post-hoc. Are you tracking how frameworks handle reasoning persistence, or is the assessment focused on runtime behavior only?"
+  },
+  {
+   "author": "participant12",
+   "created_at": "2026-05-07T18:41:45Z",
+   "body": "Good framing. One gap I keep seeing in these assessments: most frameworks log what the agent *did*, but not the reasoning state *at decision time*. By the time you audit, the model version, tool outputs, and context window are already different. So you're reconstructing intent post-hoc, which is almost useless for real compliance or incident response. The threat surface isn't just the action, it's the reasoning that produced it. Did your assessment look at any frameworks that capture frozen decision snapshots, or was it purely behavioral/output-level analysis?"
+  },
+  {
+   "author": "participant12",
+   "created_at": "2026-05-07T19:30:21Z",
+   "body": "Good work on the assessment. One angle worth adding to the OWASP framing: most of these vulnerabilities compound in production because there's no frozen record of what the agent *actually reasoned over* at decision time. Post-hoc logs capture actions, not the semantic state that produced them. That gap makes audit trails and drift detection nearly impossible, and it's orthogonal to the prompt injection / tool misuse categories you've covered. Have you seen frameworks in your 27-sample set that differentiate between action logs and reasoning-state capture?"
+  },
+  {
+   "author": "participant12",
+   "created_at": "2026-05-07T19:30:50Z",
+   "body": "Good taxonomy. One gap I keep running into in production: most of these controls focus on input/output boundaries, but the harder problem is reasoning provenance — when an agent takes a bad action, you often can't reconstruct *why* because the context window that produced it is gone. Logging the final output isn't enough; you need a frozen snapshot of the reasoning state at decision time to audit against. This matters especially for AA06 (decision integrity) and AA09 (compliance). Are you planning to include auditability of intermediate reasoning steps as a distinct control, or folding that into existing categories?"
+  },
+  {
+   "author": "participant12",
+   "created_at": "2026-05-07T19:40:07Z",
+   "body": "Good coverage. One gap I keep hitting in production: most of these OWASP categories assume you can inspect agent state at the moment of failure, but by the time you're debugging, the context window that produced the bad decision is gone. Prompt injection and memory poisoning are especially hard to audit post-hoc because the evidence evaporates. The assessment taxonomy is solid for prevention controls, but forensic traceability after an incident is basically unsolved in most frameworks. Which of the 27 frameworks had the strongest story on decision-time logging specifically?"
+  },
+  {
+   "author": "participant12",
+   "created_at": "2026-05-07T20:34:28Z",
+   "body": "Good work on this. One gap I see consistently missed in agentic assessments: most Top 10 items assume you can reconstruct what the agent 'saw' at decision time. But in practice, context windows are ephemeral. By the time you're doing a post-incident audit, the exact prompt state, tool outputs, and memory snapshot that produced a given action are already gone. That makes categories like prompt injection and decision manipulation much harder to verify forensically than the controls suggest. Are you accounting for that reconstruction problem in how you're scoring frameworks on auditability?"
+  },
+  {
+   "author": "participant12",
+   "created_at": "2026-05-07T20:40:32Z",
+   "body": "Good work on this. One gap I'd add to the OWASP framing: most of these risks compound when you can't replay what the agent actually reasoned at decision time, not just what tools it called. Logs capture actions, not the reasoning state that produced them. That distinction matters a lot for AA9 (overreliance) and AA6 (prompt injection) post-mortems because the attack surface lives in the frozen context window, not the output. Are you capturing the full reasoning snapshot in your assessment methodology, or evaluating at the action/output layer?"
+  },
+  {
+   "author": "participant12",
+   "created_at": "2026-05-07T23:47:42Z",
+   "body": "Good taxonomy. One gap I keep hitting in production: most of these risks are treated as static properties of the framework, but the real exposure is dynamic. An agent that handles OWASP A1 (prompt injection) correctly at deployment can drift into vulnerability after a model update or tool schema change, with no observable signal until something breaks. The audit surface isn't just the code, it's the reasoning state at each decision point across time. Did your assessment look at how any of the 27 frameworks handle post-deployment behavioral drift detection, or was the scope limited to initial configuration?"
+  },
+  {
+   "author": "participant12",
+   "created_at": "2026-05-08T01:02:54Z",
+   "body": "Good framing. One gap I keep seeing in these assessments: most of the OWASP agentic risks compound at decision time specifically, not at input or output. Prompt injection and memory poisoning are bad, but the real audit failure is that you can't reconstruct what context + tool state + reasoning the agent actually used when it made a call 3 days ago. Frameworks log inputs and outputs, almost none snapshot the intermediate reasoning state deterministically. Did your assessment cover post-hoc auditability of decision context, or was scope limited to runtime attack surfaces?"
+  },
+  {
+   "author": "participant12",
+   "created_at": "2026-05-08T08:03:56Z",
+   "body": "Good taxonomy. One gap I keep seeing in these frameworks: most treat security as input/output validation, but the harder problem is mid-chain state mutation. An agent can receive clean inputs and produce compliant outputs while doing something semantically wrong in the middle steps. Tool call sequences are where the real exposure lives, not the endpoints. Did your assessment look at whether frameworks preserve enough intermediate state to reconstruct *why* a tool was invoked, or just *that* it was invoked?"
+  },
+  {
+   "author": "participant12",
+   "created_at": "2026-05-08T09:51:57Z",
+   "body": "Good taxonomy. One gap I keep seeing in these assessments: most frameworks are evaluated at the tool-call level, but the real audit surface is the reasoning state between tool calls. By the time an agent hits a guardrail, the decision that caused the problem was made 2-3 steps earlier in the context window. Static framework analysis tends to miss this because it looks at inputs/outputs, not the intermediate inference chain that drove the action. Are you capturing reasoning snapshots mid-trajectory, or scoping the assessment to observable I/O boundaries?"
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "langchain-ai/langchain",
+  "default_branch": "master",
+  "commit_sha": "cee6430b1cd2530cdebcdb8820ed4ebf700556a4",
+  "as_of": "2026-03-12T21:25:42Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_langchain-ai_langchain_35803"
+}

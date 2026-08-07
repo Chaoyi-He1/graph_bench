@@ -1,0 +1,152 @@
+{
+ "repo": "duckdb/duckdb",
+ "number": 10037,
+ "url": "https://github.com/duckdb/duckdb/issues/10037",
+ "title": "Very slow join on small table (bad choice of join algorithm?)",
+ "state": "closed",
+ "labels": [
+  "reproduced",
+  "stale"
+ ],
+ "reporter": "reporter",
+ "created_at": "2023-12-19T22:23:45Z",
+ "closed_at": "2026-04-19T01:06:18Z",
+ "body": "### What happens?\r\n\r\nVery slow join on a small table.\r\n\r\nThis is extracted from a larger query on a multi-billion row table. The performance behavior can be observed at any scale though.\r\n\r\n### To Reproduce\r\n\r\nSee attached zip:  [slow.zip](https://github.com/duckdb/duckdb/files/13720913/slow.zip)\r\n\r\n\r\n```sql\r\nSELECT t1.col1\r\nFROM read_parquet('slow3.parquet') AS t1\r\nLEFT JOIN read_parquet('slow3.parquet') AS t2\r\n    ON t1.col1 = t2.col1\r\n    -- The following condition is always false on the reproducer dataset.\r\n    -- On the real world dataset, it is sometimes false.\r\n    AND t1.col1 = 'missing'\r\nGROUP BY t1.col1\r\n```\r\n\r\nTiming (small/large):\r\n\r\nDuckDB: 9/35 s\r\nchdb: 15/20 ms\r\n\r\n\r\nNB: I don't know how to write the query above in Polars, but here are timing for a query without `AND t1.col1 = 'missing'`:\r\n\r\nDuckDB: 10 s / 40 s\r\nchdb: 1.5 s / 23 s\r\nPolars (code below): 7 s / OOM\r\n\r\n```py\r\ndf = pl.scan_parquet(\"slow3.parquet\")\r\ndf.join(df, on=[\"col1\"], how=\"left\").select(pl.col.col1).group_by(pl.col.col1).agg().collect()\r\n```\r\n\r\n#### Note\r\n\r\nThe queries and timings above are a simplified example. My real world query is a bit more complicated:\r\n\r\n```sql\r\nSELECT t1.col1\r\nFROM ... AS t1\r\nLEFT JOIN ... AS t2\r\n    ON t1.col1 = t2.col1\r\n    AND t1.col2 IN (... small list of const strings ...)\r\n    AND t2.col3 IN (... another small list of const strings ...)\r\nGROUP BY t1.col1\r\n```\r\n\r\n### OS:\r\n\r\nmacOS, Linux\r\n\r\n### DuckDB Version:\r\n\r\n0.9.2\r\n\r\n### DuckDB Client:\r\n\r\nCLI\r\n\r\n### Full Name:\r\n\r\nJonas Haag\r\n\r\n### Affiliation:\r\n\r\nQuantCo\r\n\r\n### Have you tried this on the latest `main` branch?\r\n\r\nI have tested with a release build (and could not test with a main build)\r\n\r\n### Have you tried the steps to reproduce? Do they include all relevant data and configuration? Does the issue you report still appear there?\r\n\r\n- [X] Yes, I have",
+ "comments": [
+  {
+   "author": "reporter",
+   "created_at": "2023-12-21T08:04:24Z",
+   "body": "Please, can we stop discussing Polars here? I don't want to make it more difficult for the maintainers to read through this issue 🙏"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-12-22T08:52:10Z",
+   "body": "I've added timings of ClickHouse (chDB) and Polars to the original post."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-01-02T19:34:20Z",
+   "body": "Hi @reporter, thanks for reporting this, I could reproduce this.\r\n\r\nSorry for the noise in the discussion, I cleaned up the thread now."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-01-04T19:38:08Z",
+   "body": "Hi @reporter,\r\n\r\nI'm not sure what has already been mentioned since the thread history has been cleaned up, so sorry if I'm repeating anything you have already read/tried.\r\n\r\nIt seems there is a bug in DuckDB, and the filter `AND t1.col1 = 'missing'` is not being recognized as a standalone filter that can be pushed down. This causes DuckDB to plan a blockwise join instead of a  hash join, which is *much* slower. A simple workaround for this is to re-write the query as \r\n\r\n```\r\nSELECT t1.col1\r\nFROM read_parquet('slow3.parquet') AS t1\r\nLEFT JOIN read_parquet('slow3.parquet') AS t2\r\n    ON t1.col1 = t2.col1\r\n    Where t1.col1 = 'missing'\r\nGROUP BY t1.col1\r\n```\r\n\r\nThis should speed up the execution time quite a bit since a hash join is used instead of a blockwise nested loop join.\r\n\r\nI will be looking into fixing the issue as is though, I will let you know when it gets merged!"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-01-04T20:06:34Z",
+   "body": "Doesn't that change the output though? It filters rows from the LHS while my query doesn't "
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-01-04T20:46:55Z",
+   "body": "It does, you're right, I didn't think it all the way through"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-01-04T20:57:05Z",
+   "body": "I'll try to brainstorm other workarounds or fixes. I'll post here if I find something, sorry for the confusion"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-01-04T21:54:09Z",
+   "body": "Ok, I think I found a work around that gives you the same results. You just need to add the filter `t2.col1 = 'missing'`. This won't affect the result since the filter `t1.col1 = t2.col1` provides the transitivity. There is a significant speedup since t2 is  filtered down so that only matching tuples are compared during the join operation instead of all combinations of tuples. The query below gives you the same results and executes faster using the given data\r\n\r\n```\r\nSELECT t1.col1\r\nFROM read_parquet('slow3.parquet') AS t1\r\nLEFT JOIN read_parquet('slow3.parquet') AS t2\r\n    ON t1.col1 = t2.col1\r\n    AND t1.col1 = 'missing'\r\n    AND t2.col1 = 'missing'\r\nGROUP BY t1.col1;\r\n```\r\n\r\nIf you want to make it even faster, removing the `t1.col1 = 'missing'` from the query above allows the optimizer to plan a hash group by  operator for the join.\r\n\r\n```\r\nSELECT t1.col1\r\nFROM read_parquet('slow3.parquet') AS t1\r\nLEFT JOIN read_parquet('slow3.parquet') AS t2\r\n    ON t1.col1 = t2.col1\r\n    AND t2.col1 = 'missing'\r\nGROUP BY t1.col1;\r\n```\r\n\r\nLet me know if this works for you, I saw a speedup of about 9 seconds to 0.01 seconds. I'll look into implementing similar functionality in DuckDB, it should be doable, but I can't guarantee when it'll be merged\r\n\r\n"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-01-05T05:34:55Z",
+   "body": "copied from a friend's post\r\n```\r\nCreate table a (a int, b int);\r\n\r\nCreate table b (a int, b int);\r\nInsert into a value (1,1);\r\nInsert into a value (2,2);\r\nInsert into b values (2,2);\r\nInsert into b values (1,1);\r\n------Even if the ON condition is always false, table a needs to output because the ON condition is used to select table b\r\nSelect * from a left join b on 1=0;\r\nA B A B\r\n-------------------\r\n1 1\r\n2 2\r\n------If the ON condition only involves table a and is true, then there is no restriction on table b, and both rows of b will be output, equivalent to a Cartesian product\r\nSelect * from a left join b on a.a=<reviewer>;\r\nA B A B\r\n------------ -- ------------\r\n1 1 2 2\r\n1 1 1 1\r\n2 2 2 2\r\n2 2 1 1\r\n------If the ON condition can connect to table b but there are additional predicates, then table b will output when the predicate is true, and only table a will output when the predicate is false\r\nSelect * from a left join b on a. a=b. a and a. b=2;\r\nA B A B\r\n------------ -- ------------\r\n2 2 2 2\r\n1 1\r\n```"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-01-05T07:22:16Z",
+   "body": "according to the content of above post, since you don't care the data of t2, your sql  in the original post equals to\r\n```\r\nSELECT t1.col1\r\nFROM read_parquet('slow3.parquet') AS t1\r\nGROUP BY t1.col1;\r\n┌─────────┐\r\n│  col1   │\r\n│ varchar │\r\n├─────────┤\r\n│ 6       │\r\n│ 5       │\r\n│ 8       │\r\n│ 3       │\r\n│ 4       │\r\n│ 2       │\r\n│ 7       │\r\n│ 0       │\r\n│ 9       │\r\n│ 1       │\r\n├─────────┤\r\n│ 10 rows │\r\n└─────────┘\r\nRun Time (s): real 0.037 user 0.031200 sys 0.000000\r\n```\r\nbut to an database like duckdb, it's hard to know it\r\nfollowing results demonstrate it\r\n```\r\nSELECT t1.col1,count(t1.col1)\r\nFROM read_parquet('slow3.parquet') AS t1\r\nGROUP BY t1.col1;\r\n─────────┬────────────────┐\r\n  col1   │ count(t1.col1) │\r\n varchar │     int64      │\r\n─────────┼────────────────┤\r\n 1       │           9938 │\r\n 6       │           9859 │\r\n 4       │          10188 │\r\n 5       │          10063 │\r\n 8       │           9987 │\r\n 3       │          10034 │\r\n 9       │          10031 │\r\n 2       │           9995 │\r\n 7       │           9973 │\r\n 0       │           9932 │\r\n─────────┴────────────────┤\r\n 10 rows        2 columns │\r\n──────────────────────────┘\r\nSELECT t1.col1,count(t1.col1),count(t2.col1)\r\nFROM read_parquet('slow3.parquet') AS t1\r\nLEFT JOIN read_parquet('slow3.parquet') AS t2\r\n    ON t1.col1 = t2.col1\r\n    -- The following condition is always false on the reproducer dataset.\r\n    -- On the real world dataset, it is sometimes false.\r\n    AND t1.col1 = 'missing'\r\nGROUP BY t1.col1;\r\n\r\n─────────┬────────────────┬──────────\r\n  col1   │ count(t1.col1) │ count(t2.col1) │\r\n varchar │     int64      │     int64      │\r\n─────────┼────────────────┼──────────\r\n 6       │           9859 │              0 │\r\n 1       │           9938 │              0 │\r\n 9       │          10031 │              0 │\r\n 5       │          10063 │              0 │\r\n 8       │           9987 │              0 │\r\n 3       │          10034 │              0 │\r\n 4       │          10188 │              0 │\r\n 2       │           9995 │              0 │\r\n 7       │           9973 │              0 │\r\n 0       │           9932 │              0 │\r\n─────────┴────────────────┴──────────\r\n 10 rows                         3 columns │\r\n─────────────────────────────────────\r\nSELECT t1.col1,count(t1.col1),count(t2.col1)\r\nFROM read_parquet('slow3.parquet') AS t1\r\nLEFT JOIN read_parquet('slow3.parquet') AS t2\r\n    ON t1.col1 = t2.col1\r\nGROUP BY t1.col1;\r\n─────────┬────────────────┬────────────────┐\r\n  col1   │ count(t1.col1) │ count(t2.col1) │\r\n varchar │     int64      │     int64      │\r\n─────────┼────────────────┼────────────────┤\r\n 4       │      103795344 │      103795344 │\r\n 9       │      100620961 │      100620961 │\r\n 2       │       99900025 │       99900025 │\r\n 7       │       99460729 │       99460729 │\r\n 0       │       98644624 │       98644624 │\r\n 6       │       97199881 │       97199881 │\r\n 5       │      101263969 │      101263969 │\r\n 8       │       99740169 │       99740169 │\r\n 3       │      100681156 │      100681156 │\r\n 1       │       98763844 │       98763844 │\r\n─────────┴────────────────┴────────────────┤\r\n 10 rows                         3 columns │\r\n───────────────────────────────────────────┘\r\n```"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-01-05T07:51:30Z",
+   "body": "@participant3 did you forget that you promised to stop posting to this thread? Please stop posting to threads opened by me. The quality of your posts is really low. They are not helpful. Thank you. \n\n@participant2 You are right, that works. My initial query was oversimplified though in order to provide a minimal example. In my real world query, we actually have\n\n```sql\nON t1.col1 = t2.col1\nAND t1.col2 = 'missing2'\nAND t2.col3 = 'missing3'\n```\n\nShould I provide a reproducer dataset for this more complicated query?"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-01-05T08:37:41Z",
+   "body": "@reporter as I belive your original sql is wrong, so I pointed it out.\r\n\r\n@participant2  your sql can improved\r\n```\r\nSELECT t1.col1,count(t1.col1),count(t2.col1)\r\nFROM read_parquet('slow3.parquet') AS t1\r\nLEFT JOIN read_parquet('slow3.parquet') AS t2\r\n    ON t1.col1 = t2.col1\r\n    -- The following condition is always false on the reproducer dataset.\r\n    -- On the real world dataset, it is sometimes false.\r\n    AND t1.col1 = '0'\r\n    AND t2.col1 = '0'\r\nGROUP BY t1.col1;\r\n┌─────────┬────────────────┬────────────────┐\r\n│  col1   │ count(t1.col1) │ count(t2.col1) │\r\n│ varchar │     int64      │     int64      │\r\n├─────────┼────────────────┼────────────────┤\r\n│ 6       │           9859 │              0 │\r\n│ 1       │           9938 │              0 │\r\n│ 4       │          10188 │              0 │\r\n│ 9       │          10031 │              0 │\r\n│ 5       │          10063 │              0 │\r\n│ 8       │           9987 │              0 │\r\n│ 3       │          10034 │              0 │\r\n│ 0       │       98644624 │       98644624 │\r\n│ 2       │           9995 │              0 │\r\n│ 7       │           9973 │              0 │\r\n├─────────┴────────────────┴────────────────┤\r\n│ 10 rows                         3 columns │\r\n└───────────────────────────────────────────┘\r\nRun Time (s): real 7.866 user 7.846850 sys 0.000000\r\n\r\nwith temp1 as(select * from read_parquet('slow3.parquet')t1 where t1.col1 = '0'),\r\ntemp2 as(select * from read_parquet('slow3.parquet')t1 where t1.col1 != '0')\r\nSELECT t1.col1,count(t1.col1),count(t2.col1)\r\nFROM temp1 AS t1\r\nLEFT JOIN temp1 AS t2\r\n    ON t1.col1 = t2.col1\r\n    -- The following condition is always false on the reproducer dataset.\r\n    -- On the real world dataset, it is sometimes false.\r\n    AND t1.col1 = '0'\r\n    AND t2.col1 = '0'\r\nGROUP BY t1.col1\r\nunion all\r\nSELECT t1.col1,count(t1.col1),0\r\nFROM temp2 AS t1\r\nGROUP BY t1.col1;\r\n\r\n┌─────────┬────────────────┬────────────────┐\r\n│  col1   │ count(t1.col1) │ count(t2.col1) │\r\n│ varchar │     int64      │     int64      │\r\n├─────────┼────────────────┼────────────────┤\r\n│ 0       │       98644624 │       98644624 │\r\n│ 6       │           9859 │              0 │\r\n│ 4       │          10188 │              0 │\r\n│ 1       │           9938 │              0 │\r\n│ 9       │          10031 │              0 │\r\n│ 2       │           9995 │              0 │\r\n│ 7       │           9973 │              0 │\r\n│ 5       │          10063 │              0 │\r\n│ 8       │           9987 │              0 │\r\n│ 3       │          10034 │              0 │\r\n├─────────┴────────────────┴────────────────┤\r\n│ 10 rows                         3 columns │\r\n└───────────────────────────────────────────┘\r\nRun Time (s): real 2.289 user 2.277615 sys 0.000000\r\n```"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-01-05T08:49:31Z",
+   "body": "@participant3 I'm going to block you now, sorry but I've asked multiple times and you ignore my requests."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-01-05T20:06:56Z",
+   "body": "Hi Jonas,\r\n\r\nHmm, yes. The real world query does indeed make this problem harder to solve, as the string comparison for `t1.col2 = missing` makes the planner incorrectly think that a nested loop join should be used. \r\n\r\nAnother workaround that might help speed things up requires that comparisons are always constant strings. A query like the one below *should* speed up your query,\r\n\r\n```\r\n select * exclude some_tmp_name \r\n from read_parquet('slow2.parquet') t1 left join \r\n(select *, 'missing2' some_tmp_name from read_parquet('slow3.parquet')) t2 on \r\n  t1.col1 = t2.col1 and \r\n  t1.col2 = t2.some_tmp_name and \r\n  t2.col3 = 'missing'\r\ngroup by t1.col1;\r\n ```\r\n\r\nThis helps the optimizer recognize that the comparison `t1.col2 = missing` can also be done using a hash table. \r\n\r\nLet me know if this works! It won't provide much speed up with the reproducible files you gave me, but maybe in your real world data set it will 👍 "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-01-05T22:02:44Z",
+   "body": "Thank you, this sort of works, but has serious limitations:\r\n\r\n1. You need to write it this way:\r\n\r\n   ```sql\r\n   SELECT ...\r\n   FROM (SELECT * FROM ..., 'missing3' as const3) t1\r\n   LEFT JOIN (SELECT * FROM ..., 'missing2' as const2) t2\r\n   ON t1.col1 = t2.col1\r\n   AND t1.col2 = missing2\r\n   AND t2.col3 = missing3\r\n   ```\r\n\r\n   but not this way (with the constant values in each side's \"own\" SELECT):\r\n\r\n   ```sql\r\n   SELECT ...\r\n   FROM (SELECT * FROM ..., 'missing2' as const2) t1\r\n   LEFT JOIN (SELECT * FROM ..., 'missing3' as const3) t2\r\n   ON t1.col1 = t2.col1\r\n   AND t1.col2 = missing2\r\n   AND t2.col3 = missing3\r\n   ```\r\n2. It does not work with my real world query because there we don't have `col = missing` but `col IN (missing_1, missing_2, ...)`. It also doesn't work with `(col = missing_1 OR col = missing_2 ...)`. Sorry that I didn't include this fact in my reduced example either.\r\n\r\nWith the `=` instead of `IN` it gives a at least 50x speedup (I didn't wait for the NL join query to finish)"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-01-23T08:22:50Z",
+   "body": "Can confirm, hitting the exact same issue with this \r\n\r\n```sql\r\nselect *,\r\n      round(source_amount / ifnull(fxs_eur.rate, 1), 2) as source_amount_eur,\r\n      round(target_amount / ifnull(fxt_eur.rate, 1), 2) as target_amount_eur,\r\n      round(source_amount / ifnull(fxs_gbp.rate, 1), 2) as source_amount_gbp,\r\n      round(target_amount / ifnull(fxt_gbp.rate, 1), 2) as target_amount_gbp\r\nfrom transactions as b\r\nleft join\r\n    fx as fxs_eur\r\n    on b.source_currency != 'EUR'\r\n    and fxs_eur.currency = b.source_currency\r\n    and fxs_eur.date = b.start_date\r\n    and fxs_eur.base = 'EUR'\r\n    where \r\nleft join\r\n    fx as fxt_eur\r\n    on b.target_currency != 'EUR'\r\n    and fxt_eur.currency = b.target_currency\r\n    and fxt_eur.date = b.end_date\r\n    and fxt_eur.base = 'EUR'\r\nleft join\r\n    fx as fxs_gbp\r\n    on b.source_currency != 'GBP'\r\n    and fxs_gbp.currency = b.source_currency\r\n    and fxs_gbp.date = b.start_date\r\n    and fxs_gbp.base = 'GBP'\r\nleft join\r\n    fx as fxt_gbp\r\n    on b.target_currency != 'GBP'\r\n    and fxt_gbp.currency = b.target_currency\r\n    and fxt_gbp.date = b.end_date\r\n    and fxt_gbp.base = 'GBP'"
+  },
+  {
+   "author": "github-actions[bot]",
+   "created_at": "2024-07-02T00:32:56Z",
+   "body": "This issue is stale because it has been open 90 days with no activity. Remove stale label or comment or this will be closed in 30 days."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-07-02T09:18:30Z",
+   "body": "Don't think this should be marked stale"
+  },
+  {
+   "author": "github-actions[bot]",
+   "created_at": "2024-10-01T00:37:00Z",
+   "body": "This issue is stale because it has been open 90 days with no activity. Remove stale label or comment or this will be closed in 30 days."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-10-01T07:39:38Z",
+   "body": "DuckDB 1.1 timing:\r\n\r\n- Without `AND t1.col1 = 'missing'`: 8 s\r\n- With `AND t1.col1 = 'missing'`: 14 s\r\n\r\nSo it seems like timing as been reversed 🤔 still the same problem remains."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2024-11-22T21:05:37Z",
+   "body": "If I'm understanding the conversation so far correctly, it seems there are a few separate things going on here:\r\n* In the original (simple) query, it's possible to propagate the constant equality through transitivity which opens up opportunities for optimization by recognizing the key is absent on the right side of the join. This propagation is currently not done automatically, but it would likely be possible to do so and some queries would benefit from this.\r\n* The constant string comparison in the join clause prevents DuckDB from using a hash join even if a hash join could work for the query. A blockwise nested loop join is used instead and is slower.\r\n* The query without the constant string equality (i.e. simple join followed by group) is still about 6 times slower on a small dataset than a similar query in chdb. This query _does_ use a hash join in DuckDB.\r\n\r\nI have some time and appetite to work on this (though not promising I'll be successful). I'd like to narrow it down to a more specific issue though. The constraint propagation seems like it would be relatively straightforward to add but doesn't solve the problem for the more complicated query and wouldn't help @participant4 either.\r\n\r\n@reporter I do think a reproducer dataset for the more complex query could be useful, especially in combination with EXPLAIN ANALYZE outputs both on DuckDB and chdb. Then I'd be happy to look into what's driving the performance differences you're running into, and what changes can be made."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-11-22T22:03:13Z",
+   "body": "Thanks for looking into this! Happy to help if you have a specific ask or a question. I didn't hit a problem with this in big query nor postgres as I recall, maybe it helps."
+  },
+  {
+   "author": "participant6",
+   "created_at": "2025-01-09T04:48:06Z",
+   "body": "Hi, I also ran into this issue as well.\r\nThe planner goes with blockwise when there are more than two conditionals on the `ON`.\r\n\r\nFor my use case, the workaround was to simply break up the join condition, join the righthand table multiple times and then coalesce the final value.\r\n\r\nExample to repo the issue and demonstrate the workaround.\r\n```sql\r\nCREATE TABLE lhs_big_table AS \r\nSELECT \r\n    DATE '2000-01-01' + (random() * 8766)::INTEGER AS date1,\r\n    DATE '2010-01-01' + (random() * 8766)::INTEGER AS date2,\r\n    DATE '2021-01-01' + (random() * 8767)::INTEGER AS date3 \r\nFROM generate_series(1, 10000000);\r\n\r\n\r\nCREATE TABLE rhs_small_table AS \r\nSELECT \r\n    DATE '2000-01-01' + (random() * 8766)::INTEGER AS small_date1,\r\n    DATE '2010-01-01' + (random() * 8766)::INTEGER AS small_date2,\r\n    DATE '2021-01-01' + (random() * 8767)::INTEGER AS small_date3 \r\nFROM generate_series(1, 100);\r\n\r\n-- Single complex join\r\nEXPLAIN ANALYZE\r\nSELECT small_date2\r\nFROM lhs_big_table\r\n    LEFT JOIN rhs_small_table ON lhs_big_table.date1 = rhs_small_table.small_date1\r\n    AND ((\r\n            lhs_big_table.date2 = rhs_small_table.small_date2\r\n            AND lhs_big_table.date3 < rhs_small_table.small_date3\r\n        )\r\n        OR (\r\n            lhs_big_table.date2 < rhs_small_table.small_date2\r\n        )\r\n    )\r\n;\r\n\r\n-- Two simple joins\r\nEXPLAIN ANALYZE\r\nSELECT COALESCE(rhs_one.small_date2, rhs_two.small_date2) AS small_date2\r\nFROM lhs_big_table\r\n    LEFT JOIN rhs_small_table rhs_one ON lhs_big_table.date1 = rhs_one.small_date1\r\n    AND (\r\n        lhs_big_table.date2 = rhs_one.small_date2\r\n        AND lhs_big_table.date3 < rhs_one.small_date3\r\n    )\r\n    LEFT JOIN rhs_small_table rhs_two ON lhs_big_table.date1 = rhs_two.small_date1\r\n    AND (\r\n        lhs_big_table.date2 < rhs_two.small_date2\r\n    )\r\n;\r\n\r\n-- Confirming the queries are equivalent\r\nWITH table_one AS (\r\n    SELECT small_date2\r\n    FROM lhs_big_table\r\n        LEFT JOIN rhs_small_table ON lhs_big_table.date1 = rhs_small_table.small_date1\r\n        AND ((\r\n                lhs_big_table.date2 = rhs_small_table.small_date2\r\n                AND lhs_big_table.date3 < rhs_small_table.small_date3\r\n            )\r\n            OR (\r\n                lhs_big_table.date2 < rhs_small_table.small_date2\r\n            )\r\n        )\r\n),\r\ntable_two AS (\r\n    SELECT COALESCE(rhs_one.small_date2, rhs_two.small_date2) AS small_date2\r\n    FROM lhs_big_table\r\n        LEFT JOIN rhs_small_table rhs_one ON lhs_big_table.date1 = rhs_one.small_date1\r\n        AND (\r\n            lhs_big_table.date2 = rhs_one.small_date2\r\n            AND lhs_big_table.date3 < rhs_one.small_date3\r\n        )\r\n        LEFT JOIN rhs_small_table rhs_two ON lhs_big_table.date1 = rhs_two.small_date1\r\n        AND (\r\n            lhs_big_table.date2 < rhs_two.small_date2\r\n        )\r\n)\r\nSELECT \r\n    CASE \r\n        WHEN COUNT(*) = 0 THEN 'Tables are identical'\r\n        ELSE 'Tables are different'\r\n    END AS comparison_result\r\nFROM (\r\n    (SELECT * FROM table_one\r\n    EXCEPT\r\n    SELECT * FROM table_two)\r\n    UNION ALL\r\n    (SELECT * FROM table_two\r\n    EXCEPT\r\n    SELECT * FROM table_one)\r\n) AS diff;\r\n```"
+  },
+  {
+   "author": "github-actions[bot]",
+   "created_at": "2026-03-20T00:52:36Z",
+   "body": "This issue is stale because it has been open 365 days with no activity. Remove stale label or comment or this will be closed in 30 days."
+  },
+  {
+   "author": "github-actions[bot]",
+   "created_at": "2026-04-19T01:06:18Z",
+   "body": "This issue was closed because it has been stale for 30 days with no activity."
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "duckdb/duckdb",
+  "default_branch": "main",
+  "commit_sha": "b5e76ac84b799b08aa82b3801c1febc1b94393af",
+  "as_of": "2023-12-19T22:23:45Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_duckdb_duckdb_10037"
+}

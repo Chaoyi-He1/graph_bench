@@ -1,0 +1,124 @@
+{
+ "repo": "open-telemetry/opentelemetry-collector",
+ "number": 9591,
+ "url": "https://github.com/open-telemetry/opentelemetry-collector/issues/9591",
+ "title": "Applying memory_limiter extension",
+ "state": "closed",
+ "labels": [],
+ "reporter": "reporter",
+ "created_at": "2024-02-15T15:58:08Z",
+ "closed_at": "2025-12-15T18:32:15Z",
+ "body": "### Problem\r\n\r\nAs part of https://github.com/open-telemetry/opentelemetry-collector/issues/8632, we want receivers to be able to reject incoming requests if the collector is running out of memory limits instead of accepting the data transforming to OTLP and get it rejected by the `memory_limiter` processor. Scraping receivers would skip the scraping in that situation.\r\n\r\nWe introduced a memory_limiter extension in https://github.com/open-telemetry/opentelemetry-collector/pull/8964, but it has not been applied yet.\r\n\r\nhttps://github.com/open-telemetry/opentelemetry-collector/pull/9397 proposes a way to configure a `memory_limiter` extension explicitly by receivers using httpconfig. Applying only this approach to other receivers would complicate the user configuration interface as they would have to explicitly connect every receiver with a `memory_limiter` extension.\r\n\r\n### Proposed solution\r\n\r\nWe can introduce an option to configure the `memory_limiter` extension in a way that it's applied to every receiver. Particular receivers can override the default memory limiter and connect to a different one.\r\n\r\nConfiguration example:\r\n\r\n```yaml\r\nextensions:\r\n  memory_limiter:\r\n    limit_mib: 800\r\n    apply_to_all_receivers: true\r\n  memory_limiter/internal_metrics:\r\n    limit_mib: 1000\r\n\r\nreceivers:\r\n  otlp:\r\n    protocols:\r\n      grpc:\r\n        endpoint: localhost:4317\r\n      http:\r\n        endpoint: localhost:4318\r\n  prometheus:\r\n    memory_limiter: memory_limiter/internal_metrics\r\n    config:\r\n      scrape_configs:\r\n        - job_name: 'otel-collector'\r\n          scrape_interval: 10s\r\n          static_configs:\r\n            - targets: [\"localhost:8888\"]\r\n\r\nprocessors:\r\n  batch:\r\n\r\nexporters:\r\n  debug:\r\n    verbosity: detailed\r\n\r\nservice:\r\n  extensions: [memory_limiter, memory_limiter/internal_metrics]\r\n  pipelines:\r\n    traces:\r\n      receivers: [otlp]\r\n      processors: [batch]\r\n      exporters: [debug]\r\n    metrics:\r\n      receivers: [otlp, prometheus]\r\n      processors: [batch]\r\n      exporters: [debug]\r\n```\r\n\r\nIn this configuration, the default `memory_limiter` extension is implicitly applied to `otlp` receiver, and the additional `memory_limiter/internal_metrics` extension is applied explicitly to the prometheus receiver.\r\n\r\nThe user cannot define more than one `memory_limiter` extension with `apply_to_all_receivers: true`; the config validation will fail.\r\n\r\nIf `memory_limiter` extension with `apply_to_all_receivers: true` is defined, all the receivers used in the pipelines must support the `memory_limiter` extension. Otherwise, the collector won't start.\r\n\r\nProof of concept: https://github.com/open-telemetry/opentelemetry-collector/pull/9590",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2024-02-15T17:00:49Z",
+   "body": "@reporter should this functionality exist in the receiverhelper, similar to how batching is being added to the exporterhelper?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-02-15T17:40:49Z",
+   "body": "@participant1, yes, we can introduce a receiver helper. It doesn't exist at this point. It may be a cleaner implementation for the memory_limiter. If we think it can help with other problems in the future, we can add it. Otherwise, it can be also an unnecessary user interface complication. I'll look into that"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-02-15T20:32:07Z",
+   "body": "First, I would like us to agree on the user interface and the way how the memory_extension can be enabled for all receivers"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-02-15T21:33:44Z",
+   "body": "Instead of needing `apply_to_all_receivers: true`, could the extension component named `memory_limiter` be applied to all unless the component specifies a different ID?\r\n\r\nPros:\r\n- more backwards compatible\r\n- users wouldnt need to remember to set the boolean to get the feature\r\n- Less config\r\n\r\nCons:\r\n- config is less self-describing"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-02-16T00:28:31Z",
+   "body": "> more backwards compatible\r\n\r\nHow is it more backward compatible? The extension is no-op at this point\r\n\r\nHow do you know which one is applied to all receives if I have let's say two memory_limiter extensions defined? Looking at each receiver at filtering out one that is not referenced by any of them? This seems like too much magic."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-02-16T13:24:45Z",
+   "body": "I have a pending proposal for supporting interceptors (https://github.com/open-telemetry/opentelemetry-collector/issues/7441) but I've failed to dedicate engineering time for a PoC. While I'm not too tied to that specific proposal, I think that this here could be split into two parts: one more generic being part of the Collector first, and one with the memory limiter being one implementation."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-02-16T16:53:21Z",
+   "body": "> How is it more backward compatible? The extension is no-op at this point\r\n\r\nIt is closer to what users do now with the processor, so changing it to an extension would be a little easier, but not significant. \r\n\r\n> This seems like too much magic.\r\n\r\nYa probably"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-02-16T18:20:10Z",
+   "body": "> one more generic being part of the Collector first\r\n\r\n@participant2 what do you mean by this?\r\n\r\nThe middleware proposal makes sense to me, but it's not applicable to all receivers, e.g., scraping receivers. The memory_limiter is supposed to be supported by all of them. It's also important to apply the memory limiter before any other middleware for push-based receivers. So I think it's ok to keep them separate. "
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-02-19T11:00:59Z",
+   "body": "> one more generic being part of the Collector first\r\n\r\nSorry, I mean a general mechanism (interceptors/middleware/...), plus an implementation of it. I agree about the scraping one, though. \r\n\r\n> but it's not applicable to all receivers, e.g., scraping receivers\r\n\r\nStupid question, but isn't a memory limiter being used in a scraping receiver similar in usage to an exporter, in the sense that they both could intercept an outgoing HTTP/gRPC request? Perhaps there could be two interceptor interfaces, one for servers (typical receivers) and one for clients (scraping receivers and typical exporters)? "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-02-22T22:27:49Z",
+   "body": "> Stupid question, but isn't a memory limiter being used in a scraping receiver similar in usage to an exporter, in the sense that they both could intercept an outgoing HTTP/gRPC request? Perhaps there could be two interceptor interfaces, one for servers (typical receivers) and one for clients (scraping receivers and typical exporters)?\r\n\r\nScraping doesn't always involve making HTTP/gRPC requests to an external endpoint. They can read logs or metrics from local files. They can also use some 3rd-party libraries talking to external API, so it'll be hard to apply interceptors. \r\n\r\nI think scraping receivers need to skip scrapes on the application level once the memory limit is reached and avoid even making attempts for any external calls."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-02-29T21:07:31Z",
+   "body": "Hey @reporter @participant6 thanks for all your work to create this `memorylimiterextension` and to make it useable by receivers. I just wanted to check in and see if there's anything I can do to help make this memorylimiterextension useable? \r\n\r\nOur team is struggling with our service reliability because of memory/latency issues due to large requests being accepted by the receiver (despite using in flight bytes memory limiter we are applying in a custom processor).  We want to use the core collector memorylimiterextension or create a custom extension to apply our limiter at the start of our pipeline. We use an otelarrow receiver which sets up a GRPC server and seems that we could make use of `configgrpc` and interceptors to apply the `memorylimiterextension`.\r\n\r\n1. Is there anything blocking PR from being merged? https://github.com/open-telemetry/opentelemetry-collector/pull/9397\r\n2. May I implement something similar for `configgrpc` so our gRPC servers can leverage memory_limiter extensions?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-03-07T21:23:56Z",
+   "body": "Hi @participant3, thank you for the interest. I'll be happy to work on this together. \r\n\r\nhttps://github.com/open-telemetry/opentelemetry-collector/pull/9673 and https://github.com/open-telemetry/opentelemetry-collector/pull/9397 add a configuration option right in the `httpconfig` and `grpcconfig`. It's a good option if users want to enable memory_limiter explicitly. However, I believe it's important to provide a way to apply a `memory_limiter` extension to all the receivers used in the collector pipelines, as proposed in this issue.\r\n\r\nI tried to prototype this approach in https://github.com/open-telemetry/opentelemetry-collector/pull/9590, and it seems like it doesn't work with having `memory_limiter` option right in `httpconfig` and `grpcconfig` configs. Likely, every receiver has to have this option added separately in their config. That's why I'm hesitant to merge these PRs to avoid breaking them down the road. If you can find a way to merry `httpconfig` and `grpcconfig` config with the approach proposed in this PR, I'll be happy to move it forward."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-03-14T21:48:53Z",
+   "body": ">> I tried to prototype this approach in https://github.com/open-telemetry/opentelemetry-collector/pull/9590, and it seems like it doesn't work with having memory_limiter option right in httpconfig and grpcconfig configs.\r\n\r\n@reporter Hmm I've checked out your branch and ran this code. It seems to me that things are working with configgrpc/confighttp i.e. the interceptor is correctly applying the overriding memorylimiterextension you configure in the otlpreceiver, but the issue is the global memory limiter being added in \r\n\r\n```\r\nservice:\r\n  extensions: [memory_limiter, memory_limiter/internal_metrics]\r\n```\r\n\r\nwill cause the global memorylimiterextension to start up and apply garbage collection if exceeding the global memorylimiter regardless of what is going on in the interceptors for the otlpreceiver. This will happen if the global memorylimiterextension has a stricter memory limit than the overriding extension.\r\n\r\ni.e. [memorylimiter.Start()](https://github.com/open-telemetry/opentelemetry-collector/blob/main/extension/memorylimiterextension/memorylimiter.go#L30) -> [memorylimiter.CheckMemLimits()](https://github.com/open-telemetry/opentelemetry-collector/blob/main/internal/memorylimiter/memorylimiter.go#L111) -> [ml.doGCAndReadMemStats()](https://github.com/open-telemetry/opentelemetry-collector/blob/main/internal/memorylimiter/memorylimiter.go#L223) \r\n\r\nThis seems to be an issue with using the memorylimiter processor logic directly. Is garbage collection even necessary in the extension itself? i.e. we just want to monitor the current memory usage and reject/retry based on if the next request will push us over the limit.  I think each receiver would then have to check if there is a global memorylimiterextension and apply it. **Otherwise I'm not sure if it's possible we can have multiple memorylimiter extensions** \r\n\r\nI'm working on implementing a custom memorylimiterextension that uses a weighted semaphore of size `limit_mib` to control admission into the receiver. For this custom memorylimiterextension,  `MustRefuse()` will be based on whether sem.TryAcquire() succeeds based on the size of the request. _**I think**_ this removes the need for garbage collection in the original memorylimiter processor logic and will allow us to successfully override the global memorylimiterextension. \r\n\r\nAny thoughts on this?\r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-03-19T23:43:29Z",
+   "body": "@participant3, thanks for your interest. \r\n\r\nI don't see a lot of value in the GC capability of the extension. It was just copied from the processor as is. I think users should be good just with using GOMEMLIMIT instead. I think we can update the extension just to provide the `MustRefuse()` and remove the GC capability while keeping it in the processor to preserve the existing behavior of a popular component. \r\n\r\nThat will simplify further implementation of the extension. It can be a good first step. It'd be great if you can kelp with a PR.\r\n\r\nAnother option is to apply GC only if `apply_to_all_receivers: true` but I'm not sure if that is important enough."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-03-21T05:34:29Z",
+   "body": ">> I think users should be good just with using GOMEMLIMIT instead\r\n\r\n@reporter Can you expand on what you mean here? Are you saying that GOMEMLIMIT should replace the global memorylimitextension? So it should be set as an overall limit for the entire collector binary, while the memorylimiterextension will be a more local memory limit explicitly configured in the component itself?\r\n\r\nHappy to help with a PR to remove the garbage collection in the extension. Related to this - something that seems troubling about the memorylimiter is that it seems possible for limits to exceed the configured limit_mib which was why garbage collection was triggered in the processor. Is it possible to change the function signature of MustRefuse to also size the request and take the request size into consideration when refusing/accepting the requests?\r\n\r\ni.e. change from `func (ml *memorylimiterextension) MustRefuse() bool` to\r\n `func (ml *memorylimiterextension) MustRefuse(req any) bool`? "
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-04-03T19:55:01Z",
+   "body": "@reporter I'm still wondering if we can have multiple modes of memorylimiting.\r\n\r\n1. The existing one based on polling the runtime statistics to see if we are above the configured memory limits.\r\n2. One based on per-item memory limiting that sizes the request and rejects if the next request puts us over the limit.\r\n\r\nRelying on method (1) seems like it might be costly to continuously call `runtime.ReadMemStats()`, as well as accepting large or frequent requests that OOM/stall your applications if the poll interval is not sufficiently small. The smaller the poll interval implies the more expensive the memorylimiterextension is due to an increase in `runtime.ReadMemStats()` calls. Method (2) will allow the server to know the size of every request **before** admitting it into the receiver, and can even block until there is enough available memory to process the request (though the number of waiters should probably be limited).  This seems like it will make the server more resilient and allow more flexibility for users to configure a `memory_limit_strategy` that suits their needs. Users can still set GOMEMLIMIT to limit their collectors globally in both strategis.\r\n\r\nI need some help here to figure out an interface that would allow for the use of multiple strategies. It seems like the current interface of \r\n\r\n```\r\ntype memorylimiterextension interface {\r\n    Start(ctx context.Context, host component.Host) error\r\n    Shutdown(ctx context.Context) error\r\n    MustRefuse() bool\r\n}\r\n```\r\n\r\nwon't work for strategy (2) because we need to supply more information from the interceptor to account for request size in our decision to accept/refuse the request, and we need to store a running count of memory usage (and decrement this count when the handler returns).\r\n\r\nMaybe we can embed a more general interface for grpc servers to supply their own interceptors based on the memorylimit strategy.\r\n\r\n```\r\ntype grpcServerInterceptor interface {\r\n    UnaryInterceptorGenerator()\r\n    StreamInterceptorGenerator()\r\n}\r\n```\r\n\r\nThis would simplify things in configgrpc\r\n```\r\nif gss.MemoryLimiter != nil {\r\n\t\tmemoryLimiter, err := getMemoryLimiterExtension(gss.MemoryLimiter, host.GetExtensions())\r\n\t\tif err != nil {\r\n\t\t\treturn nil, err\r\n\t\t}\r\n\r\n\t\tuInterceptors = append(uInterceptors, memoryLimiter.UnaryInterceptorGenerator())\r\n\t\tsInterceptors = append(sInterceptors, memoryLimiter.StreamInterceptorGenerator()) \r\n}\r\n```\r\n\r\nMy goal here is not to overcomplicate things but rather provide more flexibility to solving memory related incidents we've experienced in production. I would love any suggestions about how we can extend this memorylimiterextension to support strategy (2) in the future, or if this would need to be a separate component altogether."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-04-05T16:58:14Z",
+   "body": "Wanting to keep this thread alive-- I've caught up with all the discussion and feel we are heading in the right direction.\r\n\r\nI definitely support @participant3's point that the memory limiter should have access to something transport-specific in order to intercept the data as it performs the limiting function. I'm not sure that an `(data any)` formal parameter is the right way, however. Perhaps we can find a way to bind transport-specific memory limiter functions, to align existing work on HTTP and gRPC interceptors with other transports, protocols, and sources of telemetry data. For example, if we are limiting a component that reads local files, an interceptor is likely to look like `io.Reader`, so the memory limiter will want to intercept `Read([]byte)`. We will have memory limiter interfaces based on the type of transport, and each memory limiter extension will want to implement all the interfaces it can. \r\n\r\n@reporter Regarding this `apply_to_all_receivers: true` suggestion, I wonder if the top-level `service` configuration ought to contain a global `memory_limiter` configuration, as the PRs linked above do for `configgrpc` and `confighttp`?  I mean to suggest that the configuration logic that applies memory limiters would first consult the relevant component-level `memory_limiter` (which may or may not be embedded in a transport-common config struct, such as `configgrpc` or `confighttp`), and if no component-level limiter is configured, then it would consult the top-level `service::memory_limiter`.\r\n\r\nThanks, all!"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-04-11T08:23:55Z",
+   "body": "@participant3 I understand the problem of the existing implementation you're trying to solve. Checking the current memory utilization periodically is not ideal. It's pretty hard to configure `spike_limit_mib` that always covers the maximum possible memory jump between the measures. I'm up for finding a solution for that. I don't think we need different modes/extensions. We have the same goal. I like @participant4's suggestion of tracking it closer to the wire. However, I have a couple of concerns about the memory_limiter tracking the memory utilization by itself:\r\n1. The measures from the input will significantly differ from the actual memory utilization down the pipeline, especially for non-otlp/grpc receivers, where we have to create the pdata and keep it along with the request until it's done.\r\n2. It won't work with any components that handle data asynchronously, e.g., tailsampling processor, groupbytrace processor, deltatocumulative processor, etc. Most importantly, it won't work with queue on exporter size. Users would have to pick a value for the memory limiter by subtracting all the configured queue sizes. Not very convenient.\r\n\r\nI think we can try to find some middle ground here. I'd like to keep the simplicity of the current approach and make it more reliable against the spikes. Even if we go with taking the request size as input for the decision for refusing, we can track it only between the runtime calls which will be still used as the source of truth and \"reset\" the tracker."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-02-21T19:59:14Z",
+   "body": "I would like to stake out a position that the memory limiter processor _ought_ to be deprecated in favor of receiver-integrated use of the memory limiter extension. See otherwise, there is a long-standing TODO: https://github.com/open-telemetry/opentelemetry-collector/pull/12454#discussion_r1966084121\n\nOn that topic, I would also like to share that in my experience running gateway collectors in horizontally autoscaled workload under k8s, I had a poor experience with memory limiter extension concept as a whole, meaning the use of garbage collector stats was difficult to combine with k8s hpa settings in a reliable way.\n\nFor the OTel-Arrow project we used an explicit admission control approach, where the receiver uses an approximation of the memory used for each request and limits admittance to the pipeline based on a weighted semaphore (see https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/receiver/otelarrowreceiver/README.md#admission-control-configuration).\n\nTherefore, I think it would be ideal if:\n\n- `memorylimiterextension` were automatically integrated with receivers\n- the \"approximate count\" of bytes used can be either:\n  - simply the OTLP protobuf `ByteSize()` function underlying the pdata object\n  - a count of uncompressed bytes in the original protocol encoding\n- `memorlimiterextension` supports different modes, the existing being \"gcstats\" (maybe), and new modes being like \"admissioncontrol\" (maybe)\n\nThe new mode would be a lot more flexible, enabling future configuration improvements. A configuration assigns a number of bytes allowed into the pipeline and a number of bytes allowed to wait for the pipeline. When both of these numbers are exceeded, receivers return errors and break the gRPC stream. I believe this mode can be integrated with the existing memory limiter extension in a compatible way."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2025-02-25T03:48:51Z",
+   "body": "@participant4 I am +100 to support this, I would like to start the implementation in this order (ideally individual PRs):\n1. Define the extension interface that an extension should implement to be used as a \"traffic controller\" (name to be decided). I can see here value in passing as arguments the size of the payload received (ideally uncompressed) and maybe the signal type.\n2. Change the current memory limiter extension to implement that interface.\n3. Update confighttp and configgrpc to initialize the http Server and the gRPC Server with the right interceptors so that traffic is rejected as soon as possible.\n4. Consider alternative implementations of this interface.\n\n"
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "open-telemetry/opentelemetry-collector",
+  "default_branch": "main",
+  "commit_sha": "59b45a575d9094b977f3904e8d1408a47ef1d70f",
+  "as_of": "2024-02-15T15:58:08Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_open-telemetry_opentelemetry-collector_9591"
+}

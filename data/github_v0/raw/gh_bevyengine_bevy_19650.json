@@ -1,0 +1,172 @@
+{
+ "repo": "bevyengine/bevy",
+ "number": 19650,
+ "url": "https://github.com/bevyengine/bevy/issues/19650",
+ "title": "Overlap system set executions",
+ "state": "closed",
+ "labels": [
+  "C-Feature",
+  "A-ECS",
+  "C-Performance",
+  "D-Complex",
+  "S-Ready-For-Implementation",
+  "X-Uncontroversial"
+ ],
+ "reporter": "reporter",
+ "created_at": "2025-06-15T02:38:28Z",
+ "closed_at": "2026-07-28T21:02:18Z",
+ "body": "## What problem does this solve or what need does it fill?\n\nImagine an app with two systems, A and B, who don't have any conflicting resource accesses. System A is scheduled in system set X, and system B is scheduled in system set Y. The system sets are ordered (X, Y).chain().\n\nExecution for A and B is currently done serially, even though there's nothing in theory disallowing overlap between them.\n\nThe render world heavily uses system sets to order execution, as otherwise it would be very difficult to always manually specify that bind_foo systems need to run after prepare_a, prepare_b, prepare_c, etc.\n\nHowever this leads to unfortunate gaps where we have idle threads waiting for a few final systems to finish before starting the next system set:\n\n![Image](https://github.com/user-attachments/assets/7160af4d-33d6-4967-b8e8-cc7fc09cd3f0)\n\nThe caveat is dependencies that Bevy can't track, such as interior mutability on read-only component/resource accesses, or global variables.\n\n\n## What solution would you like?\n\nAllow execution of systems in different system sets to overlap.\n\n## What alternative(s) have you considered?\n\nRework the render world to not use system sets.\n",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2025-06-15T03:35:56Z",
+   "body": "The term of art that we've used for this before is \"if-needed system ordering\". This is approximately one X-Uncontroversial PR away from implementation, and one X-Controversial PR away from making the default."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-06-15T06:24:35Z",
+   "body": "Quick notes on implementation:\n\n> [21:14]Alice 🌹\n> BEVY\n> : You're going to want to look into how we resolve before  / after currently when constructing a https://<redacted-host>/bevy/ecs/schedule/struct.ScheduleGraph.html\n> ScheduleGraph in bevy::ecs::schedule - Rust\n> Metadata for a `Schedule`.\n> [21:15]Alice 🌹\n> BEVY\n> : Basically, you'll want to add an additional check to remove edges that don't have any conflicting accesses (you can use the ambiguity code for that)\n> [21:16]Alice 🌹\n> BEVY\n> : But I suspect we'll want to have both strict and non-strict orderings\n> [21:16]Alice 🌹\n> BEVY\n> : So you'll need to store information about that distinction, and only do the cleanup pass on non-strict edges\n> @participant11\n> But there's no actual need to serialize a lot of the systems. The sets exist just to make system dependencies easier.\n> [21:17]Alice 🌹\n> BEVY\n> : This doesn't surprise me  I thought the same thing when I was poking at your system sets when investigating system ambiguities\n> NEW\n> @participant12\n> I haven't looked at the code in 19602, but \"extended borrows from State to Fetch to Item\" sounds a bit like what I had tried to do in https://github.com/bevyengine/bevy/pull/15396, where the QueryData::Item could borrow from WorldQuery::State by threading the 's lifetime through queries.  I let it stall out because it has some tricky interactions with https://github.com/bevyengine/bevy/pull/18162, and I thought 18162 would be more valuable and less controversial so I wanted to let it go through first.  I could try to get 15396 working again next week if we think it would help!\n> "
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-06-15T10:42:26Z",
+   "body": "I feel like this is a wrong solution to the problem.\n\nPersonally, I'm against this, because I expect code to do what I told it to. If I specify `.chain()` between system sets, then I want the systems in those sets to run after one another, because *I explicitly asked for it*. I wouldn't be happy if bevy decided it knew better.\n\nAs I understand the problem, it seems what the real issue is, is a lack of unnamed sets? I'm imagining the issue is that we have a `PrepareSet` and a `BindSet` and all `prepare_*` functions are in the former and all the `bind_*` in the latter. But if `prepare_a` is done, `bind_a` can't run until `prepare_c` is also finished?\n\nI feel like the solution to that would be some sort of dynamic anonymous set, something like\n```rust\nlet prepare_set = vec![prepare_a_a];\nlet bind_set = vec![bind_a];\napp.configure_sets((prepare_set, bind_set).chain());\n```"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-06-15T14:12:47Z",
+   "body": "The problem is that it would be a _lot_ of dependencies if we had to manually specify every system ordering. It would break really easily and be hard for 3rd party plugins to extend.\n\nI'd be fine if we made this an optional mode, but I do think it's the best solution we have."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-06-15T15:53:32Z",
+   "body": "Okay, fair enough. I think I visualize the problem more clearly now.\n\nMaybe something like\n```rust\nlet (my_prepare, my_bind) = app.clone_sets((Prepare, Bind));\n```\nwhich would maintain the relationships between the sets. So the user knows that `my_bind` *will* run after `my_prepare`, but *can* run at the same time as any other `Prepare`.\n\nThough it's still an extra line of code for every group of systems, so might still be a headache.\n\nIn general though, I'm no longer opposed to this, but I do think it needs to be optional."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-06-15T16:28:27Z",
+   "body": "I'm not sure what the clone_sets() API would do in your proposal. Can you elaborate?\n\nI was thinking we could add an `IntoScheduleConfigs::chain_loose()` method, and use that when setting up RenderSystems.\n\n```rust\n// Current\nschedule.configure_sets(\n    (\n        ExtractCommands,\n        PrepareMeshes,\n        ManageViews,\n        Queue,\n        PhaseSort,\n        Prepare,\n        Render,\n        Cleanup,\n        PostCleanup,\n    )\n        .chain(),\n);\n\n// Proposed\nschedule.configure_sets(\n    (\n        ExtractCommands,\n        PrepareMeshes,\n        ManageViews,\n        Queue,\n        PhaseSort,\n        Prepare,\n        Render,\n        Cleanup,\n        PostCleanup,\n    )\n        .chain_loose(),\n);\n```"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-06-17T19:42:29Z",
+   "body": "Oh, never mind, it was an over-engineered idea that would be annoying to use and probably a pain to implement.\n\nI support your solution."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-06-23T02:02:00Z",
+   "body": "Which do people prefer?\n1. `chain_loose()`\n2. `chain_weak()`"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-06-23T03:48:17Z",
+   "body": "> The caveat is dependencies that Bevy can't track, such as interior mutability on read-only component/resource accesses, or global variables.\n\ntbh if these are the only caveats, then I struggle to find a reason why it shouldn't be the default. Would users even be able to observe a difference?\n\nIf you use those kind of features that sidestep usual bevy workflow you can either create a marker `Res` and use it in your systems to force ordering, or switch to \"`strict systemset ordering`\" (current impl).\n\nCalling this mode loose or weak sounds like it's bad somehow. What about overlapping, greedy, eager, packed, or something more along those lines.\n\nWhat I'm more curious about is if there are scenarios where you want this overlapping mode but for some reason want to opt-out for a specific system set or system 🤔 ."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-06-23T03:59:58Z",
+   "body": "I was actually thinking that this would make sense as the default, myself. It would be a breaking change though, we might want a migration warning for 0.17, and then a change to the default behavior in 0.18. Thoughts?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-06-23T05:06:53Z",
+   "body": "> Which do people prefer?\n> \n> 1. `chain_loose()`\n> 2. `chain_weak()`\n\nweak is better, but I had previously proposed the `if_needed` or `strict` suffixes, depending on whether or not we want to make it the default.\n\n> I was actually thinking that this would make sense as the default, myself. It would be a breaking change though, we might want a migration warning for 0.17, and then a change to the default behavior in 0.18. Thoughts?\n\nThis is my preference. Ideally we can deprecate the vanilla `before` / `after` / `chain` methods for a cycle, provide `weak` and `strict` variants to force people to choose, then move `before_weak` back to `before` the release after."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-06-23T08:06:14Z",
+   "body": "As someone with a lot of `chain` calls in their code, I would not want my code to become more verbose for 0.17 if I want to opt into the new default. Maybe a feature flag alongside that already changes the suffixless methods to the weak variants would be good? That would also enable it for third-party deps, which could potentially be nice."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-06-23T16:23:13Z",
+   "body": "Opt-in feature flag that swaps the default variant behavior seems nice TBH :) And obviously expose the suffix forms under both sets of flags."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2025-06-23T20:42:23Z",
+   "body": "> > Which do people prefer?\n> > \n> > 1. `chain_loose()`\n> > 2. `chain_weak()`\n> \n> weak is better, but I had previously proposed the `if_needed` or `strict` suffixes, depending on whether or not we want to make it the default.\n> \n> > I was actually thinking that this would make sense as the default, myself. It would be a breaking change though, we might want a migration warning for 0.17, and then a change to the default behavior in 0.18. Thoughts?\n> \n> This is my preference. Ideally we can deprecate the vanilla `before` / `after` / `chain` methods for a cycle, provide `weak` and `strict` variants to force people to choose, then move `before_weak` back to `before` the release after.\n\nI would argue that there are totally different concepts at play here, as the proposal is about merely establishing an \"ordering\" between systems (units of execution) in different sets, and the status quo has total execution of a system set as if it were its own \"unit of execution\" (or \"node\" in a \"schedule execution graph\").\n\nI would consider that the first case (merely establishing the ordering) would be more common, and more performant, therefore generally more wanted, and can easily include the second case in the same API, if you just consider a system set being totally executed as its own unit of execution as the special case. So the idea is to separate these concepts.\n\nSo the API I would suggest is:\n`SetX.total().before(SetY.total())` where `total` \"strengthens\" the guarantee: by analogy, the `.total()` modifier would be like treating a Set as a single System (a single unit of execution).\nThe behaviour of `before` is merely to establish ordering between units of execution.\n\n```rs\n// With SetX = A, B; SetY = C, D:\n\nSetX.before(SetY)\n// (items in SetX before items in SetY)\n// (4 nodes at this level, 4 relationships)\n// A before C\n// A before D\n// B before C\n// B before D\n\nSetX.total().before(SetY)\n// (total execution of SetX before items in set Y)\n// (3 nodes at this level, 2 relationships)\n// let X = Total(A, B)\n// X before C\n// X before D\n\nSetX.before(SetY.total())\n// (items of SetX before total execution of SetY)\n// let Y = Total(C, D)\n// (3 nodes at this level, 2 relationships)\n// A before Y\n// B before Y\n\nSetX.total().before(SetY.total())\n// (total execution of SetX before total execution of SetY)\n// (2 nodes at this level, 1 relationship)\n// let X = Total(A, B) \n// let Y = Total(C, D)\n// X before Y\n```\n\nChain:\n```rs\n(SetX, SetY.total(), SetZ).chain()\n```\n\nAnd if you wanted different downstream sets to observe an upstream set differently (opaque/encapsulated vs transparent/spilled), it would still work.\n\n```rs\nSetX.total().before(SetY)\nSetX.before(SetZ)\n```\n\n\nNaming of the modifier method is arbitrary. Some suggestions: `total`, `unit`, `single`, `complete`, `encapsulate`, `black_box`, `opaque`, `full`, `group`, `run`, `execute`, `as_system`"
+  },
+  {
+   "author": "participant6",
+   "created_at": "2025-06-23T23:29:47Z",
+   "body": "I also have a lot of `.chain()` calls in my projects. I am aware that some of them are possibly independent. In terms of what ECS brings to the table, I find it difficult to support a case where the \"bevy knows better\" behavior is not the default. The following is all opinion posting, no facts-at-hand here:\n\nECS is all about separation of concerns. It are those disparate pieces, one cohesive product, that makes it all worthwhile. From my code-design perspective, It is extremely powerful to focus solely on this separation than it is to ever be concerned with the perfect system ordering. I want to get it \"just good enough\" so that bevy can handle find the scheduling optimizations of which I was never aware. I want my hand to be held. This is why I love using rust. I do not want to make up for the scheduler's lack of enthusiasm for things it knows could be better. Therefore, I support that if a system must be run in its explicit sequence, in complete adherence to my wishes, that I should be opting out of a default hand-holding scheduler.\n\nNonetheless this sounds awesome :)"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-07-01T22:40:33Z",
+   "body": "How does this work with commands? Does bevy somehow know what systems spawn which entities, and therefore needs flushing and an ordering constraint before running a system in another set for when we add chain_loose?"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-07-01T23:02:51Z",
+   "body": "@reporter tracking which systems spawned which entities is planned for hotpatching anyways, FYI"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-07-02T14:42:56Z",
+   "body": "> How does this work with commands? Does bevy somehow know what systems spawn which entities, and therefore needs flushing and an ordering constraint before running a system in another set for when we add chain_loose?\n\nBevy currently assumes that any system that emits commands and is ordered before another system needs a command flush between it and the next system. You can override that assumption, but that's the default :) \n\nI would expect chain_loose to work the same way here, with `Commands` being treated as a wildcard \"could mutate anything\" bit of metadata."
+  },
+  {
+   "author": "participant7",
+   "created_at": "2026-01-01T22:34:59Z",
+   "body": "Wouldn't something like this work?\n```\nschedule.configure_sets(\n    (\n        ExtractCommands,\n        PrepareMeshes,\n        ManageViews,\n        Queue,\n        PhaseSort,\n        Prepare,\n        (PostPrepare, PreRender),\n        Render,\n        Cleanup,\n        PostCleanup,\n    )\n        .chain(),\n);\n```\nThis would require moving some systems to the new sets though"
+  },
+  {
+   "author": "participant8",
+   "created_at": "2026-07-11T15:40:15Z",
+   "body": "> Imagine an app with two systems, A and B, who don't have any conflicting resource accesses. System A is scheduled in system set X, and system B is scheduled in system set Y. The system sets are ordered (X, Y).chain().\n>\n> Execution for A and B is currently done serially, even though there's nothing in theory disallowing overlap between them.\n\nBut when the user or someone else says \"these sets need to be chained\" then there must be a reason for this? The sets should not be chained in the first place if it really does not matter.\n\nFor example [a system in my crate has no world access at all](https://github.com/participant8/bevy_oozlum/blob/8a0e8478319391c0bef5391c39313da663b0c73d/src/schedule/system.rs#L502). The purpose of it is to queue undoing commands at the right time. It is absolutely important that it is possible to be ordered by the `BackwardDeferredSet`/`BackwardDeferredAndSystemSet` sets, otherwise my reversible scheduling impls will not work. (see the [parent module](https://github.com/participant8/bevy_oozlum/blob/8a0e8478319391c0bef5391c39313da663b0c73d/src/schedule/mod.rs) and search for the set usages).\n\n> I would expect chain_loose to work the same way here, with Commands being treated as a wildcard \"could mutate anything\" bit of metadata.\n\nIf this parallelization only affects systems without commands, it would be fine for my use case."
+  },
+  {
+   "author": "participant9",
+   "created_at": "2026-07-11T16:40:01Z",
+   "body": "I strongly believe that we should keep the current `chain` the default, and then have a new `chain_weak` or something. It would be **very** confusing if you happen to be using interior mutability and suddenly the systems that were chained suddenly are running in parallel. This is fundamentally an optimization and optimizations are built on assumptions. If that assumption breaks then that optimization is invalid. In this case, a user could be doing something fairly innocuous from the perspective of Rust and then suddenly be battling system-ordering demons."
+  },
+  {
+   "author": "participant10",
+   "created_at": "2026-07-22T05:43:57Z",
+   "body": "Would another solution not be to make the system execution graph more expressive. Currently systemsets implicitly mean \"Start at label X, must be done before the next label runs\". One could make the last part configurable \"Start at label X, must be done before label Y runs or frame end\" (if you want to run across frames i argue one must use async). \nIf the system would not be done by the time label Y is reached it effectively blocks as it does now. If it has already finished it is a trivial check and starts executing label Y.\nThis should result more freedom for the scheduler to schedule more systems in parallel as it sees fit.\n\n`app.add_systems(MyStartLabel, MyEndLabel, my_system()) `or `app.add_systems(MyStartLabel, my_system().finish_before(MyEndLabel))` (if `finish_before` is not specified behavior is the current behavior, next label)\n\n\nThis would allow to run more things in parallel, downside:  easy to make spaghetti (default is the same as current behavior though, so opt-in) + if we can visualize the graph bugs might still be reasonable to identify."
+  },
+  {
+   "author": "participant8",
+   "created_at": "2026-07-22T07:14:43Z",
+   "body": "The configuration could also be on the `SystemSet` derive level. It would make it harder for third-parties to opt-in or opt-out, however you do not need to search your whole code for weak chains when you just have to look at the set definition."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2026-07-22T17:50:45Z",
+   "body": "> I strongly believe that we should keep the current `chain` the default, and then have a new `chain_weak` or something. It would be **very** confusing if you happen to be using interior mutability and suddenly the systems that were chained suddenly are running in parallel. This is fundamentally an optimization and optimizations are built on assumptions. If that assumption breaks then that optimization is invalid. In this case, a user could be doing something fairly innocuous from the perspective of Rust and then suddenly be battling system-ordering demons.\n\nIMO the way to do this here is to do `chain` -> `chain_strong` with a deprecation, introducing `chain_weak`, and then afterwards do a `chain_weak` deprecation. Standard dance for swapping semantics :)"
+  },
+  {
+   "author": "participant9",
+   "created_at": "2026-07-22T18:09:23Z",
+   "body": "@participant1 I agree that if we were to change these semantics, your proposal is the correct way to do it. What I'm saying is I don't agree we should change the semantics.\n\nIMO if I see A.after(B), that implies A runs after B, not A runs after B unless they don't conflict, then it's ignored. Keep in mind, we will need `.after()` and `.after_strong()` too!"
+  },
+  {
+   "author": "participant8",
+   "created_at": "2026-07-22T18:16:56Z",
+   "body": "The idea is that you won't notice in any side effects at this relaxed ordering unless the systems in both sets modify some order-sensitive static mutex or something like that."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2026-07-22T18:17:49Z",
+   "body": "And `before` :) I think that interior mutability bugs are rare enough that making this if-needed system ordering the default is worth it for the performance gains and avoidance of foot-guns with large system sets."
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "bevyengine/bevy",
+  "default_branch": "main",
+  "commit_sha": "30aa36eaf47ba7b8518e80e560fec1a7c3d39a14",
+  "as_of": "2025-06-15T02:38:28Z",
+  "method": "github_commits_until"
+ },
+ "images": [
+  {
+   "where": "opening",
+   "source_url": "https://github.com/user-attachments/assets/7160af4d-33d6-4967-b8e8-cc7fc09cd3f0",
+   "file": "gh_bevyengine_bevy_19650_img0.png"
+  }
+ ],
+ "slug": "gh_bevyengine_bevy_19650"
+}

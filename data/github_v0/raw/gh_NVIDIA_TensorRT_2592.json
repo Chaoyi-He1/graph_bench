@@ -1,0 +1,182 @@
+{
+ "repo": "NVIDIA/TensorRT",
+ "number": 2592,
+ "url": "https://github.com/NVIDIA/TensorRT/issues/2592",
+ "title": "How to insert Q/DQ nodes between relu and pad?",
+ "state": "closed",
+ "labels": [
+  "triaged"
+ ],
+ "reporter": "Levi-zhan",
+ "created_at": "2023-01-06T09:12:24Z",
+ "closed_at": "2023-04-04T05:07:34Z",
+ "body": "## Description\r\n\r\nAccording to the tutorial, in order to quantify more layers and get int8-in-int8-out, I need to follow the conv with a Q, but if the relu is followed by a Pad, what should I do?\r\n\r\nFor example, the following figure can get int8-in-int8-out\r\n![2023-01-06_17-06](https://user-images.githubusercontent.com/30153920/210968593-ee776e9d-8787-4953-8913-cbc1c26df2c9.png)\r\nBut as shown in the following figure, how can I insert Q/QD nodes with pads behind relu?\r\n![2023-01-06_17-07](https://user-images.githubusercontent.com/30153920/210968935-69e406aa-96e7-47dc-9f30-38de3aa270e7.png)\r\nHow can I optimize the concat related layers?\r\n![2023-01-06_17-07_1](https://user-images.githubusercontent.com/30153920/210969135-70a8636b-6e64-4695-ad79-08721b53da70.png)\r\nThanks\r\n\r\n## Environment\r\n\r\n**TensorRT Version**: \r\n**NVIDIA GPU**: \r\n**NVIDIA Driver Version**: \r\n**CUDA Version**: \r\n**CUDNN Version**: \r\n**Operating System**: \r\n**Python Version (if applicable)**: \r\n**Tensorflow Version (if applicable)**: \r\n**PyTorch Version (if applicable)**: \r\n**Baremetal or Container (if so, version)**: \r\n\r\n\r\n## Relevant Files\r\n\r\n<!-- Please include links to any models, data, files, or scripts necessary to reproduce your issue. (Github repo, Google Drive/Dropbox, etc.) -->\r\n\r\n\r\n## Steps To Reproduce\r\n\r\n<!-- \r\n  Craft a minimal bug report following this guide - https://matthewrocklin.com/blog/work/2018/02/28/minimal-bug-reports\r\n\r\n  Please include:\r\n  * Exact steps/commands to build your repro\r\n  * Exact steps/commands to run your repro\r\n  * Full traceback of errors encountered \r\n-->\r\n\r\n",
+ "comments": [
+  {
+   "author": "zerollzeng",
+   "created_at": "2023-01-06T10:06:21Z",
+   "body": "@ttyio ^ ^"
+  },
+  {
+   "author": "ttyio",
+   "created_at": "2023-01-09T12:33:56Z",
+   "body": "For the 1st case, TRT can fuse `conv` + `bn` + `relu` into single `conv`,  fuse `pad` + `conv` into `conv`, so wrapper the 3 nodes inside `DQ` and `Q`, we can get INT8-IN-INT8-OUT `conv`.\r\n\r\nFor the 2nd case, TRT can fuse `pad` + `conv` into single `conv`, so the `DQ` should be put before the `pad` node.\r\n\r\nFor the 3rd case, `concat` can be erased depends on if the previous `conv` implementation support stride output. No need to worry about the `Q` after the concat, because `Q` commutes with `concat`, and TRT can help you to swap it."
+  },
+  {
+   "author": "JamesKobe23",
+   "created_at": "2023-01-09T16:04:31Z",
+   "body": "> For the 1st case, TRT can fuse `conv` + `bn` + `relu` into single `conv`, fuse `pad` + `conv` into `conv`, so wrapper the 3 nodes inside `DQ` and `Q`, we can get INT8-IN-INT8-OUT `conv`.\r\n> \r\n> For the 2nd case, TRT can fuse `pad` + `conv` into single `conv`, so the `DQ` should be put before the `pad` node.\r\n> \r\n> For the 3rd case, `concat` can be erased depends on if the previous `conv` implementation support stride output. No need to worry about the `Q` after the concat, because `Q` commutes with `concat`, and TRT can help you to swap it.\r\n\r\nThank you。Your explanation intensity my understanding of QAT.I still need to consult how to put DQ before pad？when I read code of pytorch-quantization module, by replacing nn.conv with pytorch_ quantization.quant_ nn.QuantConv2d, can insert Q/DQ before Conv。But I can't find an example of how to insert DQ before Pad for my reference."
+  },
+  {
+   "author": "JamesKobe23",
+   "created_at": "2023-01-09T16:21:47Z",
+   "body": "> For the 1st case, TRT can fuse `conv` + `bn` + `relu` into single `conv`, fuse `pad` + `conv` into `conv`, so wrapper the 3 nodes inside `DQ` and `Q`, we can get INT8-IN-INT8-OUT `conv`.\r\n> \r\n> For the 2nd case, TRT can fuse `pad` + `conv` into single `conv`, so the `DQ` should be put before the `pad` node.\r\n> \r\n> For the 3rd case, `concat` can be erased depends on if the previous `conv` implementation support stride output. No need to worry about the `Q` after the concat, because `Q` commutes with `concat`, and TRT can help you to swap it.\r\n\r\nYour \"before\" is a little ambiguous. It may be better to understand that it is better to move Q up and let DQ under the Pad? Similar to Q ->Pad ->DQ ->Conv, is this understanding correct?"
+  },
+  {
+   "author": "ttyio",
+   "created_at": "2023-01-10T02:01:44Z",
+   "body": "Q/DQ always appear in pairs, so the correct sequence is Q->DQ->Pad->Conv.\r\n\r\nTo insert Q/DQ before Pad, you need explicit insert `quant_nn.TensorQuantizer` before `nn.pad`, could you follow this resnet sample https://docs.nvidia.com/deeplearning/tensorrt/pytorch-quantization-toolkit/docs/tutorials/quant_resnet50.html#further-optimization ? "
+  },
+  {
+   "author": "Levi-zhan",
+   "created_at": "2023-01-10T03:19:22Z",
+   "body": "> Q/DQ always appear in pairs, so the correct sequence is Q->DQ->Pad->Conv.\r\n> \r\n> To insert Q/DQ before Pad, you need explicit insert `quant_nn.TensorQuantizer` before `nn.pad`, could you follow this resnet sample https://docs.nvidia.com/deeplearning/tensorrt/pytorch-quantization-toolkit/docs/tutorials/quant_resnet50.html#further-optimization ?\r\n\r\nThank you，I will try。Another problem, I don't know the principle of Tensort fusion。\r\nAbout this sentence “TRT can fuse conv + bn + relu into single conv, fuse pad + conv into conv, so wrapper the 3 nodes inside DQ and Q, we can get INT8-IN-INT8-OUT conv”\r\n\r\nThe following figure is part of the network structure\r\n\r\n![d1xBz35q31](https://user-images.githubusercontent.com/30153920/211450377-478b6925-b41c-4eaf-951d-9a31e4cd2f7d.png)\r\n\r\nand this is the corresponding log when tensort performs the fusion\r\n\r\nTensorRT VERBOSE Running: QuantizeDoubleInputNodes on Conv_135\r\nTensorRT VERBOSE QuantizeDoubleInputNodes: fusing QuantizeLinear_140 into Conv_135\r\nTensorRT VERBOSE QuantizeDoubleInputNodes: fusing (DequantizeLinear_131 and DequantizeLinear_134) into Conv_135\r\nTensorRT VERBOSE Removing QuantizeLinear_140\r\nTensorRT VERBOSE Removing DequantizeLinear_131\r\nTensorRT VERBOSE Removing DequantizeLinear_134\r\n\r\nreference https://on-demand.gputechconf.com/gtc/2017/presentation/s7310-8-bit-inference-with-tensorrt.pdf\r\n![qOFc2YdLCF](https://user-images.githubusercontent.com/30153920/211453789-553687a8-cbb5-49f7-b344-926a68cf3c8a.png)\r\n\r\nMy question is why the two DQs are integrated into Conv, and what is the calculation order?\r\n\r\nAccording to the above int8 calculation principle, use input_DQ and weight_DQ scale the int8 result （DP4A）to fp32 to calculate BN and Relu, and then use Q to scale the activation value calculated by Relu to int8. Is this understanding correct?\r\n\r\n\r\n"
+  },
+  {
+   "author": "Levi-zhan",
+   "created_at": "2023-01-10T13:30:08Z",
+   "body": "> conv\r\n\r\nI modified my code as follows：\r\nblock = Sequential(\r\n            quant_nn.TensorQuantizer(quant_nn.QuantConv2d.default_quant_desc_input),\r\n            nn.ZeroPad2d(1),\r\n            # nn.Conv2d(inplanes, planes, 3, stride=stride, bias=False),\r\n            quant_nn.QuantConv2d(inplanes, planes, 3, stride=stride, bias=False),\r\n            build_norm_layer(self._norm_cfg, planes)[1],\r\n            # nn.BatchNorm2d(planes, eps=1e-3, momentum=0.01),\r\n            nn.ReLU6(),\r\n        )\r\n\r\nThe obtained structure diagram is as follows:\r\n![d53GB1mM4H](https://user-images.githubusercontent.com/30153920/211562865-a73d5fb7-2003-416a-9d00-c2a235d2101a.png)\r\nSome logs are as follows：\r\nTensorRT VERBOSE Swapping DequantizeLinear_124 with Pad_139\r\nLayer(Padding): Pad_139, Tactic: 0x0000000000000000, 780[Int8(1,64,200,200)] -> 831[Int8(1,64,202,202)]\r\nThe log of the combination of Pad and conv was not found\r\nIs this normal? Is the code and network structure I wrote above correct? Thank you\r\n\r\n\r\n\r\n\r\n"
+  },
+  {
+   "author": "Levi-zhan",
+   "created_at": "2023-01-11T02:29:26Z",
+   "body": "@ttyio "
+  },
+  {
+   "author": "ttyio",
+   "created_at": "2023-01-11T02:36:34Z",
+   "body": "> why the two DQs are integrated into Conv, and what is the calculation order?\r\n\r\nBecause DQs before conv and the Q after conv are used for the `output_scale / (input_scale * weight_scale)` in the formula you attached in the slides. So they need fused into the op.\r\n\r\n> The log of the combination of Pad and conv was not found\r\n\r\nCould you try remove the Q/DQ between Pad and conv? \r\n\r\nThanks!\r\n"
+  },
+  {
+   "author": "Levi-zhan",
+   "created_at": "2023-01-11T08:01:11Z",
+   "body": "> > why the two DQs are integrated into Conv, and what is the calculation order?\r\n> \r\n> Because DQs before conv and the Q after conv are used for the `output_scale / (input_scale * weight_scale)` in the formula you attached in the slides. So they need fused into the op.\r\n> \r\n> > The log of the combination of Pad and conv was not found\r\n> \r\n> Could you try remove the Q/DQ between Pad and conv?\r\n> \r\n> Thanks!\r\n\r\nThank you for your suggestion! After modifying “pytorch_quantization/nn/modules/quant_conv.py“ and generating engine，achieved remove the Q/DQ between Pad and conv, Pad has been merged with conv。The inference speed of int8 began to be faster than that of fp16 (the speed was almost the same before)。Now the inference speed of fp16 model is 28 ms, and that of int8 model is 21 ms, It doesn't seem to meet expectations。\r\n\r\nThe following is a structure diagram of the output layer\r\n\r\n![TrT7S0efJY](https://user-images.githubusercontent.com/30153920/211750826-51bfc53f-6520-49f1-ac6d-9086726ccba8.png)\r\n\r\n\r\nThis is the corresponding log\r\n\r\nLayer(CaskConvolution): model.bbox_head.tasks.0.reg.3.weight + QuantizeLinear_461 + Conv_463, Tactic: 0x91a0ba608d3e9886, 1305[Int8(1,64,200,200)] -> Reformatted Output       Tensor 0 to model.bbox_head.tasks.0.reg.3.weight + QuantizeLinear_461 + Conv_463[Half(1,2,200,200)]                                                                    \r\n Layer(Reformat): Reformatting CopyNode for Output Tensor 0 to model.bbox_head.tasks.0.reg.3.weight + QuantizeLinear_461 + Conv_463, Tactic: 0x0000000000000000, Reformat      ted Output Tensor 0 to model.bbox_head.tasks.0.reg.3.weight + QuantizeLinear_461 + Conv_463[Half(1,2,200,200)] -> 1314[Float(1,2,200,200)]\r\n\r\nDoes this count as int8-in -->conv -->fp32out? Is this log normal? Do you have any suggestions on how to further optimize the time consumption? thank you.\r\n\r\nThe environment I use is Tensorrt 8.4+cuda11.4, and the hardware is Xavier\r\n\r\n\r\n\r\n"
+  },
+  {
+   "author": "Levi-zhan",
+   "created_at": "2023-01-11T08:01:28Z",
+   "body": "@ttyio "
+  },
+  {
+   "author": "ttyio",
+   "created_at": "2023-01-11T14:09:10Z",
+   "body": "@Levi-zhan , Could you try insert `Q/DQ` pair after `Conv` in the quantization toolkit, after that remove the final `DQ` in the graph using onnx graphsurgeon(https://github.com/NVIDIA/TensorRT/tree/main/tools/onnx-graphsurgeon). The graph should look like `...->Q->DQ->Conv->Q->output`\r\n\r\nFinally let's build the TRT engine with reformat free IO, set allowed output to INT8 (see sample https://github.com/NVIDIA/TensorRT/tree/main/samples/sampleIOFormats). Ideally the final conv can run in INT8-IN-INT8-OUT. Thanks!"
+  },
+  {
+   "author": "JamesKobe23",
+   "created_at": "2023-01-11T15:09:57Z",
+   "body": "> @Levi-zhan , Could you try insert `Q/DQ` pair after `Conv` in the quantization toolkit, after that remove the final `DQ` in the graph using onnx graphsurgeon(https://github.com/NVIDIA/TensorRT/tree/main/tools/onnx-graphsurgeon). The graph should look like `...->Q->DQ->Conv->Q->output`\r\n> \r\n> Finally let's build the TRT engine with reformat free IO, set allowed output to INT8 (see sample https://github.com/NVIDIA/TensorRT/tree/main/samples/sampleIOFormats). Ideally the final conv can run in INT8-IN-INT8-OUT. Thanks!\r\n\r\n@ttyio  Thank you for your suggestion. I'll try again。Do you have time to answer another issue?\r\nNow there is still ConvTranspose that cannot be fused with Q/DQ. This makes me very confused . Thanks!\r\nhttps://github.com/NVIDIA/TensorRT/issues/2597"
+  },
+  {
+   "author": "Levi-zhan",
+   "created_at": "2023-01-29T09:55:43Z",
+   "body": "> @Levi-zhan , Could you try insert `Q/DQ` pair after `Conv` in the quantization toolkit, after that remove the final `DQ` in the graph using onnx graphsurgeon(https://github.com/NVIDIA/TensorRT/tree/main/tools/onnx-graphsurgeon). The graph should look like `...->Q->DQ->Conv->Q->output`\r\n> \r\n> Finally let's build the TRT engine with reformat free IO, set allowed output to INT8 (see sample https://github.com/NVIDIA/TensorRT/tree/main/samples/sampleIOFormats). Ideally the final conv can run in INT8-IN-INT8-OUT. Thanks!\r\n\r\nI saw the code in the link you sent. In this example, the output classification of int8 format is directly used. But the model I use is more complex. The model has 40 conv layers for output results. For example, the output result of the conv layer in the first picture is the offset of the box coordinate xy. The second image conv layer is output to simmod. These all require that the input is of float type. In this case, \"reformat free IO\" is not supported，right？\r\n\r\n![AU6VoBzfAA](https://user-images.githubusercontent.com/30153920/215318600-27ae619e-a77f-412b-8cec-0c91c1e61dcc.png)\r\n![xGw5Q0E8Vj](https://user-images.githubusercontent.com/30153920/215318605-2baeef3e-cbcd-4c21-bde3-43284c26fe5b.png)\r\n\r\n\r\nI don't know if this understanding is correct. Do you have any optimization suggestions? thank you"
+  },
+  {
+   "author": "Levi-zhan",
+   "created_at": "2023-01-29T09:55:57Z",
+   "body": "@ttyio "
+  },
+  {
+   "author": "ttyio",
+   "created_at": "2023-02-07T02:14:09Z",
+   "body": "@Levi-zhan , \r\nfor the `conv-exp` pattern in the pic that you show, I doubt that we can maintain the accuracy if we insert extra q/dq between `conv` and `exp`. \r\nfor the `conv-sigmoid-*` pattern, if we change to `conv-sigmoid-q/dq-*`, there will dangling `dq` node cannot optimized away. you can do an experiment to check the time change."
+  },
+  {
+   "author": "Levi-zhan",
+   "created_at": "2023-02-07T03:15:00Z",
+   "body": "> \r\nThank you for your reply. I will try. I want to ask, under the mode of \"conv-sigmoid-q/dq - *\", will sigmod be fused with conv when Tensorrt generating engine? thank you\r\n\r\n\r\n"
+  },
+  {
+   "author": "ttyio",
+   "created_at": "2023-02-07T04:34:24Z",
+   "body": "@Levi-zhan , yes it is fused into conv, can be confirmed after enable `kVERBOSE` log level, thanks!"
+  },
+  {
+   "author": "Levi-zhan",
+   "created_at": "2023-02-22T08:27:10Z",
+   "body": "I have modified the output of the model to the following figure, but sigmod is still not fused with conv。\r\n\r\n![image](https://user-images.githubusercontent.com/30153920/220563120-dc500137-342a-42f8-8497-a961635202af.png)\r\n\r\nDo you know why? thank you"
+  },
+  {
+   "author": "ttyio",
+   "created_at": "2023-03-01T07:19:41Z",
+   "body": "Hi @Levi-zhan , it also depends on the workload size. e.g, input channel, output channel. TRT has some heuristic before make the fusion decision. Could you provide onnx file only contains this subgraph for debug? thanks!"
+  },
+  {
+   "author": "ttyio",
+   "created_at": "2023-04-04T05:07:34Z",
+   "body": "closing since no activity for more than 3 weeks, pls reopen if you still have question, thanks!"
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "NVIDIA/TensorRT",
+  "default_branch": "main",
+  "commit_sha": "c6eea9512ef14c13be56d6d230a12a601890d34e",
+  "as_of": "2023-01-06T09:12:24Z",
+  "method": "github_commits_until"
+ },
+ "images": [
+  {
+   "where": "opening",
+   "source_url": "https://user-images.githubusercontent.com/30153920/210968593-ee776e9d-8787-4953-8913-cbc1c26df2c9.png",
+   "file": "gh_NVIDIA_TensorRT_2592_img0.png"
+  },
+  {
+   "where": "opening",
+   "source_url": "https://user-images.githubusercontent.com/30153920/210968935-69e406aa-96e7-47dc-9f30-38de3aa270e7.png",
+   "file": "gh_NVIDIA_TensorRT_2592_img1.png"
+  },
+  {
+   "where": "opening",
+   "source_url": "https://user-images.githubusercontent.com/30153920/210969135-70a8636b-6e64-4695-ad79-08721b53da70.png",
+   "file": "gh_NVIDIA_TensorRT_2592_img2.png"
+  },
+  {
+   "where": "c5",
+   "source_url": "https://user-images.githubusercontent.com/30153920/211450377-478b6925-b41c-4eaf-951d-9a31e4cd2f7d.png",
+   "file": "gh_NVIDIA_TensorRT_2592_img3.png"
+  },
+  {
+   "where": "c5",
+   "source_url": "https://user-images.githubusercontent.com/30153920/211453789-553687a8-cbb5-49f7-b344-926a68cf3c8a.png",
+   "file": "gh_NVIDIA_TensorRT_2592_img4.png"
+  },
+  {
+   "where": "c6",
+   "source_url": "https://user-images.githubusercontent.com/30153920/211562865-a73d5fb7-2003-416a-9d00-c2a235d2101a.png",
+   "file": "gh_NVIDIA_TensorRT_2592_img5.png"
+  },
+  {
+   "where": "c9",
+   "source_url": "https://user-images.githubusercontent.com/30153920/211750826-51bfc53f-6520-49f1-ac6d-9086726ccba8.png",
+   "file": "gh_NVIDIA_TensorRT_2592_img6.png"
+  },
+  {
+   "where": "c13",
+   "source_url": "https://user-images.githubusercontent.com/30153920/215318600-27ae619e-a77f-412b-8cec-0c91c1e61dcc.png",
+   "file": "gh_NVIDIA_TensorRT_2592_img7.png"
+  },
+  {
+   "where": "c13",
+   "source_url": "https://user-images.githubusercontent.com/30153920/215318605-2baeef3e-cbcd-4c21-bde3-43284c26fe5b.png",
+   "file": "gh_NVIDIA_TensorRT_2592_img8.png"
+  },
+  {
+   "where": "c18",
+   "source_url": "https://user-images.githubusercontent.com/30153920/220563120-dc500137-342a-42f8-8497-a961635202af.png",
+   "file": "gh_NVIDIA_TensorRT_2592_img9.png"
+  }
+ ],
+ "slug": "gh_NVIDIA_TensorRT_2592"
+}

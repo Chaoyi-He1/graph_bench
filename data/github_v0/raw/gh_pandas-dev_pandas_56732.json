@@ -1,0 +1,193 @@
+{
+ "repo": "pandas-dev/pandas",
+ "number": 56732,
+ "url": "https://github.com/pandas-dev/pandas/issues/56732",
+ "title": "Move interchange protocol implementation into a separate project",
+ "state": "closed",
+ "labels": [
+  "Deprecate",
+  "Needs Discussion",
+  "Interchange"
+ ],
+ "reporter": "reporter",
+ "created_at": "2024-01-04T09:32:53Z",
+ "closed_at": "2025-11-03T17:05:45Z",
+ "body": "Some of us talked a little bit about this when we met in Basel. The interchange protocol was added to pandas a while ago, but we believe that it would be beneficial to remove it from the pandas main repo into a separate repository.\r\n\r\nThe main issue is that bugfixes to the interchange protocol are currently tied to the pandas release cycle, which means that users might have to pin the pandas version if they run into a bug that they care about. Having it as a dependency decouples the releases, which can make the protocol much more responsive and pins are no longer tied to the main pandas repository if necessary at all.\r\n\r\nThe package would be a pure and lightweight Python dependency which makes it easier to contribute for others, because the testsuite is not slowed down by the pandas testsuite.\r\n\r\nThe new optional dependency is extremly lightweight, no additional dependencies brought in and only around 30kb in size, so it really doesn't matter much.\r\n\r\nThose are really small downsides for improved interoperability and the decoupling of release cycles for both components.\r\n\r\n\r\ncc @pandas-dev/pandas-core ",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2024-01-04T10:01:28Z",
+   "body": "Sure, no objections to removing it from the pandas repo\r\n\r\nI could take it into https://github.com/data-apis/dataframe-api-compat and maintain it, if people are OK with that. There should be enough projects in the community and people in the consortium interested in this that we can keep it alive 💪 \r\n\r\nI think there's only a handful of repos* currently using it anyway (plotly, seaborn, vscode), it'd be pretty easy to manually make PRs to all of them. I could take this on too\r\n\r\nI think that scikit-learn and altair wouldn't need to change anything:\r\n- the former only uses the interchange protocol for not-pandas:\r\n  https://github.com/scikit-learn/scikit-learn/blob/4ce8e19859cb8b2f2bef197ed5b28beea44ee4b4/sklearn/utils/validation.py#L281-L288\r\n- the latter only uses the interchange protocol for not-pandas, and uses pyarrow's `from_dataframe` method"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-01-04T18:41:50Z",
+   "body": "Would we still have some sort of testing burden for the interchange protocol even after it's removed?\r\n(e.g. do we need to run a CI job against df-api-compat?)"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-01-04T18:58:27Z",
+   "body": "there could be just a simple test, like there is for the api standard (which also defers to `dataframe-api-compat`):\r\n\r\nhttps://github.com/pandas-dev/pandas/blob/8fb8b9fbbe04733336e48503dbfe5abdea8ac0c1/pandas/tests/test_downstream.py#L307-L323"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-01-04T19:35:32Z",
+   "body": "How often does the issue pop up where tying the fixes to a release is problematic? I _think_ that is actually preferable; syncing this across two projects seems more problematic to me\r\n\r\n> The package would be a pure and lightweight Python dependency \r\n\r\nThis is true today, although I've toyed around with moving part of the implementation down to Cython to have the pandas buffers adhere to the Python buffer protocol. I don't think that is possible in a pure Python package. See https://github.com/pandas-dev/pandas/pull/55671"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-01-04T21:16:06Z",
+   "body": "plotly currently do this\r\n\r\n```python\r\n        if hasattr(args[\"data_frame\"], \"__dataframe__\") and version.parse(\r\n            pd.__version__\r\n        ) >= version.parse(\"2.0.2\"):\r\n            import pandas.api.interchange\r\n\r\n            df_not_pandas = args[\"data_frame\"]\r\n            args[\"data_frame\"] = df_not_pandas.__dataframe__()\r\n            # According interchange protocol: `def column_names(self) -> Iterable[str]:`\r\n            # so this function can return for example a generator.\r\n            # The easiest way is to convert `columns` to `pandas.Index` so that the\r\n            # type is similar to the types in other code branches.\r\n            columns = pd.Index(args[\"data_frame\"].column_names())\r\n            needs_interchanging = True\r\n        elif hasattr(args[\"data_frame\"], \"to_pandas\"):\r\n            args[\"data_frame\"] = args[\"data_frame\"].to_pandas()\r\n            columns = args[\"data_frame\"].columns\r\n```\r\n\r\nand other issues have come up since\r\n\r\nI think it would've been cleaner to just set a minimum version on dataframe-api-compat, and handle different pandas versions in there\r\n\r\n>  I've toyed around with moving part of the implementation down to Cython to have the pandas buffers adhere to the Python buffer protocol\r\n\r\nOK yeah, if there's something like that which ties it to living in pandas, then it probably shouldn't be removed, thanks for bringing this up"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-01-05T16:55:58Z",
+   "body": "IIUC the PandasBuffer (which seems like the thing that would get a cython buffer implementation mixed into it) takes an ndarray in `__init__` and doesn't seem to rely on anything pandas-specific.  So I don't see that potential refactor as requiring this stuff to live in pandas (though it would negate the \"pure-python\" part of the description above).\r\n\r\nReally the reason to split this out is \"This shouldn't be our problem.\""
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-01-06T09:50:27Z",
+   "body": "@participant3 could you please expand on why it would be beneficial for the buffers to adhere to the Python buffer protocol?\r\n\r\nFurthermore, would it be possible to take that out into a non-pure-Python package, or would it still need to live in pandas?"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-01-06T15:15:49Z",
+   "body": "The advantage of adhering to the Python protocol is that it allows other packages to access the raw data of a dataframe purely from Python. It doesn't necessarily need to live in pandas, but you would end up duplicating a lot of the same things that we already have in pandas (ex: build system, CI) just in another package."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-01-07T08:00:13Z",
+   "body": "Thanks\r\n\r\nJust for my understanding, would this require other libraries also adhere to the Python buffer protocol in order to be useful?"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-01-07T15:10:58Z",
+   "body": "No other libraries would not need to do anything. An object that adheres to the buffer protocol can have its raw bytes accessed through standard Python objects. If you look at the tests added in the above PR you can see how that works with a memoryview"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-01-07T16:52:14Z",
+   "body": "Sure but I mean, would consumers because to consume a column's raw bytes through standard Python objects in a library-agnostic manner if other libraries don't change anything?\r\n\r\nFor example, I can currently write\r\n```python\r\nif hasattr(df, '__dataframe__'):\r\n    df_xch = df.__dataframe__()\r\n    schema = {name: col.get_buffers()['data'][1][0] for (name, col) in zip(df_xch.column_names(), df_xch.get_columns())}\r\n```\r\nand know that it will give me the schema of any dataframe which implements the interchange protocol.\r\n\r\nIf pandas buffers were to adhere to the Python buffer protocol, then IIUC you'd also be able to do, say, `bytearray(memoryview(df_xch.get_column_by_name('a').get_buffers()[\"data\"][0]))`. But, if not all library which implement the interchange protocol also adhere to the python buffer protocol, then you'd have no guarantee that that code would work in a library-agnostic manner, right?"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-01-07T20:40:38Z",
+   "body": "Yea I don't think it replaces or changes any parts of the dataframe protocol; I think of it more as a lightweight convenience that a third party can use to perform smaller tasks or aid in debugging a larger implementation of the dataframe protocol"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2024-01-10T16:38:19Z",
+   "body": "In theory it could be brought up to the DataFrame Interchange Protocol spec to add Python buffer protocol support as a general requirement, but not sure all implementations would want to do that (for pyarrow it would be easy, since our main Buffer object already implements the buffer protocol). \r\n\r\n---\r\n\r\nIf we move it out, would the idea be that it becomes a _required_ dependency of pandas, and not optional? (I assume so, otherwise consumers cannot have the guarantee calling `__dataframe__` on a pandas object would work)\r\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-01-10T16:47:05Z",
+   "body": "it could still be optional, anyone using it (e.g. plotly, seaborn) would need to make it required"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2024-01-10T16:52:55Z",
+   "body": "But in general, we want to allow projects to be able to accept a pandas object, without depending on pandas. \r\nOf course we could ensure that this new `pandas-interchange-protocol` package doesn't actually have a hard dependency on pandas, so they could add a dependency on that package without depending on pandas. But it does require every project that wants to use the interchange protocol to add such dependencies, which feels a bit strange?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-01-10T17:16:10Z",
+   "body": "If a library already depends on pandas and does:\r\n```python\r\nif isinstance(df, pd.DataFrame):\r\n   pass\r\nelif hasattr(df, '__dataframe__'):\r\n   df = pd.api.interchange.from_dataframe(df)\r\n```\r\nthen instead of just having pandas as a dependency, they would need to also have the interchange protocol package as a dependency. Users need not change anything.\r\n\r\nHypothetically* speaking, if a library does not already depend on pandas, does not have a special path for pandas, and does, say\r\n```python\r\nif hasattr(df, '__dataframe__'):\r\n   df = pyarrow.interchange.from_dataframe(df)\r\n```\r\nthen they could either:\r\n- accept that pandas users are going to get a runtime error, telling them to install an optional dependency. pandas users already get this if they try to do `df.to_excel`, `df.plot`, `df.to_markdown`, so it doesn't feel terrible\r\n- only add the interchange protocol package as a dependency (and not pandas!). If we can keep it pure-Python and under 50 kilobytes, I don't foresee objections, it's a small price to pay in exchange for interoperability. They could even just vendor it.\r\n\r\n*I don't think any such libraries currently exist"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-01-10T21:14:59Z",
+   "body": "On the call today @participant5 brought up the C data interface that pyarrow is pushing for, which looks further along developed and probably would make the interchange protocol obsolete. If that materializes I would definitely be in favor of deprecating / removing this. \r\n\r\nI guess the only theoretical advantage this would have over the Arrow approach is that we would have the flexibility to serialize non-Arrow types, but I'm not sure if that is really useful in practice"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-01-11T08:44:12Z",
+   "body": "I'm confused, doesn't the dataframe interchange protocol use the Arrow C Data Interface?\r\n\r\nIf you inspect the third element of the `dtype` property of a `Column`, you'll see a format string from the Arrow C Data Interface\r\n```python\r\nIn [1]: df = pd.DataFrame({'a': [pd.Timestamp('2020-01-01', tz='Asia/Kathmandu')]})\r\n\r\nIn [2]: df\r\nOut[2]:\r\n                          a\r\n0 2020-01-01 00:00:00+05:45\r\n\r\nIn [3]: df.__dataframe__().get_column_by_name('a').dtype\r\nOut[3]: (<DtypeKind.DATETIME: 22>, 64, 'tsn:Asia/Kathmandu', '=')\r\n```\r\n`'tsn:Asia/Kathmandu'` means \"timestamp [nanoseconds] with timezone “Asia/Kathmandu”\", according to https://arrow.apache.org/docs/format/CDataInterface.html#data-type-description-format-strings\r\n\r\nI'm probably missing something, but could you please elaborate on how it would make the dataframe interchange protocol obsolete?"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-01-11T12:37:13Z",
+   "body": "The C data interface documents the comparison\n\nhttps://arrow.apache.org/docs/format/CDataInterface/PyCapsuleInterface.html#comparison-to-dataframe-interchange-protocol\n\nThere is definitely a lot of overlap. The difference would really come down to how important we think it is to exchange non-arrow types "
+  },
+  {
+   "author": "participant5",
+   "created_at": "2024-01-12T20:15:37Z",
+   "body": "> Hypothetically* speaking, if a library does not already depend on pandas, does not have a special path for pandas ... *I don't think any such libraries currently exist\r\n\r\nTrue, but of course it's a bit of the point of the interchange protocol to allow this more easily\r\n\r\n----\r\n\r\n> On the call today @participant5 brought up the C data interface that pyarrow is pushing for, which looks further along developed and probably would make the interchange protocol obsolete.\r\n\r\nWhile there is certainly overlap, it doesn't make it fully obsolete, there are definitely still use case for both. In fact, I actually also proposed to add the Arrow protocol to the DataFrame Interchange protocol: https://github.com/data-apis/dataframe-api/issues/279 / https://github.com/data-apis/dataframe-api/pull/342. \r\nThe interchange protocol still gives you a nicer Python API to do some inspection, while the Arrow capsule protocol just gives you an opaque capsule (unless you use a library to consume those). So there can be a use case to first get `__dataframe__` to inspect the column names, or number of rows, .. select the columns you need, etc, and then when you actually want to consume the data, use the `__arrow_c_array/stream__` on the dataframe interchange object to access the actual data (instead of accessing the data through the columns and buffers of the interchange protocol). In summary, it's mostly an alternative to the manual access of individual buffer addresses for consumers, but not necessarily for the top-level dataframe object returned by `__dataframe__`.\r\n\r\n> I guess the only theoretical advantage this would have over the Arrow approach is that we would have the flexibility to serialize non-Arrow types, but I'm not sure if that is really useful in practice\r\n\r\nIndeed, that's the main disadvantage. For example, _if_ you have one dataframe library that implements missing values with a sentinel or byte mask, and interchanges data with another dataframe library that uses the same representation, then passing through Arrow incurs some extra overhead (because it only has one way of representing missing values), while going through the columns/buffers of the interchange protocol allows you to get exactly the data as they are represented by the producing library.\r\n\r\n> I'm confused, doesn't the dataframe interchange protocol use the Arrow C Data Interface?\r\n\r\nThe dataframe interchange protocol uses the type _format string notation_ of the Arrow C Data Interface, as a way to have a more detailed type description than the generic enum (first element of the `dtype` tuple). But that's only a format string, it further doesn't actually use the core of the Arrow C Data Interface, i.e. the C struct with the actual buffer pointers. \r\n\r\n---\r\n\r\nTo mention it here as well, I have a PR to add the Arrow C Data Interface (PyCapsule protocol) to pandas: https://github.com/pandas-dev/pandas/pull/56587"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-01-15T21:12:40Z",
+   "body": "Thanks all for comments (and ensuing conversations), interesting stuff\r\n\r\n> The interchange protocol still gives you a nicer Python API to do some inspection\r\n\r\nIndeed! I do think it is nice to be able to do\r\n```python\r\npandas_df = pd.api.interchange.from_dataframe(some_other_df)\r\n```\r\nand to know that, so long as `some_other_df` implements `__dataframe__`, then `some_other_df` can be converted to pandas\r\n\r\nIf I've understood Joris' proposal in https://github.com/pandas-dev/pandas/pull/56587, then this would allow for the Python API to be kept, but for it to use (where possible) the Arrow C Data Interface\r\n\r\nThis way, plotly / seaborn / altair could keep saying \"if you input something which isn't pandas/pyarrow, we can agnostically convert to them\""
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-03-22T18:58:17Z",
+   "body": "The main open issues have been addressed. There's only 2 left, and they're very minor - I have a PR open for one, and will open one for the other next week (already got it working locally)\r\n\r\nIt's really not that bad to deal with IMO\r\n\r\nAt this point, given that the interchange protocol already has users, and that splitting it out would require those users to take on an extra dependency, I think it may not be too bad to just keep it?"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-11-09T16:39:48Z",
+   "body": "Do we have an inventory of projects that have still adopted this? I think there has been a huge shift in the ecosystem to the PyArrow Capsule interface in the months since we last had this conversation. Maybe worth deprecating and pushing more people towards the PyArrow method going forward?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-11-09T17:11:49Z",
+   "body": "As far as I'm aware:\r\n- Altair -> moved to Narwhals\r\n- Vegafusion -> moved to PyCapsule Interface + Narwhals\r\n- Plotly -> they've merged a PR to use Narwhals instead\r\n- pantab -> moved to PyCapsule Interface\r\n- vscode-jupyter: never adopted it in the first place (as https://github.com/data-apis/dataframe-api/pull/349 was rejected)\r\n- scikit-learn -> removed their usage of the interchange protocol for pandas\r\n\r\nAs far as I'm aware, the only library still using it is Seaborn, but even for them it causes issues because there's no list type support https://github.com/mwaskom/seaborn/issues/3533\r\n\r\nIn addition:\r\n- cuDF haven't kept their implementation working: https://github.com/rapidsai/cudf/issues/17282\r\n- bugs go unanswered: https://github.com/data-apis/dataframe-api/issues/352, https://github.com/data-apis/dataframe-api/issues/351\r\n- feature requests go unanswered https://github.com/data-apis/dataframe-api/issues/359\r\n- even an attempt to salvage it by integrating the PyCapsule interface in it was ignored / rejected https://github.com/data-apis/dataframe-api/pull/342\r\n- there's not been a single commit single August 2023 https://github.com/data-apis/dataframe-api/pull/228. Other more recent commits in the repo regard a different (and now discontinued) initiative, we can ignore them for this discussion. The last commit to the interchange protocol was in August 2023\r\n\r\nWill summarised his experience with it in https://willayd.com/leveraging-the-arrow-c-data-interface.html, and explains why he switched over to the PyCapsule interface (despite initially having been positive about the interchange protocol)\r\n\r\nIf we can move Seaborn over, I think we could start the deprecation process"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-11-21T11:06:42Z",
+   "body": "News: cuDF have said that they'll deprecate support for the protocol: https://github.com/rapidsai/cudf/issues/17282#issuecomment-2490722924\r\n\r\nAny objections to following suit?"
+  },
+  {
+   "author": "participant6",
+   "created_at": "2025-03-02T13:25:18Z",
+   "body": "@participant1 - are we good to add the deprecation for 3.0?\n\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-03-02T14:15:09Z",
+   "body": "I think it might not be too bad to keep to keep the standardised `column_names` and `dtype` around. It is kinda nice to be able to get those without any extra dependencies, and they're not very complex to maintain\n\n`get_chunks` / `get_buffers` on the other hand...they're very complex and poorly implemented, I think they need to go\n\nI'll get to this soon"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-03-27T12:10:21Z",
+   "body": "Just checked, and scikit-learn isn't even using the interchange protocol anymore for pandas anyway\n\nhttps://github.com/scikit-learn/scikit-learn/blob/fe7c4176828af5231f526e76683fb9bdb9ea0367/sklearn/utils/validation.py#L318-L326\n\nJust double-checking with @participant7 \n\nUnless there's objections, my suggestion would be:\n- deprecate `DataFrame.__dataframe__` and everything related to the interchange protocol's buffers\n- the only part I'd suggest keeping is https://github.com/pandas-dev/pandas/blob/bbd6526461b6e9fc7783bd51298db5cb2ae0c679/pandas/core/interchange/from_dataframe.py#L95-L105 , as that's very few lines of code anyway and is used by Seaborn (and possibly others)"
+  },
+  {
+   "author": "participant7",
+   "created_at": "2025-03-27T15:56:59Z",
+   "body": "scikit-learn uses the interchange in a few places:\n\n- `num_columns()`, `column_names()`: https://github.com/scikit-learn/scikit-learn/blob/0dbbac961ee251309aa7ec6deee658da83b0eaf0/sklearn/utils/_indexing.py#L378\n- `num_rows()`: https://github.com/scikit-learn/scikit-learn/blob/fe7c4176828af5231f526e76683fb9bdb9ea0367/sklearn/utils/validation.py#L389C18-L389C31\n- `get_columns()`: https://github.com/scikit-learn/scikit-learn/blob/0dbbac961ee251309aa7ec6deee658da83b0eaf0/sklearn/ensemble/_hist_gradient_boosting/gradient_boosting.py#L380\n- Just checking if an object is a dataframe: https://github.com/scikit-learn/scikit-learn/blob/0dbbac961ee251309aa7ec6deee658da83b0eaf0/sklearn/compose/_column_transformer.py#L773"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-03-27T17:44:41Z",
+   "body": "Thanks @participant7 -  it's true that sklearn uses the protocol in some places, but none of them for pandas, right?\n\nThe code you linked to for `column_names`, for example, is only called if [_use_interchange_protocol(X)](https://github.com/scikit-learn/scikit-learn/blob/1b7dea1d00fb1faf26588cf5fc23d12a4a03ba1b/sklearn/utils/_indexing.py#L331) is `True` - however, that function is never True for pandas:\n\n```python\ndef _use_interchange_protocol(X):\n    \"\"\"Use interchange protocol for non-pandas dataframes that follow the protocol.\n\n    Note: at this point we chose not to use the interchange API on pandas dataframe\n    to ensure strict behavioral backward compatibility with older versions of\n    scikit-learn.\n    \"\"\"\n    return not _is_pandas_df(X) and hasattr(X, \"__dataframe__\")\n```\nhttps://github.com/scikit-learn/scikit-learn/blob/fe7c4176828af5231f526e76683fb9bdb9ea0367/sklearn/utils/validation.py#L318-L325\n\nI tried removing removing the interchange protocol from pandas and running the sklearn test suite, and the only test that failed is https://github.com/scikit-learn/scikit-learn/blob/fe7c4176828af5231f526e76683fb9bdb9ea0367/sklearn/utils/tests/test_indexing.py#L445-L452 , which it intended to test non-pandas behaviour anyway (hence the `MockDataFrame` construct). I've made a PR to remove pandas from that test https://github.com/scikit-learn/scikit-learn/pull/31095/files\n\nSo it seems to me that the Interchange Protocol is only used in scikit-learn for Polars and PyArrow support, and is not used at all for pandas"
+  },
+  {
+   "author": "participant7",
+   "created_at": "2025-03-27T23:35:06Z",
+   "body": "Ah yes, that makes sense. In that case, it should be safe to remove interchange support from pandas (for scikit-learn)."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-10-27T17:41:30Z",
+   "body": "@participant1 i think we decided just to deprecate this entirely?  want to take point?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-10-27T18:05:41Z",
+   "body": "yeah let's deprecate this, i'll make a PR this week"
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "pandas-dev/pandas",
+  "default_branch": "main",
+  "commit_sha": "70fc17444be82a8e07bfc1b69088379b79a3653b",
+  "as_of": "2024-01-04T09:32:53Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_pandas-dev_pandas_56732"
+}

@@ -1,0 +1,209 @@
+{
+ "repo": "tmux/tmux",
+ "number": 4302,
+ "url": "https://github.com/tmux/tmux/issues/4302",
+ "title": "Enable passthrough output in control mode",
+ "state": "closed",
+ "labels": [],
+ "reporter": "reporter",
+ "created_at": "2024-12-16T06:49:40Z",
+ "closed_at": "2024-12-31T13:30:37Z",
+ "body": "As referred in participant2/yazi#2054, when passthrough is enabled in control mode, echo to some commands is quietly omitted.\n\n## Replication\n\nI tried replicating the issue by starting `tmux` with no config, first without control mode, then with control mode using `-CC`:\n\n```\n❯ tmux -Ltest kill-server\n❯ tmux -vv -Ltest -f/dev/null new # New tmux session\n❯ tmux set -p allow-passthrough on\n❯ echo -e -n \"\\x1bPtmux;\\x1b\\x1b[0c\\x1b\\\\\"; cat\n^[[?64;1;2;4;6;17;18;21;22c^C\n```\n\n```\n❯ tmux -Ltest kill-server\n❯ tmux -vv -Ltest -f/dev/null -CC new # New tmux session\n❯ tmux set -p allow-passthrough on\n❯ echo -e -n \"\\x1bPtmux;\\x1b\\x1b[0c\\x1b\\\\\"; cat # No output\n```\n\nAs noted above, when using `-CC` and passthrough is on, some control characters that should output something are not outputting anything.\n\n## Debug output\n\nAs required in [CONTRIBUTING.md](https://github.com/tmux/tmux/blob/master/.github/CONTRIBUTING.md):\n\n```\n❯ uname -sp && tmux -V && echo $TERM\nDarwin arm\ntmux 3.5a\nscreen-256color\n❯ sw_vers\nProductName:                macOS\nProductVersion:         14.6.1\nBuildVersion:           23G93\n```\n\n## Logs\n\nI did generate the logs but I found quite a bit of sensitive information in them, notably from environment variables, that I cannot post in public. However, if they are really crucial for debugging this issue, I can look into redacting them.",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2024-12-18T05:59:05Z",
+   "body": "I don't think passthrough for control clients really makes that much sense because the client is not necessarily a terminal."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-12-18T07:22:28Z",
+   "body": "If I understand correctly, the purpose of passthrough is to provide the app with a way to send content directly to the client, bypassing tmux.\r\n\r\nThat is, it's designed for direct communication between the app and the client. In this case, if the client is not a terminal, this seems more like something the app itself should consider, rather than tmux, i.e. how Yazi should behave when the user runs it through a non-terminal environment.\r\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-12-18T07:26:24Z",
+   "body": "No, the purpose is to let you send escape sequences to the terminal that it does not make sense for tmux itself to support, for example window control sequences or GUI notifications."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-12-18T07:31:32Z",
+   "body": "Yeah that's exactly my case - I need to send the [Kitty graphics protocol detection sequence](https://<redacted-host>/kitty/graphics-protocol/#querying-support-and-available-transmission-mediums) (which tmux itself doesn't support) to the terminal to check if it's supported. Without passthrough, I won't be able to do it, even if the client is a real terminal not something else."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-12-18T07:40:34Z",
+   "body": "Control mode clients get passthrough sequences for me:\r\n~~~~\r\n%output %0 \\033Ptmux;\\033\\033[c\\033\\134\r\n~~~~"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-12-18T07:50:18Z",
+   "body": "How should I use this in my app? When I `echo` it in iTerm2 with control mode I get:\r\n\r\n```\r\n❯ echo -e -n \"\\033Ptmux;\\033\\033[c\\033\\134\"; cat\r\n134\r\n```\r\n\r\nThis doesn't look right"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-12-18T08:02:47Z",
+   "body": "It looks like iTerm2 doesn't support the passthrough sequence (not really surprisingly) so you will need to  send the escape sequence without the passthrough wrapper in iTerm2."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-12-18T08:12:56Z",
+   "body": "The problem here is, how do I know when to disable passthrough in this case? Normally (not in control mode), I can detect if the user is in tmux to enable the passthrough, since tmux supports passthrough.\r\n\r\nBut I'm not sure how to detect if the user is in tmux **and** in control mode, and the client (which here is iTerm2) doesn't support passthrough, so I can disable the passthrough."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-12-18T08:53:10Z",
+   "body": "Why not send both with and without passthrough and see what responses you get?\r\n\r\nControl mode by design just sends output unchanged, it is up to the receiving process to interpret it."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-12-18T09:04:44Z",
+   "body": "This would cause the responses to be reordered, see https://github.com/participant2/yazi/issues/1557#issuecomment-2340294607.\r\n\r\nFor terminals that do not support the Kitty graphics protocol, they will not respond to anything. Hence, I need to send the actual Kitty probe sequence followed by a [`DA1`](https://vt100.net/docs/vt510-rm/DA1.html) to ensure the terminal responds to something. \r\n\r\nBut `DA1` is a sequence supported by tmux, so I also have to passthrough it; otherwise, the app will always receive the `DA1` response first, and Yazi will think the terminal has finished responding - but not.\r\n\r\nSending both means that `DA1` needs to be sent in both passthrough and non-passthrough versions, and the non-passthrough `DA1` will always be \"intercepted\" by tmux.\r\n\r\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-12-18T09:52:49Z",
+   "body": "OK, so you can't send both sequences because you want to abuse DA1 as a kind of end marker and it triggers a bug on Windows.\r\n\r\nI think the only realistic way you are going to get it to work reliably is to use a timeout to wait for the response instead of trying to use DA1. This is how most applications deal with query-response and means you do not have to worry about ordering - you can just send the single query sequence as both passthrough and non-passthrough. It would also avoid ordering problems if tmux is attached to multiple clients so you get multiple responses.\r\n\r\nThe other option would be to try and detect what terminal you are in, but most of the methods either require a query so have the same issue (for example `CSI >q`) or won't work over ssh (for example asking tmux).\r\n\r\nIf you want to ask tmux, this will tell you if any clients have control mode:\r\n~~~~\r\ntmux lsc -t: -F '#{client_control_mode}'\r\n~~~~\r\nOr what type of terminal each client is running in\r\n~~~~\r\ntmux lsc -t: -F '#{client_termtype}'\r\n~~~~"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-12-18T11:13:28Z",
+   "body": "> abuse DA1 as a kind of end marker\r\n\r\nIt's hard to say it's \"abuse\" – it's the detection method specified by the Kitty graphics protocol, and nearly all apps implement it this way. I want to follow this standard as much as possible and handle any issues related to tmux incompatibility.\r\n\r\n> it triggers a bug on Windows\r\n\r\nSorry for not being clear. What I meant is that tmux and Windows' (old) ConPTY have the same issue, and the linked issue explained the cause of the problem. Windows isn't needed, you can reproduce it just with tmux by running the following in Kitty:\r\n\r\n```sh\r\necho -e -n \"\\x1bPtmux;\\x1b_Gi=31,s=1,v=1,a=q,t=d,f=24;AAAA\\x1b\\\\\\x1b\\\\\\x1b[c\"; cat\r\n```\r\n\r\nThis results in:\r\n\r\n```\r\n\\x1b[?1;2;4c\\x1b_Gi=31;OK\\x1b\\\\\r\n```\r\n\r\nThe `DA1` request (`\\x1b[c`) is sent last but responds first, which makes Yazi think the response is complete.\r\n\r\nSo, I really want to avoid introducing timeouts – because of the reordering of `DA1`, Yazi can never know when the response actually ends so it can prematurely end reading. \r\n\r\nIt has to wait for the specified timeout every time, which introduces startup delays for each tmux user (especially since Yazi is an app that needs to be started frequently), and timeouts are unreliable in slow SSH scenarios as well.\r\n\r\n---\r\n\r\nThanks for the second solution you mentioned, I'll try to see if I can make it work.\r\n\r\nBy the way, do you think it's a good idea for `tmux set -p allow-passthrough on` to return a failure instead of success in control mode - since it doesn't actually enable anything? This way, I can reduce the number of tmux calls and speed up startup. Or is there any way to detect control mode directly without creating new processes?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-12-18T11:18:42Z",
+   "body": "Are you saying tmux reorders the output on Linux or macOS as well? Can you give me an example that doesn't use a Kitty-only escape sequence, such as sending both DA and DA2?"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-12-18T11:27:26Z",
+   "body": "Sure, here's an example that only uses `DA1` and `DA2` — `DA2` goes through passthrough and is sent out first, while `DA1` doesn't go through passthrough and is sent out later:\r\n\r\n```sh\r\necho -e -n \"\\x1bPtmux;\\x1b[>c\\x1b\\\\\\x1b[c\"; cat\r\n```\r\n\r\nBut the response from `DA1` was received first:\r\n\r\n```sh\r\n\\x1b[?1;2;4c\\x1b[>1;4000;38c\r\n```\r\n\r\nMy tmux version (I'm on macOS):\r\n\r\n```sh\r\n❯ tmux -V\r\ntmux 3.5a\r\n```"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-12-18T11:32:46Z",
+   "body": "OK that is expected, I thought you were sending them both passthrough, you can't send passthrough and non-passthrough sequences and expect them to be ordered. You need to send them both passthrough or both not."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-12-18T11:39:28Z",
+   "body": "Yeah that's the reason I can't send both (passthrough and non-passthrough) at the same time. \r\n\r\nAnyway, is it possible to provide a way that doesn't require creating a process to check if it's in control mode? I guess a large portion of users don't use control mode, and Yazi still has to create a process for this unlikely case, which is quite a big overhead tbh."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-12-18T11:48:37Z",
+   "body": "I don't really know why you need to send both passthrough and non-passthrough at all. DA1 is no use as a terminator if it is not coming from the same process as the sequence you care about, so you should be either sending both as passthrough or both as not.\r\n\r\nI don't think there is another way to find out you are in control mode that makes sense. Process creation should not be very expensive."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-12-18T11:53:19Z",
+   "body": "Ah never mind, I must misunderstood https://github.com/tmux/tmux/issues/4302#issuecomment-2550725402\r\n\r\nI'll try the second way you mentioned, thanks for your help!"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-12-18T13:33:04Z",
+   "body": "I tried disabling passthrough when `client_control_mode` is set to `1`, and now I can receive responses, but these responses are coming from tmux instead of the actual terminal (iTerm2), so unfortunately, this approach doesn't work for me.\r\n\r\nI'm a bit confused about the control mode. Is the user interacting with tmux or iTerm2? If it's iTerm2, the responses should be from iTerm2 itself, not tmux. \r\n\r\nBut if it's tmux, then why did I set `allow-passthrough on` for tmux, but still need iTerm2 to provide passthrough support (If I understand correctly https://github.com/tmux/tmux/issues/4302#issuecomment-2550613685)? Is there no way to directly support passthrough in tmux?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-12-18T13:51:48Z",
+   "body": "The control mode client as iTerm2 uses it is like an alternative display for one or more tmux panes. tmux is still the terminal and processes the output as normal to update its internal copy of the terminal state, but as well as updating any attached normal tmux clients, it also sends a copy of all output to any attached control mode clients which iTerm2 uses to draw the pane as if it was an iTerm2 pane rather than a tmux pane. This copy is *in front* of tmux's processing, which is why the control mode client gets the passthrough sequences including the Ptmux wrapper.\r\n\r\nI thought iTerm2 would respond to queries as well as tmux but of course thinking about it that would be wrong, sorry I led you down the wrong path there...\r\n\r\nI think you really need iTerm2 to detect the passthrough sequences and say \"this is for me\" and handle them, the way it would if tmux unwrapped them and sent them to a normal client.\r\n\r\nI am not sure you will be able to do this automatically without that. You could can talk to @participant3 and see if it is something iTerm2 should do.\r\n\r\nWriting images behind tmux's back using the passthrough sequence isn't guaranteed to work terribly well, so if it was me I would probably not be turning it on automatically anyway. Maybe you could instead give users a way to bypass the detection and choose on or off themselves?"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-12-18T14:24:03Z",
+   "body": "I think I now roughly understand how it works. In control mode, tmux acts more like a real terminal, while iTerm2 takes on a role similar to tmux. Their control has essentially flipped:\r\n\r\n- In normal mode (non-control mode), tmux's passthrough behavior is to pass things through to the actual terminal, so this needs to be supported by tmux.\r\n- In control mode, iTerm2's passthrough behavior is to handle things itself, so this needs to be supported by iTerm2.\r\n\r\nThank you so much for your detailed explanation. My knowledge of tmux is still lacking, sorry for asking so many dumb questions here :)\r\n\r\n> Maybe you could instead give users a way to bypass the detection and choose on or off themselves?\r\n\r\nYeah, I can provide a manual workaround in the doc or somewhere, just wanted to give it one last try before giving up on supporting it :D"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-12-18T14:36:52Z",
+   "body": "Yeah that is right. So it looks like:\r\n~~~~~\r\npane pty ---> tmux input parser ----------> tmux internal screen\r\n  |                    |\r\n(if attached)          |---(if attached)--> tmux client handling ---> terminal ptys\r\n  |\r\n  v\r\ncontrol mode clients\r\n~~~~~\r\nThe input parser can detect and unwrap passthrough sequences in the data from the pane and send the internal sequence to to the terminal pty, but for control mode clients there is no layer that parses it - the data just goes unmodified, and it is up to the receiving client (that is, iTerm2) to process it (ideally in the same way tmux would).\r\n\r\ntmux sends replies to queries because it always parses the data - it has to to maintain its own state in case it needs to redraw (if you detach and reattach or switch window or anything like that). In theory iTerm2 could reply as well, but that would be confusing, so it is probably better that it doesn't. It *could* reply to passthrough sequences if it wanted, because they are \"intended\" for it to receive, tmux will never reply to them.\r\n"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-12-19T01:06:19Z",
+   "body": "iTerm2 ignores passthrough sequences in tmux integration mode. I don't know what would break if that were to change; it might even be OK.\r\n\r\nSince the raw control sequences get passed through, regular image display code should work. tmux imposes a maximum size on OSC sequences, so you'll need to use the chunked encoding that imgcat currently implements. It's a bit of an inelegant mess, of course, since tmux has no idea that there's an image and when you attach your image will be gone.\r\n\r\nUnfortunately detecting the presence of tmux integration mode is difficult, so you'll have a hard time switching behavior depending on its presence. \r\n\r\nKitty's image protocol is probably a better match for tmux than iTerm2's, but it is mighty complicated. iTerm2 does support it now (except for animations) so if tmux adds it we can figure out a way to make it work in the integration."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-12-19T03:53:33Z",
+   "body": "> tmux imposes a maximum size on OSC sequences\r\n\r\nI currently don't chunk the inline image protocol. I looked at the inline image protocol documentation, and it seems that chunking support was introduced only after iTerm2 3.5. The docs mention that it's meant to work in tmux integration mode. If I understood correctly, this limitation only exists in tmux control mode, and not in non-control mode, meaning I only need to chunk the data when tmux is running and in control mode, right?\r\n\r\nDoes this mean that, regardless of whether iTerm2 supports tmux passthrough, I'll always need to somehow figure out if the user is in integration mode, and apply chunking only in that mode, not in non-integration mode? I think this makes sense because chunking support seems new, and I'm not sure if any terminals other than iTerm2 support this feature, so it should probably be safer to default to not chunking.\r\n\r\n> Unfortunately detecting the presence of tmux integration mode is difficult, so you'll have a hard time switching behavior depending on its presence.\r\n\r\nWould it be possible to add an environment variable in iTerm2 to indicate whether the user is in integration mode? That should cover most cases, and I could just check if that environment variable is set. I'm not sure if integration mode works across SSH, though—if it does, that might be another edge case to consider.\r\n\r\n> iTerm2 does support it now (except for animations) so if tmux adds it we can figure out a way to make it work in the integration\r\n\r\nThat's awesome! It's great to know that iTerm2 now supports the Kitty graphics protocol. This means that users and developers will have another option available anytime. Great job on that!\r\n\r\nDoes iTerm2 currently support the [Unicode placeholders](https://<redacted-host>/kitty/graphics-protocol/#unicode-placeholders) for the Kitty graphics format? If it does, then it might not be necessary to add direct support for it in tmux. It could work fine under tmux, but adding tmux support would mean that the escape sequences would need to be parsed and processed twice (once by tmux, and then by the actual terminal), which could hurt performance. I think it's better to just pass it through directly to the terminal."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-12-20T01:05:14Z",
+   "body": "> I only need to chunk the data when tmux is running and in control mode, right?\r\n\r\n@participant2 Yes, that's right. The easiest way is to check if $TERM is matches `tmux.*` or `screen.*` but probably there is a smarter way :)\r\n\r\nDefaulting to not chunking is probably wise since there are other terms that implement the original protocol but not chunking.\r\n\r\n> Would it be possible to add an environment variable in iTerm2 to indicate whether the user is in integration mode?\r\n\r\ntmux would need to do that, not iTerm2 (it can't effect the environment of login sessions created by tmux). It wouldn't survive ssh, of course. To make matters worse, tmux can have multiple clients connected (both control and non-control) so avoid getting too clever because the edge cases will make your life miserable.\r\n\r\n> Does iTerm2 currently support the [Unicode placeholders](https://<redacted-host>/kitty/graphics-protocol/#unicode-placeholders) for the Kitty graphics format\r\n\r\nYes, it's a recent addition."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-12-31T14:49:07Z",
+   "body": "@participant3 Ah I see, this is indeed a mess. Maybe we can get iTerm2 to support passthrough first. In the worst case, even if users can't preview images, at least Yazi won't fail to receive the correct response and won't fail to start.\r\n\r\n@participant1 What do you think about the idea of adding such an environment variable? At least this way, users won't have issues using control mode locally. As for SSH, if it's too difficult, we can leave that aside for now."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-12-31T14:52:32Z",
+   "body": "An environment variable is no use because there is no way to update it when the user detaches and reattaches to a different client."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-12-31T15:06:40Z",
+   "body": "You mean the user can also detach and reattach in control mode right? \r\n\r\nIf I press `Esc` to detach in iTerm2, the iTerm2 window closes, and the tmux process gets killed. It seems like tmux and iTerm2 are bound 1:1:\r\n\r\nhttps://github.com/user-attachments/assets/8d50843b-8a5f-4c5d-97c7-02dfbd27a88a\r\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-12-31T15:09:19Z",
+   "body": "They can detach and reattach with or without control mode, or attach again without detaching."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-01-02T13:15:33Z",
+   "body": "On second thought, from the perspective of application developers, whether the user is in tmux control mode should be transparent, i.e., tmux's behavior should remain consistent regardless of whether the user is in control mode, and developers shouldn't have to worry too much about the internal interaction details of tmux. \r\n\r\nTherefore, the idea of the app detecting whether it's in control mode doesn't really make sense to me. Is it possible for tmux (and iTerm2) to provide a unified way to manage their behavior? Specifically:\r\n\r\n- iTerm2 supports passthrough, so Yazi can always use it without worrying about whether passthrough needs to be disabled in control mode. This would require support on the iTerm2 side.\r\n- tmux could remove the maximum size on OSC sequences, or provide a way like `passthrough` does (`tmux set -p allow-passthrough on`), I can run it before the app starts to tune up this limit manually. I'm not entirely clear on this actually — according to https://github.com/tmux/tmux/issues/4302#issuecomment-2556048620, this restriction only exists in control mode. Why is control mode required to have this restriction, while non-control mode does not?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-01-02T13:21:37Z",
+   "body": "Passthrough to non-control mode clients has the same same size limit as all other sequences, and the user can already increase it if they want."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-01-02T13:26:49Z",
+   "body": "Are you referring to the limitation being related to passthrough, rather than whether it's in control mode or not? So, as long as it's a passthrough sequence, this limitation applies. Is there a way to automatically adjust or disable it during app runtime with a tmux command, similar to how passthrough is enabled? Since from the app's perspective, we need to ensure that all users can render images correctly, and this limitation doesn't really make sense."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-01-02T13:27:22Z",
+   "body": "Also, is there any documentation for this limit, such as the value range for different tmux versions?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-01-02T15:00:28Z",
+   "body": "There is no limit on what is sent to the control mode client because tmux does not process the data, but any sequences processed by tmux itself are limited to 1 MB unless the user runs c26d71d3e9425fd5a5f3075888b5425fe6219462 or later and increases the buffer size."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-01-13T04:21:20Z",
+   "body": "> tmux imposes a maximum size on OSC sequences, so you'll need to use the chunked encoding that imgcat currently implements\r\n\r\nHey @participant3, could you provide more details about the limitation? If tmux doesn't impose a limit, does that mean this limitation is enforced by iTerm2 in control mode? Is there a way to remove or increase this limit in that case?"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-01-15T01:45:04Z",
+   "body": "@participant2 Looking again at https://gitlab.com/participant3/iterm2/-/issues/11738 the problem was when using DCS escaping for the control sequence. Maybe that takes a different code path? At any rate, if you don't do that then it doesn't seem to be a problem."
+  },
+  {
+   "author": "github-actions[bot]",
+   "created_at": "2025-02-15T00:21:34Z",
+   "body": "This issue has been automatically locked since there has not been any recent activity after it was closed."
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "tmux/tmux",
+  "default_branch": "master",
+  "commit_sha": "ae8f2208c98e3c2d6e3fe4cad2281dce8fd11f31",
+  "as_of": "2024-12-16T06:49:40Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_tmux_tmux_4302"
+}

@@ -1,0 +1,159 @@
+{
+ "repo": "bevyengine/bevy",
+ "number": 15265,
+ "url": "https://github.com/bevyengine/bevy/issues/15265",
+ "title": "Systems should be skipped if their resources cannot be fetched",
+ "state": "closed",
+ "labels": [
+  "A-ECS",
+  "C-Usability",
+  "S-Needs-Design",
+  "X-Needs-SME"
+ ],
+ "reporter": "reporter",
+ "created_at": "2024-09-17T16:04:37Z",
+ "closed_at": "2024-09-23T17:11:19Z",
+ "body": "              > The solution to this I would prefer is to lean into the ECS paradigm more & treat more things as if they were querying the world. If a Res<Foo> doesn't exist the system just doesn't run. Similar to how iterating over a Query<Bar> that matches nothing loops over nothing. If users want a more explicit panicky behavior they can use Option<Res<Foo>> & unwrap.\r\n\r\nI do think we should do this, and if we can get this behavior in place I'd prefer to encourage the use of the `Single` system param from #15264. This would go a long way to addressing the problem and ensuring non-panicking behavior by default without an ergonomics hit.\r\n\r\n_Originally posted by @participant3 and @reporter in https://github.com/bevyengine/bevy/issues/14275#issuecomment-2356344841_\r\n            ",
+ "comments": [
+  {
+   "author": "reporter",
+   "created_at": "2024-09-17T16:06:25Z",
+   "body": "I really quite like this idea: I think it's generally a pretty robust solution. The design challenge here is:\r\n\r\na) how do we provide warnings to users that their system isn't running because they forgot to initialize a resource or whatever\r\nb) how do we easily silence that warning for cases where this behavior is expected\r\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-09-17T16:15:36Z",
+   "body": "+1 for this, this has bitten me before\r\n\r\nI guess a warning could tell you to explicitly use `Option` or `Single` if it's missing?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-09-17T16:19:52Z",
+   "body": "Discord notes from a [conversation on 2024-09-17](https://discordapp.com/channels/691052431525675048/749335865876021248/1285634512838987816).\r\n\r\n>  SystemParam::get_param can mutate SystemParam::State, so it'd need to be split into try_get (immutable state) and apply_get (mutable, post access)\r\n\r\n- @participant4 \r\n\r\n>  Semantically there's not much difference between SystemParam and WorldQuery, they both grab pointers from the world, cache state etc. IMO reaching convergence there so queries and systems are one and the same would be nice, but is so much code churn that I don't know if it's realistic at this point\r\n\r\n@participant7\r\n"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-09-17T16:35:18Z",
+   "body": "What about logging a warning on first run (or not-run?) that says more or less \"system did not run because `XXX` resource was not present in the world. To suppress this warning, either insert the resource or add `.run_if(resource_exists::<XXX>)` to the system\""
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-09-17T16:52:17Z",
+   "body": "Yeah, I'm happy with that as an initial solution."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-09-17T16:55:16Z",
+   "body": "I'd prefer for this to be an expected default that designs take into consideration cause it's more consistent with the behaviors of ECS. A diagnostic warning about missing resources is mostly going to be for transitioning from the old behavior. \r\n\r\nIs there a mechanism to have custom lints? If there is we could have one for all instances of `Res` & `ResMut` in `0.16` that people can suppress with `#![allow(..)]` that just reads:\r\n> \"Systems will not run when resources can't be fetched from `0.16` onward. Use `Option<Res<_>>` or `Option<ResMut<_>>` to change this\"."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-09-17T16:55:41Z",
+   "body": "Another implication of this is that `System::run_unsafe -> Self::Out` can sometimes not run, so we need to wrap the return value in option, probably rename the function to `try_run_unsafe` as well.\r\nReturning `None` will invalidate all chaining/piping/etc.\r\n\r\nUnless we decide to do param validation before `run_unsafe`"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-09-17T17:05:42Z",
+   "body": "We could also add an associated const on the resource trait \r\n```rs\r\npub trait Resource: Send + Sync + 'static {\r\n    const NOISY: bool = false;\r\n}\r\n```\r\nWith a helper attribute for the derive that sets this to `true`. When checking if a system runs where there is a missing resource that has this set to `true` it will cause a panic instead of the system not running."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-09-17T17:06:58Z",
+   "body": "Should `SystemParam::validate_param` run before or inside `System::run_unsafe`?\r\nThe latter requires us to return `Option<System::Out>` instead of `System::Out`.\r\n\r\n> I'd rather it be before instead of inside to avoid unnecessary wrapping in the cases where the validation can (potentially) be elided.\r\n\r\n*From @participant8 in [discord](https://discord.com/channels/691052431525675048/749335865876021248/1285647422940516545)*"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-09-17T17:09:40Z",
+   "body": "I agree with @participant8 there: validation should be distinct from running the system, and be done by schedulers.\r\n\r\n@participant3 for custom lints, we'd need https://github.com/theBevyFlock/bevy_cli. I think I like the associated constant idea better though, although we should have various log levels (including panic), rather than just a `bool`. Defaulting to `error` feels correct though."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-09-17T17:11:46Z",
+   "body": "@participant4 points out that run conditions are systems too. If a run condition cannot be evaluated, it should be treated as if it returned false."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-09-17T17:14:03Z",
+   "body": "@participant9 points out that we should perform the validation checks as soon as possible, before spawning a task for the scheduler.\r\n\r\nFor piped systems, al params must be checked at the start, and the whole piped collection of systems must be skipped if any are invalid. This is because piped systems are opaque to the schedule."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-09-17T17:14:07Z",
+   "body": "For warnings, should we add a system config flag that decides whether to emit a warning?\r\nSome systems will use this as run conditions, but in others this can be an accidental decision.\r\n\r\nBy default it would be `true`.\r\nBut then disabling it is a massive pain."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-09-17T17:16:02Z",
+   "body": "Yeah, I was thinking about that in terms of system config initially, but I wasn't happy with the disabling ergonomics. I don't mind it existing, but in most cases I think that adding this at the resource / component level will better match the user intent and result in fewer bugs and boilerplate."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-09-17T17:17:05Z",
+   "body": "Can we perhaps leverage module-filtering for this?\r\nPeople could then selectively filter modules where they resolved this and no longer receive warnings.\r\nThis would play along with plugins too, since they're essentially modules.\r\n\r\nActually no, that doesn't make sense.\r\nThere is a solution to be made with disabling this per plugin, but it's a bit more work."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-09-17T17:20:27Z",
+   "body": "> although we should have various log levels (including panic), rather than just a `bool`. Defaulting to `error` feels correct though.\r\n\r\nI'm not sure about this cause for anything other than panic you'll get a wall of errors like WGPU which isn't much more helpful than a panic. Errors by default means you'll get a lot of opting out (which is indicative of a bad default). I think some people might be worried but would be surprised to find how sane this behavior actually is."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-09-17T17:22:41Z",
+   "body": "Hmm. Panic might be a better default, yeah. I worry about adding more causes of \"what the heck why isn't my system working\": forgetting to add the system and forgetting to add the plugin are both super frustrating currently."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-09-17T18:16:43Z",
+   "body": "Actually `error` would be fine if we add a `bool` to `Schedule` or something to track if first time diagnostics are emitted. It's a bool that would be changed at most *once* so it's easy for branch predictors to optimize out."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2024-09-17T18:26:05Z",
+   "body": "> We could also add an associated const on the resource trait\r\n> ```rs\r\n> pub trait Resource: Send + Sync + 'static {\r\n>     const NOISY: bool = false;\r\n> }\r\n> ```\r\nIf this is considered, I'd prefer a const generic bool `SKIP_SYSTEM_IF_MISSING` on `Res`/`ResMut`. Though this will probably conflict with `Option<Res>` if the default is `true` as that makes no sense in that case."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-09-17T18:28:32Z",
+   "body": "@participant3 we already have a warn_once family of macros for exactly this purpose."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-09-17T18:29:32Z",
+   "body": "Adding an associated type or constant on Resource will break trait objects for it, so that needs to be considered carefully."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-09-17T18:45:52Z",
+   "body": "> Adding an associated type or constant on Resource will break trait objects for it, so that needs to be considered carefully.\r\n\r\nWhy would people have trait objects of an empty trait tho? :<nick>: "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-09-17T19:07:48Z",
+   "body": "Inserting arbitrary components / resources is something I've seen people want to do. That said, we already do this with the `Storage` associated type, and those users probably actually want to use reflection. So yeah, I think adding associated constants or types is fine."
+  },
+  {
+   "author": "participant6",
+   "created_at": "2024-09-17T22:38:00Z",
+   "body": "> @participant3 we already have a warn_once family of macros for exactly this purpose.\r\n\r\nThat's once globally (per callsite), but we want to do it per system, and we want to have all warnings for the first run."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-09-17T22:51:07Z",
+   "body": "Right, we'll need to add some variant of that that checks against a key (probably the system name in this case)."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-09-18T01:59:53Z",
+   "body": "Ah goodness duplicate comment, my browser had a stroke"
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "bevyengine/bevy",
+  "default_branch": "main",
+  "commit_sha": "b884f96598e483eb0a21c3b5bb613179e7bdc4ff",
+  "as_of": "2024-09-17T16:04:37Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_bevyengine_bevy_15265"
+}

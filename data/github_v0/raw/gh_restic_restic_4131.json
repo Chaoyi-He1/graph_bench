@@ -1,0 +1,212 @@
+{
+ "repo": "restic/restic",
+ "number": 4131,
+ "url": "https://github.com/restic/restic/issues/4131",
+ "title": "System-wide hang after a few weeks",
+ "state": "closed",
+ "labels": [
+  "misc: hardware issue"
+ ],
+ "reporter": "reporter",
+ "created_at": "2023-01-05T21:29:41Z",
+ "closed_at": "2023-06-10T23:34:21Z",
+ "body": "Output of `restic version`\r\n--------------------------\r\n\r\n```\r\nianh@participant7:~$ restic version\r\nrestic 0.11.0 compiled with go1.15.9 on linux/amd64\r\nianh@participant7:~$ uname -a\r\nLinux feral 5.10.0-20-amd64 #1 SMP Debian 5.10.158-2 (2022-12-13) x86_64 GNU/Linux\r\nianh@participant7:~$ cat /proc/cpuinfo | grep model\r\nmodel           : 122\r\nmodel name      : Intel(R) Celeron(R) N4000 CPU @ 1.10GHz\r\nmodel           : 122\r\nmodel name      : Intel(R) Celeron(R) N4000 CPU @ 1.10GHz\r\nianh@participant7:~$ cat /proc/meminfo | head -3\r\nMemTotal:        3841828 kB\r\nMemFree:          124884 kB\r\nMemAvailable:    3083456 kB\r\nianh@participant7:~$ df -hal\r\nFilesystem      Size  Used Avail Use% Mounted on\r\nsysfs              0     0     0    - /sys\r\nproc               0     0     0    - /proc\r\nudev            1.9G     0  1.9G   0% /dev\r\ndevpts             0     0     0    - /dev/pts\r\ntmpfs           376M  816K  375M   1% /run\r\n/dev/mmcblk0p2   55G  1.4G   51G   3% /\r\nsecurityfs         0     0     0    - /sys/kernel/security\r\ntmpfs           1.9G     0  1.9G   0% /dev/shm\r\ntmpfs           5.0M     0  5.0M   0% /run/lock\r\ncgroup2            0     0     0    - /sys/fs/cgroup\r\npstore             0     0     0    - /sys/fs/pstore\r\nefivarfs           0     0     0    - /sys/firmware/efi/efivars\r\nnone               0     0     0    - /sys/fs/bpf\r\nsystemd-1          -     -     -    - /proc/sys/fs/binfmt_misc\r\nhugetlbfs          0     0     0    - /dev/hugepages\r\nmqueue             0     0     0    - /dev/mqueue\r\ndebugfs            0     0     0    - /sys/kernel/debug\r\ntracefs            0     0     0    - /sys/kernel/tracing\r\nconfigfs           0     0     0    - /sys/kernel/config\r\nfusectl            0     0     0    - /sys/fs/fuse/connections\r\n/dev/mmcblk0p1  511M  5.8M  506M   2% /boot/efi\r\n/dev/nvme0n1p1  1.8T   23G  1.7T   2% /home\r\ntmpfs           376M     0  376M   0% /run/user/1000\r\nbinfmt_misc        0     0     0    - /proc/sys/fs/binfmt_misc\r\n```\r\n\r\nHow did you run restic exactly?\r\n-------------------------------\r\n\r\n```\r\nexport AWS_ACCESS_KEY_ID=\"...\"\r\nexport AWS_SECRET_ACCESS_KEY=\"...\"\r\nexport RESTIC_REPOSITORY=\"s3:<redacted-host>/...\"\r\nexport RESTIC_PASSWORD_FILE=/home/<user>/restic/password.key\r\nrestic init\r\n# the output is lost to time, but matched the usual output seen in tutorials\r\nrestic backup /mnt/*\r\n# the output is what I would expect (i.e. just listing files it is backing up), although occasionally I do see lines like:\r\nSave(<data/...>) returned error, retrying after 619.645675ms: client.PutObject: An internal error occurred.  Please retry your upload.                                                                                                                   |\r\n```\r\n\r\nThe files being backed up (/mnt/*) are CIFS mounts from a Drobo NFS. The Drobo and the NUC running restic have fixed IPs. Both are protected by separate UPSes. Both are connected to the network via gigabit Ethernet (no wifi).\r\n\r\nWhat backend/server/service did you use to store the repository?\r\n----------------------------------------------------------------\r\n\r\nBackblaze via the s3 restic backend.\r\n\r\n\r\nExpected behavior\r\n-----------------\r\n\r\nSystem should back up successfully.\r\n\r\nActual behavior\r\n---------------\r\n\r\nI've done this twice so far, once on a headless raspberry pi, and once on a headless NUC (the details for the latter are above). In both cases they were running some variant of Linux, accessed over SSH.\r\n\r\nIn both cases, everything seemed to be going great for the first few days (I have terabytes of data to back up). However, in both cases, after a few weeks, **I went to check on the computer and could not ssh into it**. In the case of the raspberry pi, I was never able to figure out what happened. The microSD card was trashed, and I could never get anything out of it (e.g. logs) to determine what happened. The problem occurred during a heat wave and I originally just assumed that, combined with the low capabilities of the pi and other software running on it at the time, was the problem.\r\n\r\nMore recently though I got a new NUC, freshly installed, no other tasks running on it at all. I set it up to do the backup as described above. I cleared the backblaze bucket first so it was a fresh backup too. At first everything seemed great, but when I checked up on it yesterday, the machine had hard hung. It was no longer doing DHCP or ARP (and its lease had expired). I connected a display and keyboard to the NUC to see what was happening; the keyboard did not respond (capslock did not toggle its LED, for example), and on the screen there was what I presume was a kernel crash. I regret that I did not think to take a photo, thinking it would be visible in the logs.\r\n\r\nUnfortunately when I examined the logs I found nothing. Based on my DHCP logs, the machine disconnected from the network around 9am (I have short leases of around 15 minutes), but the latest entries in the log files all dated from hours earlier or were mundane entries like renewing DHCP. Whatever caused the problem prevented the last few seconds of logs from being written to disk; some of the log files ended with NULs (upon rebooting, there was a message about the filesystem having to replay the journal). Also I was not, at the time, logging restic output to disk.\r\n\r\n\r\nSteps to reproduce the behavior\r\n-------------------------------\r\n\r\nI don't know. So far I have had a 100% success rate at reproducing this by just using restic normally to back up several terabytes and then just waiting a few weeks (about 50% through the total backup, very roughly), but obviously two data points do not make a trend and in particular the first hang happened among many confounding circumstances.\r\n\r\n\r\nDo you have any idea what may have caused this?\r\n-----------------------------------------------\r\n\r\nNo.\r\n\r\n\r\nDo you have an idea how to solve the issue?\r\n-------------------------------------------\r\n\r\nNo.\r\n\r\n\r\nThoughts\r\n--------\r\n\r\nI'm running restic again now with the log being `tee`d to disk and with data from /proc/meminfo and /proc/pressure/* being logged every minute in case that shows a trend. I am filing this issue in part in the hope that you will recognise the symptoms as those of some misconfiguration error I've made, and in part in the hope that you will suggest other things I could add to my \"log system state every minute\" script so that we can debug the cause if it happens again.\r\n\r\nFWIW, currently I'm running:\r\n```\r\necho \"\"\r\ndate\r\ncat /proc/meminfo | grep MemFree\r\ngrep full /proc/pressure/*\r\n```\r\n\r\n...every minute and the first and latest log entries are:\r\n\r\n```\r\nWed 04 Jan 2023 04:14:55 PM PST\r\nMemFree:          112780 kB\r\n/proc/pressure/io:full avg10=3.92 avg60=3.93 avg300=3.99 total=75934965\r\n/proc/pressure/memory:full avg10=0.00 avg60=0.04 avg300=0.00 total=601574\r\n\r\n[...]\r\n\r\nThu 05 Jan 2023 01:20:51 PM PST\r\nMemFree:          115972 kB\r\n/proc/pressure/io:full avg10=3.23 avg60=3.20 avg300=3.20 total=7854277124\r\n/proc/pressure/memory:full avg10=0.00 avg60=0.00 avg300=0.00 total=73134839\r\n```\r\n\r\nI suppose the problem could be something like a bug in the CIFS kernel module where after some significant amount of network traffic, it crashes.\r\n\r\nDid restic help you today? Did it make you happy in any way?\r\n------------------------------------------------------------\r\n\r\nI love the potential of restic! I really hope this is just an aberration because the promise of easy backups is extremely attractive. So far all my interactions with y'all have been super positive.",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2023-01-07T01:10:32Z",
+   "body": "I have no idea but you could try\r\n- the latest version of restic\r\n- try to mount your source in another way (maybe nfs or sftp)\r\n- backup to another target (maybe nfs, sftp, local or usb)\r\n\r\ncould it be related to #2659 or #4130?"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-01-07T22:20:38Z",
+   "body": "> Save(<data/...>) returned error, retrying after 619.645675ms: client.PutObject: An internal error occurred.  Please retry your upload.\r\n\r\nThat error is rather unusual. I haven't seen that specific error somewhere else so far.\r\n\r\n> and on the screen there was what I presume was a kernel crash.\r\n\r\nA kernel crash is a problem of the underlying system, not of restic.\r\n\r\n> Whatever caused the problem prevented the last few seconds of logs from being written to disk; some of the log files ended with NULs (upon rebooting, there was a message about the filesystem having to replay the journal).\r\n\r\nThat indeed looks like a kernel crash.\r\n\r\n> So far I have had a 100% success rate at reproducing this by just using restic normally to back up several terabytes\r\n\r\nSeveral terabytes will definitely require quite a bit of memory. But that would normally just result in restic getting killed by the kernel's oom killer..."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-01-07T23:56:55Z",
+   "body": "@participant2 I'm just curious - why does restic needs more memory for lager backups? is it because of the metadata or because of the size of the files? 🤔 "
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-01-08T19:34:29Z",
+   "body": "@participant1 Restic uses an index which keeps information about each stored file chunk and which is used to deduplicate data. For performance / simplicity that index is fully loaded into memory. As each file chunk is listed in the index, it will grow as more data is added to a repository.\r\n\r\nThe file metadata inside a folder also requires additional memory, but unless you have folder which directly contains hundreds of thousands of files (not recursively), the main memory user will be the index."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-01-08T23:54:08Z",
+   "body": "So far it hasn't crashed a third time, I'll try to update and see if I can mount some other way if it does crash again..."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-01-23T23:06:44Z",
+   "body": "So, I ran into a restic hang recently (version 0.15.0) and diagnosed it down to a restic interaction with Transparent Huge Pages. \r\n\r\nI'm not 100% up to speed on THP support in Go, but it seems like restic is wanting to use a hugepage and that amount of contiguous memory is not immediately available. The system just... hangs a bit while kcompactd and kswapd try and rearrange memory enough to make this possible.\r\n\r\nSo, the behavior I see is that khugepaged and kcompactd slam up to 100% CPU usage. If I close some stuff down, I can get it to immediately wake up and restic can continue. Otherwise, allocations all over the place suffer dramatically while the kernel attempts to resolve the issue."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-01-29T23:09:37Z",
+   "body": "I've had two more cases of the machine I'm trying to use for restic hanging during the backup. No smoking guns so far (no obvious ramping up of CPU load or memory usage leading up to the hang, nothing in the logs, etc). I didn't have a monitor hooked up so no idea if it was a kernel crash these times. Trying some of the suggestions above now."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-01-30T21:35:22Z",
+   "body": "Maybe some of the suggestions from https://<redacted-host>/t/server-unresponsive-during-restic-backups/5739/24 help?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-01-30T21:43:35Z",
+   "body": "Yeah, I'll try those too.\r\n\r\nI tried updating to the latest restic (downloaded the binary directly instead of using `apt`), and after a few hours the machine stopped responding to ssh (but still responds to pings for now). The last bit of output on the ssh connection was:\r\n\r\n```\r\n        /usr/local/go/src/runtime/asm_amd64.s:1594 +0x1 fp=0xc006687fe8 sp=0xc006687fe0 pc=0x466e21\r\ncreated by golang.org/x/sync/errgroup.(*Group).Go\r\n        /home/<user>/go/pkg/mod/golang.org/x/sync@v0.1.0/errgroup/errgroup.go:72 +0xa5\r\n\r\ngoroutine 104 [syscall, 2 minutes]:\r\nsyscall.Syscall(0xc00efe15c0?, 0x40?, 0xc0062a1d00?, 0x80b9ca?)\r\n        /usr/local/go/src/syscall/syscall_linux.go:68 +0x27 fp=0xc0062a1c18 sp=0xc0062a1ba8 pc=0x47ccc7\r\nsyscall.Close(0xc0028d4480?)\r\n        /usr/local/go/src/syscall/zsyscall_linux_amd64.go:295 +0x2a fp=0xc0062a1c48 sp=0xc0062a1c18 pc=0x47a1ea\r\ninternal/poll.(*FD).destroy(0xc0148eb560)\r\n        /usr/local/go/src/internal/poll/fd_unix.go:84 +0x51 fp=0xc0062a1c70 sp=0xc0062a1c48 pc=0x49f2f1\r\ninternal/poll.(*FD).decref(0x10?)\r\n        /usr/local/go/src/internal/poll/fd_mutex.go:213 +0x53 fp=0xc0062a1c90 sp=0xc0062a1c70 pc=0x49e153\r\ninternal/poll.(*FD).Close(0xc0148eb560)\r\n        /usr/local/go/src/internal/poll/fd_unix.go:107 +0x4f fp=0xc0062a1cb8 sp=0xc0062a1c90 pc=0x49f38f\r\nos.(*file).close(0xc0148eb560)\r\n        /usr/local/go/src/os/file_unix.go:252 +0xad fp=0xc0062a1d10 sp=0xc0062a1cb8 pc=0x4ae60d\r\nos.(*File).Close(...)\r\n        /usr/local/go/src/os/file_posix.go:25\r\ngithub.com/restic/restic/internal/repository.(*Repository).savePacker(0xc0003c61a0, {0x12d7850, 0xc0028d4480}, 0x1, 0xc00f07a618)\r\n        /restic/internal/repository/packer_manager.go:177 +0x6e6 fp=0xc0062a1ed0 sp=0xc0062a1d10 pc=0x826ac6\r\ngithub.com/restic/restic/internal/repository.newPackerUploader.func1()\r\n        /restic/internal/repository/packer_uploader.go:37 +0xff fp=0xc0062a1f78 sp=0xc0062a1ed0 pc=0x826fbf\r\ngolang.org/x/sync/errgroup.(*Group).Go.func1()\r\n        /home/<user>/go/pkg/mod/golang.org/x/sync@v0.1.0/errgroup/errgroup.go:75 +0x64 fp=0xc0062a1fe0 sp=0xc0062a1f78 pc=0x74b2e4\r\nruntime.goexit()\r\n        /usr/local/go/src/runtime/asm_amd64.s:1594 +0x1 fp=0xc0062a1fe8 sp=0xc0062a1fe0 pc=0x466e21\r\ncreated by golang.org/x/sync/errgroup.(*Group).Go\r\n        /home/<user>/go/pkg/mod/golang.org/x/sync@v0.1.0/errgroup/errgroup.go:72 +0xa5\r\n\r\ngoroutine 109 [semacquire, 2 minutes]:\r\nruntime.gopark(0xae601d9c9766f9cd?, 0xc0002554e8?, 0xc0?, 0x89?, 0x761065?)\r\n        /usr/local/go/src/runtime/proc.go:363 +0xd6 fp=0xc0002554a8 sp=0xc000255488 pc=0x438876\r\nruntime.goparkunlock(...)\r\n        /usr/local/go/src/runtime/proc.go:369\r\nruntime.semacquire1(0xc00038088c, 0x30?, 0x3, 0x1)\r\n        /usr/local/go/src/runtime/sema.go:150 +0x1fe fp=0xc000255510 sp=0xc0002554a8 pc=0x448d9e\r\nsync.runtime_SemacquireMutex(0xf?, 0x1?, 0xc0002555c8?)\r\n        /usr/local/go/src/runtime/sema.go:77 +0x25 fp=0xc000255540 sp=0xc000255510 pc=0x462fa5\r\nsync.(*Mutex).lockSlow(0xc000380888)\r\n        /usr/local/go/src/sync/mutex.go:171 +0x165 fp=0xc000255590 sp=0xc000255540 pc=0x470e25\r\nsync.(*Mutex).Lock(...)\r\n        /usr/local/go/src/sync/mutex.go:90\r\ngithub.com/restic/restic/internal/repository.(*packerManager).SaveBlob(0xc000380870, {0x12d7850, 0xc0028d4500}, 0x0?, {0x27, 0x61, 0xcb, 0xcf, 0x2, 0x5e, ...}, ...)\r\n        /restic/internal/repository/packer_manager.go:68 +0xaf fp=0xc000255660 sp=0xc000255590 pc=0x825d2f\r\ngithub.com/restic/restic/internal/repository.(*Repository).saveAndEncrypt(0xc0003c61a0, {0x12d7850, 0xc0028d4500}, 0x1, {0xc021e66000, 0x1351ff, 0x800000}, {0x27, 0x61, 0xcb, ...})\r\n        /restic/internal/repository/repository.go:432 +0x358 fp=0xc000255790 sp=0xc000255660 pc=0x82b618\r\ngithub.com/restic/restic/internal/repository.(*Repository).SaveBlob(0xc0003c61a0, {0x12d7850, 0xc0028d4500}, 0x1, {0xc021e66000, 0x1351ff, 0x800000}, {0x0, 0x0, 0x0, ...}, ...)\r\n        /restic/internal/repository/repository.go:843 +0x27e fp=0xc000255d08 sp=0xc000255790 pc=0x82e57e\r\ngithub.com/restic/restic/internal/archiver.(*BlobSaver).saveBlob(0xc021b41ab8?, {0x12d7850?, 0xc0028d4500?}, 0x1?, {0xc021e66000?, 0x1351ff, 0x800000?})\r\n        /restic/internal/archiver/blob_saver.go:68 +0x85 fp=0xc000255dd8 sp=0xc000255d08 pc=0x797fe5\r\ngithub.com/restic/restic/internal/archiver.(*BlobSaver).worker(0x0?, {0x12d7850, 0xc0028d4500}, 0xc00010b260)\r\n        /restic/internal/archiver/blob_saver.go:95 +0x131 fp=0xc000255f48 sp=0xc000255dd8 pc=0x798271\r\ngithub.com/restic/restic/internal/archiver.NewBlobSaver.func1()\r\n        /restic/internal/archiver/blob_saver.go:33 +0x29 fp=0xc000255f78 sp=0xc000255f48 pc=0x797e29\r\ngolang.org/x/sync/errgroup.(*Group).Go.func1()\r\n        /home/<user>/go/pkg/mod/golang.org/x/sync@v0.1.0/errgroup/errgroup.go:75 +0x64 fp=0xc000255fe0 sp=0xc000255f78 pc=0x74b2e4\r\nruntime.goexit()\r\n        /usr/local/go/src/runtime/asm_amd64.s:1594 +0x1 fp=0xc000255fe8 sp=0xc000255fe0 pc=0x466e21\r\ncreated by golang.org/x/sync/errgroup.(*Group).Go\r\n        /home/<user>/go/pkg/mod/golang.org/x/sync@v0.1.0/errgroup/errgroup.go:72 +0xa5\r\n\r\ngoroutine 112 [select, 2 minutes]:\r\nruntime.gopark(0xc002997b70?, 0x2?, 0x10?, 0x46?, 0xc002997b4c?)\r\n        /usr/local/go/src/runtime/proc.go:363 +0xd6 fp=0xc0001739d8 sp=0xc0001739b8 pc=0x438876\r\nruntime.selectgo(0xc000173b70, 0xc002997b48, 0xf7578b007651d0bd?, 0x1, 0x40d5bf?, 0x1)\r\n        /usr/local/go/src/runtime/select.go:328 +0x7bc fp=0xc000173b18 sp=0xc0001739d8 pc=0x447cdc\r\ngithub.com/restic/restic/internal/archiver.(*BlobSaver).Save(0x7a6380f7?, {0x12d7850?, 0xc0028d4500?}, 0x30?, 0x106e1a0?, 0x800001?)\r\n        /restic/internal/archiver/blob_saver.go:47 +0x98 fp=0xc000173ba0 sp=0xc000173b18 pc=0x797ed8\r\ngithub.com/restic/restic/internal/archiver.(*BlobSaver).Save-fm({0x12d7850?, 0xc0028d4500?}, 0x2c?, 0x800000?, 0xc007d544e0?)\r\n        <autogenerated>:1 +0x45 fp=0xc000173be0 sp=0xc000173ba0 pc=0x79eaa5\r\ngithub.com/restic/restic/internal/archiver.(*FileSaver).saveFile(0xc0003809c0, {0x12d7850, 0xc0028d4500}, 0xc0000f4600?, {0xc007f34800, 0x77}, {0xc007f34680, 0x77}, {0x12dbf10, 0xc000012148}, ...)\r\n        /restic/internal/archiver/file_saver.go:207 +0x8de fp=0xc000173d60 sp=0xc000173be0 pc=0x79939e\r\ngithub.com/restic/restic/internal/archiver.(*FileSaver).worker(0xc0003809c0, {0x12d7850, 0xc0028d4500}, 0xc00010b380)\r\n        /restic/internal/archiver/file_saver.go:264 +0x105 fp=0xc000173f48 sp=0xc000173d60 pc=0x799e25\r\ngithub.com/restic/restic/internal/archiver.NewFileSaver.func2()\r\n        /restic/internal/archiver/file_saver.go:54 +0x29 fp=0xc000173f78 sp=0xc000173f48 pc=0x7987a9\r\ngolang.org/x/sync/errgroup.(*Group).Go.func1()\r\n        /home/<user>/go/pkg/mod/golang.org/x/sync@v0.1.0/errgroup/errgroup.go:75 +0x64 fp=0xc000173fe0 sp=0xc000173f78 pc=0x74b2e4\r\nruntime.goexit()\r\n        /usr/local/go/src/runtime/asm_amd64.s:1594 +0x1 fp=0xc000173fe8 sp=0xc000173fe0 pc=0x466e21\r\ncreated by golang.org/x/sync/errgroup.(*Group).Go\r\n        /home/<user>/go/pkg/mod/golang.org/x/sync@v0.1.0/errgroup/errgroup.go:72 +0xa5\r\n                  \r\n```"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-02-01T21:49:26Z",
+   "body": "> goroutine 104 [syscall, 2 minutes]:\r\n\r\nThat is very odd. Apparently the syscall to close one of the temporary files used by restic has hung for over 2 minutes. Either the system is swapping itself to death or something else is very wrong.\r\n\r\nDo you also have the start of the stacktrace output? I wonder why the stacktrace is printed at all."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-02-01T22:21:56Z",
+   "body": "I unfortunately wasn't logging stderr. I will fix that before I restart it. (Sorry, only get to work on this in my spare time.)\r\n\r\nThe earlier crash (where I didn't have a stack trace) I did have enough logs to know the machine was only at about 50% memory usage, so I doubt it was swapping to death. In any case I've now disabled the swap, to take that out of the equation."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2023-02-22T15:52:10Z",
+   "body": "Out of curiosity - is restic cache enabled during your normal use of restic?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-02-27T02:15:35Z",
+   "body": "So, it happened again (and hung a while ago, I just didn't look into it until just now). I ran it like this:\r\n\r\n```\r\n(cd restic; . restic-config.sh; GOMAXPROCS=1 nice ionice restic backup --read-concurrency 1 /mnt/foo 2>&1 | tee -a log.current)\r\n# restic/ is where i have restic-config.sh, it's just a random mostly empty directory\r\n# /mnt/foo is what i'm backing up\r\n# restic-config.sh sets AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, RESTIC_REPOSITORY (to a string beginning with \"s3:<redacted-host>/), and RESTIC_PASSWORD_FILE\r\n```\r\n\r\nThe contents of `log.current` after that were:\r\n\r\n```\r\nusing parent snapshot b69fc099\r\n\r\nFiles:          71 new,    44 changed, 598893 unmodified\r\nDirs:            5 new,    42 changed, 56477 unmodified\r\nAdded to the repository: 58.376 MiB (58.385 MiB stored)\r\n\r\nprocessed 599008 files, 20.688 GiB in 4:19\r\nsnapshot 3e44e9e0 saved\r\n```\r\n\r\n...though its timestamp is over a week before the system hung. I'm guessing something about my command above failed to report all the logs?\r\n\r\nWhat should I do to get more useful logging?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-02-27T02:16:54Z",
+   "body": "Oh and I have no swap at all on the machine, and nothing else was happening (it's just a stock debian install with only restic running). Not sure what restic cache is."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2023-02-27T17:33:21Z",
+   "body": "If swap is already off, consider adding `--no-cache` to restic invocation, at least until you finish troubleshooting. Trashed microsd card and system unresponsiveness could be the effect of excessive media wear. Exploring what other software is running and persisting data might be useful. If the only candidate is indeed restic then moving the cache elsewhere or disabling it could help. Disabled cache may incur extra transactions to/from s3 though, so you need to decide if that's ok. Check online documentation if you want to know more about restic cache."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-02-27T18:38:54Z",
+   "body": "You could also try memtest, prime95 and a local repo to ensure that this is not a Hardware or network-issue."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-02-27T20:44:26Z",
+   "body": "Trying user mode memtester and mprime torture test now (memtest86+ would be tricker since this is a headless machine in a rack). If the machine survives a few days of that I'll try a local repo to see if that does anything different."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-03-26T04:42:55Z",
+   "body": "Well I ran memtester and the mprime torture test for about 28 days and they had no issues. Next step is checking a local repo."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-04-22T20:15:04Z",
+   "body": "Ok I'm trying a local backup. I have a 2TB local drive, and did:\r\n\r\n```bash\r\nexport RESTIC_REPOSITORY=\"/home/<user>/restic-local-backup\"\r\nexport RESTIC_PASSWORD_FILE=\"/home/<user>/restic/password.key\"\r\nmkdir -p $RESTIC_REPOSITORY\r\nrestic init\r\nGOMAXPROCS=1 nice ionice restic backup --read-concurrency 1 /mnt/scratch 2>&1 | tee -a log.current\r\n```\r\n\r\nWe'll see what happens. This is backing up a subset of the files the previous attempts tried to back up because of the limited space on this volume. The source is still coming from a CIFS share."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-04-23T20:11:06Z",
+   "body": "Well it did the 800GB backup mostly without issue (well it said \"no such file or directory\" for two of the files but let's ignore that for now while our bar for \"issue\" is \"entire machine hangs\") while backing up from the CIFS share to a local disk... Gonna try some different files in case it's something about the files I'm backing up."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-04-24T19:36:10Z",
+   "body": "Yeah no problems there either (until it ran out of disk space). This suggests the problem is specifically with the AWS backend maybe. I'll try using the backblaze backend next..."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-04-27T04:34:09Z",
+   "body": "Well here's an interesting datapoint. I'm pretty sure after the last backup attempt (which was not yet the one to backblaze) I left the machine idle, and today I find it's gone offline again.\r\n\r\nIt was online for literally months including several weeks of extensive activity without any trouble, then it hung a day or so after doing a backup. I have no explanation..."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-04-27T04:35:07Z",
+   "body": "Maybe it's a CIFS problem after all, let's try extensive activity involving that drive but no restic..."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-05-24T18:23:51Z",
+   "body": "Well I ran `while (true); do find -type f -print0 | xargs -0 hd; done` in the directory with the CIFS mount for about 4 weeks straight and nothing bad happened..."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-05-24T18:24:20Z",
+   "body": "Going to leave the machine idle for a while now and see if it hangs like it did last month."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-06-10T23:34:21Z",
+   "body": "Well, it did. So I guess restic isn't to blame."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-06-16T20:51:27Z",
+   "body": "@reporter Good luck with hunting the problem down, and thanks for keeping us up to date."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2023-11-17T21:09:35Z",
+   "body": "Sorry to reply in this old issue but did you ever solve this problem @reporter?\r\n\r\nThis seems almost exactly like an issue I'm having. That is, my system completely freezes periodically with no errors logged to the journal and keyboard input does not work. After basically replacing the entire system piece by piece (thinking it was hardware related) I'm now seeing heavily correlation to my Restic runs and the freezes happening. I am backing up to Backblaze."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-11-17T21:29:36Z",
+   "body": "Every few months I have system hangs, but I haven't been able to pinpoint the problem at restic. I've seen it happen with the machine idle and I've seen it happen while rsync is running."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-11-17T22:29:07Z",
+   "body": "My guess would be that your system runs out of memory. There's a certain chance that a Linux system may freeze in that case. Depending on how you run restic, it might be possible to e.g. limit the amount of memory a systemd unit is allowed to use."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-11-17T22:38:27Z",
+   "body": "(My case is definitely not memory pressure, FWIW; I verified this in various ways, some of which are documented in this thread. But I also don't believe my case is related to restic; I suspect some sort of hardware issue or a kernel bug related to network file systems.)"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2023-11-17T23:02:00Z",
+   "body": "> My guess would be that your system runs out of memory.\r\n\r\nI use Netdata to monitor my system and memory usage has never been particularly high at the time of or shortly before it froze. Nor has CPU or any other metric that I've noticed.\r\n"
+  },
+  {
+   "author": "participant6",
+   "created_at": "2025-04-11T18:37:53Z",
+   "body": "Hey, sorry for necroposting on a 2-year-old issue. \nI've run into this exact scenario (restic on a debian system, backing up from a CIFS network drive to local drive) and managed to capture the kernel stack trace, which is below, but I'm not sure how to interpret it. \n\n![Image](https://github.com/user-attachments/assets/e7330679-2a7e-4305-87c5-cc2c3b8e4a2a)\n\n[Here's also a video of the entire process](https://<redacted-host>/uploads/2025-04-11%2020-09-42.mp4), from local repo creation to script start (script only contains a check if the CIFS share is available and an env for the repo password - hence not catted out in video. I can provide that if needed). It panicked twice, the first time no kernel trace, the second time I got it.\nMy best guess is that this is CIFS related, but thats about all I got. "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-04-11T21:58:29Z",
+   "body": "FWIW in my case I think the problem turned out to be a hardware error with the SSD I was using, which Linux is not handling well. At some point the machine failed with some pretty dire disk corruption and after attempting to recover from that I think the bad parts of the disk got marked as bad by the filesystem and it hasn't crashed since. But who knows."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-04-14T18:30:41Z",
+   "body": "> FWIW in my case I think the problem turned out to be a hardware error with the SSD I was using, which Linux is not handling well.\n\nThat sounds like either some IO got stuck or that even some memory sections containing code where swapped out and the read back corrupted. Thanks for the feedback."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-04-14T20:21:10Z",
+   "body": "It was the data disk (the disk to which I am rsync'ing data before backing it up with restic), so I don't think it was code damage, but the Linux filesystems aren't especially good at handling disk errors in general, so who knows what was going on."
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "restic/restic",
+  "default_branch": "master",
+  "commit_sha": "24178c97e99b11ca8f3cbd725b2e65b4fa10e32e",
+  "as_of": "2023-01-05T21:29:41Z",
+  "method": "github_commits_until"
+ },
+ "images": [
+  {
+   "where": "c32",
+   "source_url": "https://github.com/user-attachments/assets/e7330679-2a7e-4305-87c5-cc2c3b8e4a2a",
+   "file": "gh_restic_restic_4131_img0.png"
+  }
+ ],
+ "slug": "gh_restic_restic_4131"
+}

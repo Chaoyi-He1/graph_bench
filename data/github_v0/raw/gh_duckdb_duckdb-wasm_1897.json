@@ -1,0 +1,86 @@
+{
+ "repo": "duckdb/duckdb-wasm",
+ "number": 1897,
+ "url": "https://github.com/duckdb/duckdb-wasm/issues/1897",
+ "title": "Wrong Default value of TimeZone in the duckdb settings ",
+ "state": "closed",
+ "labels": [
+  "v1.4.0"
+ ],
+ "reporter": "ujaval403",
+ "created_at": "2024-10-15T15:06:24Z",
+ "closed_at": "2025-10-28T17:52:28Z",
+ "body": "### What happens?\n\nThe TimeZone value in settings is in UTC+XXXX or UTC-XXXX which is not supported value in the timezone\r\nso we are not getting expected values in query results.\r\n\r\nhttps://duckdb.org/docs/sql/data_types/timezones.html\n\n### To Reproduce\n\nhttps://github.com/user-attachments/assets/cdd5617f-8833-4acf-8256-cd5147a8a821\r\n\r\n```\r\ninstall icu;\r\nload icu;\r\n\r\nCREATE or REPLACE TABLE events (\r\n   id INTEGER,\r\n   event_time TIMESTAMPTZ\r\n);\r\n\r\ninsert into events values (1, epoch_ms(1680308400000)); -- 1 April 2023 12:20:00 AM UTC\r\n\r\nselect *, date_trunc('month', event_time) from events;\r\n```\r\n\r\nto check the current value\r\n```\r\nselect * from duckdb_settings() where name='TimeZone';\r\n```\r\n\r\nRight Result after\r\n\r\n```\r\nset TimeZone = 'America/Los_Angeles';\r\n\r\nselect *, date_trunc('month', event_time) from events;\r\n\r\n```\n\n### Browser/Environment:\n\n129.0.6668.100\n\n### Device:\n\nMac OS\n\n### DuckDB-Wasm Version:\n\n1.28.1-dev258.0\n\n### DuckDB-Wasm Deployment:\n\nCustom\n\n### Full Name:\n\nUjaval Bhatt\n\n### Affiliation:\n\nDevRev",
+ "comments": [
+  {
+   "author": "carlopi",
+   "created_at": "2025-09-11T10:39:41Z",
+   "body": "I believe this is fixed bumping to duckdb v1.4.0"
+  },
+  {
+   "author": "jraymakers",
+   "created_at": "2025-09-24T19:56:29Z",
+   "body": "This behavior does not appear to be different in 1.4.0:\n\n```\nDuckDB Web Shell\nDatabase: v1.4.0\nPackage:  @duckdb/duckdb-wasm@1.30.1-dev4.0\n\nConnected to a local transient in-memory database.\nEnter .help for usage hints.\n\nduckdb> select current_setting('timezone');\n┌─────────────────────────────┐\n│ current_setting('timezone') │\n╞═════════════════════════════╡\n│ UTC-0800                    │\n└─────────────────────────────┘\n```\n\n@carlopi What would you expect to be different in 1.4.0?"
+  },
+  {
+   "author": "jraymakers",
+   "created_at": "2025-10-17T16:19:56Z",
+   "body": "Might [this change](https://github.com/duckdb/duckdb/pull/19413) address this issue?\n\n@hawkfish In case you have any insight."
+  },
+  {
+   "author": "hawkfish",
+   "created_at": "2025-10-17T17:20:47Z",
+   "body": "> Might [this change](https://github.com/duckdb/duckdb/pull/19413) address this issue?\n\nUnfortunately no, that was a narrow fix for a specific case. The situation here is that the environment is using a TZ that ICU does not understand.\n\nIn general, it is a Good Idea to set the TZ explicitly rather than relying on the environment.  In this case, `UTC-0800` does not have DST, which may be causing some of the calculation issues. Moreover, I believe ICU will default to `UTC+0000` if it doesn't understand the environment's, which may also be the source of the discrepancy."
+  },
+  {
+   "author": "hawkfish",
+   "created_at": "2025-10-17T17:27:43Z",
+   "body": "The names of the non-DST offset TZs in ICU are `Etc/GMT+H` so the equivalent to what is in your environment is `Etc/GMT-8`. But we are not translating those formats."
+  },
+  {
+   "author": "jraymakers",
+   "created_at": "2025-10-17T17:28:26Z",
+   "body": "I see, thanks for clarifying.\n\nI agree that setting the TZ explicitly may be called for here. It would be nicer, of course, if ICU could gather a TZ from the environment that it understands when in the Wasm environment."
+  },
+  {
+   "author": "hawkfish",
+   "created_at": "2025-10-17T17:38:40Z",
+   "body": "Some of our ICU issues might be resolved by moving to a more modern version (we are still on 66.0) but the TZ data is shared by all versions, so this is just not a name that ICU supports. It does seem to have a Wikipedia entry, so we could probably just add them at ICU startup (there's only 27 offsets)."
+  },
+  {
+   "author": "jraymakers",
+   "created_at": "2025-10-19T16:20:08Z",
+   "body": "I think forms like \"UTC-0800\" are technically [considered](https://en.wikipedia.org/wiki/UTC_offset#Time_zones_and_time_offsets) \"UTC offsets\", not, strictly speaking, \"time zones\", because they don't correspond to a geographical area. That may explain why they're not in ICU's list. It certainly would be convenient to be able to use them as \"time zones\", though."
+  },
+  {
+   "author": "hawkfish",
+   "created_at": "2025-10-19T18:48:14Z",
+   "body": "ICU does have \"offset\" time zones (`Etc/GMT±N`). I'd be worried about people not realising that the DST rules were not being applied, which is why I think they should be explicit. Its easy enough to translate the offsets to the ICU TZs, but I'm not sure hiding this issue is in the user's best interests?"
+  },
+  {
+   "author": "hawkfish",
+   "created_at": "2025-10-20T19:32:31Z",
+   "body": "OK I did a bit more digging, and ICU is _very_ dependent on TZ names being Olson IDs.  I think the best one can hope for here is to catch it at initialization time and translate it.\n\n\nI can put this in but I have been unable to find a way to test it, so I may need you to try it. "
+  },
+  {
+   "author": "jraymakers",
+   "created_at": "2025-10-20T20:38:03Z",
+   "body": "If you can get it into a release of duckdb-wasm, I can test it.\n\nIf you want to test before that, I can probably test it from a duckdb branch, by building duckdb-wasm against that branch."
+  },
+  {
+   "author": "hawkfish",
+   "created_at": "2025-10-20T21:15:28Z",
+   "body": "To test it I made a more general fix, which allows us to start adding aliases like this. The initialization code and the `SET` code now allow this UTC offset syntax when it can be mapped to Olson time zones."
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "duckdb/duckdb-wasm",
+  "default_branch": "main",
+  "commit_sha": "a9a38bb480c1b44bb90e6fa35e731c572e8868ef",
+  "as_of": "2024-10-15T15:06:24Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_duckdb_duckdb-wasm_1897"
+}

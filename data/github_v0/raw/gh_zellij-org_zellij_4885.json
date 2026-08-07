@@ -1,0 +1,91 @@
+{
+ "repo": "zellij-org/zellij",
+ "number": 4885,
+ "url": "https://github.com/zellij-org/zellij/issues/4885",
+ "title": "# [Windows] Multi-line paste broken -- newlines treated as Enter",
+ "state": "closed",
+ "labels": [
+  "suspected bug"
+ ],
+ "reporter": "reporter",
+ "created_at": "2026-03-23T07:12:28Z",
+ "closed_at": "2026-07-07T12:41:45Z",
+ "body": "<!-- Issues with the Zellij UI / behavior / crash -->\n\n## Issue description\n\nWhen running zellij natively on Windows (e.g. in Windows Terminal), pasting multi-line text causes each line to be submitted separately — as if I'm hitting Enter after every line. This completely breaks pasting code blocks, multi-line commands, or anything with newlines into apps running inside zellij (shells, editors, TUI apps like opencode, etc.).\n\nThe same paste works perfectly when running the application directly in Windows Terminal without zellij.\n\n**Basic information**\n\n`zellij --version`: 0.44.0 (built from source with Windows support)\n\n`ver` (Windows): Windows 11 (Build 26220)\n\n## Minimal reproduction\n\n1. Open Windows Terminal (or any terminal where the `TERM` environment variable is **not** set — this is the default on Windows)\n2. Run `zellij`\n3. Inside zellij, open a shell (or any app that accepts multi-line input, e.g. `cat`)\n4. Copy some multi-line text to clipboard:\n   ```\n   line one\n   line two\n   line three\n   ```\n5. Paste (Ctrl+V) into the app\n\n**Expected**: All three lines appear as a single paste operation (the inner app sees them wrapped in bracketed paste sequences)\n\n**Actual**: Each newline triggers a real Enter keypress, causing each line to be submitted/executed separately\n\n## Other relevant information\n\n### What's going on\n\nZellij on Windows has two stdin input paths, chosen at `stdin_handler.rs:94`:\n\n```rust\nlet use_vt_reader = std::env::var(\"TERM\").is_ok() && enable_vt_input();\n```\n\n| Condition      | Input Path         | Read Method                      | Paste Support                       |\n| -------------- | ------------------ | -------------------------------- | ----------------------------------- |\n| `TERM` not set | **Native Console** | `ReadConsoleInput` via crossterm | No `Event::Paste`                   |\n| `TERM` is set  | VT Reader          | `ReadFile` raw bytes via termwiz | Parses `\\x1b[200~...\\x1b[201~`     |\n\nIn most Windows environments (Windows Terminal, cmd.exe, PowerShell), `TERM` is **not set**, so zellij uses the native console path. On this path:\n\n1. Zellij enables bracketed paste mode by sending `\\x1b[?2004h` to the outer terminal\n2. Windows Terminal receives this and wraps pasted content with `\\x1b[200~...\\x1b[201~`\n3. But zellij reads input via `ReadConsoleInput` (native console API), not raw VT bytes\n4. `ReadConsoleInput` delivers each character as an individual `KEY_EVENT` — including newlines\n5. Crossterm converts each `KEY_EVENT` to `Event::Key` — `Event::Paste` is **never produced** on this path (crossterm only recognizes bracketed paste sequences on the Unix parse path)\n6. Every `\\n` in the paste becomes `Event::Key(Enter)` → forwarded to the PTY as a real Enter\n\nThe paste handling code in `input_handler.rs` (lines 176-227) is correct — it just never gets triggered because crossterm never produces the paste event on the native console path.\n\n### Affected code locations\n\n| File                                               | Relevance                                       |\n| -------------------------------------------------- | ----------------------------------------------- |\n| `zellij-client/src/stdin_handler.rs:94`            | `TERM` check decides input path                 |\n| `zellij-client/src/stdin_handler_windows.rs:17-63` | Native console event loop (no paste detection)  |\n| `zellij-client/src/input_handler.rs:151-227`       | Paste event handling (correct but unreachable)   |\n| `zellij-server/src/panes/terminal_pane.rs:237-248` | Bracket stripping for non-bracketed-paste panes |\n\n### Workaround\n\nSet `TERM` as a persistent environment variable so zellij always uses the VT reader path:\n\n```powershell\n[Environment]::SetEnvironmentVariable('TERM', 'xterm-256color', 'User')\n```\n\nThis makes zellij use `ENABLE_VIRTUAL_TERMINAL_INPUT` + termwiz's `InputParser`, which correctly parses bracketed paste sequences from the raw VT byte stream. Note: this changes ALT key behavior from modifier flags to ESC-prefix encoding, which may affect some keybindings.\n\n### Suggested fix\n\nThe simplest fix would be to detect Windows Terminal (via `WT_SESSION` env var) and automatically use the VT reader path, even when `TERM` isn't set:\n\n```rust\n#[cfg(windows)]\nlet use_vt_reader = (std::env::var(\"TERM\").is_ok()\n    || std::env::var(\"WT_SESSION\").is_ok())  // Windows Terminal\n    && enable_vt_input();\n```\n\nRelated: #3865 (similar symptom reported from the SSH client side)",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2026-03-23T09:20:27Z",
+   "body": "Thanks for the report, will look into this."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2026-05-14T18:56:03Z",
+   "body": "+1 for this bugfix. This is the #1 issue preventing me from using zellij for everything in my CLI."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2026-06-17T07:24:38Z",
+   "body": "Has this now been fixed?"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2026-06-17T20:05:18Z",
+   "body": "Please fix this, this is the only thing that prevents me from using Zellij 🙏🏼"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2026-06-19T07:30:37Z",
+   "body": "Please fix this, as I am also having a lot of trouble due to this bug."
+  },
+  {
+   "author": "participant6",
+   "created_at": "2026-06-19T19:45:17Z",
+   "body": "+1 please"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2026-06-20T10:45:49Z",
+   "body": "Given the amount of attention this issue is getting, I guess it's worth saying here : I'm working on this issue at the moment. It's not a trivial fix though (the workaround suggested by @reporter is not enough). I'll keep you guys posted."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2026-06-21T04:46:42Z",
+   "body": "@participant1 Much appreciation to you for your diligence and commitment to delivering quality code 🙏"
+  },
+  {
+   "author": "participant7",
+   "created_at": "2026-06-27T05:51:12Z",
+   "body": "I was suffering from this exact issue and was loving zellij\n\nHere is a work-around for this bug using a helper tool.\nhttps://github.com/participant7/PasteThrough"
+  },
+  {
+   "author": "participant8",
+   "created_at": "2026-07-05T14:23:30Z",
+   "body": "\nC# developer, not Rust. AI was used in the investigation. Line references below are against v0.44.3.\n\nTested the `WT_SESSION` extension proposed in the \"Suggested fix\" section of the issue, applied to `zellij-client/src/stdin_handler.rs:33`, with `read_from_stdin` byte-logged at `zellij-client/src/os_input_output.rs:177`. Running under Windows Terminal + pwsh 7.6.3.\n\n## What flows through the read channel\n\n- **OSC replies from WT arrive intact.** Startup query batch (`\\x1b[14t`, palette register queries, ...) generates ~7KB of `\\x1b]4;N;rgb:.../.../...` responses, streamed as raw bytes.\n- **Typed regular characters arrive as ASCII.** Typing `hello` produces individual reads of `[68] [65] [6C] [6C] [6F]`.\n\n## What doesn't reach the read channel\n\n- **Arrow keys.** Pressing Up produces no bytes. `\\x1b[A` never appears.\n- **Alt+letter.** Pressing Alt+n produces no bytes at all. Alt+n is the default new-pane keybind, so functionality that worked on the native-console path is gone under this patch.\n- **Bracketed paste wrapper.** Pasting a three-line block produces two reads: `[6C 69 6E 65 31]` and `[0D 6C 69 6E 65 32 0D 6C 69 6E 65 33]`. Raw chars with `\\r` between lines. No `\\x1b[200~` or `\\x1b[201~` anywhere in the log.\n\nThe paste result directly bears on this issue: with the wrapper absent from the raw byte stream, termwiz's `InputParser` has no bracketed-paste sequence to recognize, even though it would if the wrapper were present (as it does on Unix). So the \"termwiz's `InputParser`... correctly parses bracketed paste sequences from the raw VT byte stream\" step of the suggested fix doesn't hold under Windows Terminal.\n\n## Possible mechanism\n\n`read_from_stdin` calls `std::io::stdin().lock().fill_buf()`, which on Windows does `ReadFile` on the standard input handle. Under Windows Terminal, that handle is a ConPTY endpoint. The observed pattern (OSC replies and typed chars in the byte stream; arrow keys, Alt+letter, and paste wrappers absent) is consistent with ConPTY delivering typed-char and OSC data through the `ReadFile` channel while routing keyboard-event data (function keys, modifier-keyed events, and likely the bracketed-paste wrapper) through the `ReadConsoleInput` INPUT_RECORD queue instead. Setting `ENABLE_VIRTUAL_TERMINAL_INPUT` on the client console mode doesn't appear to unify the two channels under WT.\n\nThe code comment at `stdin_handler.rs:22-31` says the VT reader path bypasses \"conpty's lossy VT->INPUT_RECORD translation.\" This holds under Alacritty (where zellij is spawned through a raw pipe, so `stdin` really is a raw byte stream), but empirically not under Windows Terminal.\n\nHappy to gather more debug data if useful.\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2026-07-06T12:57:27Z",
+   "body": "@participant7 Thanks for providing a workaround solution while we're working on a fix.\n\n@participant8 Thanks for sharing your investigation. \n\nI've come to the conclusion that the native input path does not provide enough support for advanced use cases and that it's better to move Windows Terminal to the VT input path. While this was the original suggestion here, there was a slight caveat in that the input path gate was checked in 2 different locations. Failing to update both checks to include WT_SESSION in addition to TERM would produce unreliable results (because of setup code that would override some options).\n\nI've opened a PR with the fix. As noted in the PR, the new path makes multi-line pasting available for applications/shells that support it, namely wsl/bash, vim, Claude CLI and other TUIs that have proper bracketed paste support. Notably, cmd, pwsh and nushell do not support bracketed paste (with or without zellij). "
+  },
+  {
+   "author": "participant3",
+   "created_at": "2026-07-06T14:40:16Z",
+   "body": "@participant1 Thank you for all of your work here! Regarding Nushell support, as a domain expert do you think you have a few moments to test a custom build with the branch from https://github.com/crossterm-rs/crossterm/pull/1030 similar to the successful test from [this comment](https://github.com/crossterm-rs/crossterm/pull/1030#issuecomment-3893112525)? The maintainer has explicitly [called](https://github.com/crossterm-rs/crossterm/pull/1030#issuecomment-4734054588) for Windows users to test the improved ANSI support since they no longer use Windows. That library appears to be foundational and the next release with that change included would fix issues/remove workarounds for other projects as well like Codex, Helix editor, etc."
+  },
+  {
+   "author": "participant9",
+   "created_at": "2026-07-07T01:08:44Z",
+   "body": "Hi, I am the author of crossterm-rs/crossterm#1030.\n\n- The Nushell issue is actually crossterm-rs/crossterm#1030. See also nushell/nushell#18153.\n- Helix is ​​irrelevant as it has moved away from crossterm (helix-editor/helix#13307). Therefore, it is no longer affected by this issue.\n\nI can't imagine when the new version containing crossterm-rs/crossterm#1030 will be released on crates.io.\n\n- The maintainer is reluctant to merge that PR.\n- There are very few activities by members that can publish crossterm on crates.io (crossterm-rs/crossterm#1023)\n\nOf course, I would appreciate it if you could review crossterm-rs/crossterm#1030, but considering these circumstances, I believe it might be better to consider migrating to https://github.com/helix-editor/termina like Helix, if possible.\n\nOr, if it's okay for the installation from crates.io to be broken, you should be able to fix the binary release and other issues simply by configuring `patch.crates-io`.\n\n```toml\n[patch.crates-io]\ncrossterm = { git = \"https://github.com/crossterm-rs/crossterm\", rev = \"03bb4f26610a5904b8e875fcb610d16bf7d00814\" }\n```\n\nhttps://github.com/participant9/arf#build-from-source"
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "zellij-org/zellij",
+  "default_branch": "main",
+  "commit_sha": "a6a6440614efb1cddbc51f01633787cdd117056c",
+  "as_of": "2026-03-23T07:12:28Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_zellij-org_zellij_4885"
+}

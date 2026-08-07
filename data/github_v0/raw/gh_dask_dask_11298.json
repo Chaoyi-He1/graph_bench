@@ -1,0 +1,101 @@
+{
+ "repo": "dask/dask",
+ "number": 11298,
+ "url": "https://github.com/dask/dask/issues/11298",
+ "title": "Dask 2024.8 started failing when indexing result of numpy.flatnonzero",
+ "state": "closed",
+ "labels": [
+  "array"
+ ],
+ "reporter": "reporter",
+ "created_at": "2024-08-10T22:38:43Z",
+ "closed_at": "2024-08-12T17:00:01Z",
+ "body": "<!-- Please include a self-contained copy-pastable example that generates the issue if possible.\r\n\r\nPlease be concise with code posted. See guidelines below on how to provide a good bug report:\r\n\r\n- Craft Minimal Bug Reports http://matthewrocklin.com/blog/work/2018/02/28/minimal-bug-reports\r\n- Minimal Complete Verifiable Examples https://stackoverflow.com/help/mcve\r\n\r\nBug reports that follow these guidelines are easier to diagnose, and so are often handled much more quickly.\r\n-->\r\n\r\n**Describe the issue**:\r\n\r\nscikit-image's CI started failing with Dask 2024.8 when it worked fine before with 2024.7. As described in https://github.com/scikit-image/scikit-image/issues/7491, we traced the failure \r\n```plain\r\nValueError: Array chunk size or shape is unknown. \r\n```\r\nto a line that tries to index the result of a `numpy.flatnonzero` operation. See the MCVE below which fails for 2024.8 but works fine for 2024.7. \r\n\r\n**Minimal Complete Verifiable Example**:\r\n\r\n```python\r\nimport numpy as np\r\nimport dask.array as da\r\n\r\nhist = da.from_array(np.arange(256, dtype=int), chunks=(256,))\r\nresult = np.flatnonzero(hist)\r\nresult[[0, -1]]  # ValueError: Array chunk size or shape is unknown. \r\n```\r\n\r\n**Anything else we need to know?**:\r\n\r\nFrom reading the [docs that are pointed out by the error message](https://<redacted-host>/en/latest/array-chunks.html#unknown-chunks), it seems this behavior might not be entirely unexpected and this might not actually be a bug. However, I'm unsure why it worked before with 2024.7. And since I currently don't really now how to address this on scikit-image's side without adding an extra code path to support Dask 2024.8, I'd be grateful for feedback and context.\r\n\r\nSorry if I missed any existing issues or docs that already describe or explain this.\r\n\r\n**Environment**:\r\n\r\n- Dask version: 2024.8.0\r\n- Python version: 3.12.0\r\n- Operating System: Linux 6.10.3-arch1-1 (64-bit)\r\n- Install method (conda, pip, source): pip\r\n",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2024-08-12T09:45:14Z",
+   "body": "Thanks for the report.\r\n\r\nYeah, unknown chunks are annoying. We can indeed make this work, since there is only a single chunk along the axis with unknown chunks, but we would still raise if you have more than one chunk there. The previous implementation actually let this through, but returned incorrect results, i.e.\r\n\r\n```\r\nhist = da.from_array(np.arange(256, dtype=int), chunks=(128, ))\r\nresult = np.flatnonzero(hist)\r\nresult[[0, -1]].compute()\r\n```\r\n\r\nthis returned \r\n\r\n```\r\n array([  1, 127])\r\n```\r\n\r\nwhich is obviously incorrect. So your case will work again, but as soon as you have more than one chunk, it will continue to raise. computing the chunk sizes is the solution for this case"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-08-29T10:18:28Z",
+   "body": "Is there a reason why `compute_chunk_sizes()` cannot be invoked automatically instead of raising the error message?\r\nIt is quite common to have code targeted at NumPy, that we want to run via dask with minimal changes."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-08-29T11:01:43Z",
+   "body": "We've decided to remove the unofficial dask support & test's for now from scikit-image (https://github.com/scikit-image/scikit-image/pull/7509). Thanks for the feedback @participant1!"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-08-29T11:13:15Z",
+   "body": "Just to put a finer point on it: we removed the failing test, we did not change any of the code paths that previous allowed dask arrays through (they still do)."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-08-29T11:22:42Z",
+   "body": "We are moving away from implicit computes in Dask, this can have heavy performance penalties, so it's unlikely that we will add that back in again. This should be an explicit call by users (scikit-image in this case), but I can understand if you don't necessarily want to do this."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-08-29T11:35:02Z",
+   "body": "Perhaps this is the more relevant question for us: does dask (aim to) support the Array API? If so, that is a path that skimage can follow, but it still would not involve explicit dask-specific code such as `compute_chunk_sizes`.\r\n\r\nIf the decision here implies Array API incompatibility, then that should raise some warning flags."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-08-29T12:16:11Z",
+   "body": "Dask is explicitly mentioned as a target at https://data-apis.org/array-api/latest/\r\n\r\nHowever, the following code no longer works:\r\n\r\n```\r\nimport numpy as np\r\nimport dask.array as da\r\nimport array_api_compat\r\n\r\nd = da.from_array(np.arange(256), chunks=(12,))\r\nnx = array_api_compat.get_namespace(d)\r\nnx.flatnonzero(d)[[0, -1]]\r\n```\r\n\r\nI am not yet that familiar with the Array API, so I will chat to @participant3 here at EuroSciPy to find out whether my concern is justified, and perhaps ping @participant5 to help me understand whether https://github.com/data-apis/array-api-compat does, as the README seems to indicate, fully support Dask."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-08-29T12:28:23Z",
+   "body": "This looks unrelated to array-api-compat to me - the following also fails:\r\n\r\n```python\r\nimport dask.array as da\r\nimport numpy as np\r\nd = da.from_array(np.arange(256), chunks=(12,))\r\nda.flatnonzero(d)[[0, -1]]\r\n```\r\n\r\nNote that `flatnonzero` is not in the standard, so this seems to be just a Dask regression (perhaps deliberate? EDIT: read above)."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-08-29T12:32:47Z",
+   "body": "Should `nx` then have a `flatnonzero` member?"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-08-29T12:36:10Z",
+   "body": "I think you are looking for [this part of the array-api-compat](https://data-apis.org/array-api-compat/dev/special-considerations.html#special-considerations) docs:\r\n\r\n> - Avoid Restricting Behavior that is Outside the Scope of the Standard. All array libraries have functions and behaviors that are outside of the scope of what is specified by the standard. These behaviors should be left intact whenever possible, unless the standard explicitly disallows something. This means\r\n> \t-\tAll namespaces are extended with wrapper functions. You may notice the extensive use of import * in various files in array_api_compat. While this would normally be questionable, this is the [one actual legitimate use-case for import *](https://peps.python.org/pep-0008/#imports), to re-export names from an external namespace.\r\n> \t- All wrapper functions pass **kwargs through to the wrapped function.\r\n> \t- Input types not supported by the standard should work if they work in the underlying wrapped function (for instance, Python scalars or np.ndarray subclasses).\r\n> \r\n> By keeping underlying behaviors intact, it is easier for libraries to swap out NumPy or other array libraries for array-api-compat, and it is easier for libraries to write array library-specific code paths.\r\n\r\nSo yes, `nx` should have the same `flatnonzero` as `da`."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-08-29T12:38:45Z",
+   "body": "This would make sense to me for a library that explicitly supports the Array API, but I don't think dask does (there's no `__array_namespace__`), and therefore I suppose it becomes `array-api-compat`s responsibility to filter out functions that don't adhere to the specification, or won't work when called from `nx.*`."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-08-29T12:42:04Z",
+   "body": "First of all, please note that the above example only worked in the past because there was only one chunk. As soon as you move to a multi chunk array, you saw the same exception on older dask versions, i.e. this never actually worked. Real dask arrays always have more than one chunk. I strongly recommend to use multi chunked arrays (two are typically sufficient) if you write any dask tests.\r\n\r\n---\r\n\r\n> Perhaps this is the more relevant question for us: does dask (aim to) support the Array API?\r\n\r\nThere hasn't been an explicit decision about this. I'm not aware of any dask maintainer who is working on compatibility to Array API and this is certainly not something that will come for free. While dask is being mentioned on the Array API documentation page, I do not know which (if any) maintainer participated in the definition of that spec. To the best of my knowledge, we are currently not fully compatible and unless somebody is stepping up and is willing to invest serious time into this, I doubt it is going to happen.\r\n\r\nSo far, when we encountered requests or issues raised about Array API compatibility, this often affected cases that are notoriously hard to deal with using a distributed or lazy array. Some things are free on a numpy array that are prohibitively expensive on a chunked, distributed array (ravel is a nice example and slicing is also highly nontrivial just to name some examples).\r\n\r\nCompatibility alone might be achievable but in our experience these implicit compute patterns are strong anti patterns [1] that are surprising people and are actively harmful in many cases. We are preferring a non surprising and easy to use API and are willing to sacrifice compatibility for this if necessary.\r\nNote, that this kind of problem is even explicitly mentioned (to some extent) in the Array API about lazy implementations, see https://data-apis.org/array-api/latest/design_topics/lazy_eager.html\r\n\r\nI'm also not deeply familiar with the Array API spec but as the above page already mentions, Array API is not trying to deal with the different semantics around lazy arrays and I'm not sure where this is actually breaking down.\r\n\r\n[1] Think about an array of a couple TB in a remote storage that is being loaded entirely just to allow simple indexing as shown in this example. If we called `compute_chunk_sizes` ourselves, all of this would happen (and cost money) just because a user did `arr[[0, 1]]`"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-08-29T12:44:08Z",
+   "body": ">  it becomes array-api-compats responsibility to filter out functions that don't adhere to the specification\r\n\r\n`flatnonzero` is not in the standard, so I don't think this counts as 'not adhering to the specification'. From [the spec](https://data-apis.org/array-api/draft/purpose_and_scope.html#conformance):\r\n\r\n> A conforming implementation of the array API standard must provide and support all the functions, arguments, data types, syntax, and semantics described in this specification.\r\n> \r\n> A conforming implementation of the array API standard may provide additional values, objects, properties, data types, and functions beyond those described in this specification."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-08-29T12:49:16Z",
+   "body": "Thank you for that context @participant4 :<nick>:. This makes it clear what happens now:\r\n\r\n(1) `skimage` cannot be assumed to be compatible with `dask` arrays without additional work, and therefore we shall not test against it;\r\n(2) `skimage` will continue our work on allowing dispatching via `spatch`, and this may enable benefiting from dask via `dask-image` or other backend implementations;\r\n(2) `api-array-compat` may want to make some changes to make their dask namespace's behavior less surprising. From @participant3's comment above it's not 100% clear whether they'd want to do that, but my hunch is that it's necessary.\r\n\r\nThanks all for your input! I consider this issue resolved from the skimage perspective."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2024-09-10T17:43:54Z",
+   "body": "Just to be clear, there have been Dask developers involved in the array API (for instance, @participant6). There have been discussions about adding array API support to Dask itself (most notably at https://github.com/dask/dask/pull/8750, and there's also https://github.com/dask/dask/issues/10994). For now, array-api-compat wraps libraries like Dask that are close to the array API but have various differences. Lazy arrays are definitely something that we care about in the array API and have tried to make allowances for. For instance, APIs in the standard that have value-dependent shapes are optional (like boolean indexing and unique). If you feel that there are issues with the array API that would prevent Dask from adopting it, please bring them up in the array-api repo. "
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "dask/dask",
+  "default_branch": "main",
+  "commit_sha": "1ba9c5bf9d0b005b89a04804f29c16e5f0f2dadf",
+  "as_of": "2024-08-10T22:38:43Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_dask_dask_11298"
+}

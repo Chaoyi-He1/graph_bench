@@ -1,0 +1,151 @@
+{
+ "repo": "fluent/fluent-bit",
+ "number": 6933,
+ "url": "https://github.com/fluent/fluent-bit/issues/6933",
+ "title": "S3 output intermittently fails with errors SignatureDoesNotMatch, broken pipe, or HTTP version error",
+ "state": "closed",
+ "labels": [
+  "status: waiting-for-triage"
+ ],
+ "reporter": "reporter",
+ "created_at": "2023-02-28T23:46:01Z",
+ "closed_at": "2023-03-15T12:26:01Z",
+ "body": "## Bug Report\r\n\r\n**Describe the bug**\r\nI have Fluent Bit deployed in a kubernetes cluster sending a large volume of logs to an S3 bucket. Most logs are transmitted successfully, however Fluent Bit regularly logs the \"PutObject request failed\" error. (This is odd because `use_put_object` is set to `false`) Fluent Bit logs the HTTP 403 response it got from S3, which has this error text: \"The request signature we calculated does not match the signature you provided. Check your key and signing method.\"\r\n\r\nThere are also a lot of \"broken pipe\" errors although it is unclear if they are related.\r\n\r\nEven more bizarrely, there are intermittent HTTP 505 Version not supported errors. I have no idea how these could be intermittent, surely the HTTP version is always the same?\r\n\r\n**To Reproduce**\r\n- Rubular link if applicable: N/A\r\n- Example log message if applicable:\r\n```\r\n[2023/02/28 23:16:52] [error] [output:s3:s3.1] PutObject request failed\r\n[2023/02/28 23:16:52] [error] [output:s3:s3.1] PutObject API responded with error='SignatureDoesNotMatch', message='The request signature we calculated does not match the signature you provided. Check your key and signing method.'\r\n\r\n[2023/02/28 23:16:52] [error] [/src/fluent-bit/src/flb_http_client.c:1201 errno=32] Broken pipe\r\n\r\n[2023/02/28 23:31:05] [error] [output:s3:s3.1] PutObject API responded with error='HttpVersionNotSupported', message='The HTTP version specified is not supported.'\r\n[2023/02/28 23:31:05] [error] [output:s3:s3.1] Raw PutObject response: HTTP/1.1 505 HTTP Version not supported\r\n```\r\n- Steps to reproduce the problem:\r\nI'm afraid I don't have a concise set of steps to reproduce, our environment is fairly large and complex and this issue only seems to appear under heavy load.\r\n\r\n**Expected behavior**\r\nFluent Bit sends log files to S3 bucket\r\n\r\n**Screenshots**\r\nN/A\r\n\r\n**Your Environment**\r\n* Version used: 2.0.9\r\n* Configuration:\r\n```\r\n    [OUTPUT]\r\n        Name s3\r\n        Match *\r\n        bucket ${log_bucket_name}\r\n        region ${log_bucket_region}\r\n        total_file_size 10M\r\n        s3_key_format /${cluster_name}/$TAG/%Y/%m/%d/%H/%M/%S\r\n        use_put_object false\r\n```\r\n* Environment name and version (e.g. Kubernetes? What version?): AWS EKS cluster, Kubernetes 1.22\r\n* Server type and version: EC2 instances of various types\r\n* Operating System and version: Bottlerocket 1.12.0\r\n* Filters and plugins: tail input, modify filter, kubernetes filter\r\n\r\n**Additional context**\r\nI know that Fluent Bit retries requests to S3 but I am seeing occasional messages like this:\r\n```\r\n[2023/02/28 23:30:56] [ warn] [output:s3:s3.1] Chunk file failed to send 5 times, will not retry\r\n```\r\nSo I am concerned that I am losing log messages.\r\n\r\nI realize that these could be 3 different issues however they seem to occur together and I'm wondering if they could have a common cause.\r\n\r\nIncidentally, I found this comment (over a year old) which reports the same behavior: https://github.com/fluent/fluent-bit/issues/4505#issuecomment-1000376903",
+ "comments": [
+  {
+   "author": "reporter",
+   "created_at": "2023-03-07T23:51:08Z",
+   "body": "I've stopped seeing these errors after I made a change to the `s3_key_format` config value. I originally had `/${cluster_name}/$TAG/%Y/%m/%d/%H/%M/%S` which is very close to the default value (`/fluent-bit-logs/$TAG/%Y/%m/%d/%H/%M/%S`). After I changed this to `/${cluster_name}/%Y/%m/%d/%H/$TAG[4]/$UUID.gz`, all of the errors went away. (I also tested this without compression to eliminate that variable)\r\n\r\nIt occurs to me that the primary effect of the change to `s3_key_format` was to make the keys somewhat shorter. The keys are around 200 characters, well under the S3 max key length of 1024 characters. However the nature of the error messages suggests that the S3 output plugin was sending malformed HTTP requests somehow.\r\n\r\nThe cause of these problems seems likely to be difficult to track down and apparently it isn't very common since others aren't reporting it. If I have time I will try to capture some of the raw HTTP requests to see if they shed any light."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-03-08T15:51:34Z",
+   "body": "I'm seeing the same issue. I'm also suspecting the `s3_key_format` and more specifically, using `$TAG` within.\r\n```\r\n[OUTPUT]\r\n    Name             s3\r\n    Match            *\r\n    region           ${AWS_REGION}\r\n    bucket           ${ORGANIZATION}-${ENVIRONMENT}-event-data\r\n    total_file_size  32M\r\n    upload_timeout   1m\r\n    retry_limit      2\r\n    use_put_object   On\r\n    compression      gzip\r\n    json_date_key    false\r\n    s3_key_format    /${ORGANIZATION}-${ENVIRONMENT}-ads-server-$TAG/%Y/%m/%d/%H.%M.%S.$UUID.gz\r\n```\r\nMy suspicion on `$TAG` comes from seeing these results. `click` and `impression` are the only expected tags. Possibly other control chars are being introduced to the object prefix which makes S3 calls fail?\r\n```\r\norg-prod-ads-server-click/\r\norg-prod-ads-server-clickn/\r\norg-prod-ads-server-impression%02%01/ <- actually control chars\r\norg-prod-ads-server-impression/\r\norg-prod-ads-server-impression00Z/\r\norg-prod-ads-server-impression28Z/\r\norg-prod-ads-server-impression59Z/\r\n```"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-03-09T14:00:26Z",
+   "body": "I've just come across the same issue as @participant1 too, and am getting similar upload problems to an S3 compatible endpoint. I have:\r\n\r\n```\r\ns3_key_format /$TAG/%Y/%m/%d/%H_%M_%S.$UUID.gz\r\n```\r\n\r\n$TAG should be `project.example` but sometimes it is being written out by the s3 plugin as `project.exampler`, `project.exampled`, `project.exampleost` etc. I have the same output going to the file plugin that also uses the $TAG and none of these corrupted tags end up on-disk, so my tag variable does actually old the expected value! Looks to me like a memory corruption bug!\r\n"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-03-09T14:12:15Z",
+   "body": "I wonder if the issue is that [s3_put_object](https://github.com/fluent/fluent-bit/blob/6ee3b8a05d2cae0b2159175e8956bfdd5c2c61aa/plugins/out_s3/s3.c#L1321) treats tag as a NULL terminated string whereas its callers clearly receive a buffer with its length explicitly stated.\r\n\r\nI think modifying that function to expect the caller to provide the length and make a local copy would fix the problem.\r\n\r\nAt the end of the chain there's `flb_get_s3_key` who also expects the buffer to be NULL terminated so we could fix it at the root or at the middle, it doesn't really matter in this case because it's a PoC.\r\n\r\nI doubt I'll be able to dedicate time to this issue myself but if anyone wants to take a stab feel free to contact me for assistance either in the  issue or in slack."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-03-09T14:39:50Z",
+   "body": ">I wonder if the issue is that [s3_put_object](https://github.com/fluent/fluent-bit/blob/6ee3b8a05d2cae0b2159175e8956bfdd5c2c61aa/plugins/out_s3/s3.c#L1321) treats tag as a NULL terminated string whereas its callers clearly receive a buffer with its length explicitly stated.\r\n\r\nI think this tracks. The control chars and date fragments seemed like they were coming from raw fluent message pack. I originally suspected the encoding in my client.\r\n\r\nFor what it's worth, I switched back to the [aws-for-fluent-bit](https://github.com/aws/aws-for-fluent-bit) image in the meantime."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-03-09T14:57:20Z",
+   "body": "@participant4 would you be able to patch that?"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-03-09T16:31:47Z",
+   "body": "> I wonder if the issue is that [s3_put_object](https://github.com/fluent/fluent-bit/blob/6ee3b8a05d2cae0b2159175e8956bfdd5c2c61aa/plugins/out_s3/s3.c#L1321) treats tag as a NULL terminated string whereas its callers clearly receive a buffer with its length explicitly stated.\r\n\r\nThat looks right to me yeah - presumably the only reason this works at all in some circumstances is because the buffer is initially zeroed. But that suggests that the buffer is reused at some point and not zeroed, right? It looks to be using calloc, so doesn't seem so.\r\n\r\nIs this actually related to rewrite_tag?  Is everyone seeing this using rewrite_tag?\r\n\r\n> \r\n> I think modifying that function to expect the caller to provide the length and make a local copy would fix the problem.\r\n\r\nif I'm following it correctly, the tag buffer is expected to be NULL terminated in a few other place too, such as error messages: https://github.com/fluent/fluent-bit/blob/6ee3b8a05d2cae0b2159175e8956bfdd5c2c61aa/plugins/out_s3/s3.c#L1211-L1214 So this is going to be a little more complicated.\r\n\r\n\r\n\r\n"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2023-03-09T19:21:59Z",
+   "body": "@participant3 Ack. "
+  },
+  {
+   "author": "participant4",
+   "created_at": "2023-03-09T19:28:56Z",
+   "body": "I will investigate if this report is related: https://github.com/aws/aws-for-fluent-bit/issues/541"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2023-03-09T21:30:46Z",
+   "body": "@participant3 since we switched to event_chunk, tags are now always null terminated because they are SDS strings:\r\n* https://github.com/fluent/fluent-bit/blob/master/src/flb_event.c#L42\r\n* https://github.com/fluent/fluent-bit/blob/master/src/flb_sds.c#L69\r\n\r\nI think something else in the `flb_get_s3_key` code is probably making a wrong assumption... haven't figure out what it is yet..."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-03-09T21:43:50Z",
+   "body": "Could it be that when a chunk is added to the upload queue by [add_to_queue](https://github.com/fluent/fluent-bit/blob/6ee3b8a05d2cae0b2159175e8956bfdd5c2c61aa/plugins/out_s3/s3.c#L1564) a raw copy of the tag is made in line [1584](https://github.com/fluent/fluent-bit/blob/6ee3b8a05d2cae0b2159175e8956bfdd5c2c61aa/plugins/out_s3/s3.c#L1584) with a buffer that's insufficient to hold the terminator? "
+  },
+  {
+   "author": "participant4",
+   "created_at": "2023-03-09T21:49:07Z",
+   "body": "@participant3 Oh my... thanks for finding this for me... I would have spent hours and probably not found it...\r\n\r\nI will submit a fix ASAP. "
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-03-09T21:51:24Z",
+   "body": "Glad to be of help, it seems like we need to patch this in master, 2.0 and 1.9, will you send three patches or do you want someone else to backport it once you send it to master?"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2023-03-09T21:53:43Z",
+   "body": "@participant3 I will submit both PRs ASAP"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2023-03-09T21:55:15Z",
+   "body": "On a slightly related note, I'm also working on completely deleting and rewriting the s3 upload queue code... since its buggy and could be simplified a lot"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-03-09T21:56:22Z",
+   "body": "Awesome, let me know if you need anything on my end =)"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2023-03-09T21:57:04Z",
+   "body": "Oh so this came up in 2.x because I made `preserve_data_ordering` default to `On`."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-03-09T21:58:17Z",
+   "body": "Yes but I manually checked the code in 1.9 and that part matches so I think we should patch it as well.\r\n\r\nEdit: Sorry, I think i misunderstood you, it's too late, I should be sleeping."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2023-03-09T22:37:11Z",
+   "body": "@participant3  Here you go. \r\n\r\nI also bundled in some other minor improvements that I thought of, let me know if you want me to remove them, they are:\r\n* always use `flb_calloc` instead of `flb_malloc`\r\n* use strncpy instead of strcpy in `flb_get_s3_key `code\r\n\r\nPull Requests:\r\n* master: https://github.com/fluent/fluent-bit/pull/6988\r\n* 1.9: https://github.com/fluent/fluent-bit/pull/6987"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-03-09T22:44:24Z",
+   "body": "Quick question, will you backport from master to 2.0? "
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-03-10T12:26:16Z",
+   "body": "Sorry, the PR merge automatically closed this issue but I'd like to have confirmation  before if possible so I'll leave the same message I left in #6981.\r\n\r\nPRs #6987, #6988 and #6990 which fix what we suspect to be the root cause of this in the master, 1.9 and 2.0 branches have been merged and the test containers are scheduled for creation, please let us know if you are interested in testing them, once they are ready you will be able to fetch them from : \r\n\r\n- ghcr.io/fluent/fluent-bit/test/master\r\n- ghcr.io/fluent/fluent-bit/test/1.9\r\n- ghcr.io/fluent/fluent-bit/test/2.0\r\n\r\nAny feedback would be greatly appreciated."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-03-12T00:02:18Z",
+   "body": "I'm currently testing \"version=2.0.10, commit=cf57255c59\" on a staging system - previously, this would break within a few hours of running so if it's still all good come Monday I'd say it's fixed!"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-03-13T12:25:14Z",
+   "body": "36 hours of runtime, 4500+ uploads, 3 tags, not one corrupted tag and not one upload error. So LGTM!\r\n\r\nNo reoccurrences of #6981 either. That is a bit of a strange error message for a situation like this, but I suppose a memory corruption bug can do strange things, so that can probably be closed too.\r\n\r\nThanks everyone!\r\n\r\n"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2023-03-15T05:31:14Z",
+   "body": "Fixed in AWS release: https://github.com/aws/aws-for-fluent-bit/releases/tag/v2.31.7"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-03-15T12:25:57Z",
+   "body": "Tip top! On our side this fix will be available in the next release which should be sooner rather than later.\r\n\r\nI'll close this issue now then, once again, thanks a lot folks!\r\n"
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "fluent/fluent-bit",
+  "default_branch": "master",
+  "commit_sha": "563ea2d003229adc91aadf34b6cd2d082c74f14f",
+  "as_of": "2023-02-28T23:46:01Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_fluent_fluent-bit_6933"
+}

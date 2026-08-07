@@ -1,0 +1,144 @@
+{
+ "repo": "bevyengine/bevy",
+ "number": 13127,
+ "url": "https://github.com/bevyengine/bevy/issues/13127",
+ "title": "Add `EntityMut::components` and `EntityRef` and `EntityWorldMut` equivalent",
+ "state": "closed",
+ "labels": [
+  "A-ECS",
+  "C-Usability",
+  "D-Complex",
+  "S-Needs-Design"
+ ],
+ "reporter": "reporter",
+ "created_at": "2024-04-28T13:04:31Z",
+ "closed_at": "2024-09-09T19:30:57Z",
+ "body": "## What problem does this solve or what need does it fill?\r\n\r\nSome users (and applications) prefer a more game-object style of writing Bevy: fetching fat components directly from the ECS and quickly changing the data needed as their systems evolve.\r\n\r\nThis style can be comfortable and productive to write, but this path isn't adequately taught or supported.\r\nIn particular, accessing multiple components from a single entity in an ad hoc way is very useful for avatar-centric games like platformers or ARPGs, but is frustrating to do.\r\n\r\n## What solution would you like?\r\n\r\n```rust\r\nfn get_components<D: QueryData>(&mut self) ->Option<D::Item>\r\n```\r\n\r\nThis proposed method takes any type that implements `QueryData` (like `(&mut Transform, &Life)` and returns the type that would be fetched by an equivalent query. Note that the type signature is actually messier, using as associated types and an `as WorldQuery`.\r\n\r\nBoth `EntityMut` and `EntityWorldMut` should have this method added as is. `EntityRef` requires an additional bound on `D`: it must instead be a `ReadOnlyQueryData`.\r\n\r\n## What alternative(s) have you considered?\r\n\r\nThere's various [`get` methods](https://docs.rs/bevy/latest/bevy/ecs/prelude/struct.EntityMut.html#method.get) which return a single component at a time. These are less flexible, as they return only a single component.\r\n\r\nWe could return a `Result` with a `QueryItemError`, like `Query::get`, but most of its variants will never be hit.\r\n\r\nWe could add a `QueryFilter` generic to these methods,  but there's no point: we're already working on a single entity!\r\n\r\nWe could add a `get_components_mut` method, and have `get_components` as a way to fetch the read-only form. Given that this is a convenience API designed for handcrafted code, I don't think this is a useful transformation to expose here at the cost of ergonomics.\r\n\r\nWe could make this panicking by default or add a panicking equivalent, but as per #12660, this is likely to increase user suffering overall.\r\n\r\n## Additional context\r\n\r\n> I also think we should prioritize implementing let (mut transform, player) = entity.components::<(&mut Transform, &Player)>(), as I think it shores up a pretty big pain point.\r\n\r\n- @participant1 [on Discord](https://discord.com/channels/691052431525675048/1233486877307179188/1233541912569319505), in response to [Leaving Rust Gamedev](https://loglog.games/blog/leaving-rust-gamedev/) post.",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2024-04-28T20:03:22Z",
+   "body": "I was worried our Query infrastructure was missing the necessary pieces to do this efficiently (namely determining query matches without allocating and setting FilteredAccess). But thanks to `matches_component_set`  we have all we need. I have an impl incoming."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-04-28T20:38:13Z",
+   "body": "> We could add a get_components_mut method, and have get_components as a way to fetch the read-only form. Given that this is a convenience API designed for handcrafted code, I don't think this is a useful transformation to expose here at the cost of ergonomics.\r\n\r\nI think we probably want a read-only variant. Disallowing things like this seems overly borrow-checker-restrictive, especially given that this exists to lift borrow checker constraints:\r\n\r\n```rust\r\nlet (a, b) = entity.components::<(&A, &B)>();\r\nif SOME_CONDITION {\r\n  let (c, d) = entity.components::<(&C, &D)>();\r\n}\r\n```\r\n\r\nI think the only question is naming:\r\n\r\n1. `components` (read only), `components_mut` (unrestricted)\r\n2. `components_read_only` (read only), `components` (unrestricted)\r\n3. `read_components` (read only), `components` (unrestricted)\r\n\r\nWe could also consider replacing the current get/get_mut with this api (especially if the perf is the same ... get/get_mut currently use a smaller / simpler code path, so they _might_ perform differently).\r\n\r\n```rust\r\nlet a = entity.get::<&A>();\r\nlet mut a = entity.get_mut::<&A>();\r\nlet (a, b) = entity.get::<(&A, &B)>();\r\nlet (mut a, b) = entity.get_mut::<(&mut A, &B)>();\r\n```\r\n\r\nOf course, this would be a breaking change. And it does notably make single component accesses less ergonomic:\r\n\r\n```rust\r\nlet a = entity.get::<&A>();\r\n```\r\nvs\r\n```rust\r\nlet a = entity.get::<A>();\r\n```"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-04-28T20:39:41Z",
+   "body": "Even more so for get_mut:\r\n\r\n```rust\r\nlet a = entity.get_mut::<&mut A>();\r\n```\r\n\r\nvs\r\n\r\n```rust\r\nlet a = entity.get_mut::<A>();\r\n```"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-04-28T20:40:15Z",
+   "body": "But a single unified API (that exactly matches the Query API) does feel like a solid unification."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-04-28T20:46:10Z",
+   "body": "```rust\r\n// EntityMut\r\nlet (mut a, b) = entity.get_mut::<(&mut A, &B)>;\r\n\r\n// Direct World Queries\r\nlet mut query = world.query::<(&mut A, &B)>;\r\nlet (mut a, b) = query.get_mut(world, SOME_ENTITY);\r\n\r\n// Systems\r\nfn system(query: Query<(&mut A, &B)>) {\r\n    let (mut a, b) = query.get_mut(SOME_ENTITY);\r\n} \r\n```\r\nHard to deny how nice the overlap is."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-04-28T20:49:52Z",
+   "body": "(I've wrapped up an implementation so the only remaining question is how we expose it)"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-04-28T21:16:55Z",
+   "body": "I would like replacing `get_(mut)` anyway because it gives it parity with `QueryData` & makes it naturally consistent with the other bevy APIs like `add_systems`, `insert`, `add_plugins` etc. The breaking change is very minor."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-04-28T21:20:03Z",
+   "body": "Just realized that I forgot to do the unwraps on all of those get/get_mut calls :)\r\n\r\nI am personally very interested in implicit-unwrap variants (both for Queries and Entities) as I think a high percentage of use cases benefit from that ergonomically. I end up throwing a lot of `get().unwrap()` into my game code and I would prefer a single friendly method to call for those cases (ideally using the same verb as the fallible variant).\r\n\r\n`get_X` is our convention for returning a result/option for `X` and `x()` is our convention for a panicking version of that. For our current methods `get()` / `get_mut()`, that leaves us with no `X`. Not quite sure how to solve that naming problem in a satisfying way. \r\n\r\nIf we could implement Index for Query, this would be pretty satisfying, although even if `query[entity]` were possible, the mut vs read-only question comes into play:\r\n\r\n```rust\r\nlet (mut a, b) = entity.query::<(&mut A, &B)>();\r\nlet (mut a, b) = entity.get_query::<(&mut A, &B>().unwrap();\r\nlet (mut a, b) = query[entity];\r\nlet (mut a, b) = query.get_mut(entity).unwrap();\r\n```\r\n\r\nI think our best bet might be `get()` and `try_get()`\r\n```rust\r\nlet (mut a, b) = entity.get::<(&mut A, &B)>();\r\nlet (mut a, b) = entity.try_get::<(&mut A, &B>().unwrap();\r\nlet (mut a, b) = query.get(entity);\r\nlet (mut a, b) = query.try_get(entity).unwrap();\r\n```\r\n(Notably, GetComponent and TryGetComponent is used for Unity component access)"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-04-28T21:27:00Z",
+   "body": "How about:\r\n```rust\r\nentity.data::<(&mut A, &B)>();\r\nenttiy.get_data::<(&mut A, &B)>();\r\n\r\nentity.data_mut::<(&mut A, &B)>();\r\nenttiy.get_data_mut::<(&mut A, &B)>();\r\n```\r\nlike Query***Data***."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-04-28T21:28:58Z",
+   "body": "I'm on board with a mutable / immutable split, and unification with get. Panicking variants are fine too: I can just not use them ;)"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-04-28T21:29:17Z",
+   "body": "> like QueryData.\r\n\r\nI think `Data` is irrelevant / implicit from a user perspective. Everything is \"data\".  And its not an ECS term that users think about."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-04-28T21:31:59Z",
+   "body": "I'm more a fan of that redundancy than `try_get` which is 2 rust terms for fallible."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-04-28T21:49:47Z",
+   "body": "> I'm on board with a mutable / immutable split, and unification with get. Panicking variants are fine too: I can just not use them ;)\r\n\r\nI think the biggest ergonomic causality of the unified `try` (non panicking) `get` (retrieve components) and `mut` (allow mutations) approach is:\r\n\r\n```rust\r\nlet mut a = entity.get_mut::<A>().unwrap();\r\n```\r\n\r\nWhich becomes:\r\n\r\n```rust\r\nlet mut a = entity.try_get_mut::<&mut A>().unwrap();\r\n```\r\n\r\nHowever it also makes this possible (and often preferable), so I'll call it a win:\r\n\r\n```rust\r\nlet mut a = entity.get_mut::<&mut A>();\r\n```\r\n\r\nWe could also invert things / make mutable access the default. That does sort of make sense in the context of queries, where \"read only\"-ness is an _additional_ constraint added:\r\n\r\n```rust\r\nlet mut a = entity.get::<&mut A>();\r\n// still a mutable `entity` access\r\nlet b = entity.get::<&B>();\r\nlet c = entity.get_ref::<&C>();\r\n```\r\n\r\nThat approach would also remove a bunch of `mut` stutters in cases like this:\r\n\r\n```rust\r\nfn system(query: Query<&mut A>) {\r\n  let mut a = query.get(ENTITY);\r\n}\r\n```\r\n\r\nAt the cost of making `ref` necessary in cases where multiple reads take place:\r\n\r\n```rust\r\nfn system(query: Query<&A>) {\r\n  // this is fine, but it borrows query mutably\r\n  let a = query.get(ENTITY);\r\n}\r\n```\r\n\r\n```rust\r\nfn system(query: Query<&A>) {\r\n  let a1 = query.get(ENTITY_1);\r\n   // this would fail\r\n  let a2 = query.get(ENTITY_2);\r\n}\r\n```\r\n\r\n```rust\r\nfn system(query: Query<&A>) {\r\n  let a1 = query.get_ref(ENTITY_1);\r\n  // this succeeds\r\n  let a2 = query.get_ref(ENTITY_2);\r\n}\r\n```"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-04-28T21:54:07Z",
+   "body": "> I'm more a fan of that redundancy than try_get which is 2 rust terms for fallible.\r\n\r\nI do see your point, but `get` does also fall into the \"non fallible\" category in `std`:\r\n* https://doc.rust-lang.org/std/cell/struct.Cell.html#method.get\r\n* https://doc.rust-lang.org/std/collections/btree_map/struct.OccupiedEntry.html#method.get\r\n* https://doc.rust-lang.org/std/num/struct.NonZero.html#method.get-10\r\n\r\nI see it as more of a \"generic retrieve some thing based on context\" verb."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-04-28T21:56:41Z",
+   "body": "I will concede that those are all cases _where there is no fallible option_. In `std`, in cases where there is a fallible variant, `get` _is_ that variant.\r\n\r\nThat being said, `std` tends to use the `Index` operator for the panicking variants in these cases, which isn't an option for us. "
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-04-28T21:58:18Z",
+   "body": "I think `try_get` and `get` is a reasonable / `std` compatible interpretation. I think this particular ambiguity has never been resolved in `std` and both interpretations are valid."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-04-28T22:01:19Z",
+   "body": "> We could also invert things / make mutable access the default. \r\n\r\nI don't think that's a good idea because:\r\n- It would be the only inconsistent exception among every other access API like `Query::get_(mut)` & `World::(get)_resource_(mut)`.\r\n- It's also inconsistent with all of rust because rust is immutable by default making it not only an exception among bevy ecs APIs but also an exception among many rust library APIs including libraries in bevy.\r\n- Read access is the thing you can get multiple times while mut access you can only get once. Meaning the thing you can do multiple times is the more verbose thing.\r\n\r\nEdit: Missed the query rename but point stands."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-04-28T22:16:14Z",
+   "body": "Agreed those are good arguments :)"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-05-02T21:33:12Z",
+   "body": "These extensions should also be added to `FilteredEntityRef` & `FilteredEntityMut`."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-07-11T13:47:41Z",
+   "body": "Related to #14231."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-09-09T16:30:52Z",
+   "body": "https://github.com/bevyengine/bevy/pull/15089 implements a read-only variant of these APIs. As discussed in #13375, the mutable ones need more design to avoid mutable aliasing UB."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-09-09T19:30:57Z",
+   "body": "Makes sense! I'll close this out given that in its current form it can't land, and I'm not planning on investing more time in this in the short term."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-01-12T18:57:51Z",
+   "body": "Ultimately fixed by https://github.com/bevyengine/bevy/pull/21780."
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "bevyengine/bevy",
+  "default_branch": "main",
+  "commit_sha": "16531fb3e3c3ff58e3e41b598ae14d960f71a0d0",
+  "as_of": "2024-04-28T13:04:31Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_bevyengine_bevy_13127"
+}

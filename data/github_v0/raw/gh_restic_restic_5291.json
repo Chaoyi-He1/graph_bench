@@ -1,0 +1,106 @@
+{
+ "repo": "restic/restic",
+ "number": 5291,
+ "url": "https://github.com/restic/restic/issues/5291",
+ "title": "Attack on content-defined chunking algorithm used by restic",
+ "state": "closed",
+ "labels": [
+  "misc: security"
+ ],
+ "reporter": "reporter",
+ "created_at": "2025-03-21T21:52:19Z",
+ "closed_at": "2025-03-31T16:40:44Z",
+ "body": "Hi folks!\n\nhttps://<redacted-host>/item?id=43438601\n\nCan someone professionally explain to an amateur if this \"attack\" is an attack at all?\n\n[Edit by @participant5] Link to the paper: https://<redacted-host>/blog/chunking-attacks.pdf [/Edit]",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2025-03-22T04:37:28Z",
+   "body": "Co-author of that paper here.  These are absolutely real attacks -- otherwise I wouldn't have put code into Tarsnap to defend against them -- but whether they're attacks you care about is a different matter.\n\nIn the case of Restic, knowing 3 chunks of data you're archiving makes it possible to determine the chunking parameters; once you know the chunking parameters, knowing the sequence of chunk sizes allows an attacker to e.g. \"fingerprint\" known data (e.g. \"looks like you backed up a copy of TopSecretDocument.pdf, we were wondering who leaked that to the press\").\n\nOn the other hand, knowing the chunking parameters doesn't do much to help an attacker reveal *unknown* data (there are theoretical ways it can be done but they're somewhat contrived and involve finding ways to mix chosen plaintext with the secrets you're trying to leak).  So this is mainly a data-possession oracle rather than a leaking-secrets attack.\n\nDoes that answer your question?"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-03-22T09:48:18Z",
+   "body": "@reporter \n\nThe restic Threat Model section might provide you some more insight. [Threat Model](https://restic.readthedocs.io/en/latest/100_references.html#threat-model)\n\nCorrect me if I am wrong, from my understanding, the attacker would need malicious access to the storage server or network to fingerprint chunks. \n\nRestic's threat model already assumes that the storage server you back up to is trusted. This can be posted on the restic forum for much more detailed discussions. I might be wrong.\n"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-03-22T12:34:46Z",
+   "body": "@participant2 No.. `restic` assumes that host where backup is created is trusted. But not storage. "
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-03-22T12:54:03Z",
+   "body": "> The restic backup program is not designed to protect against attackers deleting files at the storage location. There is nothing that can be done about this. If this needs to be guaranteed, get a secure location without any access from third parties."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-03-22T23:54:27Z",
+   "body": "Am I correct in thinking (as relates to this) that it would be a good idea (for a user) to give name a repository's main directory (or at least any online copy of it) with some sort of name that doesn't really help narrow down the type of content that the repository might contain?\n\n**EDIT:** Like, avoid naming it \"Spreadsheets\" or \"MySQLStuff\"."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-03-23T00:55:28Z",
+   "body": "> allows an attacker to e.g. \"fingerprint\" known data (e.g. \"looks like you backed up a copy of TopSecretDocument.pdf, we were wondering who leaked that to the press\")\n\nSo this does not mean compromise and disclosure of the content of my encrypted files?\n\nOnly means that:\n- I have a SnowdenTopSecret.pdf file on my host\n- I make a backup to Borgbase\n- the attacker has the same SnowdenTopSecret.pdf file\n- The attacker will find out that I have the same file\n\nI understand well?\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-03-23T04:16:39Z",
+   "body": "That's the simplest attack. Note that in this case SnowdenTopSecret.pdf might be StarWarsEpisodeIV.mp4 and the attacker might be the MPAA.\n\nThere are also other possible attacks, e.g. if the attacker knows *most* of a file you're backing up -- say, if you back up a copy of your genome sequence, since you're (presumably) human and share the vast majority of your DNA with other humans; they could potentially determine which version of a gene you have.\n\n(There may also be more attacks we haven't found yet!  There's a saying in cryptography, \"attacks only get better\".)"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2025-03-23T10:59:09Z",
+   "body": "Restic's threat model assumes that you only have to trust the storage enough that it won't randomly delete your data. That is an attacker that can infer information about the content of a backup (besides the backup size) is considered as a problem.\n\n> Am I correct in thinking (as relates to this) that it would be a good idea (for a user) to give name a repository's main directory (or at least any online copy of it) with some sort of name that doesn't really help narrow down the type of content that the repository might contain?\n\nThe main attack enabled by the paper is that an attacker might be able to fingerprint certain files in a backup. However, this requires an attacker to have knowledge of a few files stored in the backup to extract the CDC polynomial. Obfuscating the repository name might provide some minimal protection, but I'd expect that the only feasible approach is for an attacker to trick you into downloading an attacker-known, large file and including that in the backup. However, I think that a practical attack is more complicated than suggested by the paper. See below for details.\n\n### Comments on Paper\n\n@participant1 Thanks for the analysis of the CDC used by restic. While reading through the paper I've ended up with a few questions and noticed a few typos. In particular, an actual attack on restic has to jump through a few additional hops that aren't discussed in the paper.\n\n> From Section 2.2 Information Flow and Encryption\n> As a consequence, we assume that the server knows the lengths of the compressed chunks but not their content.\n\nThis is the underlying assumption of the paper, but it only partially applies to restic. Chunks in restic are not uploaded individually to the server, but only grouped together into pack files with a target pack size of 16MB. A pack file is fully opaque except for the length of the pack file header. That is, an attacker only learns about how many chunks are contained in a pack file, but not their individual size.\n\nHowever, this still allows an attacker to determine how much plaintext (I'm ignoring compression here for simplicity) is contained in a pack file. To make the attack work an attacker has to rely on another assumption: the chunks in the pack file must be from the attacker-known file and be stored in order. This requires a user to use non-default settings. restic by default reads and chunks two files in parallel, all further chunk processing is fully parallelized, such that blobs will likely be stored out of order except on a single-core machine. Although, I have to admit that the case where a user backs up a single file remains problematic.\n\n> From Table 1: Parameter extraction attacks\n> Attack 6: 2^44 · k\n\nI'm not 100% sure why the complexity just includes `k` and not `k^3` here. My understanding so far is that the algorithm uses the first clash to generate a list of roughly `2^26` candidate polynomials and then further filters that list with the other known clashes until a single polynomial remains. With compression or padding, it may be necessary to check `k` alternate positions for the first clash. This adds the `k` to the complexity estimation. However, the other clashes can also require checking `k` alternate positions each, which is why I was initially wondering about `k^3`. I think the explanation here is that each filter step reduces the number of candidates by `2^21`, or when considering `k` by `2^21/k`. As long as `k` is significantly smaller than the average chunk size it has no effect on the attack complexity. Is that correct?\n\nBefore I get to the mitigation idea and the permanent solution, I'd like to mention a few typos:\n- Section 2.3 Compression: compression in restic uses the zstd algorithm (to be precise the implementation from https://github.com/klauspost/compress).\n- Section 3.3 Restic: restic checks the lowest 20 bits (not 21 bits) to be zero in the CDC hash. This slightly changes the attack complexity but that's it.\n- \"Also chunk if we hit the maximum chunk size of 2^23 or 2^30 bytes.\". There's only the 2^23 bytes limit.\n- Section 4.1 Known Chunked Attack: The leak rate `(21 bits)/(2^21 bytes) ≈ 2−17 ≈ 1/100 000` is too high, it should be `≈ 2−19 ≈ 1/500 000`. Although for restic, I'd argue that the correct value would be `(20 bits)/(2^24 bytes) ≈ 2−22 ≈ 1/4 000 000` as only a single clash per pack file leaks. This also makes the Music example inapplicable for restic, unless one starts fingerprinting at the album level. However, in that case a backup will process two songs in parallel, which likely makes the information leak unusable.\n\n### Mitigation Plan\n\nAs mentioned above the attack relies on `2^21/k` being significantly larger than one. To counter the attack, let's look at different ways to increase `k`. The most obvious approach is to add padding to chunks or pack files. Unfortunately, this requires adding a large amount of garbage data to get `2^21/k` as close as possible to or below 1. I'd argue that anything beyond a few percent is impractical here. It might help prevent fingerprinting by an attacker that already knows the CDC polynomial though.\n\nAddind a padding blob (thanks @participant8 for the idea) is problematic from a backwards-compatibility point of view as there's currently no way to mark a blob as padding blob without changing the repository format. Without such a mark, `prune` would try to remove that padding blob. Padding an individual chunk is currently only possible for compressed blobs (zstd supports skippable frames that could be used to store padding bytes) and especially for small blobs results in a massive storage size overhead.\n\nHowever, there is a simpler option to push `2^21/k` below 1 (and thereby break the attack). An attacker needs to be able to guess which chunks in a pack file belong to the attacker-known file and which sections of the file they correspond to. Restic currently sequentially assembles all fully processed chunks into a single pack file, which gets uploaded once it's full. To prevent an attacker to guess which chunks of a file are in a given pack file, restic can instead assemble two pack files in parallel and randomly assign chunks to those pack files. This should introduce uncertainty at least on the scale of a chunk size and thereby stop the information leak.\n\nThere's one corner case that has to be considered here. A user could backup only a small file that get's split into two chunks. If those end up in individual packs, this would again leak the chunk size. Thus, if two small pack files remain in the end, then those must be merged.\n\nI've already implemented most of the just sketched mitigation and will open a PR soon.\n\n### Permanent Solution\n\nWe'll need to change the CDC algorithm obviously. I'm not yet sure what direction we'll go into. The approach of increasing the polynomial size suggested by the paper could work although it will result in a performance hit. Other alternatives could be mixing in some strong cryptographic algorithm or just switching to a completely different chunker algorithm. Either solution will require a new version of the repository format, which will take time to discuss and implement. Until then the mitigation discussed above should be enough to stop the known attacks.\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-03-23T14:57:01Z",
+   "body": "To sum up at a high level for an amateur:\nThis whole attack **only** leads to the fact that the attacker (for example, my hosting backup) will learn that **I have** an Example.pdf file.\nDoes not give rise to further consequences.\nDoes not lead to learning the open content of other files (encrypted)\nIs it correct?\n\nIs the proposed solution similar to the Borg `--compression obfuscate` option?\nhttps://github.com/borgbackup/borg/wiki/CDC-issues-reported-2025\nhttps://borgbackup.readthedocs.io/en/stable/usage/help.html#borg-help-compression\n"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2025-03-23T16:04:57Z",
+   "body": "> This whole attack **only** leads to the fact that the attacker (for example, my hosting backup) will learn that **I have** an Example.pdf file.\n> Does not give rise to further consequences.\n> Does not lead to learning the open content of other files (encrypted)\n> Is it correct?\n\n\"will learn\" is too strong. \"might in some cases be able to learn\" better captures it.\n\nSome other small information leaks might be possible if an attacker repeatedly gives you data to backup into your repository. Then by observing the backup size an attacker might be able to learn whether some files already exist in the backup. However, that isn't a new attack.\n\n> Is the proposed solution similar to the Borg `--compression obfuscate` option?\n\nThe way I understand that option, is that it adds padding bytes to individual chunks. In contrast to borgbackup, restic uploads pack files not individual chunks. The proposed solution relies on somewhat randomly assembling chunks into pack files. That way an attacker won't know which chunks are in a specific pack file and thereby the attack no longer works."
+  },
+  {
+   "author": "participant6",
+   "created_at": "2025-03-24T06:18:54Z",
+   "body": "I must admit that I had just time for a quick view on the paper. So here are just a few points:\n\n- I came to the same conclusion as @participant5 regarding the fact that chunks are packed. As long as we can determine the number of chunks, this still leaks information but makes the attack a lot harder. A mitigiation thus can also be to modify the pack file header - e.g. add a small random number of empty entries in order to make it much harder to guess the correct number of chunks in a pack.\n- Also IMO larger pack file sizes give more protection.\n- I can see the weakness how the parameter-extraction-attack works using chosen/known plaintext attacks on the chunker - which remains in some or other way when packing chunks. I also fear that there is no real mitigation to this from a theoretical point. As the paper correctly describes it: The attack vector is a the fact that we use a fast chunking algorithm instead of a cryptographic strong hash or something. As long as the chunking is fast, it will be possible to attack it. However if we make it slow, we'll loose backup speed.\n-  I actually don't see how the post-parameter-extraction attacks work in practice, especially the \"known chunked\" attacks like the question if a specific file is present in a repo . In the paper the attack relies on the fact that we exactly know the chunk sizes of a potential file in question, i.e. the ordered sizes of all (and only the) chunks of that file. In a repository the most you can obtain is the size of (maby even just some) chunks - but of all chunks present in the repository. But this is IMO much, much weaker than what is needed for the attack. To stay in the example about questioning wheter a given file is present in the repo: I agree that if you have the information that this file is split into let's say 10 chunks with size c_1..c_10 and you know that in the repository there is a file which was split into 10 chunks with exactly the same sizes, you can be quite certain that this file is identical to the one in the repo. But if you only know you have 10.000 chunks in the repo where 10 of those fit the size of c_1...c_10 - how high is the probability that the repo really contains that file or parts of that file? @participant1 as co-author of the paper, maybe you can comment on this?!?"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2025-03-24T10:55:50Z",
+   "body": "> * e.g. add a small random number of empty entries in order to make it much harder to guess the correct number of chunks in a pack.\n\nThat has the same effect as adding padding to blobs, but is even more limited (and unfortunately not backwards compatible). With `Attack 6` from the paper this has barely any effect.\n\n> * The attack vector is a the fact that we use a fast chunking algorithm instead of a cryptographic strong hash or something. As long as the chunking is fast, it will be possible to attack it. However if we make it slow, we'll loose backup speed.\n\nI haven't yet looked around whether there are some chunking algorithms that have a reasonable cryptographic strength and are still quite fast. Maybe there's something that hits a sweet spot. Taking a CDC hash that's much faster than the one currently used by restic and the passing the hash through some strong crypto function before checking for cut points might work.\n\n> * But if you only know you have 10.000 chunks in the repo where 10 of those fit the size of c_1...c_10\n\nMy understanding is that the attack has primarily systems in its focus that upload individual chunks to the server. There an attacker would learn both the chunk length and their upload order. The number of different possible chunk sizes is probably too low to allow fingerprinting without also taking a look at the order in which chunks are uploaded. With restic's pack files this will be even more blurry."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-03-24T15:38:17Z",
+   "body": "> I'm not 100% sure why the complexity just includes k and not k^3 here. My understanding so far is that the algorithm uses the first clash to generate a list of roughly 2^26 candidate polynomials and then further filters that list with the other known clashes until a single polynomial remains. With compression or padding, it may be necessary to check k alternate positions for the first clash. This adds the k to the complexity estimation. However, the other clashes can also require checking k alternate positions each, which is why I was initially wondering about k^3. I think the explanation here is that each filter step reduces the number of candidates by 2^21, or when considering k by 2^21/k. As long as k is significantly smaller than the average chunk size it has no effect on the attack complexity. Is that correct?\n\nYes, that's right.  I concluded that generating the list of candidate polynomials was more expensive than checking them, so the extra factors of $k$ disappeared under the large constant term."
+  },
+  {
+   "author": "participant7",
+   "created_at": "2025-03-31T00:03:40Z",
+   "body": "Does anything need to be done to ensure that the mitigation is applied to an existing repository after updating to to 0.18.0?"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2025-03-31T16:25:33Z",
+   "body": "The mitigation is always active in restic 0.18.0.\n\nData that is already stored in a repository won't be modified. As an attacker would need to know which existing pack file contains which plaintext to extract the CDC polynomial, trying to apply the attack to existing data is basically pointless. This connection gets even blurrier with each `prune` execution.\n\nTo also ensure that the existing data is rewritten using the mitigation, you'd have to create a new repository (with `--copy-chunker-params`) and then copy the snapshots over. The data will be fully reshuffled and reencrypted in the process. However, this is probably overkill for almost all users."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2025-03-31T16:40:44Z",
+   "body": "Follow up work will be tracked in https://github.com/restic/restic/issues/5328."
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "restic/restic",
+  "default_branch": "master",
+  "commit_sha": "3f42c0ad96d4e2c6fa4baa20b0c48c4ab518b429",
+  "as_of": "2025-03-21T21:52:19Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_restic_restic_5291"
+}

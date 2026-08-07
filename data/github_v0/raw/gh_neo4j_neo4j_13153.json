@@ -1,0 +1,188 @@
+{
+ "repo": "neo4j/neo4j",
+ "number": 13153,
+ "url": "https://github.com/neo4j/neo4j/issues/13153",
+ "title": "neo4j java client for cluster readers and writers for BoltServerAddress unreasonable  ",
+ "state": "closed",
+ "labels": [
+  "bug",
+  "team-drivers"
+ ],
+ "reporter": "reporter",
+ "created_at": "2023-04-17T02:37:10Z",
+ "closed_at": "2023-06-30T14:44:10Z",
+ "body": "neo4j server version 4.4.5\r\n![image](https://user-images.githubusercontent.com/15230000/206393005-e83e5e92-e3b1-404d-b336-64c87ae69d81.png)\r\n\r\nneo4j client version 4.4.5 \r\n![image](https://user-images.githubusercontent.com/15230000/206393071-68e5a7e8-7051-4873-843e-78bb1b03b95b.png)\r\n\r\nI see in neo4j java driver code there strictly separate read and write mode, and in memory there cache readers server list and writers server list,but if I just have three core servers(one leader la and two follow  fb fc),  this means all writer request will just connect to leader, I think if follow server can also process write request, why we not add follow to write servers\r\n\r\n![image](https://user-images.githubusercontent.com/15230000/232364288-029aad16-9769-4ef5-9d52-ccc8772c1e3a.png)\r\ncan we just separate core and replica , all core server will both add readers and writers ?\r\n",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2023-04-17T04:20:19Z",
+   "body": "In a causal cluster, per database there is only one leader node that processes write transactions. Followers cannot process writes.\r\n\r\nThat said, it sounds like you may be interested in server-side routing. When configured for server-side routing only, the client will no longer perform routing, allowing you to issue write transactions to any node in the cluster, but internal to the cluster write transactions will be routed to the leader for processing.\r\n\r\nhttps://neo4j.com/docs/operations-manual/current/clustering/setup/routing/#clustering-routing"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-04-17T19:19:30Z",
+   "body": "Thanks for reaching out! I agree with Andrew, this is expected in a causal cluster. Or did we misunderstand something @reporter?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-04-18T02:49:31Z",
+   "body": "> In a causal cluster, per database there is only one leader node that processes write transactions. Followers cannot process writes.\r\n> \r\n> That said, it sounds like you may be interested in server-side routing. When configured for server-side routing only, the client will no longer perform routing, allowing you to issue write transactions to any node in the cluster, but internal to the cluster write transactions will be routed to the leader for processing.\r\n> \r\n> https://neo4j.com/docs/operations-manual/current/clustering/setup/routing/#clustering-routing\r\n\r\nif we enable dbms.routing.enabled (enable  server-side routing). in neo4j driver use connect url \"neo4j://followip:followPort\", I see neo4j driver will get neo4j servers with role read/writer to collect readers/writers, if exuecte write  transactions, neo4j driver will just choose one server of writers  then get connection and exuecute. I means  if I enable dbms.routing.enabled,  write transaction in neo4j client, driver will only connect to leader, if writer is huge leader connections is huge, I think if follow can also accept write transaction connection but follow just shared connections and forward write request to leader.\r\n\r\nby the way if I use bolt://followip:followPort and execute write transaction it will work wrong and error message follow\r\n![image](https://user-images.githubusercontent.com/15230000/232657787-5fe93742-433b-4f8b-a7c4-3e3ffe473f8c.png)\r\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-04-18T03:08:22Z",
+   "body": "You're not using the `neo4j://` routing protocol, however. Your screenshot shows you are using the `bolt://` protocol, which does not engage routing (ANY routing, including server side) and that's likely why you are getting that error. Try with the `neo4j://` protocol instead.\r\n\r\nAlso, routing is not binary, there are 3 forms it can take depending on the values of two configuration properties: only client-side routing, hybrid client and server side routing (what you likely have configured now), and only server-side routing. \r\n\r\nThe two properties governing the routing are:\r\n\r\ndbms.routing.enabled - set to a boolean value. If true then enables server-side routing\r\ndbms.routing.default_router - set to either SERVER or CLIENT (CLIENT is default)\r\n\r\nSo if you have  `dbms.routing.default_router=CLIENT` or are using defaults, and `dbms.routing.enabled=true` then you are using a hybrid routing, where (provided that you are using the `neo4j://` protocol and not the `bolt://` protocol) the driver will still perform the routing, and if the server you routed a write query to is no longer the leader, the server-side routing will route it to the new leader for execution. If `dbms.routing.default_router=CLIENT` and `dbms.routing.enabled=false`, then you are purely using client-side routing. If `dbms.routing.default_router=SERVER` and `dbms.routing.enabled=true`, then you are purely using server-side routing.\r\n\r\nAgain, for any routing to take place you need to be using the `neo4j://` protocol in the connection address.\r\n\r\n"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-04-18T04:20:38Z",
+   "body": "Hi @participant1, you mentioned \"per database there is only one leader node that processes write transactions.\", but I noticed that many docs said that there may be multi \"core server\" in a cluster, does leader and follower node together called \"core server\". or only leader node called \"core server\", is it possible there are many leader in a cluster?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-04-18T04:37:14Z",
+   "body": "@participant3 One common issue with tech is that there are terms which are overloaded.\r\n\r\nI'm fairly sure \"multi core server\" uses \"core\" to mean \"cpu core\", which has only to do with hardware components, and nothing to do with Neo4j and clustering.\r\n\r\nWhen we're talking about Neo4j and clustering, \"core\" is referring to a Neo4j process running on a single server that is configured as `dbms.mode=CORE` (using 4.x config and terminology; there have been changes in 5.x) meaning that in a causal cluster it participates in the Raft protocol, and may be elected a leader for some subset of databases (and if not a db leader, then a follower).\r\n\r\nIt's also important to remember that Neo4j (as a dbms and cluster) supports multiple databases, and leadership can be different per database.\r\n\r\nSo if you had a 3 core cluster and 3 databases on your dbms: system, northwind, movies\r\nthen it's possible that core 1 could be the `movies` db leader, core 2 could be the `system` db leader, and core 3 could be the `northwind` db leader (with all other nodes otherwise being followers for the databases where they do not hold leadership). When there are more databases than there are cores in the cluster, then some cores may be leaders for multiple databases.\r\n\r\nWith that in mind, when we're talking about routing to the leader, it is the leader for the database you've specified when you create the transaction or session."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-04-18T06:27:02Z",
+   "body": "> You're not using the `neo4j://` routing protocol, however. Your screenshot shows you are using the `bolt://` protocol, which does not engage routing (ANY routing, including server side) and that's likely why you are getting that error. Try with the `neo4j://` protocol instead.\r\n> \r\n> Also, routing is not binary, there are 3 forms it can take depending on the values of two configuration properties: only client-side routing, hybrid client and server side routing (what you likely have configured now), and only server-side routing.\r\n> \r\n> The two properties governing the routing are:\r\n> \r\n> dbms.routing.enabled - set to a boolean value. If true then enables server-side routing dbms.routing.default_router - set to either SERVER or CLIENT (CLIENT is default)\r\n> \r\n> So if you have `dbms.routing.default_router=CLIENT` or are using defaults, and `dbms.routing.enabled=true` then you are using a hybrid routing, where (provided that you are using the `neo4j://` protocol and not the `bolt://` protocol) the driver will still perform the routing, and if the server you routed a write query to is no longer the leader, the server-side routing will route it to the new leader for execution. If `dbms.routing.default_router=CLIENT` and `dbms.routing.enabled=false`, then you are purely using client-side routing. If `dbms.routing.default_router=SERVER` and `dbms.routing.enabled=true`, then you are purely using server-side routing.\r\n> \r\n> Again, for any routing to take place you need to be using the `neo4j://` protocol in the connection address.\r\n\r\n\r\nif I use `neo4j://`  routing protocol, with write transaction for AccessMode.WRITE\r\n![image](https://user-images.githubusercontent.com/15230000/232687675-252c1970-013d-4ac0-8774-e9ee99a44c3b.png)\r\n\r\nacquireConnection will call LoadBalancer.acquireConnection\r\n![image](https://user-images.githubusercontent.com/15230000/232688053-0ddbc4ca-a99b-487a-895b-c7e743bf9ac2.png)\r\n\r\nwhen AccessMode.WRITE will just get server from  routingTable.writers()\r\n\r\nand from code I see routingTable.writers will init by use \r\n![image](https://user-images.githubusercontent.com/15230000/232688476-27b8052f-56f2-4a08-b58f-8c62ef437ac1.png)\r\n\r\nso if I have three core cluster neo4j server a b c, and a is leader, b c is follow.for routingTable writers just contain a（leader）, and readers just contains b c （follow）. so if I use `neo4j://`  routing protocol and for  AccessMode.WRITE transaction  neo4j driver will always choose a(leader) server to connect, I think this is just client-side route, not server-side route. if all of our operation is write transaction, client will just only choose leader a to connect.\r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-04-18T06:29:32Z",
+   "body": "> > You're not using the `neo4j://` routing protocol, however. Your screenshot shows you are using the `bolt://` protocol, which does not engage routing (ANY routing, including server side) and that's likely why you are getting that error. Try with the `neo4j://` protocol instead.\r\n> > Also, routing is not binary, there are 3 forms it can take depending on the values of two configuration properties: only client-side routing, hybrid client and server side routing (what you likely have configured now), and only server-side routing.\r\n> > The two properties governing the routing are:\r\n> > dbms.routing.enabled - set to a boolean value. If true then enables server-side routing dbms.routing.default_router - set to either SERVER or CLIENT (CLIENT is default)\r\n> > So if you have `dbms.routing.default_router=CLIENT` or are using defaults, and `dbms.routing.enabled=true` then you are using a hybrid routing, where (provided that you are using the `neo4j://` protocol and not the `bolt://` protocol) the driver will still perform the routing, and if the server you routed a write query to is no longer the leader, the server-side routing will route it to the new leader for execution. If `dbms.routing.default_router=CLIENT` and `dbms.routing.enabled=false`, then you are purely using client-side routing. If `dbms.routing.default_router=SERVER` and `dbms.routing.enabled=true`, then you are purely using server-side routing.\r\n> > Again, for any routing to take place you need to be using the `neo4j://` protocol in the connection address.\r\n> \r\n> if I use `neo4j://` routing protocol, with write transaction for AccessMode.WRITE ![image](https://user-images.githubusercontent.com/15230000/232687675-252c1970-013d-4ac0-8774-e9ee99a44c3b.png)\r\n> \r\n> acquireConnection will call LoadBalancer.acquireConnection ![image](https://user-images.githubusercontent.com/15230000/232688053-0ddbc4ca-a99b-487a-895b-c7e743bf9ac2.png)\r\n> \r\n> when AccessMode.WRITE will just get server from routingTable.writers()\r\n> \r\n> and from code I see routingTable.writers will init by use ![image](https://user-images.githubusercontent.com/15230000/232688476-27b8052f-56f2-4a08-b58f-8c62ef437ac1.png)\r\n> \r\n> so if I have three core cluster neo4j server a b c, and a is leader, b c is follow.for routingTable writers just contain a（leader）, and readers just contains b c （follow）. so if I use `neo4j://` routing protocol and for AccessMode.WRITE transaction neo4j driver will always choose a(leader) server to connect, I think this is just client-side route, not server-side route. if all of our operation is write transaction, client will just only choose leader a to connect.\r\n\r\n\r\n\r\nand I also check role with cli  \"CALL dbms.cluster.routing.getRoutingTable({}) \r\nYIELD ttl, servers \r\nUNWIND servers as server\r\nRETURN ttl, server.role, server.addresses;\""
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-04-18T06:36:41Z",
+   "body": "> I think this is just client-side route, not server-side route.\r\n\r\nYes, it likely is, since you've enabled server-side routing, but you have not disabled client-side routing, both of them can coexist, with server-side routing being used only when client-side routing routes to the wrong server (such as a timing issue during a leader switch). \r\n\r\nHave you applied `dbms.routing.default_router=SERVER` yet? That should disable client-side routing, and allow server-side routing to be the only routing system being used."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-04-18T07:08:29Z",
+   "body": "> > I think this is just client-side route, not server-side route.\r\n> \r\n> Yes, it likely is, since you've enabled server-side routing, but you have not disabled client-side routing, both of them can coexist, with server-side routing being used only when client-side routing routes to the wrong server (such as a timing issue during a leader switch).\r\n> \r\n> Have you applied `dbms.routing.default_router=SERVER` yet? That should disable client-side routing, and allow server-side routing to be the only routing system being used.\r\n\r\n\r\nso if enable server-side routing, I think for routingTable readers and writers both contains all core neo4j server will be better?\r\nfollow can also share partial write connection links.\r\n\r\nby the way your means when I  config  `dbms.routing.default_router=SERVER`, this will disable client-side routing just effect server-side? this means all core server role will be both read and write role ?just similar to single neo4j server?\r\n![image](https://user-images.githubusercontent.com/15230000/232698706-a91056ac-83e1-4bb5-8692-aa443b398a4d.png)\r\n\r\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-04-18T07:16:56Z",
+   "body": "For ONLY server-side routing you need these:\r\n\r\n```\r\ndbms.routing.default_router=SERVER\r\ndbms.routing.enabled=true\r\n```\r\n\r\nAt that point as long as you are using the `neo4j://` protocol in the connection address, you can connect to any node (or any address that resolves to any node in the cluster, or use a load balancer) and the node will accept the transaction and route it to the leader internally (if it's a write) or execute it immediately if it's a read."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-04-18T07:19:30Z",
+   "body": "> dbms.routing.default_router=SERVER\r\n> dbms.routing.enabled=true\r\n\r\nif I config this what's resonse about \r\nCALL dbms.cluster.routing.getRoutingTable({}) \r\nYIELD ttl, servers \r\nUNWIND servers as server\r\nRETURN ttl, server.role, server.addresses;\r\n\r\nall core servers both are read and write role? "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-04-18T07:22:00Z",
+   "body": "> > dbms.routing.default_router=SERVER\r\n> > dbms.routing.enabled=true\r\n> \r\n> if I config this what's resonse about CALL dbms.cluster.routing.getRoutingTable({}) YIELD ttl, servers UNWIND servers as server RETURN ttl, server.role, server.addresses;\r\n> \r\n> all core servers both are read and write role?\r\n\r\nor just leader in write role, follow in write role ? if in this, neo4j driver in client will always be client-side route. all write transaction will only choose leader to connect and execute(unless leader switch)"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-04-18T07:23:10Z",
+   "body": "> > > dbms.routing.default_router=SERVER\r\n> > > dbms.routing.enabled=true\r\n> > \r\n> > \r\n> > if I config this what's resonse about CALL dbms.cluster.routing.getRoutingTable({}) YIELD ttl, servers UNWIND servers as server RETURN ttl, server.role, server.addresses;\r\n> > all core servers both are read and write role?\r\n> \r\n> or just leader in write role, follow in write role ? if in this, neo4j driver in client will always be client-side route. all write transaction will only choose leader to connect and execute(unless leader switch)\r\n\r\n I means java neo4j driver ，it now default implementation is cache readers and writers , and choose address by accessmode,and Currently, read and write are strictly separated."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-04-18T07:32:03Z",
+   "body": "> > > > dbms.routing.default_router=SERVER\r\n> > > > dbms.routing.enabled=true\r\n> > > \r\n> > > \r\n> > > if I config this what's resonse about CALL dbms.cluster.routing.getRoutingTable({}) YIELD ttl, servers UNWIND servers as server RETURN ttl, server.role, server.addresses;\r\n> > > all core servers both are read and write role?\r\n> > \r\n> > \r\n> > or just leader in write role, follow in write role ? if in this, neo4j driver in client will always be client-side route. all write transaction will only choose leader to connect and execute(unless leader switch)\r\n> \r\n> I means java neo4j driver ，it now default implementation is cache readers and writers , and choose address by accessmode,and Currently, read and write are strictly separated.\r\n\r\n![image](https://user-images.githubusercontent.com/15230000/232704208-cc80002f-dde2-4713-9128-4e7cad3f28a9.png)\r\nI guess if I config dbms.routing.default_router=SERVER. the response about \r\nCALL dbms.cluster.routing.getRoutingTable({})\r\nYIELD ttl, servers\r\nUNWIND servers as server\r\nRETURN ttl, server.role, server.addresses;\r\nwill be all core server both contains in read and write role.\r\nor write role get all core server, read role get all follow server?\r\n\r\n\r\nI don't  have env to verify this ,cloud please help check this result ?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-04-19T01:38:47Z",
+   "body": "@participant1 \r\n\r\nI guess if I config dbms.routing.default_router=SERVER. the response about\r\nCALL dbms.cluster.routing.getRoutingTable({})\r\nYIELD ttl, servers\r\nUNWIND servers as server\r\nRETURN ttl, server.role, server.addresses;\r\nwill be all core server both contains in read and write role.\r\nor write role get all core server, read role get all follow server?\r\n\r\nI don't have env to verify this ,cloud please help check this result ?"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-04-19T15:32:01Z",
+   "body": "This issue is beyond my expertise so I've forwarded it to the clustering team ([link to internal issue tracker](https://trello.com/c/2Vk56t2r)). "
+  },
+  {
+   "author": "participant4",
+   "created_at": "2023-04-19T17:21:43Z",
+   "body": "All this above is java driver code, clustering provides the list of servers for all roles (what is behind the routing table), but nothing beyond that. Not how is it used either on the server on the client side.\r\nThis is for the drivers team."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-04-20T02:56:30Z",
+   "body": "> All this above is java driver code, clustering provides the list of servers for all roles (what is behind the routing table), but nothing beyond that. Not how is it used either on the server on the client side.\r\n> This is for the drivers team.\r\n\r\nI guess if I config dbms.routing.default_router=SERVER. the response about\r\nCALL dbms.cluster.routing.getRoutingTable({})\r\nYIELD ttl, servers\r\nUNWIND servers as server\r\nRETURN ttl, server.role, server.addresses;\r\nwill be all core server both contains in read and write role.\r\nor write role get all core server, read role get all follow server?\r\n\r\nI don't have env to verify this ,cloud please help check this result ?\r\n\r\nI hope know exact result. thanks"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2023-06-30T14:44:10Z",
+   "body": "As this issue has been quiet for a while we will close it. \r\n\r\nIf you have follow on questions then please consider opening a question on stackoverflow, our community forums https://<redacted-host>/ or such. This issues tracker is generally not the right place for general questions unless there's a bug or a suspected bug in the driver involved."
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "neo4j/neo4j",
+  "default_branch": "2026.06",
+  "commit_sha": "e55aa2f2be75f49d08451d0173f15a77d5f607bc",
+  "as_of": "2023-04-17T02:37:10Z",
+  "method": "github_commits_until"
+ },
+ "images": [
+  {
+   "where": "opening",
+   "source_url": "https://user-images.githubusercontent.com/15230000/206393005-e83e5e92-e3b1-404d-b336-64c87ae69d81.png",
+   "file": "gh_neo4j_neo4j_13153_img0.png"
+  },
+  {
+   "where": "opening",
+   "source_url": "https://user-images.githubusercontent.com/15230000/206393071-68e5a7e8-7051-4873-843e-78bb1b03b95b.png",
+   "file": "gh_neo4j_neo4j_13153_img1.png"
+  },
+  {
+   "where": "opening",
+   "source_url": "https://user-images.githubusercontent.com/15230000/232364288-029aad16-9769-4ef5-9d52-ccc8772c1e3a.png",
+   "file": "gh_neo4j_neo4j_13153_img2.png"
+  },
+  {
+   "where": "c2",
+   "source_url": "https://user-images.githubusercontent.com/15230000/232657787-5fe93742-433b-4f8b-a7c4-3e3ffe473f8c.png",
+   "file": "gh_neo4j_neo4j_13153_img3.png"
+  },
+  {
+   "where": "c6",
+   "source_url": "https://user-images.githubusercontent.com/15230000/232687675-252c1970-013d-4ac0-8774-e9ee99a44c3b.png",
+   "file": "gh_neo4j_neo4j_13153_img4.png"
+  },
+  {
+   "where": "c6",
+   "source_url": "https://user-images.githubusercontent.com/15230000/232688053-0ddbc4ca-a99b-487a-895b-c7e743bf9ac2.png",
+   "file": "gh_neo4j_neo4j_13153_img5.png"
+  },
+  {
+   "where": "c6",
+   "source_url": "https://user-images.githubusercontent.com/15230000/232688476-27b8052f-56f2-4a08-b58f-8c62ef437ac1.png",
+   "file": "gh_neo4j_neo4j_13153_img6.png"
+  },
+  {
+   "where": "c7",
+   "source_url": "https://user-images.githubusercontent.com/15230000/232687675-252c1970-013d-4ac0-8774-e9ee99a44c3b.png",
+   "file": "gh_neo4j_neo4j_13153_img7.png"
+  },
+  {
+   "where": "c7",
+   "source_url": "https://user-images.githubusercontent.com/15230000/232688053-0ddbc4ca-a99b-487a-895b-c7e743bf9ac2.png",
+   "file": "gh_neo4j_neo4j_13153_img8.png"
+  },
+  {
+   "where": "c7",
+   "source_url": "https://user-images.githubusercontent.com/15230000/232688476-27b8052f-56f2-4a08-b58f-8c62ef437ac1.png",
+   "file": "gh_neo4j_neo4j_13153_img9.png"
+  },
+  {
+   "where": "c9",
+   "source_url": "https://user-images.githubusercontent.com/15230000/232698706-a91056ac-83e1-4bb5-8692-aa443b398a4d.png",
+   "file": "gh_neo4j_neo4j_13153_img10.png"
+  },
+  {
+   "where": "c14",
+   "source_url": "https://user-images.githubusercontent.com/15230000/232704208-cc80002f-dde2-4713-9128-4e7cad3f28a9.png",
+   "file": "gh_neo4j_neo4j_13153_img11.png"
+  }
+ ],
+ "slug": "gh_neo4j_neo4j_13153"
+}

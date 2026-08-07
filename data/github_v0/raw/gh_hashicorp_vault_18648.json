@@ -1,0 +1,153 @@
+{
+ "repo": "hashicorp/vault",
+ "number": 18648,
+ "url": "https://github.com/hashicorp/vault/issues/18648",
+ "title": "Sudden error when trying to authenticate in Vault UI via OIDC provider",
+ "state": "closed",
+ "labels": [
+  "ui",
+  "bug",
+  "auth/oidc"
+ ],
+ "reporter": "reporter",
+ "created_at": "2023-01-10T16:59:03Z",
+ "closed_at": "2023-01-23T10:53:39Z",
+ "body": "Hi,\r\n\r\nI’m suddenly having a OIDC login issue in the UI after weeks of normal operation with Vault 1.12.2. \r\n\r\nI click on “Sign in with OIDC provider”, and almost immediately the main window shows “Error: The provider window was closed before authentication was complete. Please click Sign In to try again.”. \r\nThen even though authentication to the OIDC identity provider (within the pop-up window) is successful, the pop-up shows message \"Error: Cannot read properties of null (reading 'postMessage')\", and Vault does not follow-through with the flow.\r\n\r\nBUT, the OIDC workflow when initiated via the CLI works just fine. I get the OIDC provider URL, load it in the browser, authenticate, get the local URL, call the URL locally with curl, get the token and login with the token in the UI just fine.\r\n\r\nThe problem surfaced suddenly, there was no changes to configuration or node restarts. The only thing I tried was to demote the active to elect another, but that didn't make any difference (unsurprisingly).\r\n\r\nAll browsers fail, tested Brave, Chrome, Firefox, Safari, using “incognito” windows, so it’s not browser specific, extension related or pop-up blocker related. Issue affects other people as well, so not specific to my computer.\r\n\r\nCan’t see anything interesting in the logs, and I run with DEBUG level.\r\n\r\nSeems like a bug, because I've had this configuration running for more than a year, over multiple versions of Vault, including latest. Any suggestion on things to check?\r\n\r\n",
+ "comments": [
+  {
+   "author": "reporter",
+   "created_at": "2023-01-12T18:04:14Z",
+   "body": "Performed a rolling restart of all the 5 nodes in the cluster, didn't help. \r\nTest cluster also facing same issue.\r\nChecked reverse proxy logs, no errors.\r\nChecked browser developer tools, for errors on console or request/response errors, none found.\r\nWaiting for confirmation of request/response errors on the OIDC IdP side.\r\nSeems like a problem in the communication between the main window and the OIDC pop-up login window.\r\n\r\nCurrently don't have any idea to recover normal operation."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-01-12T18:40:44Z",
+   "body": "Traced packets between browser client system and IdP provider, and also between Vault active node and IdP provider.\r\nNo packets detected, which suggests the OIDC flow is not even being initiated past the UI in the browser."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-01-15T02:07:25Z",
+   "body": "Disabled OIDC (vault auth disable oidc). Re-configured. Issue persists.\r\nAny hints?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-01-17T01:43:35Z",
+   "body": "Update:\r\n\r\nDowngraded to 1.11.4, did not help.\r\n\r\nIdP logs were checked, when using the UI, Vault does not reach IdP to request OIDC access token."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-01-18T21:17:31Z",
+   "body": "@reporter thanks for reporting this. I've been trying to recreate using the [Auth0 tutorial](https://<redacted-host>/vault/tutorials/auth-methods/oidc-auth) but haven't had any luck. The error message you referenced should only display if the popup window was closed. Could you provide more information like OS and browser version that might help track this down?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-01-18T22:08:01Z",
+   "body": "@participant1 I personally use MacOS and Brave is my main browser, and I wish this could be tracked down to specific combination, but the fact is that I've confirmed that this happens on both Windows or MacOS, and with Chrome, Brave, Firefox, Safari. Tested with other computers than my own as well. \r\n\r\nThere was also a report by someone else about this happening with Firefox when running the browser in full-screen mode in MacOS. Not the case."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-01-18T22:14:36Z",
+   "body": "@reporter are you able to test the configuration in the Auth0 tutorial to rule out anything with your specific configuration? Beyond that, a screen recording of the login attempt that shows both the main window (with dev tools opened on console tab) and the popup window may be helpful. "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-01-18T22:24:35Z",
+   "body": "@participant1 on it, will get back to you asap."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-01-21T02:04:39Z",
+   "body": "@participant1 here's the recording, will get back to you with the Auth0 test results soon. Test done with Firefox. I already had a session open with the IdP, to avoid showing the IdP authentication screen. I also had to obfuscate a small section where the IdP URL is shown.\r\n\r\nUpdate: recording removed, no longer useful.\r\n\r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-01-21T21:32:50Z",
+   "body": "@participant1 I've tried the Auth0 test, and it worked. Restored basic OIDC configuration for my IdP, and I get the same problem again. So what could be happening between my browser and the IdP that makes Vault return that error?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-01-22T01:39:52Z",
+   "body": "UPDATE: problem found (this was a tricky one). \r\n\r\nThe IdP is sending this header: `Cross-Origin-Opener-Policy: same-origin`\r\n\r\nI used an extension in Firefox to remove this header from the response, and the login happens OK.\r\n\r\nSo the problem happened all of a sudden because the IdP code was modified to introduce this header (probably due to a library update or explicit security hardening).\r\n\r\nSome additional details for replication:\r\n\r\n0. Have IdP responses with the COOP header (can be injected via an header manipulation extension)\r\n1. Launch Chrome with automatic devtools enabled (--args --auto-open-devtools-for-tabs), this will allow to monitor the pop-up window easily.\r\n2. Initiate OIDC authentication.\r\n3. Once the pop-up opens, Immediately identify error in the console: \"Error while processing route: vault.cluster.oidc-callback Cannot read properties of null (reading 'postMessage') TypeError: Cannot read properties of null (reading 'postMessage')\"\r\n4. from the traceback, check \"at e.afterModel\", notice reference to function call \"window.opener.postMessage(a,window.origin)\"\r\n5. Confirm in the \"Network\" section the headers of the request to the IdP, with the response containing \"Cross-Origin-Opener-Policy: same-origin\"\r\n\r\nLike I said, this was probably done for security hardening purposes. I don't know if Vault can be made to perform this authentication in a way that is unaffected by this header, but if doable, maybe that is worth consideration.\r\n\r\nFinal note,  came across https://web.dev/cross-origin-isolation-guide/, which clearly states that this header breaks OAuth for now. Setting Cross-Origin-Opener-Policy: same-origin-allow-popups does not mitigate the issue.\r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-01-23T10:53:39Z",
+   "body": "Issue was unknowingly introduced after updating the web framework the IdP is based on, which started injecting it in the responses by default. Mitigated by selectively disabling the COOP header for the OAUTH related endpoints."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-01-23T15:36:05Z",
+   "body": "@reporter glad you were able to track it down! I will look into this further and see if at very least we can detect this situation and provide some messaging related to that header. Thanks for all the information."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-01-23T20:16:20Z",
+   "body": "@participant1 of course, you're welcome. This all \"unraveled\" after you asked me to test Auth0 and then I started comparing headers :) \r\nThat's a great idea, it could save a lot of pain in troubleshooting indeed, as this header becomes more mainstream. \r\nOne thing I can add, is that after this I was wondering why GitLab instance was not suffering from the same problem, as it uses OIDC with the same IdP. And the reason is simple, the OIDC auth flow In GitLab only happens in the main window, there's no pop-up's involved. I don't know if that could be an option for Vault as well, thought I'd mention it. Cheers."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-02-28T16:39:11Z",
+   "body": "I had the issue on Firefox / Linux due to [CanvasBlocker](https://addons.mozilla.org/en-GB/firefox/addon/canvasblocker/), that alters some JS APIs to prevent fingerprinting. \r\n\r\nFor me, the solution was to [change addon's options](moz-extension://47583f7c-1242-440d-a700-45bb2d9d57e3/options/options.html):\r\n1. Enable `Expert mode` ;\r\n2. Add the domain to the `List` > `Whitelist` entry\r\n3. Reload and try again.\r\n"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-10-02T14:39:53Z",
+   "body": "This issue is preventing authentication via Gitlab, as the COOP header was modified (on the public server) a week ago: https://gitlab.com/gitlab-org/gitlab/-/issues/425701\r\n\r\nIs there another way Vault could do OIDC login, without opening a popup?"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-04-02T01:59:29Z",
+   "body": "The issue is closed, but it's still not clear how to fix it... I see it being the problem in the latest vault release"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2024-04-23T00:03:05Z",
+   "body": "I've just observed the same behavior with AWS Cognito. Tried to set it up as OIDC provider for vault - and login from web fails. Cognito hosted UI sets the same `Cross-Origin-Opener-Policy: same-origin` header, and vault popup window fails to post the state message back to origin. "
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-06-12T19:41:35Z",
+   "body": "Any updates?"
+  },
+  {
+   "author": "participant6",
+   "created_at": "2024-06-16T16:41:46Z",
+   "body": "Same problem since friday"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-10-07T23:20:32Z",
+   "body": "Latest release, still the same issue"
+  },
+  {
+   "author": "participant7",
+   "created_at": "2025-01-06T21:51:41Z",
+   "body": "Same issue with vault 1.18.3"
+  },
+  {
+   "author": "participant8",
+   "created_at": "2025-01-26T01:17:03Z",
+   "body": "This does not solve the main problem, but you can use a workaround for AWS Cognito:\n\n1. Upgrade to Cognito Essentials Plan (for my use case it was free, but be careful)\n2. Use the Managed login page and create a Custom domain for your User Pool\n3. You can use proxy mechanisms to remove the Cross-Origin-Opener-Policy header from the Cognito response when the login page is running on a domain you control. In my case, it was convenient to use Cloudflare - response header modification rules.\n\nCurrently, this configuration works well, but not much time has passed. There may be some maintenance problem in the future.\n\n"
+  },
+  {
+   "author": "participant9",
+   "created_at": "2026-03-06T10:49:54Z",
+   "body": "Repeating [comment from: 26596](https://github.com/hashicorp/vault/issues/26596#issuecomment-4010983198); this issue does not seem specific to Vault but rather to the OIDC IdP as well as client browsers.\n\nThree (3) relevant areas to pursue include:\n\n1. IdP / provider responses. Expect intermissions from upstream and do NOT assume IdP is always correct. In the context of Azure differences in response / behaviour could be observed where there were no other changes in Vault yet the same broken login started working again.\n\n1. Multi-tenancy or multiple accounts on IdP.\n   - Using Azure where there are two or more account types to select then a similar intermittency is encountered where sometimes it works and other times not.\n   - Removing all accounts so that only 1 account is available and can be selected then fixes the issue entirely.\n   - Adding another account for selection that's not relevant nor selected then recreates the issue\n\n1. CORS: Chrome can be launched with: `--disable-features=CrossOriginOpenerPolicy` or otherwise a browser plugin is also a solution as last resort. Working back from a broken flow and immediately disabling CORS then results in everything working as expected."
+  },
+  {
+   "author": "participant10",
+   "created_at": "2026-04-01T10:11:43Z",
+   "body": "Adding to the list of possible triggers in case you get the `, window.opener is null` part: I use Firefox with Containers and the sign-on is via Azure.\n\nWhen the pop-up opens, Firefox can intercept the pop-up open action and open a *tab* for the sign-in pop-up, asking you whether you want to open the URL in X container or another one. Sign-on succeeds, but then Vault complains with `Error: Cannot read properties of null (reading 'postMessage'), window.opener is null`.\n\nI guess the issue is that it's opening in a **tab** and not a separate **window**, so `window.opener` really is null.\n\nOnce I clicked `Always open site X in this container`, the pop-up opened properly as a separate window and the issue disappeared."
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "hashicorp/vault",
+  "default_branch": "main",
+  "commit_sha": "3f073ae3ce50d1e5614f8d8a0658b80d53df2189",
+  "as_of": "2023-01-10T16:59:03Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_hashicorp_vault_18648"
+}

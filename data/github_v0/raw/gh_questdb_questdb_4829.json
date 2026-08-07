@@ -1,0 +1,137 @@
+{
+ "repo": "questdb/questdb",
+ "number": 4829,
+ "url": "https://github.com/questdb/questdb/issues/4829",
+ "title": "Automatic recovery for suspended (WAL) tables on start-up",
+ "state": "closed",
+ "labels": [
+  "New feature",
+  "Core"
+ ],
+ "reporter": "reporter",
+ "created_at": "2024-07-29T21:49:34Z",
+ "closed_at": "2024-09-24T08:34:40Z",
+ "body": "### Is your feature request related to a problem?\r\n\r\nWhen data is streamed to a table 24/7 and there is a power outage (or similar issue), upon resume of the server many (if not all) WAL tables are suspended due to corrupt data (I guess).\r\n\r\nAt this stage, the user needs to go an manually perform an `ALTER TABLE my_table RESUME WAL from txn 1231` \r\nAny corrupted transaction will not enter into the table, so the table will keep being suspended, unless this transaction is skipped. There is a lot of manual work or a separate script which the user needs to write in order to get the table back up and running.\r\n\r\nIt will be nice to have a feature where the user can say:\r\n- i want each table to be auto resumed\r\n- i want it to try and add any txn from WAL but skip the corrupted ones\r\n\r\n### Describe the solution you'd like.\r\n\r\nManually resume the table \r\nor\r\nmanually resume WAL from the last transaction (essentially skipping all of them and discarding them)\r\nor \r\ngoing one by one in the pending transaction until the table is fully caught up and resumed\r\n\r\n### Describe alternatives you've considered.\r\n\r\nNothing else beyond what I wrote.\r\n\r\nEither way I do not understand why a table will be suspended at all. Surely the user wants all possible good data from WAL to go into the table and the table to be back up and running. This can be automated, so the need for suspension at all is something I do not get why it exists and why it awaits user choice and intervention, since the rational choice (it seems) is always the same. \r\nI may be missing something.\r\n\r\n### Full Name:\r\n\r\nStelian Nenkov\r\n\r\n### Affiliation:\r\n\r\nWA\r\n\r\n### Additional context\r\n\r\n_No response_",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2024-08-05T21:55:27Z",
+   "body": "@reporter @participant2 is this issue picked already? I would like to work on it\r\nIt would be great if you could provide me with the following info\r\n- Which classes to explore for starters\r\n- Any easy way to replicate this scenario on my local machine?\r\n"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-08-06T08:25:30Z",
+   "body": "Hi @participant1, here's some context.\r\n\r\nThe table can become suspended for several reasons:\r\n\r\n- database needs more RAM to execute the txn\r\n- database needs more disk\r\n- transaction cannot be applied (corrupted txn).\r\n\r\nIn the earlier two cases, the database deployment can be upgraded, and then the tables resumed. This is currently performed via [ALTER TABLE RESUME WAL](https://questdb.io/docs/reference/sql/alter-table-resume-wal/). I think the database may try to resume the tables on restart - if it doesn't, then it should, and you can add that.\r\n\r\nIn the case where the txn cannot be applied due to corruption, then it must be skipped. This is also done via a SQL command. \r\n\r\nIn @reporter's case, he has a deployment which can be sometimes unstable, and encounters corrupted transactions. Rather than having to manually resume the table, he would like to skip as many transactions as is necessary to resume the table.\r\n\r\nPlaces to start:\r\n\r\nSqlCompilerImpl.alterTableResume\r\nTableSequencerAPI.resumeTable\r\n\r\nThose shows how tables can be resumed. \r\n\r\nThe process to resume tables should be asynchronous and executed at startup. This can be implemented using the Task and Job APIs. Tasks can be found in `io.questdb.tasks` and you can search for the job process.\r\n\r\nFor testing, you can use an undocumented function, `ALTER TABLE table_name SUSPEND WAL`. You can also run this with a message on the end i.e `WITH \"message\"`. This requires you to add the `dev.mode.enabled` property to your `server.conf`.\r\n\r\nFor testing resuming corrupted transactions, you can suspend the table, then truncate or add garbage to the `_txn` file. This should be thoroughly tested.\r\n\r\nHope this helps!"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-08-30T14:30:33Z",
+   "body": "Some additional thoughts/ideas: When starting QuestDB, during the recovery process, it could check if the next transaction can be applied. If not, it could provide hints on what to do, for example, linking to https://questdb.io/docs/reference/sql/alter-table-resume-wal/.\r\n\r\nAlternatively, there could be syntax like `ALTER TABLE <table> RESUME WAL FROM TRANSACTION AUTO;` or `ALTER TABLE <table> RESUME WAL FORCE`, where QuestDB would skip all transactions that cannot be applied. Obviously, this is a drastic option, but in practice, users would likely need to skip the problematic transactions manually anyway."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-09-15T10:30:56Z",
+   "body": "Is there any progress on that? Lack of this feature stops me from being able to effectivelu use questdb for my appliance. \r\n\r\nI want to deploy questdb in an environment with occassional power outages. I performed some test deployments and it seems that my tables get suspended from time to time because corrupted txn. For my appliance it's not a huge deal that some data get lost, however it's troublesome if I need to constantly monitor if table haven't had suspended and manually perform some actions to resume them.\r\n\r\nI was thinking about performing some automation around that, however, being able to controll that with configuration in questdb would be more welcomed.\r\n\r\nIf nobody is currently working on that, maybe I'd give it a try."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-09-15T10:34:00Z",
+   "body": "Hi @participant4 ,\r\nI have a script running which will perform the task of auto-resuming. It's not perfect, but it does the job every time i have an outage. That's the best solution I could find until QDB team get a more native solution (which will practically be the same).\r\nHope that helps"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-09-15T13:00:50Z",
+   "body": "Hi @participant4 , I am working on this issue, will try to wrap it ASAP"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-09-15T19:39:54Z",
+   "body": "Thanks for confirmation @participant1, looking forward to that!\r\n\r\n@reporter would you mind sharing your solution? I need to solve this problem before QDB gets it natively, it would save me some time if I use yours :)"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-09-16T09:44:55Z",
+   "body": "\r\n@participant2, thanks for clarifications, \r\n  I am following the approach told by you\r\nCouple of questions around it\r\n\r\n1. `_txn` file is decoded in some format, how to corrupt data inside it\r\n2. I json serialised the file and found it contains information about txn offsets, partitions etc, what data should I change in that so that a particular txn can be eligible for **being skipped**\r\n\r\n[sample_txn.json](https://github.com/user-attachments/files/17011041/sample_txn.json)\r\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-09-16T19:25:06Z",
+   "body": "@reporter can you share zip of any broken table for testing, I'll import in my local to replicate this case"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-09-17T19:51:11Z",
+   "body": "@participant1 I have couple of tables that got suspended because corrupted txn. I've compressed whole `/var/lib/questdb`. Hope it will help you. \r\n[questdb.zip](https://github.com/user-attachments/files/17034244/questdb.zip)\r\n"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2024-09-23T09:20:56Z",
+   "body": "Closed by #4513 and shipped in v8.0.0."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-09-23T20:29:30Z",
+   "body": "I wouldn't say that #4513 solves an issue that is described above. AFAIU #4513 is about making an attempt to resume suspended WAL tables on service startup, however, this issue is more about being able to resume table while skipping problematic/corrupted transactions.\n\nI opt for reopening this issue as I believe it's not solved yet."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2024-09-24T05:42:32Z",
+   "body": "> I wouldn't say that #4513 solves an issue that is described above. AFAIU #4513 is about making an attempt to resume suspended WAL tables on service startup, however, this issue is more about being able to resume table while skipping problematic/corrupted transactions.\r\n> \r\n> I opt for reopening this issue as I believe it's not solved yet.\r\n\r\nMakes sense. I got misled by the PR title. Changed it to \"Automatic recovery for suspended (WAL) tables on start-up\". This has to be an opt-in feature, not the default behavior as otherwise data corruption may go unnoticed by users."
+  },
+  {
+   "author": "participant6",
+   "created_at": "2024-09-24T08:34:40Z",
+   "body": "@participant4 the result of power resets while running in non-sync durability mode can corrupt the main table storage. Then the only way is to restore the database from the backup. Sipping WAL transactions will not help in this case. It is also nearly impossible to detect that the database storage is corrupt unless everything is run in paranoia mode, checking every byte written.\r\n\r\nIf resuming the database by skipping WAL transactions after a power reset worked for you so far, consider yourself lucky.\r\n\r\nIf you want to run on unstable hardware there are only 2 choices:\r\n\r\n- run in sync durability mode https://questdb.io/docs/concept/storage-model/#consistency-and-durability\r\n- take snapshot/checkpoint every X minutes and on power reset, restore from the checkpoint https://questdb.io/docs/operations/backup/\r\n\r\nThe room for improvement can be:\r\n\r\n- make durable mode less \"taxing\" on overall performance. It will use more CPU/IO however, that's given\r\n- document how to make \"cheaper\" checkpoint copies where the files are stored on the same disk using hard links. This is only possible on LInux file systems.\r\n\r\nThe issue as it is stated cannot be solved, the database cannot always be restored after a power reset by skipping WAL transactions."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-09-26T17:26:58Z",
+   "body": "@participant6 thanks on elaborating a bit more on that. I'll definetely check out sync durability mode, probaby it will work better for my appliance."
+  },
+  {
+   "author": "participant7",
+   "created_at": "2024-11-20T20:11:52Z",
+   "body": "Looked at referenced issues. it i not like \"unstable hardware\". Any, literally ANY hardware can hit once in a while power issue. There are almost no datacenters which are fully safe from \"man on excavator\" :) Regardless of number of reserve generators and lines.\r\nAnd once you have hundreds of tables to recover manually, it is a pain :) and in such situation, strategy is very simple, indeed, just look for txn from which you can recover, incrementing by one(right now I do this monkey job manually). Having some sort of mechanism, maybe not automatic, but one which can be triggered manually  - would be nice. "
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-11-20T21:15:13Z",
+   "body": "@participant7 in the end I've implementetd this script for myself, if you need it, feel free to use it - https://github.com/silesiasolar/questdb-table-resumer\r\n\r\nAnyways, I agree this could be somehow streamlined within QuestDB"
+  },
+  {
+   "author": "participant7",
+   "created_at": "2024-11-21T01:04:04Z",
+   "body": "Thanks! will snatch it for future )\r\nI was also thinking about writing script also, but thought that if I ever get to this point again, then will do.\r\n"
+  },
+  {
+   "author": "participant8",
+   "created_at": "2024-12-13T08:29:09Z",
+   "body": "Hi @participant4, thanks for sharing the script! In the end, did the sync durability mode helps for your case?\r\n\r\nJust sharing my context, I'm deploying QDB for a customer, remotely, and if it needs to be restarted manually (skip txn etc) everytime there's an outage that causes corrupted transactions, it's not very convenient unfortunately."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-12-14T16:42:55Z",
+   "body": "@participant8 since I've enabled durability mode I've never had the issue with corrupted txns again, despite several power outages. "
+  },
+  {
+   "author": "participant7",
+   "created_at": "2024-12-15T20:17:45Z",
+   "body": "How bad durability mode affect performance/CPU load in real life?"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-12-18T16:30:22Z",
+   "body": "I haven't noticed any performance drop, but I wouldn't consider my usage heavy - occasional queries and ingestion every 10 seconds, also the volume of my databases is not extra huge.\n\nBut to answer this question one would need to run some performance tests"
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "questdb/questdb",
+  "default_branch": "master",
+  "commit_sha": "c7ec19127c518399008d8e6c2573df62d9f66dcb",
+  "as_of": "2024-07-29T21:49:34Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_questdb_questdb_4829"
+}

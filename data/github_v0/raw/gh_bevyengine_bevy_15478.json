@@ -1,0 +1,145 @@
+{
+ "repo": "bevyengine/bevy",
+ "number": 15478,
+ "url": "https://github.com/bevyengine/bevy/issues/15478",
+ "title": "Support same-state transitions out of the box via new schedules",
+ "state": "closed",
+ "labels": [
+  "C-Feature",
+  "S-Needs-Design",
+  "X-Contentious",
+  "D-Modest",
+  "A-States"
+ ],
+ "reporter": "reporter",
+ "created_at": "2024-09-27T19:57:00Z",
+ "closed_at": "2025-03-09T23:49:53Z",
+ "body": "## What problem does this solve or what need does it fill?\r\n\r\nSupport same-state transitions out of the box for things like \"restart game\" or \"reset UI\". See https://github.com/bevyengine/bevy/issues/14447 for more information.\r\n\r\n## What solution would you like?\r\n\r\nProvide the following schedules:\r\n\r\n- `OnExit(S)`: Runs on the exit side of a transition `S -> _`.\r\n- `OnEnter(S)`: Runs on the enter side of a transition `_ -> S`.\r\n- `OnTransition(S, T)`: Runs between the exit and enter sides of a transition `S -> T`.\r\n- `OnReExit(S)`: Runs on the exit side of a transition `S -> S`.\r\n- `OnReEnter(S)`: Runs on the enter side of a transition `S -> S`\r\n- `OnChangeExit(S)`: Runs on the exit side of a transition `S -> !S`\r\n- `OnChangeEnter(S)`: Runs on the enter side of a transition `!S -> S`\r\n\r\nSchedule names are bikesheddable.\r\n\r\n## What alternative(s) have you considered?\r\n\r\nNotice that each schedule actually encodes 2 separate concepts:\r\n\r\n1. **Ordering (when the systems run):** Do the systems run on the exit side, enter side, or in between? This is necessary so that teardown systems run before setup systems.\r\n2. **Condition (whether the systems run):** Which state transitions cause the systems to run? Is it a transition that exits a specific state `S`? Or a transition from `S` to `S`? Etc.\r\n\r\nThis can be split into two orthogonal axes using system sets and run conditions respectively. This allows you to schedule a system to run on the enter side of a `S -> _` transition for example, or even use state pattern-matching to match on any class of transitions you're interested in.\r\n\r\nThis approach has a proof of concept in `pyri_state` that maintains comparable ergonomics, but it would require a bigger internal / breaking change to implement in `bevy_state`.",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2024-09-27T20:01:36Z",
+   "body": "I'd rather keep the name of `OnExit` (here `OnChangeExit`) and `OnEnter` (here `OnChangeEnter`) and instead use `OnAnyExit`(here `OnExit`) and `OnAnyEnter(here `OnEnter`).\r\nIt's prevent the breaking change and I still think the current `OnExit` is the best default behavior, so the name should be shorter."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-09-28T06:22:25Z",
+   "body": "I'm against putting this in main. I also haven't seen a compelling motivation for why one would want to handle identity transitions. Show me the states and conditions where this is warranted. It takes a no-op in the current implementation and makes it an \"op\".\r\n\r\nIt adds to the API surface in a way that is going to be difficult to explain in the documentation why you'd choose one schedule over another without having to explain \"state transitions\" also means \"state identity transitions\", which aren't really transitions.\r\n\r\nIf people truly want to adopt that complexity, let them. It can be implemented by a third-party crate and has an [implementation](https://github.com/participant1/bevy/blob/main/examples/state/custom_transitions.rs) in the examples showing the way. "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-09-28T06:34:16Z",
+   "body": "I could provide many examples where this is desirable. The most obvious example is restarting a game or level, or refreshing some UI that sets itself up upon entering a state. Another example is selecting a level to enter in the pause menu of a puzzle game, which may happen to be the level you're already in. \"Exit the current state and then enter it again\" is very natural, and not supporting it creates a weird edge case."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-09-28T07:21:14Z",
+   "body": "Thank you for providing examples. The level selection is a good example. Let's work with that. Assuming you're using a state for the level, changing it to the same level currently is a no-op, which is what motivates an identity state transition. But I believe there's another verb here, which is you also want to reset the level, which can happen to and in any level at any time, which is not a state; it's an event.\r\n\r\nNow you may object that resetting a level is tearing it down and recreating it. But for some games, like sokoban for instance, resetting a level can just be resetting a few transforms to their original positions. Resetting can be much cheaper than tearing down and setting back up. Here's my pseudo-code to facilitate the discussion.\r\n\r\n```rust\r\n#[derive(States)]\r\npub enum GameState {\r\n    Level(pub u8),\r\n}\r\n// ...\r\n        .add_systems(OnExit(GameState::Level), teardown_level)\r\n        .add_systems(OnEnter(GameState::Level), setup_level)\r\n\r\n// Let's say there are two ways to deal with level resets.\r\n// 1. Brute force approach. (Expensive)\r\n        .add_systems(Update, (teardown_level, setup_level).chain().run_if(on_event(ResetLevel)))\r\n\r\n// 2. Minimal dynamic state. (Cheap)\r\n        .add_systems(Update, reset_player_and_elements.run_if(on_event(ResetLevel)))\r\n```\r\n\r\nFor me this reinforces my point. A state machine is a good fundamental building block, but it is in its own way opinionated about what constitutes a state: You can only be in one state, and you can only transition to another state. Often times trying to use a state machine forces you to recon with latent or implicit states; this is good! It helps your design become more explicit.\r\n\r\nPerhaps we should consider creating an example that shows this kind of level selection pattern using states and a reset event. I notice there aren't any examples with states that have additional data to them like `Level(pub u8)`."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-09-28T07:44:36Z",
+   "body": "I don't consider performance to be a legitimate issue in the level selector example. If the \"level 1 -> 2\" transition logic is considered sufficiently performant, then reusing that logic for \"level 1 -> 1\" would be as well. If somehow that's not the case, this proposal provides the tools to micro-optimize by isolating same-state transitions anyways.\r\n\r\nA same-state transition is still a state transition, it's not a totally different concept. Mathematically it's a self-edge. In practice it means exiting the current state and then entering the current state instead of a different state. It's natural and convenient, and treating it like a special case is an unnecessary papercut."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-09-28T07:52:51Z",
+   "body": "Well, I've been subjected to enough single-player games where dying was penalized mainly by waiting for a game to reload its level that I consider it a valid performance issue."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-09-28T07:57:20Z",
+   "body": "Sure, you'd want to restrict a system that loads the next level to only run when it differs from the previous level. That would go in `OnChangeEnter(S)`, which is why a schedule with that behavior should still be provided. Personally I'd argue for even _more_ flexibility via run conditions instead of schedules, because I absolutely agree that these tools are needed and the user should have the power to decide what makes the most sense on a case by case basis."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-09-28T08:17:02Z",
+   "body": "I relent that self-edges are permissible and prevalent in finite state machines. But they don't do anything mathematically. We have to choose leave them as no-ops or make them do something.\r\n\r\nLet's look at your proposal given the level loading example and the cheap and expensive level reset.\r\n\r\n```rust\r\n// Let's say there are two ways to deal with level resets.\r\n// 1. Brute force approach. (Expensive)\r\n    .add_systems(OnExit(GameState::Level), teardown_level)\r\n    .add_systems(OnEnter(GameState::Level), setup_level)\r\n\r\n// 2. Minimal dynamic state. (Cheap)\r\n    .add_systems(OnChangeExit(GameState::Level), teardown_level)\r\n    .add_systems(OnChangeEnter(GameState::Level), setup_level)\r\n    .add_systems(OnEnter(GameState::Level), reset_player_and_elements)\r\n```\r\n\r\nNow, I don't mind the look of either, but in the second cheap way (preferred), there is a issue we have to contend with. What order do the `Enter`s run? `Any`, `Change`, `Re`. Can they be ordered in the general case? I fear they can't be. Here `reset_player_and_elements` must come after `setup_level` so we can by fiat declare that the ordering will be `Change`, `Any`, `Re`, but will that work for everyone, all the time?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-09-28T08:23:20Z",
+   "body": "Yeah, regarding ordering you're right, and a user will have the same issue if they follow the `custom_transitions` example themselves. This is a good reason for the engine to provide a proper solution out of the box (not necessarily this particular proposal I guess, I'd just hoped it would be more palatable because it already exists in an upstream example).\r\n\r\nThe system set / run condition approach doesn't have the ordering issue OTOH because putting a run condition on a system doesn't force it into a different system set, whereas in present `bevy_state` the two concepts are awkwardly merged along a single axis."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-01-21T00:34:26Z",
+   "body": "> Show me the states and conditions where this is warranted. It takes a no-op in the current implementation and makes it an \"op\".\n\nI want to refresh my game's menu – which I load by listening for an `OnEnter(Screen::Menu( Menu::ThisMenusName ))` state transition – whenever the language changes.  \nOne may additionally want to refresh the menu for other reasons.\n\nSimilar refreshing logic could be used in games for other things that may not necessarily be loading-related.\n\nI'm sure others here may have other, better reasons for wanting to capture the \"identity state transition\" (whatever the fuck that means).  \n&nbsp;(I presume it just means the transition from one state to itself, kind ov like how the number one in math is the multiplicative identity.)"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-01-21T05:28:22Z",
+   "body": "You can have it both ways. You can listen for state changes and you can exercise the same system when there hasn't been any state changes.\n\n```rust\napp.add_systems(Update, refresh_mesh.run_if(on_event::<RefreshMenuEvent>()));\n```\n\n* * *\n\nActually, this is a moot point. Bevy 0.16 supports identity state transitions with [StateTransitionEvent](https://docs.rs/bevy/latest/bevy/prelude/struct.StateTransitionEvent.html) and `OnTransition`. However, it ignores it for `OnEnter` and `OnExit`. Not a bad way to deal with it."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-01-21T05:30:03Z",
+   "body": "In light of same-state transitions being supported, I'd suggest closing this issue."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-01-21T06:01:44Z",
+   "body": "> You can have it both ways. You can listen for state changes and you can exercise the same system when there hasn't been any state changes.\n> \n> ```rust\n> app.add_systems(Update, refresh_mesh.run_if(on_event::<RefreshMenuEvent>()));\n> ```\n\nRight, but doesn't this have the overhead ov running a check every frame?  \nAlso, I've never used events, and I'm not very experienced on how to use them – and, while I know I will probably have to interact with them (or know how to use them) at some point, it's quite frankly simpler to interact with states by resetting the current menu state, rather than introducing an entirely new concept to the project.\n\nAlso, using `OnTransition`, which I'm guessing one could be use to detect the change from one state to another is much simpler in premise than setting this up (in addition to the actual code that registers the events).\n\n> In light of same-state transitions being supported, I'd suggest closing this issue.\n\nYou say it's supported... in Bevy 0.16, but I don't think Bevy 0.16 has been released yet, so this would be incorrect."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-01-21T06:23:52Z",
+   "body": "I misspoke. It's in Bevy 0.15."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-01-21T16:55:44Z",
+   "body": "How come it's not `Option<S>` instead ov `S` (for the field values ov `OnTransition`)?  \nWhat if I want to listen for the transition from any state to `entered`?\n\nYou might say \"Then use `OnEnter`.\";  however, I can not use `OnEnter` since it (still) does not handle identity transitions, I believe.\n\n(P.S. I think you should edit your previous comment to reflect the acknowledgement ov the typo.)"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-01-22T05:36:07Z",
+   "body": "You can have them if you want them, but I still think it's not worth doing because you're taking a state machine and asking it to treat some state, say, `Menu` as both `MenuFresh` and `MenuDirty` when what's preferable is to let the state machine help you. If something makes your menu dirty such that it requires a refresh then that's something you should capture in your states. Then you can write your code that deals with that explicit state instead of transitioning to the same state you're already in and doing a bunch of work that is sometimes required (when it's dirty) and sometimes not (when it's not dirty). \n\nEvery same-state transition that requires an \"operation\" is a latent, unexplicated state waiting to be exposed. Expose it. \n\n```rust\n/// ```ignore\n/// app.add_system(Update, refresh_mesh.run_if(on_any_enter(AppState::Menu)));\n/// ```\npub fn on_any_enter<S: States>(state: S) -> impl Fn(EventReader<StateTransitionEvent<S>>) -> bool {\n    move |mut reader: EventReader<StateTransitionEvent<S>>| {\n        reader.read().any(|e| e.entered.as_ref().map(|enter| *enter == state).unwrap_or(false))\n    }\n}\n\n/// ```ignore\n/// app.add_system(Update, teardown_mesh.run_if(on_any_exit(AppState::Menu)));\n/// ```\npub fn on_any_exit<S: States>(state: S) -> impl Fn(EventReader<StateTransitionEvent<S>>) -> bool {\n    move |mut reader: EventReader<StateTransitionEvent<S>>| {\n        reader.read().any(|e| e.exited.as_ref().map(|exit| *exit == state).unwrap_or(false))\n    }\n}\n```"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-01-22T15:44:20Z",
+   "body": "> If something makes your menu dirty such that it requires a refresh then that's something you should capture in your states.\n\nBut nothing is making my menu \"dirty\".\n\nNo new UI elements are added, nor are any removed – the menu is simply outdated and needs a simple refresh, which I do not believe is \"a big enough deal\" to need to capture with states.\n\n> Then you can write your code that deals with that explicit state instead of transitioning to the same state you're already in and doing a bunch of work that is sometimes required (when it's dirty) and sometimes not (when it's not dirty).\n\nYes, but then I have to write boilerplate \"bounceback\" code, to to **literally nothing** ... **except** change the state back to one referring it.  \n~~(And that's **even more** bothersome if I am using this designpattern for multiple types which implement `States`)~~\n\\[Nevermind to that last thing, as I just noticed the functions are generic.\\]\n\nIdeally, Bevy would come prepacked with a way to handle this situation.  \n\n\\[To @participant4: Take notes, my man.&nbsp;&nbsp;😉)"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-01-22T19:31:50Z",
+   "body": "> No new UI elements are added, nor are any removed – the menu is simply outdated and needs a simple refresh, which I do not believe is \"a big enough deal\" to need to capture with states.\n\nCan you share an example of what a \"refresh\" of your menu does? What changes?"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-01-22T20:45:01Z",
+   "body": "> Can you share an example of what a \"refresh\" of your menu does?\n\nIt reconstructs the entire menu so that any influential values (such as the values ov particular `Res`ources) may affect the menu.\n\nSee the images in [my post on Bluesky](https://bsky.app/profile/kattytheenby.bsky.social/post/3lfmeyrz4s223):\n![A screenshot of the title-screen in English.](https://cdn.bsky.app/img/feed_fullsize/plain/did:plc:m2cat6yxr4v3csw2dtlxm2kt/bafkreidaw5vpituvbrjdslbrekwo337g2ysqamoppbjnyihumw7gcohvtm)\n![A screenshot of the title-screen in Swedish.](https://cdn.bsky.app/img/feed_fullsize/plain/did:plc:m2cat6yxr4v3csw2dtlxm2kt/bafkreigf4dhrrcjiep3g6cuqbesfvlxbxupygeazvokzla5riyswcpsz7i)\n\n> What changes?\n\n**In this particular case**, the language changes, causing textual elements to update their text — however, in theory, anything could change based on what the value ov certain `Res`ources or `State`s are, since a system request specific information is responsible for setting it up."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-01-22T21:39:52Z",
+   "body": "Thank you. That's helpful. And that's cool that you're supporting multiple languages. Perhaps I'm being too stackoverflow-y about state transitions. You should be able to do it how you want to do it.\n\nIf you want to do it via same-state transitions, you can do it this way with the above code.\n\n```rust\n// OLD\n// app.add_systems(OnEnter(AppState::Menu), update_menu);\n// NEW\napp.add_systems(Update, update_menu.run_if(on_any_enter(AppState::Menu));\n```"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-01-23T01:43:03Z",
+   "body": "> Perhaps I'm being too stackoverflow-y about state transitions.\n\nI'm (also) a bit stubborn about code, particularly in regards to how reusable it is.\n\nHopefully, though, this situation has illuminated the scenarios in which having something \"just refresh\" is useful.  \n(Though, the reason it's particularly useful in the context ov menus is because menus are typically designed to be \"reactive\", changing at the snap ov a finger – like how websites work.)\n\n> And that's cool that you're supporting multiple languages.\n\nThank you.\n\nI think it's a good thing to do, if you can, since it makes your game more accessible.\n\n> If you want to do it via same-state transitions, you can do it this way with the above code.\n> ```rust\n> // OLD\n> // app.add_systems(OnEnter(AppState::Menu), update_menu);\n> // NEW\n> app.add_systems(Update, update_menu.run_if(on_any_enter(AppState::Menu));\n> ```\n\nI'm guessing you mean \"below\"(?). — What is `on_any_enter`?  \nI looked up \"\"bevy\" \"on_any_enter\"\" on Google and it only showed [the crates.io page for `pyri_state`](https://crates.io/crates/pyri_state/0.1.0).\n\n(I want to make sure this is the same `on_any_enter` that you are talking about.)"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-01-23T02:57:10Z",
+   "body": "It's [the code I wrote in this comment](https://github.com/bevyengine/bevy/issues/15478#issuecomment-2606339094). It's a `Condition`, which is a `System` that returns a boolean. I'd just copy-and-paste that code and move on to the next thing. If you find it particularly helpful in the long run and think it should be built-in, then you can file a PR for it. I withdraw my initial reservations about it. "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-03-09T23:49:53Z",
+   "body": "Unfortunately it seems that this particular approach doesn't have enough support (and it's not my preferred approach anyways), so I'm closing this issue. The \"parent\" issue is still open: https://github.com/bevyengine/bevy/issues/14447."
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "bevyengine/bevy",
+  "default_branch": "main",
+  "commit_sha": "39d6a745d2c8249b91259cf3bf620435593f42a0",
+  "as_of": "2024-09-27T19:57:00Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_bevyengine_bevy_15478"
+}

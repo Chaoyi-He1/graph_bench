@@ -1,0 +1,89 @@
+{
+ "repo": "dask/dask",
+ "number": 11290,
+ "url": "https://github.com/dask/dask/issues/11290",
+ "title": "`2024.8.0` breaks `sparse` array indexing",
+ "state": "closed",
+ "labels": [],
+ "reporter": "reporter",
+ "created_at": "2024-08-08T20:58:22Z",
+ "closed_at": "2024-10-16T12:27:44Z",
+ "body": "<!-- Please include a self-contained copy-pastable example that generates the issue if possible.\r\n\r\nPlease be concise with code posted. See guidelines below on how to provide a good bug report:\r\n\r\n- Craft Minimal Bug Reports http://matthewrocklin.com/blog/work/2018/02/28/minimal-bug-reports\r\n- Minimal Complete Verifiable Examples https://stackoverflow.com/help/mcve\r\n\r\nBug reports that follow these guidelines are easier to diagnose, and so are often handled much more quickly.\r\n-->\r\n\r\n**Describe the issue**:\r\n\r\nPreviously, one could at least use `dask` for sparse array indexing/getting, even if more complex operations didn't work.  But now, this too has broken, at least in one use-case.\r\n\r\n**Minimal Complete Verifiable Example**:\r\nThe following works on `<2024.8.0` but breaks otherwise\r\n```python\r\nimport dask.array as da\r\nimport scipy as sp\r\n\r\nX = da.map_blocks(lambda: sp.sparse.random(10, 10, format=\"csr\"), meta=sp.sparse.random(10, 10, format=\"csr\"), chunks=((10, ) * 100, (10, )))\r\n\r\nX[[5, 15], :].compute()\r\n```\r\n\r\n\r\n```python\r\n---------------------------------------------------------------------------\r\nValueError                                Traceback (most recent call last)\r\nCell In[11], line 1\r\n----> 1 X[[5, 15],:].compute()\r\n\r\nFile ~/Projects/Theis/anndata/venv/lib/python3.11/site-packages/dask/base.py:376, in DaskMethodsMixin.compute(self, **kwargs)\r\n    352 def compute(self, **kwargs):\r\n    353     \"\"\"Compute this dask collection\r\n    354 \r\n    355     This turns a lazy Dask collection into its in-memory equivalent.\r\n   (...)\r\n    374     dask.compute\r\n    375     \"\"\"\r\n--> 376     (result,) = compute(self, traverse=False, **kwargs)\r\n    377     return result\r\n\r\nFile ~/Projects/Theis/anndata/venv/lib/python3.11/site-packages/dask/base.py:662, in compute(traverse, optimize_graph, scheduler, get, *args, **kwargs)\r\n    659     postcomputes.append(x.__dask_postcompute__())\r\n    661 with shorten_traceback():\r\n--> 662     results = schedule(dsk, keys, **kwargs)\r\n    664 return repack([f(r, *a) for r, (f, a) in zip(results, postcomputes)])\r\n\r\nFile ~/Projects/Theis/anndata/venv/lib/python3.11/site-packages/dask/array/_shuffle.py:190, in concatenate_arrays(arrs, sorter, axis)\r\n    189 def concatenate_arrays(arrs, sorter, axis):\r\n--> 190     return np.take(np.concatenate(arrs, axis=axis), np.argsort(sorter), axis=axis)\r\n\r\nValueError: zero-dimensional arrays cannot be concatenated\r\n```\r\n**Anything else we need to know?**:\r\nI've noticed that the problem only occurs when indexing across the chunk boundaries, for what it is worth.\r\n**Environment**:\r\n\r\n- Dask version: 2024.8.0\r\n- Python version: 3.11\r\n- Operating System: mac\r\n- Install method (conda, pip, source): pip\r\n",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2024-08-08T21:05:43Z",
+   "body": "Thanks for the report. We rewrote indexing because the previous implementation was terrible in most cases. Is there a sparse equivalent to concat these arrays?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-08-08T21:30:05Z",
+   "body": "> Is there a sparse equivalent to concat these arrays?\r\n\r\nWhat do you mean by this?  Equivalent to what?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-08-08T21:31:39Z",
+   "body": "A sparse equivalent for np.concatenate that does not raise for sparse arrays with 0 elements"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-08-09T13:15:58Z",
+   "body": "I don't think the arrays are zero-dimensional - that's just the errror message:\r\n\r\n```python\r\nimport scipy as sp\r\nimport numpy as np\r\nX = sp.sparse.random(10, 10, format=\"csr\")\r\nnp.concatenate([X, X])\r\n---------------------------------------------------------------------------\r\nValueError                                Traceback (most recent call last)\r\nCell In[5], line 1\r\n----> 1 np.concatenate([X, X])\r\n\r\nValueError: zero-dimensional arrays cannot be concatenated\r\n```\r\n\r\nAs for the alternative: https://<redacted-host>/doc/scipy/reference/generated/scipy.sparse.vstack.html\r\n\r\n\r\n```python\r\nnp.testing.assert_allclose(sp.sparse.vstack([X, X]).toarray(), np.concatenate([X.toarray(), X.toarray()]))\r\n```"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-08-14T21:02:01Z",
+   "body": "For what it's worth, pydata/sparse handles it:\r\n\r\n```python\r\nimport numpy as np\r\nimport sparse as sp\r\nX = sp.random((10, 10), format=\"csr\")\r\nnp.concatenate([X, X])\r\nOut[10]: <GCXS: shape=(20, 10), dtype=float64, nnz=2, fill_value=0.0, compressed_axes=(np.int64(0),)>\r\n```\r\n\r\n```python\r\nimport dask.array as da\r\nimport sparse as sp\r\nX = da.map_blocks(lambda: sp.random((10, 10), format=\"csr\"), meta=sp.random((10, 10), format=\"csr\"), chunks=((10, ) * 100, (10, )))\r\nX[[5, 15], :].compute()\r\n<GCXS: shape=(2, 10), dtype=float64, nnz=1, fill_value=0.0, compressed_axes=(0,)>\r\n```"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-08-16T15:06:20Z",
+   "body": "@participant2 Thanks, but unfortunately, that's not an option for us."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-08-28T22:04:07Z",
+   "body": "@participant1, there isn't a direct equivalent but I think it wouldn't be so bad to wrap the existing concatenation functions into something that looks array-api compliant.\r\n\r\nIf we make that is there a good overload point here?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-08-29T08:55:23Z",
+   "body": "We could overload yes. I think (haven't looked deeply) that argsort could also be problematic. The main change is:\r\n\r\nWe are now concatenating and then calling argsort on it"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-09-17T10:28:34Z",
+   "body": "@participant1 Is there a plan for this?  If you could give a quick outline of what needs to change, I could take it from there?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-09-17T11:03:52Z",
+   "body": "Happy to review a pr that addresses this, haven’t looked much into what needs to change though "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-09-17T11:51:11Z",
+   "body": "@participant1 Perhaps you could point me to the refactoring PR that you mentioned earlier?  You seem to have some sense that this PR may have caused this issue."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-09-17T14:43:28Z",
+   "body": "I think it's in ``concatenate_arrays`` in ``array._shuffle.py``. Just special Casing would be fine for an initial version"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-09-18T21:11:55Z",
+   "body": "So, `concatenate` is already overloaded here: https://github.com/dask/dask/blob/e71d4361a57e7990e4a325021e6382877ac9ab49/dask/array/backends.py#L198-L216\r\n\r\nBut there's no overload point in the shuffle module however. If we had an overloaded indexer function (instead of `np.take`) that would work here. For instance, it seems like I can get this to work if I define `concatenate_arrays` like:\r\n\r\n```python\r\ndef concatenate_arrays(arrs, sorter, axis):\r\n    from scipy import sparse\r\n    typ = type(arrs[0])\r\n\r\n    concatenate = concatenate_lookup.dispatch(typ)\r\n    idx = np.argsort(sorter[1])\r\n    array = concatenate(arrs, axis=axis)\r\n    if issubclass(typ, sparse.spmatrix):\r\n        if axis == 0:\r\n            return array[idx, :]\r\n        elif axis == 1:\r\n            return array[:, idx]\r\n        else:\r\n            raise ValueError()\r\n    else:\r\n        return np.take(array, idx, axis=axis)\r\n```\r\n\r\nBut it's not very pretty"
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "dask/dask",
+  "default_branch": "main",
+  "commit_sha": "ed5f68897b3a097f7c5ec1a9ec13ce49c112a544",
+  "as_of": "2024-08-08T20:58:22Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_dask_dask_11290"
+}

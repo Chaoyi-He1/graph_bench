@@ -1,0 +1,96 @@
+{
+ "repo": "zellij-org/zellij",
+ "number": 3114,
+ "url": "https://github.com/zellij-org/zellij/issues/3114",
+ "title": "Fails to read creation time for exited sessions on musl libc",
+ "state": "closed",
+ "labels": [
+  "suspected bug"
+ ],
+ "reporter": "reporter",
+ "created_at": "2024-02-06T20:45:12Z",
+ "closed_at": "2026-03-30T01:58:19Z",
+ "body": "# 2. Issues with the Zellij UI / behavior / crash\r\n\r\n## Basic information\r\n\r\n`binary`: https://github.com/zellij-org/zellij/releases/download/v0.39.2/zellij-x86_64-unknown-linux-musl.tar.gz\r\n`zellij --version`: zellij 0.39.2\r\n`libc`: musl libc v1.1.24\r\n`cross`: ghcr.io/cross-rs/x86_64-unknown-linux-musl:0.2.5\r\n\r\n## Issue description\r\n\r\nThe recent Session Resurrection features (CLI and Session Manager) fail to read the creation time (ctime) for exited session files on musl libc since both Rust's std and the libc crate do not support it. Libc only supports [statx for gnu](https://github.com/rust-lang/libc/blob/main/src/unix/linux_like/linux/gnu/mod.rs#L19C1-L44C6) and so std does not provide [statx for musl](https://github.com/rust-lang/rust/blob/master/library/std/src/sys/pal/unix/fs.rs#L114C1-L134C2). Because of this, the **ReadAllSessionInfosOnMachine** background job will _always_ send the value 0 (Duration's default) as the current duration for exited sessions, [code location](https://github.com/zellij-org/zellij/blob/v0.40.1/zellij-server/src/background_jobs.rs#L433-L456).\r\n\r\nZellij ls\r\n![zellij-ls-0 39 2-musl](https://github.com/zellij-org/zellij/assets/12203476/5d2cfc3e-1c78-41d4-ac1f-c6e4f4789090)\r\n\r\nZellij session-manager\r\n![zellij-session-manager-0 39 2-musl](https://github.com/zellij-org/zellij/assets/12203476/ba31bbd8-0b20-4b78-9789-64119e7ad128)\r\n\r\nSince the **ReadAllSessionInfosOnMachine** background job fetches session data in a loop, this issue also happens to fill the log file with `Failed to read created stamp of resurrection file: Error { kind: Unsupported, message: \"creation time is not available on this platform currently\"` quite fast, writing a new entry for every tick (default 1sec) x no. of active sessions x no. of exited sessions with a session-layout.kdl file.\r\n\r\n## Minimal reproduction\r\n\r\n1. Download Zellij for linux/musl: https://github.com/zellij-org/zellij/releases/download/v0.39.2/zellij-x86_64-unknown-linux-musl.tar.gz\r\n2. Run one or more sessions with the downloaded Zellij: `<your_path>/zellij`\r\n3. Wait for about 1 minute so that Zellij will write layout snapshots for your new sessions\r\n4. Confirm that session-layout.kdl files have been written with: `ls ~/.cache/zellij/0.39.2/session_info/*`\r\n5. Close all sessions from step 2\r\n6. Check their exit status and **wrong** duration with `<your_path>/zellij ls` (created: 0s ago is incorrect)\r\n7. Run a new session like step 2\r\n8. Check incoming errors in the log file with: `tail -f /tmp/zellij-1000/zellij-log/zellij.log`\r\n\r\n## Other relevant information\r\n\r\nBuilding Zellij in a linux/gnu environment (`cargo build --release` or `cargo install zellij`) does not have such issues.\r\n",
+ "comments": [
+  {
+   "author": "reporter",
+   "created_at": "2024-02-09T19:57:29Z",
+   "body": "Some possible solutions that I could think of (other designs and ideas are welcome):\r\n\r\n1. Keep current behavior for musl targets (always shows 0s ago) and either suppress the error entirely or cache it and then log it only once.\r\n2. When targeting musl specifically, show the duration since last modification (that would be the last time Zellij took a snapshot) for exited sessions. This of course will not represent the \"created at\" duration accurately.\r\n3. Update the behavior for all targets to show \"last snapshot\" instead of creation. The UI would read something like \"Last Save\", \"Saved\", etc. This would deviate the most from the current experience though. But one could argue that \"last saved time\" is a better hint to what the session will look like in comparison to its full duration. "
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-05-04T21:01:53Z",
+   "body": "I'm experiencing this too.\r\n\r\nAlso a question, so we need to wait 1 minute for the session to be cached?\r\n\r\nIf I create a session, issue some random command and then quit with Ctrl + q then I can't see the session with `zellij ls`"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-05-07T18:22:47Z",
+   "body": "Yeah you need to wait for at least the **serialization_interval**'s value (default 60 seconds) and **session_serialization** must be set to **true** (which is the default value)."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-05-07T18:46:09Z",
+   "body": "> Yeah you need to wait for at least the **serialization_interval**'s value (default 60 seconds) and **session_serialization** must be set to **true** (which is the default value).\r\n\r\nThanks! Can this time be configured? Do not see it in the docs. "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-05-07T19:08:10Z",
+   "body": "It is not in the docs page yet, but you can add to your **config.kdl** like this (value is in seconds):\r\n```kdl\r\nserialization_interval 300\r\n```"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-10-28T16:29:36Z",
+   "body": "Could you release a gnu-linux binary at least until this is fixed?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-10-31T01:23:57Z",
+   "body": "I don't think a gnu based binary release is planned. The musl based one is convenient and easy enough to distribute, since it's all statically linked. The zellij package from your distribution is very likely built from source, targeting linux-gnu though. Another option is to build it yourself, I think that would only require you to install a Rust toolchain."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-11-16T22:05:20Z",
+   "body": "Is this also the reason why I get the following logged in zellij.log multiple times a second?\r\n\r\n```\r\nERROR  |zellij_server::background| 2024-11-16 23:04:03.846 [async-std/runti] [zellij-server/src/background_jobs.rs:485]: Failed to read created stamp of resurrection file: Error { kind: Unsupported, message: \"creation time is not available on this platform currently\" }\r\nERROR  |zellij_server::background| 2024-11-16 23:04:03.846 [async-std/runti] [zellij-server/src/background_jobs.rs:485]: Failed to read created stamp of resurrection file: Error { kind: Unsupported, message: \"creation time is not available on this platform currently\" }\r\nERROR  |zellij_server::background| 2024-11-16 23:04:03.846 [async-std/runti] [zellij-server/src/background_jobs.rs:485]: Failed to read created stamp of resurrection file: Error { kind: Unsupported, message: \"creation time is not available on this platform currently\" }\r\n```"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-11-17T00:33:09Z",
+   "body": "> Is this also the reason why I get the following logged in zellij.log multiple times a second?\r\n> \r\n> ```\r\n> ERROR  |zellij_server::background| 2024-11-16 23:04:03.846 [async-std/runti] [zellij-server/src/background_jobs.rs:485]: Failed to read created stamp of resurrection file: Error { kind: Unsupported, message: \"creation time is not available on this platform currently\" }\r\n> ERROR  |zellij_server::background| 2024-11-16 23:04:03.846 [async-std/runti] [zellij-server/src/background_jobs.rs:485]: Failed to read created stamp of resurrection file: Error { kind: Unsupported, message: \"creation time is not available on this platform currently\" }\r\n> ERROR  |zellij_server::background| 2024-11-16 23:04:03.846 [async-std/runti] [zellij-server/src/background_jobs.rs:485]: Failed to read created stamp of resurrection file: Error { kind: Unsupported, message: \"creation time is not available on this platform currently\" }\r\n> ```\r\nYeah, that is correct. I would recommend running a glibc linked executable for now, it will work properly."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-03-19T19:53:27Z",
+   "body": "Still experiencing this; any plans to release glibc linked binaries via gh releases?"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2025-03-22T16:17:14Z",
+   "body": "Can confirm in `Ubuntu 22.04.4 LTS x86_64`\n\nAll of my sessions that I created a few months ago show `[Created 0s ago]` when I run `zellij ls`"
+  },
+  {
+   "author": "participant6",
+   "created_at": "2025-04-06T20:19:58Z",
+   "body": "Zellij also spams the logs with the messages\n\n> ERROR  |zellij_server::background| 2025-04-06 23:18:20.961 [async-std/runti] [zellij-server/src/background_jobs.rs:485]: Failed to read created stamp of resurrection file: Error { kind: Unsupported, message: \"creation time is not available on this platform currently\" }\n> ERROR  |zellij_server::background| 2025-04-06 23:18:20.961 [async-std/runti] [zellij-server/src/background_jobs.rs:485]: Failed to read created stamp of resurrection file: Error { kind: Unsupported, message: \"creation time is not available on this platform currently\" }\n\nQuickly making them several MB large."
+  },
+  {
+   "author": "participant6",
+   "created_at": "2025-04-07T22:25:27Z",
+   "body": "Because of the problem I have described previously I built zellij myself. You can also do it by using [my repository](https://github.com/participant6/zellij_builder) or download debs from it"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-03-30T01:58:19Z",
+   "body": "Fixed by #4645, released under v0.44.0. Falls back to modification time in case creation time is not available."
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "zellij-org/zellij",
+  "default_branch": "main",
+  "commit_sha": "5e364940fde45631a6ede344d9839240b34c5a62",
+  "as_of": "2024-02-06T20:45:12Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_zellij-org_zellij_3114"
+}

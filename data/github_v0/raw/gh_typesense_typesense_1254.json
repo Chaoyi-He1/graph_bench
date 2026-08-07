@@ -1,0 +1,123 @@
+{
+ "repo": "typesense/typesense",
+ "number": 1254,
+ "url": "https://github.com/typesense/typesense/issues/1254",
+ "title": "Use Auto Embedding for querying but not for indexing",
+ "state": "closed",
+ "labels": [
+  "bug",
+  "fix-available",
+  "feature:vectorsearch"
+ ],
+ "reporter": "reporter",
+ "created_at": "2023-09-26T16:06:50Z",
+ "closed_at": "2024-01-16T10:02:01Z",
+ "body": "## Description\r\n\r\nwe were trying auto embedding on a new collection but it was using way too much of the server resources and eventually caused the server to crash. \r\n\r\nI was thinking to use the same model for embedding the data before indexing. and then typesense will only need to generate embeddings for the query on runtime. \r\n\r\nI tried multiple solutions to do this yet there doesn't seem to be a way to have the schema use an already generated embeddings and internally generate embeddings for the query. \r\n\r\n## Steps to reproduce\r\n\r\n- clone https://github.com/typesense/typesense-instantsearch-semantic-search-demo\r\n- update the schema to auto embed the vectors db. just remove the from field for example.  \r\n\r\n## Expected Behavior\r\n\r\nyou are able to query the collection normally with auto generated embedded for the query. \r\n\r\n## Actual Behavior\r\n\r\nthe schema will not be accepted and will still need to generate embedding automatically on the server\r\n\r\n## Metadata\r\n\r\n**Typesense Version**: 0.25.1\r\n\r\n**OS**: ubunto\r\n",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2023-09-26T16:30:23Z",
+   "body": "If you have an auto-embedding field in an empty collection, and then import documents with the same embedding field already set in your documents, then Typesense won't regenerate embeddings for those documents. \r\n\r\nThen when you send a search query, only the query will use the built-in embedding model. "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-10-08T08:55:16Z",
+   "body": "Thanks a lot for the suggestion .. we tried this and it seemed to work. \r\n\r\nI wonder if there could be an alternative solution to generate the embedding though that doesn't require the to spawn a full typesense server. but I am not sure how to do it exactly !"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-10-08T18:43:26Z",
+   "body": "> alternative solution to generate the embedding though that doesn't require the to spawn a full typesense server\r\n\r\nYou could use a Python script [like this](https://github.com/typesense/showcase-ecommerce-store/blob/33e604a75b81f1de258ff185c775288b27db8335/scripts/vector-generation/main.py) to generate embeddings externally."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-10-09T14:32:46Z",
+   "body": "I have tried using this route as well.. but I wasn't able to figure out how to use the same hugging face model in the python script. I have trying using it like this\r\n```python\r\nmodel = SentenceTransformer('all-MiniLM-L12-v2')\r\n```\r\n\r\nbut it produces totally different embeddings. any idea how to fix this ? "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-10-15T07:57:55Z",
+   "body": "Hello @participant1 , \r\n\r\nI tried a few more things and I still can't get it product similar embeddings. can you should some light on how to replicate embedding generation similar to typesense auto embeddings but without spawning a typesense instance ?\r\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-10-16T15:04:37Z",
+   "body": "> but it produces totally different embeddings. any idea how to fix this ?\r\n\r\nCould you elaborate on this? Any model will generate a set of floating point numbers for vectors, so it would be hard to tell which model was used to generate embeddings, just by looking at the vectors generated. \r\n\r\nCould you share the exact code you're using and describe the problem you're running into, with one sample record?"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-12-01T21:09:36Z",
+   "body": "I ran into the same problem where generating embeddings using `SentenceTransformer` in python resulted in a vector that looks quite dissimilar from a vector generated using autoembeddings with the same model in typesense. Here's my reproduction:\r\n\r\n```python\r\nfrom sentence_transformers import SentenceTransformer\r\nimport typesense\r\n\r\ntest_doc = {\r\n   \"id\": \"test\",\r\n   \"title\": \"Fancy Document\",\r\n   \"content\": \"hello world\",\r\n}\r\n\r\nmodel = SentenceTransformer('sentence-transformers/all-MiniLM-L12-v2')\r\ntest_doc[\"embedding\"] = model.encode(test_doc[\"content\"])\r\n\r\nclient = typesense.Client(\r\n    {\r\n        \"api_key\": \"abc\",\r\n        \"nodes\": [{\"host\": \"localhost\", \"port\": \"8108\", \"protocol\": \"http\"}],\r\n        \"connection_timeout_seconds\": 30,\r\n    }\r\n)\r\n\r\nschema = {\r\n    \"name\": \"test\",\r\n    \"fields\": [\r\n        {\"name\": \"title\", \"type\": \"string\"},\r\n        {\"name\": \"content\", \"type\": \"string\"},       \r\n        {\"name\": \"embedding\", \"type\": \"float[]\", \"num_dim\": 384},\r\n        {\r\n            \"name\": \"autoembedding\",\r\n            \"type\": \"float[]\",\r\n            \"embed\": {\r\n                \"from\": [\"content\"],\r\n                \"model_config\": {\"model_name\": \"ts/all-MiniLM-L12-v2\"},\r\n            },\r\n        },\r\n    ],\r\n}\r\n\r\ncollection = client.collections.create(schema)\r\ncollection.documents.create(test_doc)\r\ndoc = collection.documents[\"test\"].retrieve()\r\n\r\ndoc[\"embedding\"][0:10]\r\n# [-0.07597321271896362, -0.005261972080916166, 0.011456318199634552, -0.06798461079597473, -0.0030688385013490915, -0.18362320959568024, 0.06599248945713043, 0.0294693261384964, -0.05323604866862297, 0.08215268701314926]\r\n\r\ndoc[\"autoembedding\"][0:10]\r\n# [-0.3613221049308777, -0.025025347247719765, 0.05448530614376068, -0.3233288526535034, -0.014595293439924717, -0.8732964992523193, 0.3138545751571655, 0.14015333354473114, -0.2531859576702118, 0.3907110095024109]\r\n```\r\n\r\nIf I use autoembeddings for indexing and querying, I have observed that I get similar search results compared to if I do compute embeddings with sentence-transformer for both doc and query - so it seems the results are \"correct\", but the embeddings do not seem to be interchangeable between typesense generated vs sentence-transformers in python.\r\n\r\n\r\n"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-12-06T09:02:50Z",
+   "body": "@participant2 \r\n\r\nIf you used Python for generating embeddings but queried using Typesemse, that does not produce totally wrong results? Or they just produce _different_ results (similar but not exact)?"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-12-06T19:49:14Z",
+   "body": "> @participant2\r\n> \r\n> If you used Python for generating embeddings but queried using Typesemse, that does not produce totally wrong results? Or they just produce _different_ results (similar but not exact)?\r\n\r\nIf I create an autoembedding field in typesense, but I provide the embedding vectors (from my python code) when I import the documents into Typesense, then I rely on Typesense autoembedding field to do embedding on the queries, based on some testing, I would say that the results are not _completely wrong_ - the results bring up distantly related document snippets, but are definitely not the same result as when using autoembedding to embed the documents and query."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-12-07T19:32:29Z",
+   "body": "I found that the discrepancy for the embedding values between what typesense autoembedding creates vs using sentence transformers from python is that typesense does not perform any sort of normalization after mean_pooling. Not all sentence_transformers have this, but the model I was using does have a [normalization layer](https://huggingface.co/sentence-transformers/all-MiniLM-L12-v2/blob/main/modules.json#L18)."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-12-08T05:45:16Z",
+   "body": "@participant2 \r\n\r\nGood catch. Although technically we do convert data vectors to unit vectors (i.e. normalize them) before indexing into the hnsw vector index (likewise for the query vector), so even though the stored values are different, the indexed values will be normalized so the searches should be identical. \r\n\r\nWe will look into this."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-12-08T12:13:20Z",
+   "body": "> @participant2 \n> \n> Good catch. Although technically we do convert data vectors to unit vectors (i.e. normalize them) before indexing into the hnsw vector index (likewise for the query vector), so even though the stored values are different, the indexed values will be normalized so the searches should be identical. \n> \n> We will look into this.\n\nRight, I did see that normalization routine in index.cpp - if sentence_transformer embeddings for a given model are already normalized, what would end up getting indexed when using pre-generated embeddings?"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-12-12T03:51:53Z",
+   "body": "We have a step that converts both pre-generated and auto-generated embeddings into unit vectors before indexing into HNSW. While this should technically handle all differences, it's not. We will be investigating this in more detail in a few days once we wrap up a few ongoing tasks."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-12-16T00:36:44Z",
+   "body": "[Here is a fully reproducible](https://gist.github.com/participant2/fea83d9982b3c7ba82711609d3fd64fd) demo of how the same embedding model produces different search results for the same query. This uses dataset I created out of Huggingface, Typesense and Deeplearning.AI documentation. I chunked the text content into max 128 token chunks, then used both `sentence_transformer` and typesense to create embeddings (using the same model) and I exported the typesense embeddings back into the dataset so it imports quickly for testing.\r\n\r\nThe dataset has two embedding columns: `embedding`, `ts_embedding` - embedding is the set of embeddings created using sentence_transformer, and ts_embedding came from typesense. I built a faiss / pandas dataframe pair as the challenger mechanism.\r\n\r\nIn this example, different search terms sometimes produce similar results, and other times less similar.\r\nSome examples I tried:\r\n- embedding\r\n- export\r\n- models\r\n- python script\r\n- upload dataset\r\n\r\nMy assumption is that, since these are using the same model, the results would be identical - there could be a difference in how the similarity is computed in typesense vs faiss, however in various cases it seems the results are entirely wrong.\r\n\r\nHopefully this is helpful."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-12-19T13:57:48Z",
+   "body": "I used [this C++ compiled with Typesense bazel](https://gist.github.com/participant2/d43e70f3450c86f9a7f809b6bb88c4c6) setup to verify that embedding vectors generated by the ONNX model match the same (unnormalized) embedding vector when using `sentence_transformers`."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2023-12-19T16:29:20Z",
+   "body": "@participant2 Hi, we found a problem with our mean pooling function that causes miscalculation of means of embeddings in some cases, which also leads to difference between embeddings generated by sentence transformers and embeddings generated by our ONNX models. Fix (#1437) will be included to next RC build and upcoming 0.25.2 release."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-12-20T03:02:06Z",
+   "body": "@participant2 \r\n\r\nCan you please check against this build: `0.25.2.rc14`"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2024-03-20T08:45:45Z",
+   "body": "> ## Description\r\n> we were trying auto embedding on a new collection but it was using way too much of the server resources and eventually caused the server to crash.\r\n> \r\n> I was thinking to use the same model for embedding the data before indexing. and then typesense will only need to generate embeddings for the query on runtime.\r\n> \r\n> I tried multiple solutions to do this yet there doesn't seem to be a way to have the schema use an already generated embeddings and internally generate embeddings for the query.\r\n> \r\n> ## Steps to reproduce\r\n> * clone https://github.com/typesense/typesense-instantsearch-semantic-search-demo\r\n> * update the schema to auto embed the vectors db. just remove the from field for example.\r\n> \r\n> ## Expected Behavior\r\n> you are able to query the collection normally with auto generated embedded for the query.\r\n> \r\n> ## Actual Behavior\r\n> the schema will not be accepted and will still need to generate embedding automatically on the server\r\n> \r\n> ## Metadata\r\n> **Typesense Version**: 0.25.1\r\n> \r\n> **OS**: ubunto\r\n\r\nHi can you please share the fix. Specifically, did you change anything on the index.js call signatures in the index.js file?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-10-29T21:25:03Z",
+   "body": "@participant5 unfortunately I couldn't find a straightforward solution to generating the embeddings before indexing to typesense. all things I tried never led to outputting the same vector array. \r\n\r\nthe thing I ended up doing eventually was to index the data to another server other than the production server and export the data with embedding and indexing it then to the production server. that way the production server will no longer need to generate embeddings as it's already in the indexed data"
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "typesense/typesense",
+  "default_branch": "v31",
+  "commit_sha": "fd85c897e558ae86044599ee4d8088c2990b8a2e",
+  "as_of": "2023-09-26T16:06:50Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_typesense_typesense_1254"
+}

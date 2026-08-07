@@ -1,0 +1,190 @@
+{
+ "repo": "participant1/fzf",
+ "number": 4710,
+ "url": "https://github.com/participant1/fzf/issues/4710",
+ "title": "Running fzf from $HOME causes ALL CPU cores to operate at 100% continuously when nothing is typed.",
+ "state": "closed",
+ "labels": [],
+ "reporter": "reporter",
+ "created_at": "2026-03-09T05:08:42Z",
+ "closed_at": "2026-03-18T11:43:30Z",
+ "body": "### Checklist\n\n- [x] I have read through the manual page (`man fzf`)\n- [x] I have searched through the existing issues\n- [x] For bug reports, I have checked if the bug is reproducible in the latest version of fzf\n\n### Output of `fzf --version`\n\n0.70.0 (eacef5ea)\n\n### OS\n\n- [x] Linux\n- [ ] macOS\n- [ ] Windows\n- [ ] Etc.\n\n### Shell\n\n- [x] bash\n- [ ] zsh\n- [ ] fish\n\n### Problem / Steps to reproduce\n\nThis is what happen after the `fzf ` command is issued from $HOME and me not typing anything into the fzf interface:\n![Image](https://github.com/user-attachments/assets/85ef005e-1b55-4820-bf79-8aec533dcf9d)\n\nThis issue of maxing out the CPU cores at 100% utilization seems to only occur when `fzf` command is issued from `$HOME` and not other directory.\n\n**2nd Attempt: 1 minute observation.**\n<img width=\"1301\" height=\"685\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/0913b5e5-ba73-4685-acf1-138c2390aaad\" />\n\n**3rd Attempt: 5 minutes observation.** \n32GB RAM is nearly max out by fzf. ~20GB ram filled up in 5 minutes.\n\n<img width=\"1301\" height=\"685\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/059dce3c-694f-44ae-a392-4cb616c8fb14\" />\n\n<img width=\"1301\" height=\"685\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/c93f6925-1b5a-4123-b247-953e02078d68\" />\n\n\nSeems to be quite dangerous to run `fzf` command when in $HOME. Is this normal?\n\n",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2026-03-10T03:42:16Z",
+   "body": "fzf does use multiple threads when traversing the file system using the [fastwalk](https://github.com/charlievieth/fastwalk) library.\n\n- https://github.com/charlievieth/fastwalk/blob/99cabbde61f9f204ff24e8bc1e775a288d52a546/fastwalk.go#L67-L91\n\n20GB for 16M entries does seem unusually high though. That is not within the expected range. On my computer, fzf takes less than 2GB for 7M entries under my home directory.\n\nCould you try something like this to check the number of entries and the total size in bytes?\n\n```sh\n(cd ~; fd -H -L) | wc\n  # 7943053 8800320 1072569518\n```\n(https://github.com/sharkdp/fd)"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2026-03-11T19:43:14Z",
+   "body": "> This issue of maxing out the CPU cores at 100% utilization seems to only occur when `fzf` command is issued from `$HOME` and not other directory.\n\nI would assume most likely related to symlinks ? \n\nRelated comment: https://github.com/participant1/fzf/issues/4015#issuecomment-2379865111\n\nhttps://github.com/participant1/fzf/blob/b59f27ef5aba64e20d4415538fa2f460977a0cba/man/man1/fzf.1#L1252-L1256"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-03-17T09:47:02Z",
+   "body": "I confirm that FZF will run continuously with all cores at 100% utilization and not stop when walker is run with `--follow` option from $HOME directory. Its like it is in an infinite loop condition.\n\nUsing command `(cd ~; fdfind -H -L) | wc`, i.e. replacing charlievieth/fastwalk with `fd`,  will also result in all cores running at 100% utilization continuously. The difference is the RAM usage remains low and does not get max out.  \n\nHowever,  when I use export `FZF_DEFAULT_COMMAND='fdfind -H -L -E \".git\"'`, all cores will also run at 100% utilization continuously and RAM can also be used to near max very quickly.\n\nOther than switching off `follow symlink`, is there another way to resolve this issue?\n\nThis infinite loop at 100% max running fzf from $HOME is expensive. On my CPU, it easily consumes an additional amount of ~70W (I see this from the power meter). Also means increase wear on SSD, which is quite costly now a days. \n"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2026-03-17T10:01:05Z",
+   "body": "> Other than switching off `follow symlink`, is there another way to resolve this issue?\n\nTry to locate the directory causing the slowdown ideally it’s just one folder and exclude it when using `fd` (see `man fd`) or `fzf`’s built-in walker.\n\nhttps://github.com/participant1/fzf/blob/b59f27ef5aba64e20d4415538fa2f460977a0cba/man/man1/fzf.1#L1273-L1275"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2026-03-17T10:27:47Z",
+   "body": "> The difference is the RAM usage remains low and does not get max out.\n\nfzf has to retain the entire input in memory for interactive filtering unlike the command which can throw away each item immediately after printing it."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-03-17T15:59:57Z",
+   "body": "To locate the problematic symlink causing the infinite loop,  I ran this command: \n```\nfind -L \"$HOME\" -type l -print\n```\nThe problematic link appears something like below and kept repeating.\n\n```\nfind: File system loop detected; '/home/<user>/dir/sym' is part of the same file system loop as '/home/<user>' \n```\nIn my case, it was caused by Steam. I tried uninstalling it but the problem still persisted.  I then removed it via\n```\nrm -rf ~/.var/app/com.valvesoftware.Steam\n```\nand now when I run fzf, the infinite loop no longer occurred. \n\nWriting the above here to help others who may similarly experience this issue. \n\nI like to suggest a cautionary note of this issue be informed to user in fzf documentation. \n\nThank you everyone."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2026-03-17T16:48:56Z",
+   "body": "The fastwalk library is known to detect file system loops, and I can confirm this behavior in simple examples. Would it be possible to construct a reproducible case where it fails to detect such a loop?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-03-17T18:52:20Z",
+   "body": "@participant1  I had deleted the entire problematic directory.  Sorry.  But I can share the real error here. Hope it can help you see the issue I had.\n\n`find: File system loop detected; ‘/home/<user>/.var/app/com.valvesoftware.Steam/.local/share/Steam/steamapps/compatdata/1493710/pfx/dosdevices/z:/proc/3266/task/3266/root/sys/kernel/iommu_groups/17/devices/0000:04:06.0/wakeup/wakeup28/subsystem/wakeup58/device/device:9e/power_resources_D0/LNXPOWER:40/subsystem/devices/ACPI0007:15/thermal_cooling/subsystem/cooling_device13/device/physical_node/node0/cpu12/driver/cpu2/subsystem/devices/cpu20/subsystem’ is part of the same file system loop as ‘/home/<user>/.var/app/com.valvesoftware.Steam/.local/share/Steam/steamapps/compatdata/1493710/pfx/dosdevices/z:/proc/3266/task/3266/root/sys/kernel/iommu_groups/17/devices/0000:04:06.0/wakeup/wakeup28/subsystem/wakeup58/device/device:9e/power_resources_D0/LNXPOWER:40/subsystem/devices/ACPI0007:15/thermal_cooling/subsystem/cooling_device13/device/physical_node/node0/cpu12/driver/cpu2/subsystem’`"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2026-03-18T01:19:50Z",
+   "body": "I see, thanks. I decided to adopt the `IgnoreDuplicateDirs` option of fastwalk which I believe should help in such cases.\n\n https://github.com/participant1/fzf/commit/6f33df755ed8ace0fe078827ba12298af73c72cc"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-03-18T03:05:28Z",
+   "body": "@participant1 Do you have a similar solution for when fastwalker is not used? E.g. for when `fd` or `rg` is used? Or does your solution also work for `fd` and `rg`?\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-03-18T09:34:22Z",
+   "body": "@participant1 After reinstalling Steam (flatpak version), this infinite loop problem came back. So it seems that the `IgnoreDuplicateDirs` option can't resolve this infinite loop issue. It does prevent all the CPU cores from running at 100%, but the additional power consumption is still quite high (~60W), and I notice that fzf's match counter increases much slower than before since all the CPU cores are not running at 100%.  \n\n\n<img width=\"608\" height=\"573\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/bc1c147b-9777-495c-8772-f33e970e966c\" />\n\nExample of a small section of the logs from `find -L \"$HOME\" -type l -print`:\n\n```\nfind: File system loop detected; ‘/home/<user>/.var/app/com.valvesoftware.Steam/.local/share/Steam/steamapps/compatdata/1493710/pfx/dosdevices/z:/proc/3337/task/3337/root/sys/kernel/iommu_groups/17/devices/0000:04:06.0/wakeup/wakeup28/subsystem/wakeup58/device/device:9e/power_resources_D0/LNXPOWER:40/subsystem/devices/ACPI0007:15/thermal_cooling/subsystem/cooling_device13/device/physical_node/node0/cpu9/driver/cpu3/subsystem/devices/cpu10/firmware_node/subsystem’ is part of the same file system loop as ‘/home/<user>/.var/app/com.valvesoftware.Steam/.local/share/Steam/steamapps/compatdata/1493710/pfx/dosdevices/z:/proc/3337/task/3337/root/sys/kernel/iommu_groups/17/devices/0000:04:06.0/wakeup/wakeup28/subsystem/wakeup58/device/device:9e/power_resources_D0/LNXPOWER:40/subsystem’.\nfind: File system loop detected; ‘/home/<user>/.var/app/com.valvesoftware.Steam/.local/share/Steam/steamapps/compatdata/1493710/pfx/dosdevices/z:/proc/3337/task/3337/root/sys/kernel/iommu_groups/17/devices/0000:04:06.0/wakeup/wakeup28/subsystem/wakeup58/device/device:9e/power_resources_D0/LNXPOWER:40/subsystem/devices/ACPI0007:15/thermal_cooling/subsystem/cooling_device13/device/physical_node/node0/cpu9/driver/cpu3/subsystem/devices/cpu10/node0’ is part of the same file system loop as ‘/home/<user>/.var/app/com.valvesoftware.Steam/.local/share/Steam/steamapps/compatdata/1493710/pfx/dosdevices/z:/proc/3337/task/3337/root/sys/kernel/iommu_groups/17/devices/0000:04:06.0/wakeup/wakeup28/subsystem/wakeup58/device/device:9e/power_resources_D0/LNXPOWER:40/subsystem/devices/ACPI0007:15/thermal_cooling/subsystem/cooling_device13/device/physical_node/node0’.\nfind: File system loop detected; ‘/home/<user>/.var/app/com.valvesoftware.Steam/.local/share/Steam/steamapps/compatdata/1493710/pfx/dosdevices/z:/proc/3337/task/3337/root/sys/kernel/iommu_groups/17/devices/0000:04:06.0/wakeup/wakeup28/subsystem/wakeup58/device/device:9e/power_resources_D0/LNXPOWER:40/subsystem/devices/ACPI0007:15/thermal_cooling/subsystem/cooling_device13/device/physical_node/node0/cpu9/driver/cpu3/subsystem/devices/cpu10/driver’ is part of the same file system loop as ‘/home/<user>/.var/app/com.valvesoftware.Steam/.local/share/Steam/steamapps/compatdata/1493710/pfx/dosdevices/z:/proc/3337/task/3337/root/sys/kernel/iommu_groups/17/devices/0000:04:06.0/wakeup/wakeup28/subsystem/wakeup58/device/device:9e/power_resources_D0/LNXPOWER:40/subsystem/devices/ACPI0007:15/thermal_cooling/subsystem/cooling_device13/device/physical_node/node0/cpu9/driver’.\nfind: File system loop detected; ‘/home/<user>/.var/app/com.valvesoftware.Steam/.local/share/Steam/steamapps/compatdata/1493710/pfx/dosdevices/z:/proc/3337/task/3337/root/sys/kernel/iommu_groups/17/devices/0000:04:06.0/wakeup/wakeup28/subsystem/wakeup58/device/device:9e/power_resources_D0/LNXPOWER:40/subsystem/devices/ACPI0007:15/thermal_cooling/subsystem/cooling_device13/device/physical_node/node0/cpu9/driver/cpu3/subsystem/devices/cpu10/subsystem’ is part of the same file system loop as ‘/home/<user>/.var/app/com.valvesoftware.Steam/.local/share/Steam/steamapps/compatdata/1493710/pfx/dosdevices/z:/proc/3337/task/3337/root/sys/kernel/iommu_groups/17/devices/0000:04:06.0/wakeup/wakeup28/subsystem/wakeup58/device/device:9e/power_resources_D0/LNXPOWER:40/subsystem/devices/ACPI0007:15/thermal_cooling/subsystem/cooling_device13/device/physical_node/node0/cpu9/driver/cpu3/subsystem’.\n```\n\nI have tried @participant2 suggestion of using `--walker-skip=DIRS`.  This is what I did:\n\n```\nexport FZF_DEFAULT_OPTS='--walker-skip=.git,node_modules,target,com.valvesoftware.Steam'\n```\n\nHere is the CPU and RAM profiles:\n\n<img width=\"608\" height=\"573\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/72d5f36b-8c63-4439-83d1-a3ffbf399209\" />\n\n**Summary:** \n\n1. Walkers' `IgnoreDuplicateDirs` option don't resolve the infinite loop issue. In fact, it seem to make fzf operate much slower. Suggest not to use it.\n2. Presently, only using `--walker-skip=DIRS` option and deleting the problematic directory resolve this infinite loop issue. However, they are not an automatic solution that fzf can implement on its on. Needs user's manual input. I suggest reopening this issue and close it after an automatic detect and avoid algo is successfully implemented."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2026-03-18T09:55:00Z",
+   "body": "That's unfortunate, I'll revert the commit. Thanks for checking.\n\n> Using command `(cd ~; fdfind -H -L) | wc`, i.e. replacing charlievieth/fastwalk with `fd`, will also result in all cores running at 100% utilization continuously. The difference is the RAM usage remains low and does not get max out.\n\n> ```sh\n> find -L \"$HOME\" -type l -print\n> ```\n> The problematic link appears something like below and kept repeating.\n\nSo to be clear, it's not just `fastwalk`, but `fd` and `find` exhibit the same behavior as well, right?\n\n/cc @participant3, in case you're interested in taking a look."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2026-03-18T10:06:54Z",
+   "body": "It's an open issue:\n- https://github.com/sharkdp/fd/issues/1339\n- https://github.com/sharkdp/fd/issues/938"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2026-03-18T10:53:56Z",
+   "body": "If this is actually a hard problem to solve, we can think of a few workarounds:\n\n- Limit the maximum depth of a traversal\n- Add `z:` (or a better one if there's any) to the default ignore list\n- Make fzf stop consuming the stream if its memory usage grows beyond a certain threshold (e.g. 70% of system memory)"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2026-03-18T11:25:23Z",
+   "body": "Hmm, on second thought, the fundamental problem here is that there are symlinks to an ancestor of the walker root. \n\nFor example, if it's a link to the root directory, we'll have to go through numerous entries before we detect a cycle.\n\n```\n/home/<user>/.local/share/Steam/steamapps/compatdata/0/pfx/dosdevices/z: -> /\n```\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2026-03-18T11:45:15Z",
+   "body": "@reporter Could you check if f0a2f5ef145e9ea30596d52c7b7a814f6babf8fb fixes the issue for you? It changes how symlinks are followed, but it should be acceptable in most cases."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-03-18T12:09:35Z",
+   "body": "@participant1  I uninstalled the previous version and `rm -rf  ~/.fzf`, followed by \n```\ngit clone --depth 1 https://github.com/participant1/fzf.git ~/.fzf\n~/.fzf/install\n```\n\nI ran `fzf` with Steam installed. The infinite loop is still happening and all CPU cores are running to 100% utilization  continuously and RAM gets depleted quickly too.\n\n<img width=\"975\" height=\"416\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/6d3c5672-b593-446f-a7b3-07979d7bdee1\" />\n\n I agree with you that the issue is occurring because of the programs used to scan the file system, such as the fastwalker, find, fd ... etc, are unable to correctly deal with  such problematic symlinks. "
+  },
+  {
+   "author": "participant1",
+   "created_at": "2026-03-18T12:36:22Z",
+   "body": "The `install` script will only download the released binary which does not include the fix. You have to build the binary from the source. If you have `go` installed, you can run `make install`.\n\nBut wait, I thought you did so when you said fastwalk's `IgnoreDuplicateDirs` didn't help. You tested with a binary without the fix?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2026-03-18T12:48:39Z",
+   "body": "### Setup\n\n```sh\n# Inside fzf project directory\nln -s ~ home\n```\n\n### Result\n\n- No fix: 1M entries\n- `IgnoreDuplicateDirs`: The count changes every time. 202, 211, 227, 217, 299158 (!)\n- Ancestor fix: 149 (`home` is completely ignored)"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-03-18T13:00:03Z",
+   "body": "@participant1 Apologies for any wrong procedure done at my end. I am not that advance. The uninstall and install steps I took is as i have described above. I did not know I had to build from source after git cloning. Can you provide me the full steps?     "
+  },
+  {
+   "author": "participant1",
+   "created_at": "2026-03-18T13:04:30Z",
+   "body": "No problem. I know you're trying to help here and I appreciate it.\n\n```sh\n# Install golang using a package manager, for example\nsudo apt install golang-go\n\n# Clone fzf repo\ngit clone --depth 1 https://github.com/participant1/fzf.git ~/.fzf\n\ncd ~/.fzf\ngit pull\nmake install\n\ncd\n~/.fzf/bin/fzf\n```"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-03-18T13:35:09Z",
+   "body": "When doing `make install` I got an error.   `sudo apt install golang-go` was already done.\n\n```\n░▒▓ ~ ❯ git clone --depth 1 https://github.com/participant1/fzf.git ~/.fzf\nCloning into '/home/<user>/.fzf'...\nremote: Enumerating objects: 163, done.\nremote: Counting objects: 100% (163/163), done.\nremote: Compressing objects: 100% (152/152), done.\nremote: Total 163 (delta 9), reused 53 (delta 4), pack-reused 0 (from 0)\nReceiving objects: 100% (163/163), 416.17 KiB | 11.25 MiB/s, done.\nResolving deltas: 100% (9/9), done.\n\n░▒▓ ~ ❯ z fzf\n\n░▒▓ …/.fzf ❯ git pull\nAlready up to date.\n\n░▒▓ …/.fzf ❯ make install\nMakefile:24: *** Not on git repository; cannot determine $FZF_VERSION.  Stop.\n\n░▒▓ …/.fzf ❯ ls -a\n .editorconfig  󰊢 .gitignore        .tool-versions   BUILD.md       Dockerfile     go.mod    install.ps1   Makefile   README-VIM.md   shell   typos.toml\n .git            .goreleaser.yml   ADVANCED.md      CHANGELOG.md   Gemfile        go.sum    LICENSE       man       󰂺 README.md      󰣞 src    󰡯 uninstall\n .github         .rubocop.yml      bin              doc            Gemfile.lock  󰡯 install   main.go       plugin    󰒃 SECURITY.md     test\n```"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2026-03-18T13:52:07Z",
+   "body": "Hmm, does this work?\n\n```sh\ngo build -o bin/fzf main.go\n```\n\nEDIT: `make install` only works when cloned without `--depth 1`."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-03-18T14:21:17Z",
+   "body": "```\n░▒▓ …/.fzf ❯ go build -o bin/fzf main.go\ngo: downloading github.com/participant3/fastwalk v1.0.14\ngo: downloading github.com/rivo/uniseg v0.4.7\ngo: downloading golang.org/x/sys v0.35.0\ngo: downloading github.com/participant1/go-shellwords v0.0.0-20250127100254-2aa3b3277741\ngo: downloading golang.org/x/term v0.34.0\ngo: downloading github.com/mattn/go-isatty v0.0.20\n\n░▒▓ …/.fzf ❯ ls bin/\n󰡯 fzf   fzf-preview.sh  󰡯 fzf-tmux\n\n░▒▓ …/.fzf ❯ z\n\n░▒▓ ~ ❯ .fzf/bin/fzf\n\n```\n\nResults in infinite loop.\n\n<img width=\"1308\" height=\"575\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/854429fb-0178-4fe6-8597-472ae30ba05b\" />\n\nShall we revisit your `IgnoreDuplicateDirs` solution to see if it works? "
+  },
+  {
+   "author": "participant1",
+   "created_at": "2026-03-21T09:56:21Z",
+   "body": "Hmm, just to be clear, can you confirm two things?\n\n1. You built the binary with the master branch including f0a2f5ef145e9ea30596d52c7b7a814f6babf8fb.\n2. You don't have `$FZF_DEFAULT_COMMAND` defined so fzf runs its built-in walker.\n\n> Shall we revisit your `IgnoreDuplicateDirs` solution to see if it works?\n\nNo, it gives inconsistent results."
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "participant1/fzf",
+  "default_branch": "master",
+  "commit_sha": "f3ca0b136540c2e042462b31ed91e2f89b906658",
+  "as_of": "2026-03-09T05:08:42Z",
+  "method": "github_commits_until"
+ },
+ "images": [
+  {
+   "where": "opening",
+   "source_url": "https://github.com/user-attachments/assets/85ef005e-1b55-4820-bf79-8aec533dcf9d",
+   "file": "gh_participant1_fzf_4710_img0.gif"
+  },
+  {
+   "where": "opening",
+   "source_url": "https://github.com/user-attachments/assets/0913b5e5-ba73-4685-acf1-138c2390aaad",
+   "file": "gh_participant1_fzf_4710_img1.png"
+  },
+  {
+   "where": "opening",
+   "source_url": "https://github.com/user-attachments/assets/059dce3c-694f-44ae-a392-4cb616c8fb14",
+   "file": "gh_participant1_fzf_4710_img2.png"
+  },
+  {
+   "where": "opening",
+   "source_url": "https://github.com/user-attachments/assets/c93f6925-1b5a-4123-b247-953e02078d68",
+   "file": "gh_participant1_fzf_4710_img3.png"
+  },
+  {
+   "where": "c10",
+   "source_url": "https://github.com/user-attachments/assets/bc1c147b-9777-495c-8772-f33e970e966c",
+   "file": "gh_participant1_fzf_4710_img4.png"
+  },
+  {
+   "where": "c10",
+   "source_url": "https://github.com/user-attachments/assets/72d5f36b-8c63-4439-83d1-a3ffbf399209",
+   "file": "gh_participant1_fzf_4710_img5.png"
+  },
+  {
+   "where": "c16",
+   "source_url": "https://github.com/user-attachments/assets/6d3c5672-b593-446f-a7b3-07979d7bdee1",
+   "file": "gh_participant1_fzf_4710_img6.png"
+  },
+  {
+   "where": "c23",
+   "source_url": "https://github.com/user-attachments/assets/854429fb-0178-4fe6-8597-472ae30ba05b",
+   "file": "gh_participant1_fzf_4710_img7.png"
+  }
+ ],
+ "slug": "gh_participant1_fzf_4710"
+}

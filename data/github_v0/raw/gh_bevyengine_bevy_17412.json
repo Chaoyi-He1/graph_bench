@@ -1,0 +1,129 @@
+{
+ "repo": "bevyengine/bevy",
+ "number": 17412,
+ "url": "https://github.com/bevyengine/bevy/issues/17412",
+ "title": "Rename `Parent` to `ChildOf` and `Children` to `ParentOf`",
+ "state": "closed",
+ "labels": [
+  "A-ECS",
+  "C-Usability",
+  "X-Needs-SME",
+  "S-Waiting-on-SME"
+ ],
+ "reporter": "reporter",
+ "created_at": "2025-01-17T02:22:17Z",
+ "closed_at": "2025-01-20T22:34:03Z",
+ "body": "When I started learning how to use Bevy recently, this was the first stumbling block. It seemed straightforward that `Parent` was a marker component (or \"driving concept\") for a parent entity!\r\n\r\n_Originally posted by @participant9 in https://github.com/bevyengine/bevy/pull/17398#discussion_r1917639410_\r\n            ",
+ "comments": [
+  {
+   "author": "reporter",
+   "created_at": "2025-01-17T02:24:07Z",
+   "body": "This is the `IsA` vs `HasA` terminology debate, to borrow some terms from flecs."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-01-17T02:25:30Z",
+   "body": "When doing this, we should be sure to keep the old names around as deprecated type aliases for a cycle."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-01-17T08:05:44Z",
+   "body": "I proposed in https://github.com/bevyengine/bevy/pull/17398#discussion_r1919477196 that each relationship actually have *three* names:\n* The component in the 'from' entity (the one in the one-to-many relationship), e.g. `ParentOf` (formerly `Children`).\n* The component in the 'to' entity, e.g. `ChildOf` (formerly `Parent`).\n* The name of the builder / constructor used to spawn a new entity that is related to the current entity.\n\nSo for example, something like:\n| Relation type | From Component | To Component | Constructor |\n| --- | --- | --- | --- |\n| children | `ParentOf` | `ChildOf` | `Children` |\n| observer | `ObservedBy` | `ObserverOf` | `Observers` |\n| ownership | `OwnerOf` | `OwnedBy` | (none, construction is always implicit) |\n\nI didn't specify names for reactions because IMHO reactions don't need a special relation type: ownership is sufficient."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-01-17T20:36:13Z",
+   "body": "I would prefer it if we didn't need to build special-cased constructors for these things:\n\n1. I don't love having two names for the same concept.\n2. I'd like these APIs to be relationship-type-driven, especially given that Relationships are a \"generic user-facing system\". Ideally they define both sides of the relationship and can immediately start spawning things in the same way Bevy's built-in relationships do it.\n\nEx: If ParentOf is the component name, then it should also be the thing that we use during spawn. ParentOf is actually reasonable in this context:\n\n```rust\nworld.spawn((\n    Foo,\n    ParentOf::spawn((\n        Spawn(Bar),\n        Spawn(Baz),\n    )),\n))\n\nworld.spawn((\n    Foo,\n    parent_of![\n        Bar,\n        Baz,\n    ]\n));\n\nbsn! {(\n    Foo,\n    ParentOf [\n        Bar,\n        Baz,\n    ]\n)}\n```\n(note that my current plan for BSN and `ParentOf` is to make `[ ]` imply `ParentOf []`)\n\nIf we do want to refer to the \"collection of childof relationships\" as \"children\" in this context, then we should violate our \"IsA\" constraint and just give it the name that makes us happy. Needing to connect ParentOf to a new \"children\" concept name is confusing and needlessly complicated. I don't think losing IsA here is a particular loss. It wouldn't be the first or the last case where \"IsA\" naming doesn't quite fit (as mentioned above)."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-01-19T01:52:25Z",
+   "body": "Just put out the rename PR. I left some more thoughts there (but lets discuss here):\n\n> * I like that the `XOf` and `XBy` naming convention helps indicate that a component is a relationship. We don't see these names much elsewhere in the wild, so it is a reasonably strong indicator that a given component is a relationship. And it helps resolve the ambiguity of `Parent` (_is_ it a parent, or does it _have_ a parent?)\n> * I think this _does_ reduce the legibility of things, especially on the `RelationshipTarget` side (ex: `Children` vs `ParentOf`). There are _a lot_ of use cases where the variable name would _really_ benefit from being `children` and not `parent_of`. Iterating or indexing a `ParentOf` is harder to mentally wrap my head around compared to iterating `Children`. Having seen the effects on the code using these APIs, I'm _kind of_ biased toward using the plural / \"has a\" naming convention (`Children`), while still moving to the `ChildOf` convention for actual Relationships. Curious what yall think. I'm still not sure where I land."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-01-19T02:31:07Z",
+   "body": "One problem with depending on the \"Of\" and \"By\" suffixes is that they can point in opposite directions depending on the verb chosen:\n\n* The \"observe\" verb points upwards (sub-entities observe super-entities), so \"ObservedBy\" points from one to many.\n* The \"own\" verb points downwards (super-entities own sub-entities), so \"OwnedBy\" points from many to one.\n\nThis means you can't rely on the suffix alone to indicate the directionality of the relationship, you have to know the meaning of the word that describes the relationship in order to know the directionality."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-01-19T03:45:58Z",
+   "body": "I hope this comment amounts to more than just bike shedding, but what about `ParentRef` and `ChildRefs`? I refer to my own code (admittedly it's arguable whether _my_ code is a good reference), where I use these two suffixes and it seems intuitive to me. I'd also possibly ask, if the `XOf` and `XBy` conventions become recommended, would my code ideally be rewritten using those conventions? If so, does that make sense?\n\nI removed the derives for brevity.\n\n```rust\n/// A component that can store a reference to a list of unit entities.\npub struct UnitRefs(pub Vec<Entity>);\n\n/// A component to store a list of references to the target entity that a\n/// regiment is moving to.\npub struct MoveTargetRefs(pub Vec<Entity>);\n\n/// A component that can store a reference to a regiment entity.\npub struct RegimentRef(pub Entity);\n\n/// A component that can store a reference to a regiment's leader entity.\npub struct RegimentLeaderRef(pub Entity);\n```\n\nReferring to the first updated example in #17427:\n\n```rust\nmut interaction_query: Query<\n    (\n        &Interaction,\n        &mut BackgroundColor,\n        &mut BorderColor,\n        &ParentOf,\n    ),\n    (Changed<Interaction>, With<Button>),\n>,\n```\n\nI don't know if it's just me, but I struggle to understand what \"parent of\" means here: It's hurts trying to work it out. I know I _can_ work it out, but yeah it doesn't look obviously clear to me by reading the query alone.\n\nReplace it with `ChildRefs` and, at the very least, I now know it's going to be a list of entities.\n\n```rust\nmut interaction_query: Query<\n    (\n        &Interaction,\n        &mut BackgroundColor,\n        &mut BorderColor,\n        &ChildRefs,\n    ),\n    (Changed<Interaction>, With<Button>),\n>,\n```\n\nSame with `ChildOf` example. Before, what are we asking for? \"Give me interaction entities and its child of\". To me that terminology doesn't make sense at all, but I'd be happy for someone to rewrite it with terminology that does make sense.\n\n```rust\nmut interaction_query: Query<(&Interaction, &ChildOf), (Changed<Interaction>, With<Button>)>,\n```\n\nAfter, we now know we're asking for the reference to the parent: \"Give me interaction entities and the ref to its parent\"\n\n```rust\nmut interaction_query: Query<(&Interaction, &ParentRef), (Changed<Interaction>, With<Button>)>,\n```"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-01-19T10:04:30Z",
+   "body": "On one hand the English language already defines dedicated words for a number of relationships and rules to form words for new ones. On the other hand - as Cart pointed it out - it makes sense to specifically indicate the built-in-relationship nature of the components. This leaves the dedicated English words available to actual users (e.g. `Children` and `Parents` may be used to define a game-mechanic family relationship without interfering with the entity hierarchy used for positioning / rendering).\n\nWhether this makes it weird to read the code is a different matter, but I think relationships need getting used to either way.\n\nNote: Flecs is also convoluted in this matter. It's just how relationship definitions fold out."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2025-01-19T10:07:38Z",
+   "body": "> I hope this comment amounts to more than just bike shedding, but what about `ParentRef` and `ChildRefs`?\n\nI must say, the `XRef`/`XRefs` to indicate you're getting a reference/pointer to some other entity/entities in the world, does seem appealing to me. More appealing than `XOf`.\n\n- `ParentRef`: This entity _has a reference to_ its parent (and is thus a child of that parent)\n- `ChildrenRefs` (or `ChildRefs`?): This entity _has references to_ its children (and is thus a parent of those children)\n\nPerhaps we could even add `EntityRef`/`EntityRefs` traits for users to derive on their own entity-reference-components, to make it easier/uniform to access those references (although it's questionable what else you can achieve with this that you can't get with `Deref` and `DerefMut`), other than the naming uniformity in the ecosystem.\n\nAnd next, if we want to go that route, we could add Bevy lints to check for common encouraged/discouraged patterns:\n\n- `X(Entity)` should be renamed to `XRef(Entity)`\n- `XRef(Entity)` should derive `EntityRef`\n- `impl EntityRef for X` where `X` should be renamed to `XRef`\n\nThe only real downside I can see with this naming convention is that we already have the `Ref` query-type in Bevy, which might be a tad confusing, or at the very least a little strange to read: `Query<Ref<ParentRef>>`"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-01-19T19:04:11Z",
+   "body": "The `Ref` terminology is going to be quite foreign and intimidating to those without a classical programming background (like game designers). These users, even if they never code, will need to interact with these types through asset files and the editor. Since this is so user facing, I'd prefer to avoid it here."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2025-01-19T20:04:34Z",
+   "body": "> The `Ref` terminology is going to be quite foreign and intimidating to those without a classical programming background (like game designers).\n\nI see your point. We could still apply the convention generally in the ecosystem, but then also have a type alias for Bevy-specific entity-reference-components that need better names for non-programmers.\n\nIn the ECS code, people can then use `ParentRef`/`ChildrenRefs` to write any query logic or other code, but in scenes it would have a different name (which, admittedly, will be confusing)."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-01-19T20:24:38Z",
+   "body": "The other challenge with a `ParentRef` / `ChildRef` convention is that it relies on having a pair of matching, opposed nouns. Most relations won't be so fortunate there :)"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-01-19T21:25:56Z",
+   "body": "> The other challenge with a `ParentRef` / `ChildRef` convention is that it relies on having a pair of matching, opposed nouns. Most relations won't be so fortunate there :)\n\nIndeed, I was thinking about that this morning: while there are a few cases of reciprocal nouns in English (\"buyer\" vs. \"seller\"), this only happens for the most common interpersonal relationships; most use the awkward \"-ee\" suffix such as \"grantor\" vs. \"grantee\" and so on."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-01-19T22:54:24Z",
+   "body": "> The other challenge with a `ParentRef` / `ChildRef` convention is that it relies on having a pair of matching, opposed nouns. Most relations won't be so fortunate there :)\n\n@reporter Can you elaborate on what you mean and maybe given an example? It might be the case that the example `XRef`s I've got in my codebase and that I put here are not relevant to this discussion! In my case I don't seem to need to have \"matching, opposed nouns\" every time I use an `XRef` component on an entity."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-01-19T23:02:32Z",
+   "body": "Before the recent relations PR landed, the standard way to create custom relations was to only define a single component for them (analogous to Parent). Bevy 0.16's relationships need *two* components, one for each side of the relationship. Your names make sense in that context, but will be hard to migrate.\n\nLet's take `RegimentRef`, which points to the regiment that a unit belongs to. To use Bevy's native relations, you also need a component for \"the entities which belong to this regiment\", which would store a `Vec<Entity>`. We can't *also* call that `RegimentRef`: a natural name might be `RegimentMembers` in this case.\n\nWe could also make the `RelationshipTarget` component optional (you don't always need to be able to search in the other direction), but that's a completely different issue.\n\n"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-01-19T23:38:37Z",
+   "body": "> Bevy 0.16's relationships need two components, one for each side of the relationship.\n\nAh ok this was the piece I was missing. That makes a lot of sense now.\n\nI guess there are probably a couple more reasons why the `XRef` choice may not be great anyway:\n\n- It's shortened which can be awkward/undesired/unidiomatic.\n- There's already a `Ref` used in Bevy ECS queries, e.g. `windows: Query<(Entity, Ref<CursorIcon>), With<Window>>,` so overloading `XRef` at the end of component names could add a lot of confusion."
+  },
+  {
+   "author": "participant6",
+   "created_at": "2025-01-20T00:49:55Z",
+   "body": ">  Having seen the effects on the code using these APIs, I'm kind of biased toward using the plural / \"has a\" naming convention (Children), while still moving to the ChildOf convention for actual Relationships. Curious what yall think. I'm still not sure where I land.\n> -- participant2\n\nI like this. The plural side of the relationship is less ambiguous than the single side. A single entity probably won't be mistaken for \"a children.\" And the two names seem closely related."
+  },
+  {
+   "author": "participant7",
+   "created_at": "2025-01-20T01:19:34Z",
+   "body": "I kind of feel like there is no specific lintable naming pattern we can (or should) enforce, other than general guidelines for what the names should be describing.\n\nRelationships are essentially just a way to describe how an entity relates to another. In some cases, a noun followed by a possessive preposition like `Of` makes sense, such as for `ChildOf`, but oftentimes a verb fits better, like the classic \"Alice likes Bob\", or \"Bob eats apples\", where `Likes` and `Eats` would be relationships. You could say `LikerOf` or `EaterOf`, but it feels awkward. The other side of the relationship is pretty natural for these verbs though, e.g. `LikedBy` and `EatenBy`.\n\nI really like `ChildOf` for the new name of `Parent`, but `ParentOf` feels strange to me. For one, it perhaps doesn't encode the plural nature well enough, but more importantly, it sounds more like the core relationship component rather than the \"target side\" of the relationship that just stores the relationship sources. So I have a preference of keeping it as just `Children`.\n\n---\n\nAs an aside, a use case of my own: I'm likely switching the `ColliderParent` component (stores the rigid body entity that a collider is attached to) in Avian to be a relationship. My current planned names are `ColliderOf` for the core relationship and `RigidBodyColliders` for storing the sources. `RigidBodyOf` would be a very bad name as you cannot tell what the relationship is really about (attached colliders). I guess `ColliderParentOf` could also work, but that doesn't indicate that it is a rigid body. So `Of` doesn't really work here."
+  },
+  {
+   "author": "participant8",
+   "created_at": "2025-01-20T11:40:35Z",
+   "body": "Just a small observation: From what I understand, there previously were components which describe what an entity \"is\" or \"has\". So an entity can *be* a `Player` or *have* an amount of `Health`. There's the option to have the former always be prepended with an \"Is\" prefix, and in some cases I could think of it making sense: `IsFrozen`, `IsWet`, `IsEnemy`, ... But it doesn't always read best.\n\n~~Now, with relationships,~~ we also have \"verbs\". Alice `Likes` Bob. Bob `Eats(3)` Apples. (edit: to be fair you could have \"verb components\" before too, so this is not necessarily related to the introduction of relationships)\nForcing them all to be unified is probably going to result in some very silly names.\n\nSo I was wondering, what if components are just named in what feels most intuitive, while avoiding confusion, with clear documentation or even a macro which describes how a component is supposed to be interpreted (could affect how an inspector displays the component), or even written (such as in a DSL)? Silly example:\n\n```rust\n#[verb(is)]\nstruct Player(Team);\n\n#[verb(has)]\nstruct Health(f32);\n\n#[verb(does)]\nstruct Likes(Entity);\n```\n\nAs for the renaming itself, I would tend towards `ChildOf` for the sake of avoiding ambiguity, however `Children` still reads better to me, and should not introduce confusion. They also both start with `Child`, suggesting they might be related by name only?\n\nWanted to throw my thoughts out there in case someone else more familiar found a use for them."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-01-20T21:43:05Z",
+   "body": "Sounds like there is a reasonable amount of agreement to keep Children as-is and rename Parent to ChildOf. I've updated #17427, which I think should be good to merge now."
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "bevyengine/bevy",
+  "default_branch": "main",
+  "commit_sha": "b66c3ceb0ee39374ff1759ffb1b5bee2e4b93e99",
+  "as_of": "2025-01-17T02:22:17Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_bevyengine_bevy_17412"
+}

@@ -1,0 +1,133 @@
+{
+ "repo": "hasura/graphql-engine",
+ "number": 9637,
+ "url": "https://github.com/hasura/graphql-engine/issues/9637",
+ "title": "Don't use NULL check for permissions on non-nullable columns",
+ "state": "closed",
+ "labels": [
+  "k/bug",
+  "t/native-dbs"
+ ],
+ "reporter": "vincentjames501",
+ "created_at": "2023-05-11T15:15:31Z",
+ "closed_at": "2025-07-17T16:11:19Z",
+ "body": "### Version Information\r\n\r\nServer Version: 2.22.0\r\n\r\n### Environment\r\n\r\nAll\r\n\r\n### What is the current behaviour?\r\n\r\nConsider the following setup:\r\n\r\n```sql\r\n-- SCHEMA\r\n\r\nCREATE SCHEMA hasura_demo;\r\n\r\nCREATE TABLE hasura_demo.customer (\r\n  id SERIAL PRIMARY KEY,\r\n  name TEXT NOT NULL\r\n);\r\n\r\nCREATE TABLE hasura_demo.events (\r\n  id SERIAL PRIMARY KEY,\r\n  customer_id SERIAL NOT NULL REFERENCES hasura_demo.customer(id) ON DELETE CASCADE,\r\n  event TEXT NOT NULL\r\n);\r\n\r\nCREATE INDEX hasura_demo_events_c_id ON hasura_demo.events(customer_id, id);\r\n\r\n-- SETUP\r\n\r\nINSERT INTO hasura_demo.customer (id, name)\r\nSELECT i id, ('customer_' || i) name\r\nFROM generate_series(0, 999) as t(i);\r\n\r\nINSERT INTO hasura_demo.events (customer_id, event)\r\nSELECT MOD(i, 1000) customer_id, ('event_' || i) name\r\nFROM generate_series(0, 999999) as t(i);\r\n```\r\n\r\nTrack these tables, add a new role with select permissions like the following:\r\n\r\n<img width=\"448\" alt=\"image\" src=\"https://github.com/hasura/graphql-engine/assets/396866/d1107f3b-3071-4cf2-bfb5-94bf6344ae71\">\r\n\r\nAnd then issue a GQL subscription request like the following:\r\n\r\n```graphql\r\nsubscription Events {\r\n  hasura_demo_events_stream(batch_size:100, cursor:{initial_value:{id:123}}) {\r\n    event\r\n  }\r\n}\r\n```\r\n\r\nHasura generates roughly the following query:\r\n\r\n```sql\r\nSELECT\r\n\t\"__subs\".\"result_id\",\r\n\t\"__fld_resp\".\"root\" AS \"result\",\r\n\t\"__fld_resp\".\"cursor\" AS \"cursor\"\r\nFROM\r\n\tunnest(\r\n\t  (ARRAY['0b3a2fc8-ef5c-11ed-a05b-0242ac120003'])::uuid[], \r\n\t  (ARRAY['{\"session\": {\"x-hasura-demo-customer-id\": \"1\"}, \"cursor\": {\"id\": \"999000\"}}'])::json[]\r\n\t ) AS \"__subs\" (\"result_id\", \"result_vars\")\r\n\tLEFT OUTER JOIN LATERAL (\r\n\tSELECT\r\n\t\tjson_build_object('hasura_demo_events_stream', \"_hasura_demo_events_stream\".\"root\") AS \"root\",\r\n\t\tto_json(\"_hasura_demo_events_stream\".\"cursor\") AS \"cursor\"\r\n\tFROM (\r\n\t\tSELECT\r\n\t\t\tcoalesce(json_agg(\"root\" ORDER BY \"root.pg.id\" ASC), '[]') AS \"root\",\r\n\t\t\tjson_build_object('id', (max(\"root.pg.id\"))::text) AS \"cursor\"\r\n\t\tFROM (\r\n\t\t\tSELECT\r\n\t\t\t\t\"_root.base\".\"id\" AS \"root.pg.id\",\r\n\t\t\t\trow_to_json((\r\n\t\t\t\t\tSELECT\r\n\t\t\t\t\t\t\"_e\"\r\n\t\t\t\t\tFROM (\r\n\t\t\t\t\t\tSELECT\r\n\t\t\t\t\t\t\t\"_root.base\".\"id\" AS \"id\") AS \"_e\")) AS \"root\"\r\n\t\t\tFROM (\r\n\t\t\t\tSELECT\r\n\t\t\t\t\t*\r\n\t\t\t\tFROM\r\n\t\t\t\t\t\"hasura_demo\".\"events\"\r\n\t\t\t\tWHERE ((((\"hasura_demo\".\"events\".\"customer_id\") = (((\"__subs\".\"result_vars\" #>> ARRAY['session', 'x-hasura-demo-customer-id']))::integer))\r\n\t\t\t\t\t\tOR (((\"hasura_demo\".\"events\".\"customer_id\") IS NULL)\r\n\t\t\t\t\t\t\tAND ((((\"__subs\".\"result_vars\" #>> ARRAY['session', 'x-hasura-demo-customer-id']))::integer) IS NULL))\r\n\t\t\t\t\t\t\t)\r\n\t\t\t\t\tAND ((\"hasura_demo\".\"events\".\"id\") > (((\"__subs\".\"result_vars\" #>> ARRAY['cursor', 'id']))::bigint)))\r\n\t\t\tORDER BY\r\n\t\t\t\t\"id\" ASC\r\n\t\t\tLIMIT 1000) AS \"_root.base\"\r\n\tORDER BY\r\n\t\t\"root.pg.id\" ASC) AS \"_root\") AS \"_hasura_demo_events_stream\") AS \"__fld_resp\" ON ('true');\r\n```\r\n\r\nThe issue comes down to the extra clause in the where clause:\r\n\r\n```sql\r\nOR (((\"hasura_demo\".\"events\".\"customer_id\") IS NULL)\r\n\t\t\t\t\t\t\tAND ((((\"__subs\".\"result_vars\" #>> ARRAY['session', 'x-hasura-demo-customer-id']))::integer) IS NULL))\r\n```\r\n\r\nIn our case we don't want this check and it shouldn't be necessary anyways given the column isn't nullable. The annoying thing is Postgres generates a slightly unoptimized query plan:\r\n\r\n```\r\nNested Loop Left Join  (cost=1135.92..1135.97 rows=1 width=80) (actual time=7.035..7.047 rows=1 loops=1)\r\n--\r\n->  Function Scan on __subs  (cost=0.01..0.01 rows=1 width=48) (actual time=0.019..0.022 rows=1 loops=1)\r\n->  Subquery Scan on _hasura_demo_events_stream  (cost=1135.91..1135.94 rows=1 width=64) (actual time=7.006..7.014 rows=1 loops=1)\r\n->  Aggregate  (cost=1135.91..1135.93 rows=1 width=64) (actual time=6.991..6.997 rows=1 loops=1)\r\n->  Subquery Scan on \"_root.base\"  (cost=1122.59..1130.91 rows=333 width=36) (actual time=5.275..6.487 rows=999 loops=1)\r\n->  Limit  (cost=1122.59..1123.42 rows=333 width=40) (actual time=5.244..5.426 rows=999 loops=1)\r\n->  Sort  (cost=1122.59..1123.42 rows=333 width=40) (actual time=5.241..5.321 rows=999 loops=1)\r\nSort Key: events.id\r\nSort Method: quicksort  Memory: 71kB\r\n->  Bitmap Heap Scan on events  (cost=16.38..1108.64 rows=333 width=40) (actual time=0.383..5.007 rows=999 loops=1)\r\nRecheck Cond: (((customer_id = ((__subs.result_vars #>> '{session,x-hasura-demo-customer-id}'::text[]))::integer) AND (id > ((__subs.result_vars #>> '{cursor,id}'::text[]))::bigint)) OR ((customer_id IS NULL) AND (id > ((__subs.result_vars #>> '{cursor,id}'::text[]))::bigint)))\r\nFilter: ((customer_id = ((__subs.result_vars #>> '{session,x-hasura-demo-customer-id}'::text[]))::integer) OR ((customer_id IS NULL) AND (((__subs.result_vars #>> '{session,x-hasura-demo-customer-id}'::text[]))::integer IS NULL)))\r\nHeap Blocks: exact=999\r\n->  BitmapOr  (cost=16.38..16.38 rows=333 width=0) (actual time=0.247..0.249 rows=0 loops=1)\r\n->  Bitmap Index Scan on hasura_demo_events_c_id  (cost=0.00..11.77 rows=333 width=0) (actual time=0.210..0.211 rows=999 loops=1)\r\nIndex Cond: ((customer_id = ((__subs.result_vars #>> '{session,x-hasura-demo-customer-id}'::text[]))::integer) AND (id > ((__subs.result_vars #>> '{cursor,id}'::text[]))::bigint))\r\n->  Bitmap Index Scan on hasura_demo_events_c_id  (cost=0.00..4.44 rows=1 width=0) (actual time=0.014..0.015 rows=0 loops=1)\r\nIndex Cond: ((customer_id IS NULL) AND (id > ((__subs.result_vars #>> '{cursor,id}'::text[]))::bigint))\r\nSubPlan 1\r\n->  Result  (cost=0.00..0.01 rows=1 width=32) (actual time=0.000..0.000 rows=1 loops=999)\r\nPlanning Time: 0.514 ms\r\nExecution Time: 7.201 ms\r\n```\r\n\r\nIf I remove this redundant NULL check I get this:\r\n\r\n```\r\nNested Loop Left Join  (cost=27.59..27.65 rows=1 width=80) (actual time=1.683..1.686 rows=1 loops=1)\r\n--\r\n->  Function Scan on __subs  (cost=0.01..0.01 rows=1 width=48) (actual time=0.007..0.008 rows=1 loops=1)\r\n->  Subquery Scan on _hasura_demo_events_stream  (cost=27.59..27.62 rows=1 width=64) (actual time=1.673..1.675 rows=1 loops=1)\r\n->  Aggregate  (cost=27.59..27.61 rows=1 width=64) (actual time=1.666..1.667 rows=1 loops=1)\r\n->  Subquery Scan on \"_root.base\"  (cost=0.44..22.59 rows=333 width=36) (actual time=0.044..1.295 rows=999 loops=1)\r\n->  Limit  (cost=0.44..15.10 rows=333 width=40) (actual time=0.038..0.348 rows=999 loops=1)\r\n->  Index Only Scan using hasura_demo_events_c_id on events  (cost=0.44..15.10 rows=333 width=40) (actual time=0.030..0.203 rows=999 loops=1)\r\nIndex Cond: ((customer_id = ((__subs.result_vars #>> '{session,x-hasura-demo-customer-id}'::text[]))::integer) AND (id > ((__subs.result_vars #>> '{cursor,id}'::text[]))::bigint))\r\nHeap Fetches: 0\r\nSubPlan 1\r\n->  Result  (cost=0.00..0.01 rows=1 width=32) (actual time=0.000..0.000 rows=1 loops=999)\r\nPlanning Time: 0.179 ms\r\nExecution Time: 1.734 ms\r\n```\r\n\r\nThe BitmapOr that Postgres seems to use in the NULL case is quite a bit slower in both planning and execution time. We have A LOT of subscriptions on our system so these add up quite a bit. I'm surprised that Postgres doesn't optimize the query a bit further since it _knows_ the column is not nullable.\r\n\r\n### What is the expected behaviour?\r\n\r\nAdd a mechanism to skip the NULL check for permissions especially if the column isn't nullable.\r\n\r\n### Any possible solutions/workarounds you're aware of?\r\n\r\nNo\r\n",
+ "comments": [
+  {
+   "author": "FraneJelavic",
+   "created_at": "2023-06-27T06:36:47Z",
+   "body": "Hi,\r\nIs there any news on the issue from above?\r\nThis reduces the throughput of queries quite a lot so it would be beneficial for us to have a fix for this or a workaround."
+  },
+  {
+   "author": "plcplc",
+   "created_at": "2023-07-10T09:14:39Z",
+   "body": "We're working on a fix for this, and it should make it to the coming release or next."
+  },
+  {
+   "author": "FraneJelavic",
+   "created_at": "2023-07-10T09:29:15Z",
+   "body": "Hi @plcplc ,\r\nThank you for the answer. Is there any ETA for the release?"
+  },
+  {
+   "author": "plcplc",
+   "created_at": "2023-07-10T09:36:53Z",
+   "body": "Version `v2.30.0` (beta) is scheduled for July 12th, and `v2.30.0` (proper) is scheduled for July 19th.\r\n\r\nThe fix just merged, so I would expect it to be publically available by then."
+  },
+  {
+   "author": "FraneJelavic",
+   "created_at": "2023-07-14T09:42:36Z",
+   "body": "We've upgraded the Hasura version but I still see `or myField is null` in generated SQL.\r\nDo we need to make that column `NOT NULL` in the DDL?\r\nHow did you based your logic here?"
+  },
+  {
+   "author": "FraneJelavic",
+   "created_at": "2023-07-17T06:55:45Z",
+   "body": "I still see the issue present using Hasura `2.30.0-beta.1` with the streaming subscription.\r\nI have the field marked as `NOT NULL` in the DDL and the permissions are set to `_eq = x-hasura-customer-id`.\r\nI've also unchecked the column permission for this field and still I have the `OR x-hasura-customer-id IS NULL` condition in the queries."
+  },
+  {
+   "author": "gustavotrott",
+   "created_at": "2024-05-01T14:02:58Z",
+   "body": "> Version `v2.30.0` (beta) is scheduled for July 12th, and `v2.30.0` (proper) is scheduled for July 19th.\r\n> \r\n> The fix just merged, so I would expect it to be publically available by then.\r\n\r\nHey, I think the fix doesn't work when I'm tracking a view (instead of a table).\r\nIs there any workaround for this situation?\r\n\r\n- It would be good if I could disable this option (`NullableComparison`) via config;\r\n- Or indicate that my session-var is never null;\r\n- Or indicate via `yml` that a certain column is not null (\"hard-coded\").\r\n\r\nI thought about using `is not distinct from` for comparison in Postgres, but maybe it is not so good as `=` to take advantage of indexes.. I'm not sure.\r\n\r\nOther alternative would be `coalesce(my_column,\"\") = `, but it would need to know the column type and I'm not sure how it would work for views...\r\n\r\nThe fact is that for some reason the `OR IS NULL` clause is making it way more complex for Postgres."
+  },
+  {
+   "author": "vincentjames501",
+   "created_at": "2025-06-16T23:11:30Z",
+   "body": "@plcplc / @rikinsk could this ticket be reopened? As noted above it doesn't work for database views."
+  },
+  {
+   "author": "vincentjames501",
+   "created_at": "2025-06-30T17:39:29Z",
+   "body": "Example reproduction steps:\n\n```\n-- SCHEMA\n\nCREATE SCHEMA hasura_demo;\n\nCREATE TABLE hasura_demo.customer (\n  name TEXT PRIMARY KEY NOT NULL,\n  active BOOLEAN NOT NULL\n);\n\nCREATE TABLE hasura_demo.events (\n  id SERIAL PRIMARY KEY,\n  customer_name TEXT NOT NULL REFERENCES hasura_demo.customer(name) ON DELETE CASCADE,\n  event TEXT NOT NULL\n);\n\nCREATE INDEX hasura_demo_events_c_id_idx ON hasura_demo.events(customer_name, id);\n\nCREATE VIEW hasura_demo.events_with_customer_active AS (\n  SELECT hde.id, hde.customer_name, hdc.active customer_active, hde.event\n  FROM hasura_demo.events hde\n  JOIN hasura_demo.customer hdc ON hdc.name = hde.customer_name \n);\n\n-- SETUP\n\nINSERT INTO hasura_demo.customer (name, active)\nSELECT ('customer_' || i) name, MOD(i, 2) = 0 active\nFROM generate_series(0, 999) as t(i);\n\nINSERT INTO hasura_demo.events (customer_name, event)\nSELECT ('customer_' || MOD(i, 1000)) customer_name, ('event_' || i) event\nFROM generate_series(0, 999999) as t(i);\n```\n\nCreate a role with custom checks\n\n<img width=\"524\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/41b27532-1b82-4026-b4be-dd856015658e\" />\n\nSet the X-Hasura-Customer-Name appropriately then issue:\n\n```\nsubscription MySubscription {\n  hasura_demo_events_with_customer_active_stream(batch_size:10, cursor:{initial_value:{id:0}}) {\n    id\n    event\n    customer_name\n    customer_active\n  }\n}\n```\n\nNotice:\n\n```\nSELECT\n  \"__subs\".\"result_id\",\n  \"__fld_resp\".\"root\" AS \"result\",\n  \"__fld_resp\".\"cursor\" AS \"cursor\"\nFROM\n  UNNEST(($ 1) :: uuid [], ($ 2) :: json []) AS \"__subs\"(\"result_id\", \"result_vars\")\n  LEFT OUTER JOIN LATERAL (\n    SELECT\n      json_build_object(\n        'hasura_demo_events_with_customer_active_stream',\n        \"_hasura_demo_events_with_customer_active_stream\".\"root\"\n      ) AS \"root\",\n      to_json(\n        \"_hasura_demo_events_with_customer_active_stream\".\"cursor\"\n      ) AS \"cursor\"\n    FROM\n      (\n        SELECT\n          coalesce(\n            json_agg(\n              \"root\"\n              ORDER BY\n                \"root.pg.id\" ASC\n            ),\n            '[]'\n          ) AS \"root\",\n          json_build_object('id', (MAX(\"root.pg.id\")) :: text) AS \"cursor\"\n        FROM\n          (\n            SELECT\n              row_to_json(\n                (\n                  SELECT\n                    \"_e\"\n                  FROM\n                    (\n                      SELECT\n                        \"_root.base\".\"id\" AS \"id\",\n                        \"_root.base\".\"event\" AS \"event\",\n                        \"_root.base\".\"customer_name\" AS \"customer_name\",\n                        \"_root.base\".\"customer_active\" AS \"customer_active\"\n                    ) AS \"_e\"\n                )\n              ) AS \"root\",\n              \"_root.base\".\"id\" AS \"root.pg.id\"\n            FROM\n              (\n                SELECT\n                  *\n                FROM\n                  \"hasura_demo\".\"events_with_customer_active\"\n                WHERE\n                  (\n                    (\n                      (\n                        (\n                          \"hasura_demo\".\"events_with_customer_active\".\"customer_name\"\n                        ) = (\n                          (\n                            (\n                              \"__subs\".\"result_vars\" #>>ARRAY['session', 'x-hasura-provider-name']))::text)) OR (((\"hasura_demo\".\"events_with_customer_active\".\"customer_name\") IS NULL) AND ((((\"__subs\".\"result_vars\"#>>ARRAY['session', 'x-hasura-provider-name']))::text) IS NULL))) AND ((\"hasura_demo\".\"events_with_customer_active\".\"id\") > (((\"__subs\".\"result_vars\"#>>ARRAY['cursor', 'id']))::integer)))   ORDER BY \"id\" ASC  LIMIT 10 ) AS \"_root.base\"    ORDER BY \"root.pg.id\" ASC   ) AS \"_root\"      ) AS \"_hasura_demo_events_with_customer_active_stream\"      ) AS \"__fld_resp\" ON ('true')\n```\n\n```\nNested Loop Left Join  (cost=439.44..439.49 rows=1 width=80)\n  ->  Function Scan on __subs  (cost=0.01..0.01 rows=1 width=48)\n  ->  Subquery Scan on _hasura_demo_events_with_customer_active_stream  (cost=439.44..439.47 rows=1 width=64)\n        ->  Aggregate  (cost=439.44..439.45 rows=1 width=64)\n              ->  Subquery Scan on \"_root.base\"  (cost=0.71..439.38 rows=10 width=36)\n                    ->  Limit  (cost=0.71..439.16 rows=10 width=29)\n                          ->  Nested Loop  (cost=0.71..14601.16 rows=333 width=29)\n                                ->  Index Scan using events_pkey on events hde  (cost=0.43..14447.76 rows=333 width=28)\n                                      Index Cond: (id > ((__subs.result_vars #>> '{cursor,id}'::text[]))::integer)\n                                      Filter: ((customer_name = (__subs.result_vars #>> '{session,x-hasura-provider-name}'::text[])) OR ((customer_name IS NULL) AND ((__subs.result_vars #>> '{session,x-hasura-provider-name}'::text[]) IS NULL)))\n                                ->  Index Scan using customer_pkey on customer hdc  (cost=0.28..0.46 rows=1 width=13)\n                                      Index Cond: (name = hde.customer_name)\n                    SubPlan 1\n                      ->  Result  (cost=0.00..0.01 rows=1 width=32)\n```\n\nIf I do the same thing but on the events table I get this plan instead:\n\n```\nNested Loop Left Join  (cost=40.44..40.49 rows=1 width=80)\n  ->  Function Scan on __subs  (cost=0.01..0.01 rows=1 width=48)\n  ->  Subquery Scan on _hasura_demo_events_stream  (cost=40.43..40.46 rows=1 width=64)\n        ->  Aggregate  (cost=40.43..40.45 rows=1 width=64)\n              ->  Subquery Scan on \"_root.base\"  (cost=0.43..40.38 rows=10 width=36)\n                    ->  Limit  (cost=0.43..40.15 rows=10 width=28)\n                          ->  Index Scan using hasura_demo_events_c_id_idx on events  (cost=0.43..1323.09 rows=333 width=28)\n                                Index Cond: ((customer_name = (__subs.result_vars #>> '{session,x-hasura-provider-name}'::text[])) AND (id > ((__subs.result_vars #>> '{cursor,id}'::text[]))::integer))\n                    SubPlan 1\n                      ->  Result  (cost=0.00..0.01 rows=1 width=32)\n```\n"
+  },
+  {
+   "author": "gustavotrott",
+   "created_at": "2025-06-30T20:35:59Z",
+   "body": "I'm not sure if there's a straightforward way to determine whether a view's column is nullable.\nThis query, for instance, will **always** return `is_nullable: 'YES'` for views:\n\n```sql\nselect c.column_name, is_nullable\nfrom information_schema.columns c\nwhere c.table_name = 'events_with_customer_active'\norder by c.column_name\n```\n\n<table><tr><td>\n<img src=\"https://github.com/user-attachments/assets/e635b1e4-6ada-4079-883d-b8273bef87eb\" width=400 />\n</td></tr></table>\n\nThere’s a way to get this information from the underlying table, but it comes with a limitation:\n\n```sql\nselect vcu.view_name, c.table_name, vcu.column_name, c.is_nullable\nfrom information_schema.view_column_usage vcu\njoin information_schema.columns c\n  on c.table_schema = vcu.table_schema\n  and c.table_name = vcu.table_name\n  and c.column_name = vcu.column_name\nwhere vcu.view_name = 'events_with_customer_active'\norder by c.column_name\n```\n\n<table><tr><td>\n<img src=\"https://github.com/user-attachments/assets/2dd43c2f-111d-4dcf-b854-efdec07245ca\" width=400 />\n</td></tr></table>\n\nThe problem is that it doesn’t show the **alias** used in the view — only the original column name from the source table.\nIn this case, it displays `active` when what we actually need is the alias `customer_active` (from `hdc.active customer_active`).\n\nTo make this work, the view would need to avoid using aliases altogether and instead retain the original column names — which doesn’t seem very reliable.\n"
+  },
+  {
+   "author": "gustavotrott",
+   "created_at": "2025-06-30T20:40:19Z",
+   "body": "One possible workaround that could be very helpful:\n\nIf it's certain that all session variables passed to this query as `x-hasura-provider-name` are non-null, then it's safe to remove the `\"OR IS NULL\"` condition on both sides.\nSince we already know the array doesn't contain any null values, this simplification should be valid.\nIt seems like a feasible solution that would cover most cases effectively."
+  },
+  {
+   "author": "vincentjames501",
+   "created_at": "2025-07-01T00:09:04Z",
+   "body": "If there was a way to flag a custom check as not null/required that would also work. "
+  },
+  {
+   "author": "jberryman",
+   "created_at": "2025-07-01T17:05:16Z",
+   "body": "@vincentjames501 thanks for the reproducer. After digging into this I think it's unlikely that we'll be able to work around this issue with views in the engine; the risk and complexity looks too high at this time, I'm sorry to say. \n\nSome possible other workarounds:\n\n- have you tried defining a [Native Query](https://hasura.io/docs/2.0/schema/postgres/native-queries/) matching your view body instead? I think this ought to optimize better\n- Have you checked the performance tracking it as a function rather than view? At least you'd have an object that can carry its own NOT NULL constraints then, but it's likely performance would be worse for different reasons I would guess\n- there is some suggestion that the [system catalog entry for the view can be modified ](https://stackoverflow.com/q/17301323) by hand to set nullability attributes. That sounds quite risky (if it even works at all these days), but with sufficient research you might convince yourself it is safe"
+  },
+  {
+   "author": "vincentjames501",
+   "created_at": "2025-07-01T19:55:50Z",
+   "body": "@jberryman , yeah it makes sense it can't be done by querying system catalogs. I think what I'm trying to say is this section:\n\n<img width=\"504\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/236722ad-8f35-489f-8fb8-3f9302be1058\" />\n\nmay make sense to add a flag to indicate whether it's NULLable. Another option is to allow `_in` to work such that it builds a query like `customer_name = ANY(...)` or `customer_name IN (...)`. The problem is that `_in` doesn't seem to take values from session?"
+  },
+  {
+   "author": "jberryman",
+   "created_at": "2025-07-09T21:41:03Z",
+   "body": "@vincentjames501 I appreciate all the ideas, I'm sorry we can't attempt a special case in the engine at this time. I'd be glad to know if any of the workarounds in https://github.com/hasura/graphql-engine/issues/9637#issuecomment-3024862398 worked for you"
+  },
+  {
+   "author": "gustavotrott",
+   "created_at": "2025-07-09T21:53:58Z",
+   "body": "Updating `pg_attribute` did the trick here."
+  },
+  {
+   "author": "vincentjames501",
+   "created_at": "2025-07-09T23:09:08Z",
+   "body": "@jberryman , is there any reason why we can't use hasura session vars in things like `_in`? That also seems like a nice way to approach this for views."
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "hasura/graphql-engine",
+  "default_branch": "master",
+  "commit_sha": "ae14af3fa5fbaa88d266dae2e10375b8bb2ab317",
+  "as_of": "2023-05-11T15:15:31Z",
+  "method": "github_commits_until"
+ },
+ "images": [
+  {
+   "where": "c8",
+   "source_url": "https://github.com/user-attachments/assets/41b27532-1b82-4026-b4be-dd856015658e",
+   "file": "gh_hasura_graphql-engine_9637_img0.png"
+  },
+  {
+   "where": "c9",
+   "source_url": "https://github.com/user-attachments/assets/e635b1e4-6ada-4079-883d-b8273bef87eb",
+   "file": "gh_hasura_graphql-engine_9637_img1.png"
+  },
+  {
+   "where": "c9",
+   "source_url": "https://github.com/user-attachments/assets/2dd43c2f-111d-4dcf-b854-efdec07245ca",
+   "file": "gh_hasura_graphql-engine_9637_img2.png"
+  },
+  {
+   "where": "c13",
+   "source_url": "https://github.com/user-attachments/assets/236722ad-8f35-489f-8fb8-3f9302be1058",
+   "file": "gh_hasura_graphql-engine_9637_img3.png"
+  }
+ ],
+ "slug": "gh_hasura_graphql-engine_9637"
+}

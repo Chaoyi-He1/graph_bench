@@ -1,0 +1,144 @@
+{
+ "repo": "duckdb/duckdb",
+ "number": 7808,
+ "url": "https://github.com/duckdb/duckdb/issues/7808",
+ "title": "Out of memory (OOM) during window function on large data",
+ "state": "closed",
+ "labels": [],
+ "reporter": "reporter",
+ "created_at": "2023-06-02T18:42:56Z",
+ "closed_at": "2023-09-28T06:38:44Z",
+ "body": "### What happens?\r\n\r\nI'm getting an OOM error on a 1 billion row table stored in a DuckDB database using the below query on DuckDB 0.8.0. I'm trying to create a new column with values for each corresponding group specified by the window. For this work I only have access to a machine with about 10 GB of usable RAM for DuckDB (16 GB total) given the security requirements of the data. \r\n\r\nI do see that there are several GBs of temp files on disk being created while this query runs.\r\n\r\nBelow is the query that causes the error:\r\n\r\n```\r\ncon.sql(\"\"\"create or replace table new_table as SELECT \r\n    Pid, \r\n    Planid, \r\n    Claimid, \r\n    'CLAIM' || dense_rank() OVER(PARTITION BY Pid, Planid ORDER BY Claimid) AS Fake_Claimid\r\nFROM big_table;\"\"\")\r\n\r\nOutOfMemoryException: Out of Memory Error: failed to pin block of size 262KB (10.0GB/10.0GB used)\r\n```\r\n\r\n### To Reproduce\r\n\r\nThe data types are double, double, and varchar for Patid, Planid, and Claimid respectively.\r\n\r\nPatid is fixed length of 15 - e.g. 123456789012345\r\nPlanid is fixed length of 15 - e.g. 123456789012345\r\nClaimid is fixed length of 10 - e.g. ABC123ABC12\r\n\r\n@participant2 Helped me out by posting a proposed data generator script (below) to give us a start with generating example data.\r\n\r\nCREATE TABLE big_table AS\r\n    SELECT \r\n        (i % 500)::DOUBLE AS \"Patid\",\r\n        (i % 5000)::DOUBLE AS \"Planid\",\r\n        uuid()::VARCHAR AS \"Claimid\",\r\n    FROM range(1000000000) tbl(i);\r\n\r\nI have also attached a Python-based faker script that gets pretty close as well, but it goes to Parquet as an intermediate step instead of direct within DuckDB. This code should produce about 10 million rows every ~90 seconds or so on a decent computer. \r\n\r\n`pip install -r requirements.txt`\r\n\r\n```\r\n# Generate fake data\r\nimport pyarrow as pa\r\nimport pyarrow.parquet as pq\r\nfrom faker import Faker\r\nimport random\r\n\r\n# Create a Faker instance\r\nfake = Faker()\r\n\r\n# Define the total number of rows and row size of each chunk\r\nnum_rows = 1_000_000_000\r\nchunk_size = 10_000_000\r\n\r\n# Calculate the number of chunks\r\nnum_chunks = num_rows // chunk_size\r\n\r\n# Cardinality is about 2% of all rows, so number of unique Pids and unique Planids is 2% of total rows\r\nnum_unique_values = int(num_rows * .02)  \r\n\r\n# Generate unique Pid and Planids\r\nstart_number = 100000000000000\r\nvalues = [_ for _ in range(start_number, start_number + num_unique_values)]\r\n\r\n# Create a PyArrow Table schema\r\nfields = [\r\n    pa.field('Pid', pa.int64()),\r\n    pa.field('Planid', pa.int64()),\r\n    pa.field('Claimid', pa.string()),\r\n]\r\nschema = pa.schema(fields)\r\n\r\n# Generate a chunk of data\r\nfor i in range(num_chunks):\r\n    data = {\r\n        'Pid': [random.choice(values) for _ in range(chunk_size)],\r\n        'Planid': [random.choice(values) for _ in range(chunk_size)],\r\n        'Claimid': [''.join(fake.random_letters(length=10)).upper() for _ in range(chunk_size)]\r\n    }\r\n\r\n    # Convert the chunk to a PyArrow Table\r\n    table = pa.Table.from_pydict(data)\r\n\r\n    # Write the chunk to a Parquet file\r\n    pq.write_table(table, f'faker_data_output\\\\fake_data-{i}.parquet')\r\n    print(f\"Wrote chunk {i}\")\r\n```\r\n\r\n[requirements.txt](https://github.com/duckdb/duckdb/files/11637989/requirements.txt)\r\n\r\n\r\n### OS:\r\n\r\nWindows 10\r\n\r\n### DuckDB Version:\r\n\r\n0.8.0\r\n\r\n### DuckDB Client:\r\n\r\nPython\r\n\r\n### Full Name:\r\n\r\nPatrick Brady\r\n\r\n### Affiliation:\r\n\r\nUniversity of Michigan\r\n\r\n### Have you tried this on the latest `master` branch?\r\n\r\n- [X] I agree\r\n\r\n### Have you tried the steps to reproduce? Do they include all relevant data and configuration? Does the issue you report still appear there?\r\n\r\n- [X] I agree",
+ "comments": [
+  {
+   "author": "reporter",
+   "created_at": "2023-06-02T19:21:58Z",
+   "body": "Just tried with 100 million rows instead of 1 billion, and also set memory limit to 1GB as a test. Basically trying to do 10% of the data processing on 10% of the hardware. Out of mem occurred right away with 1GB memory limit. \r\n\r\nBumped it up to 5GB memory limit and kept data size at 100 million and that worked. Unfortunately I can't bump my machine up to 50GB of available RAM for DuckDB to run on the full 1 billion rows. "
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-06-03T12:36:33Z",
+   "body": "why use double to save int, varchar to save uuid\r\nsmaller size runs faster\r\n```sql\r\nD .timer on\r\nD\r\nD create or replace table new_table as SELECT\r\n>     Pid,\r\n>     Planid,\r\n>     Claimid,\r\n>     'CLAIM' || dense_rank() OVER(PARTITION BY Pid, Planid ORDER BY Claimid) AS Fake_Claimid\r\n> FROM big_table;\r\nRun Time (s): real 0.402 user 1.491501 sys 0.554344\r\nD CALL pragma_database_size();\r\n┌───────────────┬───────────────┬────────────┬───┬──────────┬──────────────┬──────────────┐\r\n│ database_name │ database_size │ block_size │ … │ wal_size │ memory_usage │ memory_limit │\r\n│    varchar    │    varchar    │   int64    │   │ varchar  │   varchar    │   varchar    │\r\n├───────────────┼───────────────┼────────────┼───┼──────────┼──────────────┼──────────────┤\r\n│ memory        │ 0 bytes       │          0 │ … │ 0 bytes  │ 151.7MB      │ 6.4GB        │\r\n├───────────────┴───────────────┴────────────┴───┴──────────┴──────────────┴──────────────┤\r\n│ 1 rows                                                              9 columns (6 shown) │\r\n└─────────────────────────────────────────────────────────────────────────────────────────┘\r\nRun Time (s): real 0.004 user 0.002134 sys 0.000612\r\nD\r\nD CREATE or replace TABLE big_table AS\r\n> SELECT\r\n> (i % 500):<nick> AS \"Pid\",\r\n> (i % 5000):<nick> AS \"Planid\",\r\n> uuid()::VARCHAR AS \"Claimid\",\r\n> FROM range(1e6::int) tbl(i);\r\nRun Time (s): real 0.185 user 0.176959 sys 0.006942\r\nD\r\nD .timer on\r\nD\r\nD create or replace table new_table as SELECT\r\n>     Pid,\r\n>     Planid,\r\n>     Claimid,\r\n>     'CLAIM' || dense_rank() OVER(PARTITION BY Pid, Planid ORDER BY Claimid) AS Fake_Claimid\r\n> FROM big_table;\r\nRun Time (s): real 0.256 user 1.371662 sys 0.104416\r\nD CALL pragma_database_size();\r\n┌───────────────┬───────────────┬────────────┬───┬──────────┬──────────────┬──────────────┐\r\n│ database_name │ database_size │ block_size │ … │ wal_size │ memory_usage │ memory_limit │\r\n│    varchar    │    varchar    │   int64    │   │ varchar  │   varchar    │   varchar    │\r\n├───────────────┼───────────────┼────────────┼───┼──────────┼──────────────┼──────────────┤\r\n│ memory        │ 0 bytes       │          0 │ … │ 0 bytes  │ 130.6MB      │ 6.4GB        │\r\n├───────────────┴───────────────┴────────────┴───┴──────────┴──────────────┴──────────────┤\r\n│ 1 rows                                                              9 columns (6 shown) │\r\n└─────────────────────────────────────────────────────────────────────────────────────────┘\r\nRun Time (s): real 0.001 user 0.001142 sys 0.000229\r\nD from big_table limit 1;\r\n┌───────┬────────┬──────────────────────────────────────┐\r\n│  Pid  │ Planid │               Claimid                │\r\n│ int16 │ int16  │               varchar                │\r\n├───────┼────────┼──────────────────────────────────────┤\r\n│     0 │      0 │ c459e384-0697-4f6c-b039-a4a84c23f69b │\r\n└───────┴────────┴──────────────────────────────────────┘\r\nRun Time (s): real 0.006 user 0.002940 sys 0.002242\r\nD CREATE or replace TABLE big_table AS\r\n> SELECT\r\n> (i % 500):<nick> AS \"Pid\",\r\n> (i % 5000):<nick> AS \"Planid\",\r\n> uuid()::UUID AS \"Claimid\",\r\n> FROM range(1e6::int) tbl(i);\r\nRun Time (s): real 0.083 user 0.154249 sys 0.000418\r\nD\r\nD .timer on\r\nD\r\nD create or replace table new_table as SELECT\r\n>     Pid,\r\n>     Planid,\r\n>     Claimid,\r\n>     'CLAIM' || dense_rank() OVER(PARTITION BY Pid, Planid ORDER BY Claimid) AS Fake_Claimid\r\n> FROM big_table;\r\nRun Time (s): real 0.145 user 0.597188 sys 0.082637\r\nD\r\nD CALL pragma_database_size();\r\n┌───────────────┬───────────────┬────────────┬───┬──────────┬──────────────┬──────────────┐\r\n│ database_name │ database_size │ block_size │ … │ wal_size │ memory_usage │ memory_limit │\r\n│    varchar    │    varchar    │   int64    │   │ varchar  │   varchar    │   varchar    │\r\n├───────────────┼───────────────┼────────────┼───┼──────────┼──────────────┼──────────────┤\r\n│ memory        │ 0 bytes       │          0 │ … │ 0 bytes  │ 79.1MB       │ 6.4GB        │\r\n├───────────────┴───────────────┴────────────┴───┴──────────┴──────────────┴──────────────┤\r\n│ 1 rows                                                              9 columns (6 shown) │\r\n└─────────────────────────────────────────────────────────────────────────────────────────┘\r\nRun Time (s): real 0.001 user 0.000991 sys 0.000186\r\n```"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-06-03T13:06:59Z",
+   "body": "or you can store partitions to many parquets once a pid. \r\nthen created new table from parquets. "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-06-03T16:30:21Z",
+   "body": "I did end up switching to int64 (BIGINT) for Pid and Planid because they are 15-digit long, fixed-length ID numbers. Still running into same issue.\r\n\r\nHaven't done partitioning on Pid because there are nearly 21 million unique Pids in a single year, so we just partition the data by year and then each hive partitioned year folder contains multiple Parquet files each with ~10 million rows of data."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-06-05T21:20:32Z",
+   "body": "I think the problem is that the `ColumnDataCollection` class doesn't page to disk (although the sort logic does). I will check with @participant3 and maybe we can use a newer data structure `TupleDataCollection` here."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-06-06T07:14:03Z",
+   "body": "@participant2 `ColumnDataCollection` can go to disk. If you create a `ColumnDataCollection` using this constructor:\r\n```c++\r\nColumnDataCollection(BufferManager &buffer_manager, vector<LogicalType> types);\r\n```\r\nAll of it goes to disk (including the strings, using the same on-the-fly pointer recomputation as `TupleDataCollection`, no manual swizzling!).\r\n\r\nIf you create a `ColumnDataCollection` like this, though:\r\n```c++\r\nColumnDataCollection(Allocator &allocator, vector<LogicalType> types);\r\n```\r\nIt will be in-memory only, no spilling to disk."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-06-13T19:44:00Z",
+   "body": "Ah the problem is that `PartitionedColumnData` doesn't use this constructor."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-06-13T19:55:11Z",
+   "body": "Need to switch to `PartitionedTupleData`"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-06-22T20:41:18Z",
+   "body": "@reporter After looking into this some more, the problem is that you are heavily resource constrained. The query has a large number of partitions, which we hash into at most 1024 hash groups. Even with the new paging, each thread will need to keep at a minimum `partitions * block size * overlap` bytes = 1024 * 262000 * 2 bytes ~= 500MB. If you run the query on a large number of threads (e.g., 16) , then it can exceed the memory limit (e.g., 8GB). So one option is to use `PRAGMA threads=4` or something to restrict the memory usage. You would also need to set up `PRAGMA temp_directory='...'` so the data can be paged.\r\n\r\nI will submit the new out-of-core partitioning, which will at least allow you some control. After that, I will need to check the thread count and partitions to make sure that we don't exceed the memory budget."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-06-25T17:39:13Z",
+   "body": "@participant2 Thanks so much for looking into this! That makes sense. I'll play around with the various settings you mentioned. "
+  },
+  {
+   "author": "participant4",
+   "created_at": "2023-06-29T15:11:37Z",
+   "body": "Hi @participant2 ,\r\nI think I am suffering from the same symptons. Just choosing a different threads parameter does not help me though.\r\nIs there a possibility to try your patch (in an R package) without actually building duckdb myself? I am limited here in my access to build tools that would do that for me."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-06-29T17:06:52Z",
+   "body": "> Hi @participant2 ,\r\n> I think I am suffering from the same symptons. Just choosing a different threads parameter does not help me though.\r\n> Is there a possibility to try your patch (in an R package) without actually building duckdb myself? I am limited here in my access to build tools that would do that for me.\r\n\r\nHmm I was hoping that my PR would have the built artefacts but I don't see them. I think we are very close to merge, though, so watch this space."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2023-08-17T07:47:50Z",
+   "body": "Am I correct that the current builds on [r-universe](https://<redacted-host>/), e.g. [here](https://github.com/r-universe/duckdb/actions/runs/5879828578]), should already include that fix?\r\n\r\nIf so, it seems that it doesn't change anything for me, I still get\r\n```\r\nCaused by error:\r\n! rapi_execute: Failed to run query\r\nError: Out of Memory Error: failed to pin block of size 73.3MB (11.9GB/12.0GB used)\r\n```\r\nwhen creating a duck-db connection like this:\r\n```\r\nduckdb::duckdb(\r\n  paste0(tempfile(), \".duckdb\"),\r\n  config = list(\"memory_limit\" = \"12GB\") # , \"temp_directory\" = tmp_dir)\r\n)\r\n```\r\n\r\nWhat about you, @reporter, does that fix your issue?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-08-17T08:02:22Z",
+   "body": "I think https://github.com/duckdb/duckdb/actions?query=branch%3Amaster+event%3Arepository_dispatch+workflow%3ALinuxRelease is the latest. "
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-08-18T20:08:35Z",
+   "body": "@participant1 The original issue is [in the test suite ](https://github.com/duckdb/duckdb/blob/b105af71bbff371f7069b23e250be9183a350aa5/test/sql/window/window_partition_paging.test_slow) now, so things seem to be improving.\r\n\r\nOne thing that is not obvious is that we are not tracking all memory, so you may still run out. Try reducing it even further and seeing if that solves the problem for you."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-08-24T00:43:54Z",
+   "body": "@participant4 sorry for the radio silence on this. I got sucked into a couple of other large projects at work. I’ll try to give it another shot soon. "
+  },
+  {
+   "author": "participant4",
+   "created_at": "2023-08-24T09:37:57Z",
+   "body": "> @participant1 The original issue is [in the test suite ](https://github.com/duckdb/duckdb/blob/b105af71bbff371f7069b23e250be9183a350aa5/test/sql/window/window_partition_paging.test_slow) now, so things seem to be improving.\r\n> \r\n> One thing that is not obvious is that we are not tracking all memory, so you may still run out. Try reducing it even further and seeing if that solves the problem for you.\r\n\r\n@participant2 What exactly should I reduce? The memory limit?\r\n```config = list(\"memory_limit\" = \"12GB\")```\r\nI don't seem to run out of physical memory at all. The error message seems to indicates that it just aborts because the artificial 12GB limit seems to have been violated. Reducing this limit would probably lead to the same thing, no?"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-08-24T16:49:38Z",
+   "body": "There is an issue with being unable to purge memory when copying data from the partitioning to the sort. @participant3 will be looking at it when he is back. But your problem sounds strange. What does your data look like (how many rows, how many partitions?)"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2023-08-25T16:56:38Z",
+   "body": "The data I am looking at is stored in multiple parquet files and has ~ 142 mio records, and the number of groups is of the same order of magnitude. (My use case is some kind of \"update pipeline\", where this particular query retrieves the latest update per actual ID; usually there are only a bunch of updates per ID, so the group size is usually <= 10). I use a duckdb-arrow combination to perform the query arrow to write the result back other parquet files."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-08-26T17:07:20Z",
+   "body": "> The data I am looking at is stored in multiple parquet files and has ~ 142 mio records, and the number of groups is of the same order of magnitude. (My use case is some kind of \"update pipeline\", where this particular query retrieves the latest update per actual ID; usually there are only a bunch of updates per ID, so the group size is usually <= 10). I use a duckdb-arrow combination to perform the query arrow to write the result back other parquet files.\r\n\r\nIt sounds like you are looking for the latest change in each group? If so, you probably want to use the `arg_max` aggregate instead of windowing:\r\n\r\n```sql\r\nSELECT group, arg_max(val, timestamp) AS val\r\nFROM relation\r\nGROUP BY ALL\r\n```"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2023-08-28T06:52:45Z",
+   "body": "Ah, I wasn't aware of that function.\r\nIf have multiple columns which are not part of the group-definition, should I repeatedly use `arg_max` ?\r\n\r\nlike\r\n```\r\nSELECT group, arg_max(col1, timestamp) AS col1, arg_max(col2, timestamp) AS col2\r\nFROM relation\r\nGROUP BY group\r\n```\r\nfor relation = (group, col1, col2, timestamp).\r\n\r\nAnyways, I actually get an OOM error as well. So maybe my problem is not related to window functions after all."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-08-28T14:31:33Z",
+   "body": "Yes, sorry, I was just keeping it short (and hopefully readable!). \r\n\r\nYou could put all the columns into a struct and just use `ARG_MAX(<struct>, timestamp)` but that might be overkill."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-09-27T19:15:15Z",
+   "body": "@participant4 Ok, only took me a month but I finally got back to this. :) Version 0.9.0 does indeed fix the issue I had and I was able to run the code listed in my original issue post using only 8 GB of RAM. Took 34 minutes on my 6-core machine, but it did successfully process 1.013 billion rows of data!"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2023-09-28T06:38:44Z",
+   "body": "@reporter – Perfect, thanks for coming back to confirm that the new version fixes your issue!"
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "duckdb/duckdb",
+  "default_branch": "main",
+  "commit_sha": "b36abd3bfafb435aadb3e2200ef90cac94ec025e",
+  "as_of": "2023-06-02T18:42:56Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_duckdb_duckdb_7808"
+}

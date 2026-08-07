@@ -1,0 +1,202 @@
+{
+ "repo": "pandas-dev/pandas",
+ "number": 50887,
+ "url": "https://github.com/pandas-dev/pandas/issues/50887",
+ "title": "DEPR deprecate mixed timezone offsets with utc=False?",
+ "state": "closed",
+ "labels": [
+  "Datetime",
+  "Deprecate"
+ ],
+ "reporter": "reporter",
+ "created_at": "2023-01-20T08:47:47Z",
+ "closed_at": "2023-09-04T10:56:58Z",
+ "body": "Currently, there are two possible behaviours for mixed timezone offsetes:\r\n- `utc=True`: converts to DatetimeIndex, everything is converted to UTC\r\n- `utc=False`: becomes Index of object dtype\r\n\r\nWhat's the use-case for the latter? If it's just `Index`, then you can't use the `.dt` accessor or anything that you'd normally do with dates.\r\n\r\nShould it be deprecated?",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2023-01-20T15:57:58Z",
+   "body": "I remember addressing this years ago with the goal \"maintain the maximum information possible\" in datetime parsing, even though you get an `Index[object]` in this case. With this in mind, a common way to encounter this is a user who has a time series with UTC offsets that crosses DST and doesn't want to convert to UTC."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-01-20T17:06:28Z",
+   "body": "i think of this as like a more performant `obj.apply(pd.to_datetime)`.  Definitely would like to get it out of array_to_datetime"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-01-26T12:55:04Z",
+   "body": "> a common way to encounter this is a user who has a time series with UTC offsets that crosses DST and doesn't want to convert to UTC.\r\n\r\nSure, but then wouldn't you typically use `utc` and then convert to your timezone, e.g.\r\n```python\r\nIn [73]: ts = ['2021-03-27T23:59:59+01:00', '2021-03-28T23:59:59+02:00']\r\n\r\nIn [74]: pd.to_datetime(ts, utc=True).tz_convert('Europe/Vienna')\r\nOut[74]: DatetimeIndex(['2021-03-27 23:59:59+01:00', '2021-03-28 23:59:59+02:00'], dtype='datetime64[ns, Europe/Vienna]', freq=None)\r\n```\r\n\r\n> i think of this as like a more performant obj.apply(pd.to_datetime).\r\n\r\nSure, but why would you want that anyway if you end up with an `object` Series which you can't use the `.dt` namespace on anyway?\r\n\r\n---\r\n\r\nEDIT: things to address:\r\n- extracting local datetime\r\n- splitting local datetime and offset to different columns"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-02-09T12:09:49Z",
+   "body": "To follow up from yesterday's discussion, here's an example that was mentioned: what if users just want to keep the local datetime?\r\n\r\nThat would still be faster by calling `apply` directly:\r\n```python\r\nIn [49]: ts = pd.Series(pd.date_range('1900', '2000').tz_localize('UTC').tz_convert('Europe/Brussels').strftime('%Y-%m-%dT%H:%M:%S%z'))\r\n\r\nIn [50]: %%timeit\r\n    ...: res = ts.apply(lambda x: dt.datetime.strptime(x, '%Y-%m-%dT%H:%M:%S%z').replace(tzinfo=None))\r\n    ...:\r\n    ...:\r\n232 ms ± 458 µs per loop (mean ± std. dev. of 7 runs, 1 loop each)\r\n\r\nIn [51]: %%timeit\r\n    ...: res = to_datetime(ts).apply(lambda x: x.replace(tzinfo=None))\r\n    ...:\r\n    ...:\r\n1.87 s ± 41.1 ms per loop (mean ± std. dev. of 7 runs, 1 loop each)\r\n```\r\n\r\n(OK wow, that's a much bigger difference than I was expecting when I started putting together this example...)\r\n\r\nFurthermore, allowing for multiple timezones slows down the general case, see https://github.com/pandas-dev/pandas/issues/50107.\r\n\r\nIf `tz` was only allowed to be a single time zone or `None`, then:\r\n- in the single-time-zone case, we'd get a speedup by not spending so much time in `_return_parsed_timezone_results`\r\n- in the mixed-time-zone case, users would need to use `apply` directly, and they'd get a speedup too\r\n\r\nThe issue with returning an `object` Series is that if you want to do anything useful with it, you're going to have to use `apply` anyway\r\n\r\ncc @participant3 and @participant6 as you also took part in the discussion"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-02-10T15:24:41Z",
+   "body": "@reporter if I run your example, for me the second variant (using to_datetime) is actually faster:\r\n\r\n```\r\nIn [1]: ts = pd.Series(pd.date_range('1900', '2000').tz_localize('UTC').tz_convert('Europe/Brussels').strftime('%Y-%m-%dT%H:%M:%S%z'))\r\n\r\nIn [2]: import datetime as dt\r\n\r\nIn [3]: %timeit ts.apply(lambda x: dt.datetime.strptime(x, '%Y-%m-%dT%H:%M:%S%z').replace(tzinfo=None))\r\n372 ms ± 23.3 ms per loop (mean ± std. dev. of 7 runs, 1 loop each)\r\n\r\nIn [4]: %timeit pd.to_datetime(ts).apply(lambda x: x.replace(tzinfo=None))\r\n280 ms ± 9.27 ms per loop (mean ± std. dev. of 7 runs, 1 loop each)\r\n\r\n```"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-02-10T15:28:27Z",
+   "body": "🤔 how odd...no idea what that could be down to, any ideas?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-02-10T15:32:15Z",
+   "body": "I tried on ~someone else's machine~ Kaggle, and could reproduce the slow-down: https://<redacted-host>/marcogorelli/to-datetime-example"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-02-10T16:57:23Z",
+   "body": "My timeit results on main roughly match Joris's."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-02-10T17:30:43Z",
+   "body": "thanks - tried on main, and confirm it reproduces. I haven't pinned down the commit, but I guess some of the `to_datetime` work really sped it up since 1.5.x\r\n\r\nI'll keep exploring - there may indeed be a way to keep this around without slowing down the more standard cases"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-03-24T18:20:31Z",
+   "body": "Here's some more timings, with the latest RC (2.0.0rc1) in a fresh virtual environment\r\n```python\r\nIn [1]: ts = pd.Series(pd.date_range('1900', '2000').tz_localize('UTC').tz_convert('Europe/Brussels').strftime('%Y-%m-%d\r\n   ...: T%H:%M:%S%z'))\r\n\r\nIn [2]: import datetime as dt\r\n```\r\n\r\n### Parsing with mixed offets to `object`, then using `apply`\r\n```python\r\nIn [3]: %timeit pd.to_datetime(ts).apply(lambda x: x.replace(tzinfo=None))\r\n182 ms ± 3.06 ms per loop (mean ± std. dev. of 7 runs, 10 loops each)\r\n```\r\n\r\n### Parsing with mixed offsets directly using `apply`\r\n```python\r\nIn [5]: %timeit ts.apply(lambda x: dt.datetime.strptime(x, '%Y-%m-%dT%H:%M:%S%z').replace(tzinfo=None))\r\n244 ms ± 5.29 ms per loop (mean ± std. dev. of 7 runs, 1 loop each)\r\n```\r\nSlightly slower, but similar order of magnitude.\r\n\r\nBut what this hides is that the reason the user had mixed offsets was almost certainly due to DST, and so they should probably be doing\r\n```python\r\npd.to_datetime(ts, utc=True).dt.tz_convert('Europe/Brussels')\r\n```\r\nUsing this to do the same operation as above (i.e. parse, and then remove the time zone):\r\n```python\r\nIn [7]: %timeit pd.to_datetime(ts, utc=True).dt.tz_convert('Europe/Brussels').dt.tz_localize(None)\r\n64.6 ms ± 2.64 ms per loop (mean ± std. dev. of 7 runs, 10 loops each)\r\n```\r\nwe get the most performant solution (3x - 4x faster than the above)\r\n\r\n---\r\n\r\nSo, the cases to consider are:\r\n- multiple offsets due to dst:\r\n  - user would be best off doing `pd.to_datetime(ts, utc=True).dt.tz_convert(time_zone)`\r\n- multiple offsets due to different time zones:\r\n  - user will probably need to use `apply` anyway, so might as well nudge them towards that rightaway\r\n\r\nI'm fairly confident that this would also reduce complexity substantially, and further improve performance in the \"regular\" case. Perhaps I'll put up a draft PR to demonstrate if that helps"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-03-24T18:47:10Z",
+   "body": "In the apply case what if the user has mixed format, mixed timezone offset data?\r\n\r\n```\r\nIn [3]: pd.to_datetime([\"2020-01-01\", \"2020-01-01T00:00:00+04:00\", \"2020-01-01T00:00:00-06:00\"], format=\"mixed\")\r\nOut[3]:\r\nIndex([2020-01-01 00:00:00, 2020-01-01 00:00:00+04:00,\r\n       2020-01-01 00:00:00-06:00],\r\n      dtype='object')\r\n``` \r\n\r\n> But what this hides is that the reason the user had mixed offsets was almost certainly due to DST, and so they should probably be doing\r\n\r\nI have personally encountered dates with mixed UTC offsets because the data was collected at different locations with the UTC timestamps corresponding to the \"timezone\", so DST wasn't necessarily involved."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-03-24T18:54:21Z",
+   "body": "> In the apply case what if the user has mixed format, mixed timezone offset data?\r\n\r\nIn that case you'll end up with `object` dtype, and will have to use `apply` anyway - so my argument is that you'd be better off using `apply` directly\r\nI presume you had to use `apply` operations in the scenario you're describing?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-03-24T20:21:33Z",
+   "body": "Probably yeah"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-04-28T11:31:07Z",
+   "body": "here's an example of this causing issues / unexpected behaviour: https://github.com/pandas-dev/pandas/issues/43797\r\n\r\nI'll open a tiny PDEP, expand on this a bit more, and call a vote then, gotta either move forwards or close at some point"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-05-04T03:08:48Z",
+   "body": "I’m coming around on to being more enthusiastic about this"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-05-04T08:23:15Z",
+   "body": "thanks  - I'll try to put together a POC PR showing what the implication would be, hopefully we can find agreement without having to call a vote for something this minor"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-05-05T09:08:16Z",
+   "body": "Here's a POC of how this could work once deprecated: https://github.com/reporter/pandas/pull/7/files\r\n\r\nI've tried timing\r\n```python\r\nts = pd.Series(pd.date_range('1900', '2000', freq='1h').tz_localize('UTC').tz_convert('Europe/Brussels').strftime('%Y-%m-%dT%H:%M:%S%z'))\r\nres = to_datetime(ts, utc=True)\r\n```\r\nand I'm seeing:\r\n- in that branch: 563 ms ± 10.7 ms per loop (mean ± std. dev. of 7 runs, 1 loop each)\r\n- upstream/main: 1.71 s ± 122 ms per loop (mean ± std. dev. of 7 runs, 1 loop each)\r\n\r\nBut aside from the performance benefits, my main point is about correctness / usefulness / nudging users towards what they probably really want, which is a timezone-aware datetimeindex rather than an object index\r\n\r\n---\r\n\r\nFinally, what we currently have is value-dependent behaviour:\r\n```python\r\nIn [33]: to_datetime(['2020-01-01T00:00+01:00', '2020-01-02T00:00+02:00'])\r\nOut[33]: Index([2020-01-01 00:00:00+01:00, 2020-01-02 00:00:00+02:00], dtype='object')\r\n\r\nIn [34]: to_datetime(['2020-01-01T00:00+01:00', '2020-01-02T00:00+01:00'])\r\nOut[34]: DatetimeIndex(['2020-01-01 00:00:00+01:00', '2020-01-02 00:00:00+01:00'], dtype='datetime64[ns, UTC+01:00]', freq=None)\r\n```\r\nwhich isn't great\r\n\r\n---\r\n\r\nI'll go ahead an open a PR, if there's strong objections we can discuss there"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-05-05T12:03:05Z",
+   "body": "> But aside from the performance benefits, my main point is about correctness / usefulness / nudging users towards what they probably really want, which is a timezone-aware datetimeindex rather than an object index\r\n\r\nIf it's about nudging users towards the better behaviour, we could also consider only changing the default behaviour, while leaving the option to those users that have a use case for it. \r\n(I know it's not only about this, though, also performance)\r\n\r\nBut that makes me wonder: what would be the behaviour after deprecation in case of mixed timezones? Raise an error that you have mixed timezones, which can't be parsed, unless you set utc=True? Or convert to UTC automatically?"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-05-05T12:09:14Z",
+   "body": "We probably also need to consider the impact on reading CSV files if you have a column with mixed timezones (and if deprecating it in to_datetime, there might need to be an equivalent deprecation in read_csv). "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-05-05T13:27:41Z",
+   "body": "read_csv keeps a columns as `object` if it can't be parsed, so I don't think there'd be much of an impact there? other than that the elements would now be ymd hms formatted\r\n\r\nyes, I'm suggesting to raise if you have mixed timezones and `utc=False`\r\n\r\nWhat would you suggest changing default to? If you suggesting `utc` defaulting to `True`, then my reservation is that then timezone-naive dates would become UTC-aware ones\r\n```python\r\nIn [24]: to_datetime(['2020-01-01T00:00'], utc=True)\r\nOut[24]: DatetimeIndex(['2020-01-01 00:00:00+00:00'], dtype='datetime64[ns, UTC]', freq=None)\r\n```\r\n\r\n---\r\n\r\nThe other issue is complexity, there's a fair bit of it to deal with the mixed-timezone case\r\n\r\nIf someone really wants mixed timezones in an object Series, then\r\n```python\r\nIn [10]: %%timeit\r\n    ...: ts.apply(lambda x: Timestamp(x))\r\n    ...: \r\n    ...: \r\n3.15 s ± 126 ms per loop (mean ± std. dev. of 7 runs, 1 loop each)\r\n```\r\nisn't impossibly slow, and they'll have to then use `apply` to do anything with their new `object` Series anyway, so this performance would have to be acceptable to them anyway. Note that this is on nearly 1 million rows"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-05-05T13:29:20Z",
+   "body": "@reporter I took a quick look at a profile of the snippet above with and without your patch. And my understanding is that the difference is almost entirely due to `_return_parsed_timezone_results`, which in the current code seems to be a bottleneck (it's masking out parts, converting them, assigning back into an (object dtype!) array, and then in the end convert the objects back to datetime64 index). That seems quite inefficient, and I would assume that this could be optimized, regardless of the discussion here. I think it should be possible to avoid this costly conversion, especially in the typical case of strings with `utc=True` that you profiled above. \r\n(one idea, if `utc=True`, already apply the offset within the loop in `array_strptime` and localize the result to UTC afterwards (a metadata-change-only `tz_localize(UTC)`, and only keep track of the array of timezones if `utc=False`. And even for that case, I think it should be possible to re-write `_return_parsed_timezone_results` to make it less inefficient)\r\n\r\n "
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-05-05T13:33:11Z",
+   "body": "And to be clear, I don't feel very strongly about this specific feature. I have never used it myself, but can see potential use cases, but it's also true that the workaround (`ts.apply(lambda x: Timestamp(x))`) is OK (just slower, but then you are using object dtype and thus in slower code paths anyway). And the complexity argument is certainly valid, so if the benefits are only minor, the trade-off seems to gravitate towards not needing to keep this. \r\nMy post above is mostly because I was just curious where the performance difference was coming from :)"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-05-05T13:38:42Z",
+   "body": "> read_csv keeps a columns as `object` if it can't be parsed, so I don't think there'd be much of an impact there?\r\n\r\nCurrently it returns an object column of Timestamps I think, while after a deprecation it would either raise (not ideal for read_csv?) or return a column of strings (so at least some change in behaviour?)\r\n\r\n> yes, I'm suggesting to raise if you have mixed timezones and `utc=False`\r\n> \r\n> What would you suggest changing default to? If you suggesting `utc` defaulting to `True`, then my reservation is that then timezone-naive dates would become UTC-aware ones\r\n\r\nYeah, we of course don't want to change that if there are only naive timestamps to start with. A potential default could rather be something like \"if we detect multiple timezones, return UTC values\". "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-05-05T13:44:58Z",
+   "body": "Thanks for looking into it!\r\n\r\nI'd rather not introduce extra complexity to `array_strptime`, it's already a complex-ish part of pandas with not many people taking a look at it\r\n\r\nNote that mixed-timezone timestamps already raises\r\n```python\r\n>>> to_datetime([Timestamp('2020-01-01 00:00').tz_localize('Europe/Brussels'), Timestamp('2020-01-02 00:00').tz_localize('Asia/Kathmandu')])\r\nValueError: Tz-aware datetime.datetime cannot be converted to datetime64 unless utc=True, at position 1\r\n```\r\nso we'd just be making the string case consistent with that\r\n\r\n> Currently it returns an object column of Timestamps\r\n\r\nYou're right, thanks - so yes, this would be a behaviour change, as it would no longer parse that column, it would leave it as-is"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-05-05T13:44:59Z",
+   "body": "As other reference, pyarrow's read_csv will by default return UTC whenever you have timezone offsets (so for mixed offsets, but also if you have a constant offset). "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-05-05T13:55:45Z",
+   "body": "thanks for the reference - looks like they do that for `strptime` as well, so they don't return a non-`TimestampType` column either\r\n```python\r\nIn [1]: import pyarrow as pa\r\n\r\nIn [2]: import pyarrow.compute as pc\r\n\r\nIn [3]: dates = ['2020-01-01T00:00+01:00', '2020-01-02T00:00+02:00']\r\n\r\nIn [4]: table = pa.table({'arr': pa.array(dates, 'string')})\r\n\r\nIn [5]: pc.strptime(table.column('arr'), format='%Y-%m-%dT%H:%M%z', unit='us').type\r\nOut[5]: TimestampType(timestamp[us])\r\n\r\nIn [6]: pc.strptime(table.column('arr'), format='%Y-%m-%dT%H:%M%z', unit='us')\r\nOut[6]:\r\n<pyarrow.lib.ChunkedArray object at 0x7f78f59e5ad0>\r\n[\r\n  [\r\n    2019-12-31 23:00:00.000000,\r\n    2020-01-01 22:00:00.000000\r\n  ]\r\n]\r\n```"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-05-05T16:28:14Z",
+   "body": "Just to illustrate how inefficient the current implementation was for `utc=True`, the following small patch avoids a roundtrip through object dtype for that case:\r\n\r\n<details>\r\n\r\n```diff\r\ndiff --git a/pandas/core/tools/datetimes.py b/pandas/core/tools/datetimes.py\r\nindex 74210a1ce5..778081c32c 100644\r\n--- a/pandas/core/tools/datetimes.py\r\n+++ b/pandas/core/tools/datetimes.py\r\n@@ -333,17 +333,22 @@ def _return_parsed_timezone_results(\r\n     -------\r\n     tz_result : Index-like of parsed dates with timezone\r\n     \"\"\"\r\n-    tz_results = np.empty(len(result), dtype=object)\r\n+    if utc:\r\n+        tz_results = np.empty(len(result), dtype=\"datetime64[ns]\")\r\n+    else:\r\n+        tz_results = np.empty(len(result), dtype=object)\r\n     for zone in unique(timezones):\r\n         mask = timezones == zone\r\n         dta = DatetimeArray(result[mask]).tz_localize(zone)\r\n         if utc:\r\n             if dta.tzinfo is None:\r\n-                dta = dta.tz_localize(\"utc\")\r\n+                dta = dta.tz_localize(\"utc\")._ndarray\r\n             else:\r\n-                dta = dta.tz_convert(\"utc\")\r\n+                dta = dta.tz_convert(\"utc\")._ndarray\r\n         tz_results[mask] = dta\r\n \r\n+    if utc:\r\n+        tz_results = DatetimeArray(tz_results).tz_localize(\"utc\")\r\n     return Index(tz_results, name=name)\r\n```\r\n\r\n</details>\r\n\r\nand with that the timing of the benchmark from https://github.com/pandas-dev/pandas/issues/50887#issuecomment-1535959959 for me goes from 2.2s to 800ms.\r\n\r\n> If someone really wants mixed timezones in an object Series, then ... `ts.apply(lambda x: Timestamp(x))`\r\n\r\nI liked that workaround, and was thinking that we can mention this in the deprecation (or future error) message. However, one problem with it is that this doesn't give you a way to specify a format (or one of the other keywords of to_datetime). \r\n\r\nAnd the more general `ts.apply(lambda x: pd.to_datetime(x))` is unfortunately horribly slow .. (10min vs 4s with Timestamp on the benchmark case)\r\n\r\n> looks like they [pyarrow] do that for `strptime` as well, so they don't return a non-`TimestampType` column either\r\n\r\nThere actually seems to be a bug there, in that it returns a plain Timestamp type without tz, while the input has timezones. I would expect it to at least return a tz=UTC timestamp type, just like their read_csv does. \r\nThanks for showing that example ;) Opened https://github.com/apache/arrow/issues/35448 (and have a PR to fix it)\r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-05-05T17:49:02Z",
+   "body": "wow, nice! so pyarrow parses as `TimestampType(timestamp[us])` if elements are tz-naive, and `TimestampType(timestamp[us, tz=UTC])` if they're tz-aware?\r\n\r\nthat's beautiful, could we do that in pandas and get rid of the `utc` kwarg? ending up with a fixed-offset timezone like `'datetime64[ns, UTC+01:00]'` is mostly useless anyway, what you really want as a user is an `'Area/Location'` timezone anyway\r\n\r\n@participant2 @participant1 do you have thoughts on mirroring pyarrow here?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-05-05T18:50:08Z",
+   "body": "I guess I won't die on the mixed tz offset case hill and would be okay with returning UTC. A `UserWarning` would be nice noting if multiple different offsets were detected. What about if the offsets were all the same?\r\n\r\nIt would be nice to remove the utc kwarg from `to_datetime` too."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-05-05T21:31:42Z",
+   "body": "> What about if the offsets were all the same?\r\n\r\nI'd stay consistent with pyarrow here and just convert to utc anyway - simple and predictable"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-05-16T18:39:40Z",
+   "body": "From https://github.com/pandas-dev/pandas/issues/53250 , it seems that we can't really convert everything to UTC\r\n\r\nSo, going back to the initial suggestion of just disallowing mixed timezones, will see if I can elaborate"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-06-28T20:02:23Z",
+   "body": "outcome of today's call: people are generally in favour of raising in such a case, and advising users to pass `utc=True`"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2023-06-30T09:49:56Z",
+   "body": "I would like to work on this."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2023-09-04T10:16:08Z",
+   "body": "I guess this can be closed since #54014 was merged."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-09-04T10:56:58Z",
+   "body": "Yup thanks! "
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "pandas-dev/pandas",
+  "default_branch": "main",
+  "commit_sha": "05d12b5eb9ef3ef0ef697dac92e3548371b6dcd1",
+  "as_of": "2023-01-20T08:47:47Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_pandas-dev_pandas_50887"
+}

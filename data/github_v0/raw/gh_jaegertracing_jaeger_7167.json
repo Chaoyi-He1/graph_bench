@@ -1,0 +1,187 @@
+{
+ "repo": "jaegertracing/jaeger",
+ "number": 7167,
+ "url": "https://github.com/jaegertracing/jaeger/issues/7167",
+ "title": "ES v1 tests take too long",
+ "state": "closed",
+ "labels": [
+  "bug",
+  "help wanted",
+  "good first issue",
+  "area/storage",
+  "storage/elasticsearch",
+  "triage"
+ ],
+ "reporter": "reporter",
+ "created_at": "2025-05-26T18:00:57Z",
+ "closed_at": "2025-10-23T17:24:49Z",
+ "body": "```\n$ go test -race ./internal/storage/v1/elasticsearch/\nok  \tgithub.com/jaegertracing/jaeger/internal/storage/v1/elasticsearch\t11.506s\n```\n\nRunning with profiler\n```\n$ GOMAXPROCS=1 go test -parallel 128 -p 16 -json ./internal/storage/v1/elasticsearch/ | go run github.com/roblaszczak/vgt@latest\n```\n\nshows 3 tests blocking for 5 seconds each\n\n<img width=\"1158\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/fabfc80a-afe4-4d64-9074-0020d789508f\" />",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2025-06-01T08:51:38Z",
+   "body": " Hi, I'd like to work on this issue as part of my contribution. Could you please assign it to me if it's still available? "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-06-01T16:10:52Z",
+   "body": "we don't assign issues, feel free to submit a PR"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-06-01T16:16:36Z",
+   "body": "Thanks! I’ll start working on it and will open a PR soon."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-06-02T18:43:09Z",
+   "body": "for https://github.com/jaegertracing/jaeger/blob/bafa50774a2b4d687642fa26875f1308a15c9cb8/internal/storage/v1/elasticsearch/factory_test.go#L277C1-L364C1  we can Reduce the timeout values in the `assert.Eventually` calls . Since these are unit tests using an in-memory HTTP test server, they should complete much faster .\n\n\nhttps://github.com/jaegertracing/jaeger/blob/bafa50774a2b4d687642fa26875f1308a15c9cb8/internal/storage/v1/elasticsearch/factory_test.go#L250C1-L259C2 and https://github.com/jaegertracing/jaeger/blob/bafa50774a2b4d687642fa26875f1308a15c9cb8/internal/storage/v1/elasticsearch/factoryv1_test.go#L104C1-L127C2 tests are  taking approx 5 seconds each primarily due to timeouts occurring when these tests attempted to connect to a non-existent Elasticsearch  server in test cases . The Elasticsearch client library has a default health check timeout of 5 seconds that is causing the extra time . instead of checking the real network calls for es server we can  mock the error to eliminate the timeout , is it correct ?? @reporter "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-06-02T21:59:29Z",
+   "body": "the test is meant to test error handling when not able to connect to the db server. It may be possible to mock something underneath the HTTP client (like roundtripper) to return an error immediately."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-06-07T10:11:36Z",
+   "body": "Hi @participant2, are you working on this pr? . If not please do let me know "
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-06-07T10:35:15Z",
+   "body": "> Hi @participant2, are you working on this pr? . If not please do let me know \n\nYes I am working on this "
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-06-30T18:11:10Z",
+   "body": "@reporter can i work on this pls"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-07-01T21:41:49Z",
+   "body": "@reporter i have made pr pls review "
+  },
+  {
+   "author": "participant5",
+   "created_at": "2025-10-15T19:07:49Z",
+   "body": "Hey @reporter i was working on this one and trying out different approaches. The results that i got with different configurations are as :-\n\n1. If we just run the blocking tests in parallel then we get the time down to 5 seconds.\n\n<img width=\"902\" height=\"77\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/13a20cb6-baba-4416-8af4-5afdaf2531fc\" />\n\n2. I tried mocking the network response using `httptest` but it resulted in no gain and only other way the tests improved were if the client was initialized to error out using `FactoryBase` like \n```\n f := &FactoryBase{\n\t\tconfig:         &cfg,\n\t}\n\n\tf.newClientFn = func(_ context.Context, _ *escfg.Configuration, _ *zap.Logger, _ metrics.Factory) (es.Client, error) {\n\t\treturn nil, errors.New(\"failed to create Elasticsearch client\")\n```\nBut these might not be testing the connecting mechanism of ES client correctly.\n\nCan you please suggest something else that i could try.\n\nThanks."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-10-15T19:27:22Z",
+   "body": "> If we just run the blocking tests in parallel then we get the time down to 5 seconds.\n\nthat's already a good speedup over the current sequential execution.\n\nBut the main question is - what's taking 5 seconds? starting a server with connection should be faster than that."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2025-10-15T19:29:36Z",
+   "body": "> But the main question is - what's taking 5 seconds? starting a server with connection should be faster than that.\n\nAs far as i have understood it's not actually the server but the ES library stuff, like some checks and then it tries to connect to server.\n\nCan you suggest if i should try something else?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-10-15T20:59:38Z",
+   "body": "can you run with a profiler to get the flamechart and see where it's spending time?"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2025-10-16T09:47:04Z",
+   "body": "@reporter i did debugging and profiling and found that the `healthCheck` was causing problems and the 5 second timeout even before connecting to the server. upon disabling it in the configuration tests are faster. \n\n<img width=\"1031\" height=\"78\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/a10facf2-53dc-4564-9cde-c1dd5f0286c4\" />\n\nbut sometimes it making a `goleak` error like \n\n<img width=\"1397\" height=\"332\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/a913d636-4c4d-4577-8385-89a7d1311384\" />\n\nbut if i set the connection url like `localhost:65535` instead of `http://127.0.0.1:65535` then the error is not there and tests run fine. \n\nAlso i was not able to disable the  `healthCheck` in case of the below test which still slows down the overall test to 5 seconds.\n\n```\n{\n\t\t\tname:        \"server error\",\n\t\t\tfactory:     NewFactory(),\n\t\t\texpectedErr: \"failed to create Elasticsearch client: health check timeout: Head \\\"http://127.0.0.1:9200\\\": dial tcp 127.0.0.1:9200: connect: connection refused: no Elasticsearch node available\",\n\t\t}\n\n``` \n\nCan you suggest if anything else that i can also try for these cases.\n\nThanks."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-10-16T16:04:44Z",
+   "body": "> Also i was not able to disable the healthCheck in case of the below test which still slows down the overall test to 5 seconds.\n\nDo we have control over healthCheck timeout here? We want to set it very small. Even better if we can mock the http client to return error immediately, because the test is just testing error handling in the factory. Or perhaps we could pass an invalid host name instead, e.g. `http://invalid-host-name:9200` which might fail even sooner (but might also fail in the wrong place and affect code coverage, to need to test).\n\nplease create a PR for the speedup you already have"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2025-10-18T07:30:05Z",
+   "body": "> Do we have control over healthCheck timeout here? We want to set it very small.\n\nYes @reporter we can set the timeout. i tried this and upon setting the timeout to 1 second the tests finish in 1 second indeed.\n\n<img width=\"866\" height=\"60\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/8c820c71-1611-45ed-9175-632a51397e91\" />\n\nIn the PR should i just manually set the timeout to 1 second or make this also configurable like the `disableHealthCheck` parameter ? as i believe 1 second might be too less in real world. "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-10-18T20:05:12Z",
+   "body": "Disabling health checks if they are not relevant to a specific test is even better. The danger with small time outs is they could lead to flaky tests that do time out in the busy CI runner. "
+  },
+  {
+   "author": "participant5",
+   "created_at": "2025-10-18T20:08:30Z",
+   "body": " I had tried to disable the healthcheck as a whole but it results in goleak which is making tests fail. The leak is from client itself.\n\nHad mentioned the same problem here https://github.com/jaegertracing/jaeger/issues/7167#issuecomment-3410067386"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2025-10-19T15:52:50Z",
+   "body": "@reporter i tried to do some more debugging regarding the goleak and with simulating the connection like this \n```\n server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {\n        if r.URL.Path == \"/\" {\n            return\n        }\n        if strings.Contains(r.URL.Path, \"/_cluster/health\") {\n            return\n        }\n    }))\n    defer server.Close()\n```\n\ngoleak is still there but if i just add a `time.Sleep(5* time.Second)` to the `/` path return then the tests pass.\nWith all the methods i tried only setting the timeout seems to give some speed up else in rest goleak is making tests fail.\n\nCan you please have a look and suggest if something else I can try regarding this or should go with any approach for the PR?\nThanks. "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-10-20T00:01:26Z",
+   "body": "> Had mentioned the same problem here #7167 (comment)\n\nthat screenshot shows goroutine from bulk worker, not from healthcheck. Did you shut down the client properly?"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2025-10-21T11:53:13Z",
+   "body": "\n> that screenshot shows goroutine from bulk worker, not from healthcheck. Did you shut down the client properly?\n\nDo i need to close it separately at the end of the tests ? also as much i have tried  if the goleak is be fixed due to the below test case the overall duration will still be 5 seconds as in this case if i have understood it correct no separate argument can be passed to `NewFactory()` that will allow us to disable healtcheck here.\n```\n{\n\t\t\tname:        \"server error\",\n\t\t\tfactory:     NewFactory(),\n\t\t\texpectedErr: \"failed to create Elasticsearch client: health check timeout: Head \\\"http://127.0.0.1:9200\\\": dial tcp 127.0.0.1:9200: connect: connection refused: no Elasticsearch node available\",\n\t\t}\n```\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-10-21T16:25:03Z",
+   "body": "@participant5 #7606 - there is still one test that runs for 5s, feel free to investigate"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2025-10-21T16:31:56Z",
+   "body": "> @participant5 #7606 - there is still one test that runs for 5s, feel free to investigate\n\nSure, thanks for the lead with #7606.\n"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2025-10-21T18:58:09Z",
+   "body": "@reporter got the tests to execute faster. Had to mock the http calls and server. Now they run optimally and in parallel.\n\n<img width=\"1466\" height=\"57\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/db00fc2e-1e0d-4971-b12f-549976547827\" />\n\nShould i wait for #7606 to be merged or open a PR?\nThanks"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-10-21T20:47:08Z",
+   "body": "open PR, don't need to wait"
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "jaegertracing/jaeger",
+  "default_branch": "main",
+  "commit_sha": "abe6de5c5d377aca726691c144e39a579a4f30c4",
+  "as_of": "2025-05-26T18:00:57Z",
+  "method": "github_commits_until"
+ },
+ "images": [
+  {
+   "where": "opening",
+   "source_url": "https://github.com/user-attachments/assets/fabfc80a-afe4-4d64-9074-0020d789508f",
+   "file": "gh_jaegertracing_jaeger_7167_img0.png"
+  },
+  {
+   "where": "c9",
+   "source_url": "https://github.com/user-attachments/assets/13a20cb6-baba-4416-8af4-5afdaf2531fc",
+   "file": "gh_jaegertracing_jaeger_7167_img1.png"
+  },
+  {
+   "where": "c13",
+   "source_url": "https://github.com/user-attachments/assets/a10facf2-53dc-4564-9cde-c1dd5f0286c4",
+   "file": "gh_jaegertracing_jaeger_7167_img2.png"
+  },
+  {
+   "where": "c13",
+   "source_url": "https://github.com/user-attachments/assets/a913d636-4c4d-4577-8385-89a7d1311384",
+   "file": "gh_jaegertracing_jaeger_7167_img3.png"
+  },
+  {
+   "where": "c15",
+   "source_url": "https://github.com/user-attachments/assets/8c820c71-1611-45ed-9175-632a51397e91",
+   "file": "gh_jaegertracing_jaeger_7167_img4.png"
+  },
+  {
+   "where": "c23",
+   "source_url": "https://github.com/user-attachments/assets/db00fc2e-1e0d-4971-b12f-549976547827",
+   "file": "gh_jaegertracing_jaeger_7167_img5.png"
+  }
+ ],
+ "slug": "gh_jaegertracing_jaeger_7167"
+}

@@ -1,0 +1,164 @@
+{
+ "repo": "onnx/onnx",
+ "number": 6529,
+ "url": "https://github.com/onnx/onnx/issues/6529",
+ "title": "How to use version converter on a large (>2GB) model?",
+ "state": "closed",
+ "labels": [
+  "bug",
+  "question",
+  "module: version converter",
+  "contributions welcome"
+ ],
+ "reporter": "reporter",
+ "created_at": "2024-11-04T17:43:13Z",
+ "closed_at": "2025-04-02T14:21:51Z",
+ "body": "# Ask a Question\r\n\r\n### Question\r\nI have a model with external weights. The size of the external weights file is larger than 2GB.\r\nIf I run the converter with\r\n```\r\noriginal_model = onnx.load(model_path)\r\nconverted_model = version_converter.convert_version(original_model, 21)\r\n```\r\nthen the converter runs into an error (even though the error itself is a bit misleading `RuntimeError: /github/workspace/onnx/common/ir_pb_converter.cc:716: assertNonNull: Assertion `g.get() != nullptr` failed: Warning: onnx version converter is unable to parse input model. (The IR version of the ONNX model may be too old.)`)\r\n\r\n\r\nIf I skip loading the external weights:\r\n```\r\noriginal_model = onnx.load(model_path, load_external_data=False)\r\nconverted_model = version_converter.convert_version(original_model, 21)\r\n```\r\nthen the weights in the converted model do not have file location info anymore so the model becomes unusable.\r\n\r\nIs there a way to work around this issue?\r\n\r\n### Further information\r\n\r\n\r\n### Notes\r\n<!-- Any additional information, code snippets. -->\r\n",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2024-11-04T18:20:45Z",
+   "body": "> then the weights in the converted model do not have file location info anymore so the model becomes unusable.\r\n\r\nHmm sounds like a bug"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-11-05T05:10:45Z",
+   "body": "@participant1 Any thoughts what the root cause could be or which part of the code would be relevant? Could it just be a proto issue rather than an ONNX issue?\r\n\r\nSome additional info: the same issue also manifests itself on the inliner, although in slightly different ways:\r\n- If I load the model with external data, then the inliner completely wipes out everything in the GraphProto.\r\n- If I load the model with `load_external_data=False`, then the inliner wipes out all the FunctionProtos."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-11-05T05:32:09Z",
+   "body": "> If I load the model with external data, then the inliner completely wipes out everything in the GraphProto.\r\n\r\nIs the model >2gb? This is due to the c++/python interop\r\n\r\n> If I load the model with load_external_data=False, then the inliner wipes out all the FunctionProtos.\r\n\r\nThat's expected right? That's what the inliner is supposed to do"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-11-05T05:33:08Z",
+   "body": "I would recommend using the inliner in onnxscript (maybe not exposed publicly yet. cc @participant5). We are building a version converter based on ONNX IR too, which will not have the protobuf limitations."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-11-05T18:25:35Z",
+   "body": "> Is the model >2gb? This is due to the c++/python interop\r\n\r\nThe external data file is >2gb. The model file is quite small.\r\n\r\n> That's expected right? That's what the inliner is supposed to do\r\n\r\nIn case you misunderstood, the inliner in this case wipes out the FunctionProtos without actually inlining them. In other words, the local function subgraphs are completely lost.\r\n\r\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-11-05T18:36:33Z",
+   "body": "> The external data file is >2gb. The model file is quite small.\r\n\r\nIf you load external data, they will be loaded as a part of the model proto. As the call to the inliner (c++) happens, it gets serialized and that will exceed 2gb and fail.\r\n\r\n> wipes out the FunctionProtos without actually inlining them\r\n\r\nI see. So no inlining happened. Could you share an onnx file we can debug with?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-11-06T01:16:16Z",
+   "body": "Here's an artificial example where the model is very simple but it contains a weight tensor that exceeds 2GB. Running the following script will export the model.\r\n\r\nIf you run `onnx.inliner.inline_local_functions()` on it you will see what I described above:\r\n- If you load the model with `load_external_data=True` the output file has an empty graph.\r\n- If you load it with `load_external_data=False` no inlining happens (Although for this artificial example the behavior is slightly different from the real model I described above where no inlining happens and the local function subgraph disappears)\r\n\r\n```\r\nimport onnx_graphsurgeon as gs\r\nimport onnx\r\nimport numpy as np\r\n\r\ndtype = np.float32\r\nX = gs.Variable(name=\"X\", dtype=dtype, shape=(1,1))\r\n\r\nY = gs.Constant(name=\"Y\", values=np.zeros((20000,30000), dtype=dtype))\r\nAdd_out = gs.Variable(name=\"Add_out\")\r\nZ = gs.Variable(name=\"Z\", dtype=np.int64)\r\n\r\nnode_identity = gs.Node(op=\"Add\", inputs=[X, Y], outputs=[Add_out])\r\nnode_local = gs.Node(op=\"LocalFunction\", inputs=[Add_out], outputs=[Z], attrs={\"axis\":1}, domain=\"trt\")\r\n\r\ngraph = gs.Graph(nodes=[node_identity, node_local], inputs=[X, Y], outputs=[Z], opset=20)\r\n\r\n\r\n# Register local function\r\ndef register_ops():\r\n    @gs.Graph.register()\r\n    def constant(self, *args, **kwargs):\r\n        available_attrs = [\r\n            \"sparse_value\",\r\n            \"value\",\r\n            \"value_float\",\r\n            \"value_floats\",\r\n            \"value_int\",\r\n            \"value_ints\",\r\n            \"value_string\",\r\n            \"value_strings\",\r\n        ]\r\n        found_attrs = sum(\r\n            1 for available_attr in available_attrs if available_attr in kwargs\r\n        )\r\n        assert (\r\n            found_attrs == 1\r\n        ), f\"Exactly 1 attribute must be specified for op Constant. Got {found_attrs}\"\r\n\r\n        out = self.layer(op=\"Constant\", outputs=[\"constant_out\"], attrs=kwargs)[0]\r\n        return out\r\n\r\n    @gs.Graph.register()\r\n    def shape(self, x):\r\n        out = self.layer(\r\n            op=\"Shape\",\r\n            inputs=[x],\r\n            outputs=[\"shape_out\"],\r\n        )[0]\r\n        return out\r\n\r\n    @gs.Graph.register()\r\n    def gather(self, x, indices, axis=0):\r\n        out = self.layer(\r\n            op=\"Gather\",\r\n            inputs=[x, indices],\r\n            outputs=[\"gather_out\"],\r\n            attrs={\"axis\": axis},\r\n        )[0]\r\n        return out\r\n\r\ndef register_local_function(graph):\r\n    local_input = gs.Variable(\"local_input\", shape=[-1, -1])\r\n\r\n    local_func = gs.Function(\r\n        \"LocalFunction\",\r\n        domain=\"trt\",\r\n        inputs=[local_input],\r\n        opset=21,\r\n        attrs={\"axis\": None},\r\n    )\r\n\r\n    axis_constant_out_1 = local_func.constant(\r\n        value_int=gs.Node.AttributeRef(\"axis\", int)\r\n    )\r\n    input_shape = local_func.shape(local_input)\r\n\r\n    shape_at_axis = local_func.gather(input_shape, axis_constant_out_1, axis=0)\r\n    local_func.outputs.append(shape_at_axis)\r\n\r\n    graph.functions.append(local_func)\r\n\r\nregister_ops()\r\nregister_local_function(graph)\r\n\r\nmodel = gs.export_onnx(graph)\r\nonnx.save(model, \"test_clean.onnx\", save_as_external_data=True)\r\n```"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-11-11T03:23:13Z",
+   "body": "I also have the problem, do you have any solution now？ @reporter "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-11-18T21:54:27Z",
+   "body": "> I also have the problem, do you have any solution now？ @reporter\r\n\r\nI haven't made more progress. Not sure whether @participant1 has found out anything."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-11-18T21:59:21Z",
+   "body": "I see this is a large constant node. You would need to convert the tensor to external data before calling infer shapes. Anytime you give infer_shapes a proto with more than 2gb of data it will fail. The idea is always finding ways to change the proto to be less than 2gb. In this case you can call the external data helper to convert to external tensor"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-11-18T23:01:50Z",
+   "body": "> I see this is a large constant node. You would need to convert the tensor to external data before calling infer shapes. Anytime you give infer_shapes a proto with more than 2gb of data it will fail. The idea is always finding ways to change the proto to be less than 2gb. In this case you can call the external data helper to convert to external tensor\r\n\r\nThe export script in my previous comment https://github.com/onnx/onnx/issues/6529#issuecomment-2458509883 already exports the model with external data. Whether you then load the model with `load_external_data` set to True or False, you will run into errors described in that comment. For this model there currently doesn't seem to be a way to get the inliner or version converter to work correctly."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-11-19T00:05:09Z",
+   "body": "You want to set convert_attribute to True as well when saving. "
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-02-07T14:53:39Z",
+   "body": "I investigated the problem @reporter is having a bit further.\n\nI was able to reproduce the problem using only native ONNX code:\n\n```python\nimport onnx\nimport numpy as np\nfrom onnx import TensorProto\n\n# Random data\nnp.random.seed(42)\nrandom_shape = (20000,30000)  # Approx 2.4 GB\nrandom_data = np.random.rand(*random_shape).astype(np.float32)\nprint(f\"Data size in GB: {random_data.nbytes / (1024**3):.2f} GB\")\n\n# Create two initializer nodes: one for the data tensor, second is just a scalar 1\ninitializer_tensor = onnx.helper.make_tensor(\n    name=\"initializer_tensor\",\n    data_type=onnx.TensorProto.FLOAT,\n    dims=list(random_shape),\n    vals=random_data.flatten(),\n)\ninitializer_scalar = onnx.helper.make_tensor(\n    name=\"initializer_scalar\",\n    data_type=onnx.TensorProto.FLOAT,\n    dims=[],\n    vals=[1.0],\n)\n\n# Define a graph with simple addition\nadd_node = onnx.helper.make_node(\n    \"Add\",\n    inputs=[\"initializer_tensor\", \"initializer_scalar\"],\n    outputs=[\"sum_output\"]\n)\n\n# WILL CRASH ON THIS LINE WITH google.protobuf.message.DecodeError: Error parsing message with type 'onnx.TensorProto'\ngraph_def = onnx.helper.make_graph(\n    name=\"SimpleAddition\",\n    nodes=[add_node],\n    inputs=[],\n    outputs=[\n        onnx.helper.make_tensor_value_info(\"sum_output\", TensorProto.FLOAT, list(random_shape))\n    ],\n    initializer=[initializer_tensor, initializer_scalar]\n)\n\n# Save model to file\nmodel_filename = \"test_simple_add.onnx\"\nopset_imports=[onnx.helper.make_opsetid(\"\", 21)]\nmodel_def = onnx.helper.make_model(graph_def, opset_imports=opset_imports)\nmodel_def.ir_version = 10\nonnx.save(model_def, model_filename)\nprint(f\"ONNX model saved as {model_filename}\")\n\nonnx.checker.check_model(model_filename)\nprint(\"ONNX model is valid\")\n```\n\nIt seems to me that the problem stems from the fact that it isn't his whole model which is >2GB, but a single initializer value.\n\nThe problem can be traced further into how ONNX uses protobuf objects to store initializer data:\n\n```python\nimport numpy as np\nfrom onnx import TensorProto, GraphProto\n\n# Random data\nnp.random.seed(42)\nrandom_shape = (20000,30000)  # Approx 2.4 GB\nrandom_data = np.random.rand(*random_shape).astype(np.float32)\nprint(f\"Data size in GB: {random_data.nbytes / (1024**3):.2f} GB\")\n\ntensor = TensorProto()\ntensor.data_type = 1\ntensor.name = \"initializer_tensor\"\ntensor.float_data.extend(random_data.flat)\ntensor.dims.extend(random_shape)\n\ngraph = GraphProto()\ngraph.initializer.extend([tensor])\n```\n\nThis is essentially what ONNX is trying to do and the last line causes the protobuf `DecodeError`.\n\nThis is a limitation of Protobuf for which we currently do not have a workaround."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-02-07T19:18:05Z",
+   "body": "@participant3 Thanks so much for the investigations!\nI'm not sure if the issue comes from a single initializer exceeding 2GB.\nBelow, I adapted my previous script to have two initializers where each of them is <2GB but together they are >2GB, and the inliner issue still persists.\n```python\nimport onnx_graphsurgeon as gs\nimport onnx\nimport numpy as np\n\ndtype = np.float32\nX = gs.Variable(name=\"X\", dtype=dtype, shape=(1,1))\n\nY = gs.Constant(name=\"Y\", values=np.zeros((10000,30000), dtype=dtype))\nAdd_out = gs.Variable(name=\"Add_out\")\n\nM = gs.Constant(name=\"M\", values=np.ones((10000,30000), dtype=dtype))\nAdd_out2 = gs.Variable(name=\"Add_out2\")\n\nZ = gs.Variable(name=\"Z\", dtype=np.int64)\n\n\nnode_identity = gs.Node(op=\"Add\", inputs=[X, Y], outputs=[Add_out])\nnode_identity2 = gs.Node(op=\"Add\", inputs=[Add_out, M], outputs=[Add_out2])\nnode_local = gs.Node(op=\"LocalFunction\", inputs=[Add_out2], outputs=[Z], attrs={\"axis\":1}, domain=\"trt\")\n\ngraph = gs.Graph(nodes=[node_identity, node_identity2, node_local], inputs=[X, Y], outputs=[Z], opset=20)\n\n# Register local function\ndef register_ops():\n    @gs.Graph.register()\n    def constant(self, *args, **kwargs):\n        available_attrs = [\n            \"sparse_value\",\n            \"value\",\n            \"value_float\",\n            \"value_floats\",\n            \"value_int\",\n            \"value_ints\",\n            \"value_string\",\n            \"value_strings\",\n        ]\n        found_attrs = sum(\n            1 for available_attr in available_attrs if available_attr in kwargs\n        )\n        assert (\n            found_attrs == 1\n        ), f\"Exactly 1 attribute must be specified for op Constant. Got {found_attrs}\"\n\n        out = self.layer(op=\"Constant\", outputs=[\"constant_out\"], attrs=kwargs)[0]\n        return out\n\n    @gs.Graph.register()\n    def shape(self, x):\n        out = self.layer(\n            op=\"Shape\",\n            inputs=[x],\n            outputs=[\"shape_out\"],\n        )[0]\n        return out\n\n    @gs.Graph.register()\n    def gather(self, x, indices, axis=0):\n        out = self.layer(\n            op=\"Gather\",\n            inputs=[x, indices],\n            outputs=[\"gather_out\"],\n            attrs={\"axis\": axis},\n        )[0]\n        return out\n\ndef register_local_function(graph):\n    local_input = gs.Variable(\"local_input\", shape=[-1, -1])\n\n    local_func = gs.Function(\n        \"LocalFunction\",\n        domain=\"trt\",\n        inputs=[local_input],\n        opset=21,\n        attrs={\"axis\": None},\n    )\n\n    axis_constant_out_1 = local_func.constant(\n        value_int=gs.Node.AttributeRef(\"axis\", int)\n    )\n    input_shape = local_func.shape(local_input)\n\n    shape_at_axis = local_func.gather(input_shape, axis_constant_out_1, axis=0)\n    local_func.outputs.append(shape_at_axis)\n\n    graph.functions.append(local_func)\n\nregister_ops()\nregister_local_function(graph)\n\nmodel = gs.export_onnx(graph, ir_version=10)\nonnx.save(model, \"test_clean.onnx\", save_as_external_data=True)\n```"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-02-21T13:54:32Z",
+   "body": "I can't reproduce you problem, @reporter. It works for me ;-)\n\nRunning your test code, generated these 2 files for me:\n\n    2.4G 21 Feb 13:39 ec158c76-f050-11ef-9bb8-829cb162e004\n     708 21 Feb 13:39 test_clean.onnx\n\n\nI can load the model in ONNX and inspect the initializers.\n\n```python\n>>> import onnx\n>>> model = onnx.load(\"test_clean.onnx\")\n>>> model.graph.initializer[0].name\n'Y'\n\n>>> model.graph.initializer[0].dims\n[10000, 30000]\n\n# Basic types. https://github.com/onnx/onnx/blob/v1.17.0/onnx/onnx.proto#L502-L503\n# FLOAT = 1;   // float\n>>> model.graph.initializer[0].data_type\n1\n\n>>> len(model.graph.initializer[0].raw_data)\n1200000000\n\n>>> len(model.graph.initializer[0].raw_data[0:10])\n10\n\n>>> model.graph.initializer[0].raw_data[0:10]\nb'\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00'\n\n\n\n>>> model.graph.initializer[1].name\n'M'\n\n>>> model.graph.initializer[1].dims\n[10000, 30000]\n\n>>> model.graph.initializer[1].data_type\n1\n\n>>> len(model.graph.initializer[1].raw_data)\n1200000000\n\n>>> model.graph.initializer[1].raw_data[0:10]\nb'\\x00\\x00\\x80?\\x00\\x00\\x80?\\x00\\x00'\n```\n\nI can also open it in Netron and export the initializer tensors to numpy array files.\n\n    1.2G 21 Feb 13:42 M.npy\n    1.2G 21 Feb 13:41 Y.npy\n\nSo, for this example everything seems to be working well.\n\nBut if I increase the size of either of the initializers to over 2GB (e.g. shape `(20000,30000)`), I do get the error:\n\n```\n  File \".../lib/python3.9/site-packages/onnx/helper.py\", line 236, in make_graph\n    graph.initializer.extend(initializer)\ngoogle.protobuf.message.DecodeError: Error parsing message with type 'onnx.TensorProto'\n```\n\nSo, the issue you are reporting may be specific to an OS or ONNX version you are using. \nI have this on MacOS (Intel), Python 3.9.21.\n\n  \n    Package                   Version\n    ------------------------- --------------\n    numpy                     2.0.2\n    onnx                      1.17.0\n    onnx_graphsurgeon         0.5.5\n    protobuf                  5.29.3\n\n\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-02-21T17:14:48Z",
+   "body": "@participant3 When you say everything works well for this model do you mean the inliner also works for you? It's the inliner that's failing for me. Model creation and visualization works fine."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-02-21T18:06:31Z",
+   "body": "You can use the inliner in onnxscript: https://github.com/microsoft/onnxscript/blob/013d28c25ed8db6be0f16773d7b71fbedd331284/onnxscript/optimizer/__init__.py#L12"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-02-26T16:17:56Z",
+   "body": "We have quite a few onnx models bigger than 2gb running in one of our test suites: <https://github.com/nod-ai/SHARK-TestSuite/tree/main/alt_e2eshark>. Version updating is very useful for us, since we need the updated shape inference functions available at newer opset versions. Since updating the opset version for these models fails when loading the external data, I've occasionally hacked around this by:\n\n1. loading model without external data\n2. Performing version update (destroys external data references)\n3. tracing through the old model and collecting all external data references (initializers and node attributes)\n4. copying them over to the new model\n\nYou can see this implemented in <https://github.com/nod-ai/SHARK-TestSuite/blob/949ef993885e3941e20a496f0c0330d24b74489c/alt_e2eshark/onnx_tests/models/nlp.py#L84-L114>. \n\nIn general, I was wondering why it is necessary to load external data for the version-updating tool. Are there certain ops which need knowledge of external data to update properly?\n\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-02-26T16:25:04Z",
+   "body": "> I was wondering why it is necessary to load external data for the version-updating tool. Are there certain ops which need knowledge of external data to update properly?\n\nProbably not necessary. I am supprised that the version update logic destroys external data references."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-02-26T16:45:43Z",
+   "body": "> Probably not necessary. I am supprised that the version update logic destroys external data references.\n\nIf I get a chance to try and figure out what is happening, I'll post an update here."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-02-26T17:47:13Z",
+   "body": "Okay, I'm guessing a bit here, but \n\n<https://github.com/onnx/onnx/blob/a952ab0e15884f4aa1d67ef935c3e691ae78c061/onnx/version_converter/convert.cc#L124>\n\ncalls\n\n<https://github.com/onnx/onnx/blob/3d5acaf3e23ae8db7ac01b8cfedb17b8817121f4/onnx/common/ir_pb_converter.cc#L391>\n\ncalls\n\n<https://github.com/onnx/onnx/blob/3d5acaf3e23ae8db7ac01b8cfedb17b8817121f4/onnx/common/ir_pb_converter.cc#L229>\n\nwhich does:\n\n<https://github.com/onnx/onnx/blob/3d5acaf3e23ae8db7ac01b8cfedb17b8817121f4/onnx/common/ir_pb_converter.cc#L288-L289>\n\nAnd as far as I can grok from this, `tensorProtoToTensor` doesn't handle external data. \n\nMy understanding after skimming some of the codebase is that `TensorProto` has external data support, but <https://github.com/onnx/onnx/blob/a952ab0e15884f4aa1d67ef935c3e691ae78c061/onnx/common/tensor.h#L24> does not. The version converter works on a `Graph` and not a `GraphProto`, so the conversions back and forth to protobuf destroy the external data references. "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-02-27T01:41:17Z",
+   "body": "Seems like a bug that can be fixed by adding the external_data field to `struct Tensor`.\n\n@participant1 when calling onnxscript.optimizer._inliner.inline() I get the following error:\n```\nTraceback (most recent call last):\n  File \"<stdin>\", line 1, in <module>\n  File \"/home/<user>/.local/lib/python3.12/site-packages/onnxscript/optimizer/_inliner.py\", line 310, in inline\n    inliner = _Inliner(model)\n              ^^^^^^^^^^^^^^^\n  File \"/home/<user>/.local/lib/python3.12/site-packages/onnxscript/optimizer/_inliner.py\", line 194, in __init__\n    self._function_id_abbreviations = _abbreviate(self._functions.keys())\n                                                  ^^^^^^^^^^^^^^^^^^^^\nAttributeError: 'google._upb._message.RepeatedCompositeContainer' object has no attribute 'keys'\n```\na protobuf version issue?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-02-27T02:04:31Z",
+   "body": "Likely a version issue. What is the protobuf version you are using?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-02-28T01:15:36Z",
+   "body": "> Likely a version issue. What is the protobuf version you are using?\n\nI was using protobuf 3.21.12"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-02-28T01:25:08Z",
+   "body": "I think you need a 4.x version"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-03-31T21:12:15Z",
+   "body": "I made a PR to fix this https://github.com/onnx/onnx/pull/6847"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-04-30T03:38:38Z",
+   "body": "For future reference, here is how you can run version converter on a large model with onnxscript:\n\nhttps://github.com/onnx/onnx/pull/6847#issuecomment-2840687942"
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "onnx/onnx",
+  "default_branch": "main",
+  "commit_sha": "97f01ed7a2ac9588d78cc25c236f3c453befdb22",
+  "as_of": "2024-11-04T17:43:13Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_onnx_onnx_6529"
+}

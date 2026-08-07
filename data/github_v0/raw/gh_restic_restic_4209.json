@@ -1,0 +1,166 @@
+{
+ "repo": "restic/restic",
+ "number": 4209,
+ "url": "https://github.com/restic/restic/issues/4209",
+ "title": "Slow SFTP transfer rate since 0.12.1",
+ "state": "closed",
+ "labels": [
+  "type: feature enhancement",
+  "help: wanted",
+  "help: minor complexity",
+  "category: optimization",
+  "backend: sftp",
+  "help: good first issue"
+ ],
+ "reporter": "reporter",
+ "created_at": "2023-02-15T12:57:40Z",
+ "closed_at": "2024-05-12T13:28:34Z",
+ "body": "I'm trying to use restic to backup ~3TB of data to another system using SFTP over a gigabit network connection.\r\n\r\nI've set RESTIC_REPOSITORY and RESTIC_PASSWORT environment variables and used the following commands:\r\nrestic init\r\nrestic backup /mnt/disk\r\n\r\nWhen I tried the latest release (0.15.1), I immediately noticed the slow transfer speed of around 10 MB/s. The cpu load was 60% idle most of the time.\r\nFirst I tried a lot of different options:\r\n- Disable backup progress estimation (--no-scan)\r\n- Increasing backend connections (-o sftp.connections=10)\r\n- Disable compression (--compression off)\r\n- Increasing file read concurrency (--read-concurrency 8)\r\n- Increasing pack size (--pack-size 64)\r\nNone of these parameters did change anything.\r\n\r\nNext I tried an older version from the Debian repository (0.11.0).\r\nJust using this version caused my cpu to get maxed out and I reached about 60-70 MB/s transfer rate.\r\n\r\nThen I tried every release from 0.11.0 to 0.15.1 and starting with 0.12.1 every version afterwards shows this issue.\r\nI guess it must have something to do with a change that happened in 0.12.1.\r\n\r\nIt does only happen with SFTP repositories. A backup to a local repository is not affected.\r\nI've also tried to init the repository with 0.12.0 (repository format version 1) and then doing the backup with the latest release. Also slow transfer.\r\n\r\nAny ideas?",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2023-02-17T15:24:51Z",
+   "body": "<s>The main change in 0.12.0 regarding SFTP performance is #3211. Could be that that inferes with something in your setup.</s>\r\n\r\nSorry, 0.12.1. That has #3331, a new version of the SFTP library that we use, and #3345, a stability improvement. Maybe the former is the issue, but I can't really be sure."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-02-19T10:37:28Z",
+   "body": "I can confirm that the issue is #3331.\r\nI did a build from revision [e678aca](https://github.com/restic/restic/commit/e678acafcf77b3e9890eecccfdd0355d3f34cf8e), where the new SFTP library was added. With this build I get the reduced speed.\r\nThen I got a revision before that ([c9b4fad](https://github.com/restic/restic/commit/c9b4fadd91d9e794e0294c234c99bff0cb50a69e)). With that build the transfer rate is a lot higher."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-02-19T13:16:12Z",
+   "body": "Judging from the release notes of `pkg/sftp` version 1.13.0 this change is the culprit:\r\n\r\n> [https://github.com/pkg/sftp/pull/397] Refactoring and performance improvements, implement WriterAt interface. Concurrent writes are not longer enabled by default for safety reasons. You can use the option [UseConcurrentWrites](https://github.com/pkg/sftp/blob/v1.13.0/client.go#L100) if it's needed for your use case.\r\n\r\nThe description of UseConcurrentWrites sounds like it should be safe to use, as we completely retry the upload if there is an error while writing a file. Anyone up for a PR?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-02-20T08:15:15Z",
+   "body": "I've given the following changes a try, but it doesn't have any impact on transfer speed.\r\nMaybe I'm missing something?\r\n\r\n```\r\ndiff --git a/internal/backend/sftp/sftp.go b/internal/backend/sftp/sftp.go\r\nindex 514dd58da..d61afc5cb 100644\r\n--- a/internal/backend/sftp/sftp.go\r\n+++ b/internal/backend/sftp/sftp.go\r\n@@ -97,8 +97,12 @@ func startClient(cfg Config) (*SFTP, error) {\r\n                }\r\n        }()\r\n\r\n+       opts := []sftp.ClientOption{\r\n+               sftp.UseConcurrentWrites(true),\r\n+       }\r\n+\r\n        // open the SFTP session\r\n-       client, err := sftp.NewClientPipe(rd, wr)\r\n+       client, err := sftp.NewClientPipe(rd, wr, opts...)\r\n        if err != nil {\r\n                return nil, errors.Errorf(\"unable to start the sftp session, error: %v\", err)\r\n        }\r\n```"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-02-21T21:33:20Z",
+   "body": "@reporter I'd spell it\r\n\r\n    client, err := sftp.NewClientPipe(rd, wr, sftp.UseConcurrentWrites(true))\r\n\r\nbut yes, that should be it. UseConcurrentWrites actually only takes effect when using ReadFrom instead of Write, but it looks like the restic SFTP backend is already doing that..."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-03-21T22:50:48Z",
+   "body": "does this maybe help?\r\n```\r\ngit checkout https://github.com/pkg/sftp.git\r\ncd sftp\r\n```\r\ncreate test.sh with this content\r\n```\r\nstart=`date +%s` && go run examples/buffered-write-benchmark/main.go -user test -pass 123 && t=$((`date +%s` - $start)) && test $t -lt 7\r\n```\r\nremove host, user and pass to use localhost and maybe change the 7 to the seconds that works on your system\r\nand now let bisect do the job\r\n```\r\nroot@participant10:/go/sftp# git bisect start HEAD v1.10.0\r\nBisecting: 220 revisions left to test after this (roughly 8 steps)                                [a66e205b29f898d57b85b6f9e3a6e3ac5ad58cd4] chan is already available via closure\r\nroot@participant10:/go/sftp# git bisect run ./test.sh\r\nrunning ./test.sh\r\n2023/03/21 22:38:44 writing 1e+09 bytes\r\n2023/03/21 22:38:48 wrote 1e+09 bytes in 4.540004105s\r\nBisecting: 109 revisions left to test after this (roughly 7 steps)\r\n[ba123434b87007b835fef17bb0e95ebc28d6a21a] Merge pull request #437 from drakkan/realpath\r\nrunning ./test.sh\r\n2023/03/21 22:38:50 writing 1e+09 bytes\r\n2023/03/21 22:39:00 wrote 1e+09 bytes in 10.06397129s\r\nBisecting: 55 revisions left to test after this (roughly 6 steps)\r\n[16ca7e303229c17f462e5c1aaaf6734c8aaf9761] Merge pull request #428 from drakkan/readfrom\r\nrunning ./test.sh\r\n2023/03/21 22:39:02 writing 1e+09 bytes\r\n2023/03/21 22:39:12 wrote 1e+09 bytes in 10.033959944s\r\nBisecting: 26 revisions left to test after this (roughly 5 steps)\r\n[e164c76a1254f2d3e747327c7c7a061a1f7539f2] Merge pull request #413 from participant1/mkdirall-slash\r\nrunning ./test.sh\r\n2023/03/21 22:39:13 writing 1e+09 bytes\r\n2023/03/21 22:39:23 wrote 1e+09 bytes in 10.026752012s\r\nBisecting: 13 revisions left to test after this (roughly 4 steps)\r\n[b8102da57e756b46f2da530d9d16c868dd6c0e9d] Merge pull request #397 from pkg/more-optimization\r\n #397 from pkg/more-optimization\r\nrunning ./test.sh\r\n2023/03/21 22:39:24 writing 1e+09 bytes\r\n2023/03/21 22:39:34 wrote 1e+09 bytes in 9.892910505s        Bisecting: 6 revisions left to test after this (roughly 3 steps)                                                          [29c556e3a6f049a6932bdaf6c9a084dc4b0f08c4] WriteTo benchmarksrunning ./test.sh\r\n2023/03/21 22:39:35 writing 1e+09 bytes\r\n2023/03/21 22:39:39 wrote 1e+09 bytes in 4.604390606s        Bisecting: 3 revisions left to test after this (roughly 2 steps)                                                          [fc15699691212023/03/21 22:39:41 writing 1e+09 bytes\r\n2023/03/21 22:39:51 wrote 1e+09 bytes in 9.780662301s\r\nBisecting: 0 revisions left to test after this (roughly 1 step)\r\n[0be6950c0e91d5cb73a4d690270d3a5010ac9808] fix comments and variable names to reflect Write instead of Read                                                                                         running ./test.sh\r\n2023/03/21 22:39:52 writing 1e+09 bytes\r\n2023/03/21 22:39:57 wrote 1e+09 bytes in 4.609922288s\r\nfc156996912168806d33b55794e2f5436fae2c3d is the first bad commit                                  commit fc156996912168806d33b55794e2f5436fae2c3d\r\nAuthor: <redacted-name>\nDate:   Sun Feb 21 20:32:09 2021 +0000\r\n\r\n    fixed concurrent writes, mid-polish\r\n\r\n client.go | 614 ++++++++++++++++++++++++++++++++++++++------------------------\r\n 1 file changed, 373 insertions(+), 241 deletions(-)\r\nbisect run success\r\n```\r\nI tried this in a docker container and it seems that after this version writes are slower."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-03-21T23:12:43Z",
+   "body": "have also a look at https://github.com/pkg/sftp/issues/426 where the commit is also mentioned.\r\naccording to the issue there was something fixed in 1.13.1 but restic already uses 1.13.5 🤔 "
+  },
+  {
+   "author": "participant4",
+   "created_at": "2023-04-17T21:28:28Z",
+   "body": "Any workaround for this? Restic is taking x10 longer than borgbackup for me, right now"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-04-20T07:02:48Z",
+   "body": "I'm now using the REST server as backend, which is performing well.\r\nIf you're stuck with SFTP, the workaround is to use a version < 0.12.1."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2023-12-13T01:49:57Z",
+   "body": "To improve speed, I switched to using rclone with an SFTP backend. I felt it gave me greater control over the options and felt more optimized.\r\nDid you try, if that resolves the performance issue?"
+  },
+  {
+   "author": "participant6",
+   "created_at": "2024-01-21T13:38:48Z",
+   "body": "Hi, I was diagnosing my slow backup speeds even though I have 10g network and transfer is from local nvme to nas with ssds. \r\n\r\n```\r\n# restic options\r\nsftp.connections    set a limit for the number of concurrent connections (default: 5)\r\n```\r\n=> default should be 5, which I interpret as 5 ssh connections to the target server, which usually show up as separate process\r\n\r\nI only see 1 ssh connection on target. Is this what this bug is about and what MaxConcurrentRequestsPerFile will probably fix? \r\n\r\n```\r\nroot@participant12 14:34:56 ~ # ps aux | grep sshd | grep restic\r\nroot     1526753  0.0  0.0  11832  9120 ?        Ss   11:50   0:00 sshd: resticbackup [priv]\r\nresticb+ 1526765 34.8  0.0  12256  6456 ?        S    11:50  57:25 sshd: resticbackup@participant13\r\n```\r\nat the time of writing, I'm using latest restic 0.16.3. \r\n\r\n(I'm asking this directly which may sound stupid because the wording in \"MaxConcurrentRequestsPerFile\" makes it sound like multiple concurrent transfers to the same file but what is actually needed is multiple sftp connections to multiple files)\r\n"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-01-21T17:08:34Z",
+   "body": "The names here are somewhat misleading. `sftp.connections` currently only means that restic uploads up to 5 files in parallel, the SFTP backend currently multiplexes all requests onto a single connection.\r\n\r\nWith SFTP files are requested in 32KB chunks, which is why multiple concurrent requests have to happen for a file to ensure a decent performance. The issue here is likely related to that."
+  },
+  {
+   "author": "participant6",
+   "created_at": "2024-01-21T17:28:58Z",
+   "body": "> The names here are somewhat misleading. `sftp.connections` currently only means that restic uploads up to 5 files in parallel, the SFTP backend currently multiplexes all requests onto a single connection.\r\n> \r\n> With SFTP files are requested in 32KB chunks, which is why multiple concurrent requests have to happen for a file to ensure a decent performance. The issue here is likely related to that.\r\n\r\nthanks for clearing that up @participant2 "
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-04-28T10:07:10Z",
+   "body": "There's now https://github.com/restic/restic/pull/4782 that fixes the upload performance. Please give it a try."
+  },
+  {
+   "author": "participant6",
+   "created_at": "2024-04-30T14:01:16Z",
+   "body": "I tried to do before and after comparisons (0.16.4 and 0.16.4+patch) but somehow my performance was already adequate without the patch on vanilla 0.16.4. (around 250 MB/s ssd to ssd over 10gbe with read-concurrency 10, sftp-connections 10, Gentoo Linux). Different to what I witnessed some months ago.  I need to test some more and better structure the tests, just quickly compiled it in and looked at network graph. I hope somebody else can test the MR too.\r\nOn target, there was always just one sftp and sshd process. Is this still expected with the patch?\r\nin any case, thanks for implementing!"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-05-01T10:50:26Z",
+   "body": "The performance problems in this issue only show up when connecting to a remote server. In a LAN setting there was never much of a problem.\r\n\r\n> On target, there was always just one sftp and sshd process. Is this still expected with the patch?\r\n\r\nThis a different question from that discussed in this issue and therefore my PR doesn't change anything in that regard."
+  },
+  {
+   "author": "participant7",
+   "created_at": "2024-05-06T11:52:49Z",
+   "body": "I've tested this patch on my side, that change nothing on a single file of 1GB. File transfer is very slow"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-05-06T19:21:09Z",
+   "body": "@participant7 Can you provide a few more details on your test setup? What does \"very slow\" mean? How fast are you able to upload to that server using for example `scp`? How fast is the upload using restic 0.12.0?"
+  },
+  {
+   "author": "participant7",
+   "created_at": "2024-05-07T20:59:09Z",
+   "body": "scp on qnap is slow, that is not new for me. I stuck at 20Mb/s\r\non restic it's more like 1Mb/s\r\n\r\nI need more time to test with 0.12.0 because it's not compatible with version 2 format"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-05-11T09:57:12Z",
+   "body": "@participant7 What _exactly_ did you test? Which command, etc.? What is the output of `restic version` with and without my bugfix PR? How high is the latency between the host running restic and the NAS?"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-05-12T13:30:15Z",
+   "body": "I'm pretty sure that my bugfix PR fixes the issue introduced in restic 0.12.1; at least it did during my tests. If you still see very slow uploads/download please open a separate issue."
+  },
+  {
+   "author": "participant7",
+   "created_at": "2024-05-12T20:34:07Z",
+   "body": "Hi,\r\n\r\nMy test was to upload a single file of 512MB via sftp.\r\nThe first 115MB went well, after that's stuck at pretty 0 during few second, upload continue for 20MB, stuck again etc etc ...\r\n\r\nyour version, just compiled:\r\n```bash\r\n ./restic-patch version\r\nrestic 0.16.4-dev (compiled manually) compiled with go1.22.2 on linux/amd64\r\n```\r\n\r\nthe backup command:\r\n```bash\r\ntime ./restic-patch backup -r sftp:restic@participant14:path --tag slowsftp ./512M -v\r\nopen repository\r\nrepository 09103b42 opened (version 2, compression level auto)\r\nno parent snapshot found, will read all files\r\nload index files\r\n[0:01] 100.00%  82 / 82 index files loaded\r\nstart scan on [512M]\r\nstart backup on [512M]\r\nscan finished in 1.141s: 1 files, 512.000 MiB\r\n\r\nFiles:           1 new,     0 changed,     0 unmodified\r\nDirs:            3 new,     0 changed,     0 unmodified\r\nData Blobs:    350 new\r\nTree Blobs:      4 new\r\nAdded to the repository: 512.024 MiB (512.065 MiB stored)\r\n\r\nprocessed 1 files, 512.000 MiB in 8:00\r\nsnapshot de831b42 saved\r\n\r\nreal\t8m2.470s\r\nuser\t1m12.533s\r\nsys\t0m7.744s\r\n```\r\n\r\nA classical sftp of this one file upload went well (35sec).\r\nWith a s3 (minio) backend, everything went well too 31s\r\n\r\n```bash\r\ntime ./restic-patch backup -r =s3:https://mys3/mysuperbucket ./512M --tag slowsftp\r\nrepository 42 opened (version 2, compression level auto)\r\nno parent snapshot found, will read all files\r\n[0:01] 100.00%  8 / 8 index files loaded\r\n\r\nFiles:           1 new,     0 changed,     0 unmodified\r\nDirs:            3 new,     0 changed,     0 unmodified\r\nAdded to the repository: 512.024 MiB (512.054 MiB stored)\r\n\r\nprocessed 1 files, 512.000 MiB in 0:31\r\nsnapshot 4242 saved\r\n\r\nreal\t0m32.507s\r\nuser\t1m17.382s\r\nsys\t0m5.115s\r\n```\r\n\r\nSo I switched to S3 without understanding where the bottleneck was.\r\nI hope I'm more precise now\r\n"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-05-15T19:11:27Z",
+   "body": "Thanks for the detailed answer!\r\n\r\n> The first 115MB went well, after that's stuck at pretty 0 during few second, upload continue for 20MB, stuck again etc etc ...\r\n\r\nThat rather sounds like it takes a long time until the server has fully stored the uploaded pack files on disk. That traffic pattern definitely won't be caused by the issue discussed here."
+  },
+  {
+   "author": "participant8",
+   "created_at": "2024-06-01T22:34:06Z",
+   "body": "> There's now #4782 that fixes the upload performance. Please give it a try.\r\n\r\nI wanted to chime in that I was just wrestling with the same issue while testing restic for the first time and was absolutely perplexed that I was getting about 1.6 Mb/s multiplied by the value of `-o sftp.connections`. The source is a high end custom NAS on a 1 Gb/s link to a remote target (Hetzner Storage Box). Compiling the committed version of the PR in b5fdb1d637dcbcffd36b1f961ba13cd27e3e63d7 allowed me to saturate the remote target's 100 Mb/s link.\r\n\r\nThank you very much for this (and restic)!\r\n\r\nI'm not sure what the release criteria are but I think this is impactful enough to warrant a new release or at least push in that direction."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-06-02T14:16:56Z",
+   "body": "A new release isn't too far out anymore, I'm wrapping up the last parts of the roadmap for 0.17.0 https://github.com/orgs/restic/projects/2/views/1 (which ended up including far more changes than I've originally anticipated). So it shouldn't take more than a few weeks now to release the next version.\r\n\r\nAnd thanks for testing!"
+  },
+  {
+   "author": "participant9",
+   "created_at": "2024-07-01T22:16:31Z",
+   "body": "This fix isn’t in 0.16.5 right? Just saw it wasn’t mentioned in the release notes."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-07-02T17:11:41Z",
+   "body": "no, this will only be part of restic 0.17.0. restic 0.16.5 was just a minimal release to update a few potentially vulnerable dependencies."
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "restic/restic",
+  "default_branch": "master",
+  "commit_sha": "11ebc0c5dbc9249c3a24d6651608b686a12af570",
+  "as_of": "2023-02-15T12:57:40Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_restic_restic_4209"
+}

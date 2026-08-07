@@ -1,0 +1,84 @@
+{
+ "repo": "typesense/typesense",
+ "number": 1321,
+ "url": "https://github.com/typesense/typesense/issues/1321",
+ "title": "Last fields in my query are sometimes completly ignored and are not being searched",
+ "state": "closed",
+ "labels": [],
+ "reporter": "reporter",
+ "created_at": "2023-10-23T10:24:52Z",
+ "closed_at": "2024-01-16T10:04:49Z",
+ "body": "Hello.\r\nI have this case. I search for by 4 queries - `query_by=name,description,responses,request`\r\nI know that if no query_by_weights are not provided then fields earlier in the query_by list will be considered to have greater weight. because of this sometimes the results that I have in my request field are completely ignored are search results are not returned at all.\r\n\r\nwhen I move a request, for example, after the name then everything is great. but now my descriptions are not being searched. Is there a way to balance these behaviours? I also tried to use query_by_weights nothing really changed.\r\n\r\n`query_by=name,description,responses,request&per_page=10&query_by_weights=1,1,1,1` - this is how I have right now.\r\nI tried to add more weight to request and response, but then again, my name and description query results were lost.\r\n\r\nThanks for the help :)\r\n",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2023-10-23T18:24:32Z",
+   "body": "The default behavior in Typesense is `text_match_type: max_score` which means that the field that matches first in the list of `query_by` is used as the representative score to rank results. \r\n\r\nYou might want to try setting `text_match_type: max_weight` to see if that helps with your use-case. \r\n\r\nDocumented under this table here: https://typesense.org/docs/0.25.1/api/search.html#ranking-and-sorting-parameters\r\n\r\nIf that doesn't work, could you share a set of curl commands [like this](https://gist.github.com/participant1/7c3432713216c378472f13e72246f46b) that replicates the issue? "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-10-23T20:12:06Z",
+   "body": "thanks a lot. I will try that"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-11-02T14:51:30Z",
+   "body": "I'm actually having a very similar issue in my use case. Changing `text_match_type` does not seem to have any positive effect.\r\n\r\nUnfortunately it's not straightforward to compile into a set of reproducible CURL commands because it's a fairly large dataset (120k items). While I try to compile a proper example here's some screenshots an example query strings.\r\n\r\n\r\n![Screenshot 2023-11-02 at 14 42 40](https://github.com/typesense/typesense/assets/1319568/49057e29-8575-4236-b003-6ee6f6259e5e)\r\n\r\n![Screenshot 2023-11-02 at 14 42 56](https://github.com/typesense/typesense/assets/1319568/c73439be-62d3-414b-b224-4fc5ec6487c1)\r\n\r\n`http://localhost:12345/collections/products/documents/search?query_by=code,altcode,title,subcodes,oldcodes,barcode,category_names,keywords,oem_numbers,content&query_by_weights=10,10,1,1,1,1,1,1,1,1&filter_by=published:=true+&&+sortable_stock:>=0&sort_by=title_sortable:asc&page=1&per_page=15&text_match_type=max_weight&q=JCB+Air+Vent+round`\r\n\r\nIt almost looks like it totally ignores any tokens after the third in the query string. Is that possible?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-11-02T16:41:29Z",
+   "body": "> It almost looks like it totally ignores any tokens after the third in the query string.\r\n\r\nNot unless it's a bug... It would be great if you're able to share a minimal dataset + curl commands to replicate the issue you're seeing to debug this further. "
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-11-02T16:59:57Z",
+   "body": "I managed to create a gist here with a minimal set of products. This seems to exhibit the same behavior.\r\n\r\nhttps://gist.github.com/participant2/24aa0884f72340aaf4c6ef982325dbe1"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-11-02T17:44:26Z",
+   "body": "For my use case, which I posted earlier, `text_match_type: max_weight` worked and I also have ` query_by_weights=1,1,1,1`\r\nThanks for the response.\r\n\r\n@participant2 I hope your problem will be resolved too.\r\nHave a great day"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-11-03T08:02:00Z",
+   "body": "@participant2 \r\n\r\nThanks for sharing that gist. I tried the queries on the dataset. There are no records that contain all the word in the query (jcb, air, vent, round). \r\n\r\nIn such a scenario, Typesense proceeds to drop words in the query from right to left until results are found. \r\n\r\n1. When the query `JCB+Air+Vent+round` is made, the last word `round` is dropped and we are able to find records with the other words matching.\r\n2. However, when the query `JCB+round+Air+Vent` is made, the last word `vent` is dropped and matching records with the other words in the query are found.\r\n\r\nSince the words used for searching (after dropping of tokens) is different, the records fetched are also different."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-11-03T10:11:15Z",
+   "body": "That makes sense. Are there any params for specifying logic for dropping of tokens?\r\n\r\nThe docs are not totally clear on how the tokens are removed, they seem to suggest _BOTH_ that the tokens are dropped `left-to-right` / `right-to-left` and/or with `least results`? Removing the tokens with least individual results would certainly make sense, rather than choosing an arbitrary token.\r\n\r\n> If drop_tokens_threshold is set to a number N and a search query contains multiple words (eg: wordA wordB), if at least N results with both wordA and wordB in the same document are not found, then Typesense will drop wordB and search for documents with just wordA. Typesense will keep dropping keywords like this left to right and/or right to left, until at least N documents are found. Words that have the least individual results are dropped first. Set drop_tokens_threshold to 0 to disable dropping of words (tokens).\r\n\r\nIt would be good if this could be clarified.\r\n\r\nThinking of a typical multi-word query, more-often the descriptive detail is added first and removing the end token would completely lose the context of the search.\r\n\r\n`JCB round air vent` is a typical example where `vent` is really the key part of the search term and should not be removed.\r\n\r\nComing from the Elasticsearch world the complete removal of tokens at all is a little counter-intuitive, but I understand they are very different engines. I believe the default ES behaviour would be to individually query each token and sum the scores."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-11-05T12:31:33Z",
+   "body": "> Words that have the least individual results are dropped first. \r\n\r\nSorry for the confusion about this: it was an earlier behavior. We now drop tokens strictly right to left first and if no results are still found, move to dropping left to right. \r\n\r\nIn recent 0.25 RC builds, we have a way to control the direction. See here: \r\n\r\nhttps://github.com/typesense/typesense/issues/1162#issuecomment-1732979855"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-11-06T12:59:26Z",
+   "body": "Thanks! I tried `drop_tokens_mode` = `left_to_right` and that has made a great difference for our use case.\r\n\r\nI'm a sample size of 1 but I would say that `left_to_right` would make sense to be the default if your primary target is English speaking users."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-11-06T13:07:20Z",
+   "body": "Atleast for e-commerce, right to left makes sense because you usually have queries like \"brand product_name version\" where it's useful to return other versions when a specific version is not found...\r\n\r\nBut I agree that it's use case specific, which is why we've added a flag for this now!"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-11-06T13:25:14Z",
+   "body": "I disagree because I think the less important adjectives will often come first.\r\n\r\n`smart black trousers`\r\n`white shirt`\r\n`pleated skirt`\r\n\r\netc.\r\n\r\nIt would be interesting to look at some bulk stats for a large site and actually see how often the key term is first/last."
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "typesense/typesense",
+  "default_branch": "v31",
+  "commit_sha": "ea80d8f43d17768f12cd5300ff8ba819f0ea7127",
+  "as_of": "2023-10-23T10:24:52Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_typesense_typesense_1321"
+}

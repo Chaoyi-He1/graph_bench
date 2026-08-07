@@ -1,0 +1,132 @@
+{
+ "repo": "keras-team/keras",
+ "number": 19639,
+ "url": "https://github.com/keras-team/keras/issues/19639",
+ "title": "Unusual behavior of `predict` for JAX backend",
+ "state": "closed",
+ "labels": [
+  "type:Bug",
+  "backend:jax"
+ ],
+ "reporter": "reporter",
+ "created_at": "2024-04-29T18:43:04Z",
+ "closed_at": "2024-05-02T18:50:28Z",
+ "body": "Here is a simple jitted function doing something useful\r\n\r\n```python\r\n@participant3(jax.jit, static_argnums=(1, 2))\r\ndef get_array_slice_and_repeat(x, pos, num_repeats):\r\n    x_slice = x[:, :<nick>, :, :]\r\n    x_slice = jnp.repeat(x_slice, num_repeats, axis=2)\r\n    return x_slice\r\n\r\n# This works\r\nx = jnp.asarray(np.random.rand(1, 5, 4, 3))\r\ny = get_array_slice_and_repeat(x, 2, 3)\r\n```\r\n\r\nLet's say I have a keras model that needs to use that operation. Keeping this example very simple:\r\n\r\n```python\r\nclass CustomModel(keras.Model):\r\n    def __init__(self, name=None):\r\n        super().__init__()\r\n        self.name = name if name is not None else \"custom_model\"\r\n\r\n    def call(self, inputs, training=True):\r\n        x, pos = inputs\r\n        x = get_array_slice_and_repeat(x, pos.item(), 2)\r\n        return x\r\n\r\nx = np.random.rand(1, 5, 4, 3)\r\npos = jnp.array([2])\r\nmodel = CustomModel()\r\nout = model.predict((x, pos))\r\n```\r\n\r\nThis fails with following error:\r\n```\r\n---------------------------------------------------------------------------\r\n---------------------------------------------------------------------------\r\nConcretizationTypeError                   Traceback (most recent call last)\r\nCell In[34], line 1\r\n----> 1 out = model.predict((x, pos))\r\n\r\nFile /keras/src/utils/traceback_utils.py:113, in filter_traceback.<locals>.error_handler(*args, **kwargs)\r\n    110 @participant4(fn)\r\n    111 def error_handler(*args, **kwargs):\r\n    112     if not is_traceback_filtering_enabled():\r\n--> 113         return fn(*args, **kwargs)\r\n    115     filtered_tb = None\r\n    116     try:\r\n\r\nFile /keras/src/backend/jax/trainer.py:675, in JAXTrainer.predict(self, x, batch_size, verbose, steps, callbacks)\r\n    673 else:\r\n    674     state = (state[0], non_trainable_variables)\r\n--> 675 batch_outputs, non_trainable_variables = self.predict_function(\r\n    676     state, x\r\n    677 )\r\n    678 outputs = append_to_outputs(batch_outputs, outputs)\r\n    679 callbacks.on_predict_batch_end(step, {\"outputs\": batch_outputs})\r\n\r\n    [... skipping hidden 12 frame]\r\n\r\nFile /keras/src/backend/jax/trainer.py:322, in JAXTrainer.make_predict_function.<locals>.compiled_predict_step(state, data)\r\n    320 @participant5.jit\r\n    321 def compiled_predict_step(state, data):\r\n--> 322     return predict_step(state, data)\r\n\r\nFile /keras/src/backend/jax/trainer.py:296, in JAXTrainer.make_predict_function.<locals>.one_predict_step(state, data)\r\n    294 def one_predict_step(state, data):\r\n    295     data = data[0]\r\n--> 296     return self.predict_step(state, data)\r\n\r\nFile /keras/src/backend/jax/trainer.py:210, in JAXTrainer.predict_step(self, state, data)\r\n    207     kwargs[\"training\"] = False\r\n    209 x, _, _ = data_adapter_utils.unpack_x_y_sample_weight(data)\r\n--> 210 outputs, non_trainable_variables = self.stateless_call(\r\n    211     trainable_variables, non_trainable_variables, x, **kwargs\r\n    212 )\r\n    213 (\r\n    214     _,\r\n    215     non_trainable_variables,\r\n   (...)\r\n    222     metrics_variables=None,\r\n    223 )\r\n    224 return outputs, non_trainable_variables\r\n\r\nFile /keras/src/utils/traceback_utils.py:113, in filter_traceback.<locals>.error_handler(*args, **kwargs)\r\n    110 @participant4(fn)\r\n    111 def error_handler(*args, **kwargs):\r\n    112     if not is_traceback_filtering_enabled():\r\n--> 113         return fn(*args, **kwargs)\r\n    115     filtered_tb = None\r\n    116     try:\r\n\r\nFile /keras/src/layers/layer.py:975, in Layer.stateless_call(self, trainable_variables, non_trainable_variables, return_losses, *args, **kwargs)\r\n    973     outputs = self.quantized_call(*args, **kwargs)\r\n    974 else:\r\n--> 975     outputs = self.call(*args, **kwargs)\r\n    976 if return_losses:\r\n    977     losses = self.losses\r\n\r\nCell In[32], line 8, in CustomModel.call(self, inputs, training)\r\n      6 def call(self, inputs, training=True):\r\n      7     x, pos = inputs\r\n----> 8     x = get_array_slice_and_repeat(x, pos.item(), 2)\r\n      9     return x\r\n\r\n    [... skipping hidden 1 frame]\r\n\r\nFile /jax/_src/numpy/array_methods.py:76, in _item(a, *args)\r\n     74 def _item(a: Array, *args) -> bool | int | float | complex:\r\n     75   \"\"\"Copy an element of an array to a standard Python scalar and return it.\"\"\"\r\n---> 76   arr = core.concrete_or_error(np.asarray, a, context=\"This occurred in the item() method of jax.Array\")\r\n     77   if dtypes.issubdtype(a.dtype, dtypes.extended):\r\n     78     raise TypeError(f\"No Python scalar type for {a.dtype=}\")\r\n\r\nFile /jax/_src/core.py:1509, in concrete_or_error(force, val, context)\r\n   1507     return force(val.aval.val)\r\n   1508   else:\r\n-> 1509     raise ConcretizationTypeError(val, context)\r\n   1510 else:\r\n   1511   return force(val)\r\n\r\nConcretizationTypeError: Abstract tracer value encountered where concrete value is expected: traced array with shape int32[1].\r\nThis occurred in the item() method of jax.Array\r\nThe error occurred while tracing the function compiled_predict_step at /keras/src/backend/jax/trainer.py:320 for jit. This concrete value was not available in Python because it depends on the value of the argument data[0][0][1].\r\n\r\nSee https://jax.readthedocs.io/en/latest/errors.html#jax.errors.ConcretizationTypeError\r\n```",
+ "comments": [
+  {
+   "author": "reporter",
+   "created_at": "2024-04-29T19:18:16Z",
+   "body": "I know that the whole `call` is jitted when we call `predict`, but this seems to put a restriction if we want to have some functionality inside the call that requires to be jitted explicitly with some static arguments"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-04-29T19:29:20Z",
+   "body": "The documentation for `x.item()` in JAX says:\r\n\r\n> Copy an element of an array to a standard Python scalar and return it.\r\n\r\nIt is not possible to access the eager value of an array inside a jitted function, which is why calling `item()` inside `call()` fails with `predict()` -- as you note, `predict()` is itself jitted.\r\n\r\nYou have two possible solutions:\r\n\r\n- Do not use `item()` inside `call()`, or any other eager-only method.\r\n- Alternatively, keep using eager-only methods, but make sure you call `predict()` eagerly. This can be done by setting `model.run_eagerly = True`. Note that performance may suffer."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-04-29T19:36:44Z",
+   "body": "@participant1 Thanks for the quick response.\r\n\r\nYes, I am aware of `item()`. Here is the problem though: If I use `predict`, then all inputs needs to have same dimensionality. If I don't use `item()` or `int(pos[0])` or `int(ops.get_item(pos, -1))`, there is no way to retrieve the position as integer, and hence not possible to jit the `get_array_slice_and_repeat(...)` method as value of `pos` passed would be an object of `array_impl` which isn't hashable.\r\n\r\nUnfortunately, running eagerly is very slow for my use case. \r\n\r\nNote: I also don't see any way to use `ops.slice(...)` in this case as it will complain about the Tracer in the shape values i.e. `ops.slice(x, [0, 0, 0, 0], [x_shape[0], pos+1, x_shape[2], x_shape[3]])`"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-04-29T21:49:46Z",
+   "body": "You can try asking the question to the JAX team to see what they recommend in this case (basically, how to use your `get_array_slice_and_repeat` inside a jit function). There might be a factoring that removes the need for the eager `item()` call. If not, then it's just a hard limitation of XLA."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-04-29T22:08:54Z",
+   "body": "@reporter ,\r\n\r\nIs the `pos` argument static? Or is it dynamic per sample?\r\nCould it be a configuration of the model instead of an input?\r\n\r\nThanks, Fabien\r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-04-30T15:03:33Z",
+   "body": "> You can try asking the question to the JAX team to see what they recommend in this case (basically, how to use your get_array_slice_and_repeat inside a jit function)\r\n\r\nThere *may* be a way to convert tracer to a concrete value using `pure_callback(...)`, but I am not sure. My worry is on the other side though which is: Does this mean we will never be able to pass singleton array to `predict` where it is required to do some operation within the model e.g. retrieving the KV cache values for each attention layer?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-04-30T15:04:15Z",
+   "body": "> @reporter ,\r\n> \r\n> Is the `pos` argument static? Or is it dynamic per sample? Could it be a configuration of the model instead of an input?\r\n> \r\n> Thanks, Fabien\r\n\r\n@participant2 this can't be a configuration on the model side. It's per sample"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-04-30T16:50:39Z",
+   "body": "> @participant2 this can't be a configuration on the model side. It's per sample\r\n\r\n@reporter the reason why the `participant5.jit` works with `get_array_slice_and_repeat` the way you have it is that you marked the `pos` argument as static with `static_argnums`. What this means is that it's not dynamic, it's a constant. The function is retraced and recompiled for each new value of `pos`. This won't work with dynamic values per sample.\r\n\r\nI looked into [`participant5.lax.dynamic_slice`](https://participant5.readthedocs.io/en/latest/_autosummary/participant5.lax.dynamic_slice.html), but it won't work in this case because the size of the slices is dynamic (one of the size is `pos`). Basically, there is no way around this, JAX doesn't support dynamic output shapes. The output of the model has to have a fixed shape for some fixed shape of the input. This is not the case in your test model.\r\n\r\nThe only way to make it work is to have some operation afterwards that brings it back to a fixed size (like having a reduction or adding padding). And you may need to use masking instead of slicing. The discussion on this issue seems relevant: https://github.com/google/participant5/issues/1007\r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-04-30T16:59:31Z",
+   "body": "@participant2 I think either you misunderstood or maybe I failed to clarify. Let me elaborate a bit more. \r\n\r\nThe `pos` argument comes from a loop where the `model.predict(...)` method, something like this:\r\n```python\r\nfor pos in range(output_length):\r\n    out = model.predict([..., pos])   \r\n``` \r\n\r\nThis is what I meant when I said it's per sample. Also, this is a full-fledged [example](https://github.com/reporter/mistral_keras_participant5/blob/main/src/model.py#L218) for your reference to understand why it is this way.\r\n\r\nComing back to the arguments:\r\n\r\n>the reason why the participant5.jit works with get_array_slice_and_repeat the way you have it is that you marked the pos argument as static with static_argnums.\r\n\r\nYes, that means everytime the pos changes we will have a recompilation but it's a one time cost. Once compiled for each length, we won't have to recompile again. \r\n\r\n> I looked into [participant5.lax.dynamic_slice](https://participant5.readthedocs.io/en/latest/_autosummary/participant5.lax.dynamic_slice.html), but it won't work in this case because the size of the slices is dynamic\r\n\r\nBasically the method I came up with is more simple in this case than using `dynamic_slice(...)`\r\n\r\n> And you may need to use masking instead of slicing\r\n\r\nThe problem with masking is that you can get a masked array but if you apply `repeat` on top of it, you won't get the expected values"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-04-30T20:19:23Z",
+   "body": "@reporter here is one way to do it if I understand your use case correctly.\r\nThe idea is that `pos` is a model property that you can change instead of an input that you pass to `predict` (or `call`).\r\n\r\nIt is important to recompile the model every time `pos` is changed to force the model to retrace `call` before doing `predict`. (There are other ways to do that, but `compile` is the only public API for this).\r\n\r\n```python\r\ndef get_array_slice_and_repeat(x, pos, num_repeats):\r\n    x_slice = x[:, :<nick>, :, :]\r\n    x_slice = jnp.repeat(x_slice, num_repeats, axis=2)\r\n    return x_slice\r\n\r\nclass CustomModel(keras.Model):\r\n    def __init__(self, name=None):\r\n        super().__init__()\r\n        self.name = name if name is not None else \"custom_model\"\r\n        self.pos = None\r\n\r\n    def call(self, inputs, training=True):\r\n        x = get_array_slice_and_repeat(inputs, self.pos, 2)\r\n        return x\r\n\r\nx = np.random.rand(1, 5, 4, 3)\r\nmodel = CustomModel()\r\n\r\nmodel.pos = 3\r\nmodel.compile()\r\nout = model.predict(x)\r\n\r\nmodel.pos = 4\r\nmodel.compile()\r\nout = model.predict(x)\r\n```\r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-05-01T04:59:16Z",
+   "body": "Thanks @participant2 for the detailed explanation and the workaround.\r\n\r\nPS: Do you think there can be a better way to do this? This is a common pattern, and I feel there can be a better solution to it in general"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-05-02T18:49:49Z",
+   "body": "@reporter this pattern works \"naturally\" with Tensorflow and Torch. Unfortunately, it doesn't work with JAX because of the fixed size requirement when jitting. The general solution for JAX is to use a fixed total size and use padding / masking."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-05-02T18:50:28Z",
+   "body": "Closing now, let me know if you have more questions."
+  },
+  {
+   "author": "google-ml-butler[bot]",
+   "created_at": "2024-05-02T18:50:30Z",
+   "body": "Are you satisfied with the resolution of your issue?\n<a href=\"https://docs.google.com/forms/d/e/1FAIpQLSdHag0RVFS7UXzZkKcsFCKOcX8raCupKK9RHSlYxp5U8lSJbQ/viewform?entry.492125872=Yes&entry.243948740=https://github.com/keras-team/keras/issues/19639\">Yes</a>\n<a href=\"https://docs.google.com/forms/d/e/1FAIpQLSdHag0RVFS7UXzZkKcsFCKOcX8raCupKK9RHSlYxp5U8lSJbQ/viewform?entry.492125872=No&entry.243948740=https://github.com/keras-team/keras/issues/19639\">No</a>\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-05-03T16:37:27Z",
+   "body": "> @reporter this pattern works \"naturally\" with Tensorflow and Torch. Unfortunately, it doesn't work with JAX because of the fixed size requirement when jitting. The general solution for JAX is to use a fixed total size and use padding / masking.\r\n\r\nI am okay closing the issue for now but the constraint is not on the JAX side (we can compile that). The problem is on our side as we expect all the inputs passed in a list to have the same dimensions which doesn't make sense for many cases. For JAX backend, ideally there should be flexibility within the predict method for the end user to choose which parts to compile"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-05-03T19:37:03Z",
+   "body": "@reporter \r\n\r\n> For JAX backend, ideally there should be flexibility within the predict method for the end user to choose which parts to compile\r\n\r\nOh, that flexibility exists. All you have to do is turn `jit_compile` off in `model.compile()` and then jit the parts that you can. The `jitted_call` method below would have the bulk of the code. And `call` would only do the strict minimum, which is separating inputs and using `.item()` for the static parts.\r\n\r\n```python\r\nclass CustomModel(keras.Model):\r\n    def __init__(self, name=None):\r\n        super().__init__(name=name)\r\n\r\n    @participant3(participant5.jit, static_argnums=(0, 2, 3))\r\n    def jitted_call(self, x, pos, num_repeats):\r\n        x_slice = x[:, :<nick>, :, :]\r\n        x_slice = jnp.repeat(x_slice, num_repeats, axis=2)\r\n        return x_slice\r\n\r\n    def call(self, inputs, training=True):\r\n        x, pos = inputs\r\n        return self.jitted_call(x, pos.item(), 2)\r\n\r\nx = np.random.rand(1, 5, 4, 3)\r\npos = jnp.array([2])\r\nmodel = CustomModel()\r\nmodel.compile(jit_compile=False)\r\nmodel.predict((x, pos))\r\n```\r\n\r\nAnd you also have the option of overriding `model.predict_step()` if that helps."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-05-04T11:23:24Z",
+   "body": "This is nice! BTW what about layer level within the `call` method of `model`. Is the semantics same for that as well?"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-05-06T01:20:16Z",
+   "body": "@reporter yes, the same semantics apply to layers."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-05-06T18:19:22Z",
+   "body": "Perfect! Thanks @participant2 for the explanation. One last thing before I wrap up this thread (and I think this thread will become a good reference for such workflows): Let's say you have a model that have some `n` custom layers, and the above operation is done in those layers, then should we `jit` the individual layers?\r\n\r\n```python\r\n\r\nclass SimpleLayer(layers.Layer):\r\n    def __init__(self, name=None):\r\n        super().__init__(name=name)\r\n\r\n    @participant3(participant5.jit, static_argnums=(0, 2, 3))\r\n    def jitted_call(self, x, pos, num_repeats):\r\n        x_slice = x[:, :<nick>, :, :]\r\n        x_slice = jnp.repeat(x_slice, num_repeats, axis=2)\r\n        return x_slice\r\n\r\n    def call(self, inputs, training=True):\r\n        x, pos = inputs\r\n        return self.jitted_call(x, pos.item(), 2)\r\n\r\n\r\n\r\nclass CustomModel(keras.Model):\r\n    def __init__(self, name=None):\r\n        super().__init__(name=name)\r\n        self.layer1 = layers.Dense(32)\r\n        self.simple_layers = [SimpleLayer() for _ in range(5)]\r\n\r\n    def call(self, inputs, training=True):\r\n        x = self.layer1(x)\r\n        for i, layer in enumerate(self.simple_layers):\r\n              x = self.layer2((x, i))\r\n```\r\n\r\n\r\n"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-05-06T19:06:21Z",
+   "body": "@reporter Yes, that is the unfortunate part. If you can't jit at the model level, you'll have to jit each individual layer that supports it. And chances are the result will be slower than a fully jitted model."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-05-08T16:52:10Z",
+   "body": "Cool. Thanks @participant2 for the explanation"
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "keras-team/keras",
+  "default_branch": "master",
+  "commit_sha": "4cb5671e9aed82433de33455de285783fa81f8ee",
+  "as_of": "2024-04-29T18:43:04Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_keras-team_keras_19639"
+}

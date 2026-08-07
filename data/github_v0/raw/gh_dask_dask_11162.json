@@ -1,0 +1,101 @@
+{
+ "repo": "dask/dask",
+ "number": 11162,
+ "url": "https://github.com/dask/dask/issues/11162",
+ "title": "P2P rechunking of ERA-5 from spatial to temporal dimension is failing hard",
+ "state": "closed",
+ "labels": [
+  "array"
+ ],
+ "reporter": "reporter",
+ "created_at": "2024-06-05T09:03:55Z",
+ "closed_at": "2024-06-05T15:00:04Z",
+ "body": "This was originally reported in https://<redacted-host>/t/rechunking-large-data-at-constant-memory-in-dask-experimental/3266/8\r\n\r\nThis is a dask only reproducer of the reported problem which represents a common (?) rechunking of a large scale dataset from a spatial dimension (chunk is a snapshot of one hour of earth) to a temporal dimension (chunk is about a year of data for a certain region)\r\n\r\n```python\r\nimport dask\r\nimport numpy as np\r\nimport dask.array as da\r\n\r\ndask.config.set({\"array.rechunk.method\": \"p2p\"})\r\n# shape = (561264, 721, 1440)\r\nshape = (96432, 721, 1440)\r\nchunksize = (1, 721, 1440)\r\n# FIXME: Providing dtype to `random` is raising an error\r\ndarand = da.random.random(shape, chunks=chunksize).astype(np.float32)\r\ndarand.rechunk((8760, 72, 144)).sum().compute()\r\n```\r\n\r\nVisualizing the chunks, this is from\r\n\r\n![image](https://github.com/dask/dask/assets/8629629/7b40c248-b496-492c-b312-a36cbb4d0cb0)\r\n\r\n\r\nto \r\n\r\n![image](https://github.com/dask/dask/assets/8629629/331f8e09-648f-4865-a8af-554a6ab762c9)\r\n\r\nThis workload is exhibiting a couple of problems\r\n\r\n1. The submission to the scheduler is abysmally slow\r\n2. The original report is running into an OS error due to too little disk space. This is caused since the user is running an adaptive cluster such that the rechunk starts on a very small cluster with possible only one or very, very few clusters. Since rechunk locks in the workers when it starts, this causes the entire 400GB of data to be stored on one/few workers which is inevitably running out of disk.\r\n\r\nI still have to run a profile for 1.\r\n\r\nRe 2.) I see two things\r\n\r\nA) We should likely emit a warning (to the client) if a rechunk/shuffle is running on an adaptive cluster. Most users will not understand this and the fact that new workers cannot be utilized for this operation is something that was not present during the tasks based shuffle/rechunk\r\nB) I wonder if there is a way to break even such a non-trivial rechunk up into a couple of individual P2P operations. Maybe a hybrid tasks + p2p approach would do\r\n\r\ncc @participant1 ",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2024-06-05T09:17:21Z",
+   "body": "I'll have to look into what's actually happening on the cluster but let me explain what _should_ happen in P2P rechunking:\r\n\r\n1. This P2P rechunk should be split into ~11 partial rechunks (we chop this up along the first axis). Hence, each P2P rechunk should be worth around 37 GiB of data.\r\n2. If we schedule these partial more or less sequentially, this should cause\r\n  a. ...previous partials to get evicted from disk once _all_ of the unpack tasks have transitioned to memory\r\n  b. ...P2P rechunking to take a look at all the available workers at the time at which we start executing first transfer task of each partial. Assuming that the adaptive cluster ramps up the worker count pretty quickly, we should benefit from this in the later partials.\r\n\r\n> A) We should likely emit a warning (to the client) if a rechunk/shuffle is running on an adaptive cluster. Most users will not understand this and the fact that new workers cannot be utilized for this operation is something that was not present during the tasks based shuffle/rechunk\r\n\r\nSure, works for me.\r\n\r\n> B) I wonder if there is a way to break even such a non-trivial rechunk up into a couple of individual P2P operations. Maybe a hybrid tasks + p2p approach would do\r\n\r\nAs mentioned above, this is already being split up into partials. Do you want to split this up _further_?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-06-05T09:23:06Z",
+   "body": "> A) We should likely emit a warning (to the client) if a rechunk/shuffle is running on an adaptive cluster. Most users will not understand this and the fact that new workers cannot be utilized for this operation is something that was not present during the tasks based shuffle/rechunk\r\n\r\nIs there a good way for P2P to pre-emptively trigger upscaling? I wonder if by looking at the target at the moment the P2P run initialized, we can see that we're way underprovisioned and just wait for adaptive to give us more workers to work with."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-06-05T09:31:10Z",
+   "body": "> 1. This P2P rechunk should be split into ~11 partial rechunks (we chop this up along the first axis). Hence, each P2P rechunk should be worth around 37 GiB of data.\r\n\r\nFrom what I see, we have only a single worker available at the moment the first P2P partial starts. Granted, with ~28 GiB of free disk space, that worker will have a pretty bad time trying to pull of rechunking of 37 GiB of data."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-06-05T09:39:50Z",
+   "body": "FWIW I ran this on a cluster with 50 workers booted up right away and it runs flawlessly. 50 is even overprovisioned it seems so apart from the super slow transmission, this is doing what it is supposed to.\r\n\r\n![image](https://github.com/dask/dask/assets/8629629/4f59ccf2-3946-4bdd-8046-24b4c7353d53)\r\n\r\nNote: The first long CPU time range on the scheduler was a run I cancelled. The second thing is the actual run\r\n\r\n\r\nhttps://<redacted-host>/clusters/488173/account/dask-engineering/information?scopes=%7B%22type%22%3A%22account%22%2C%22id%22%3A5147%2C%22name%22%3A%22dask-engineering%22%2C%22organizationId%22%3A7269%2C%22slug%22%3A%22dask-engineering%22%7D&tab=Code\r\n\r\nI think I'll open a dedicated issue to the adaptive P2P topic since there are many different things we could do now or later."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-06-05T09:46:29Z",
+   "body": "regarding the slowness of this I have good and bad news. \r\n\r\nGood news: it's not `dask.order` 🎉 \r\n\r\nBad news: It's [unpack_remotedata](https://github.com/dask/distributed/blob/7aea988722f285e9fc5a67a817f664bd14ef47a5/distributed/utils_comm.py#L272) recursing over the graph (for 8min)\r\n\r\n![image](https://github.com/dask/dask/assets/8629629/1921d014-494c-44f5-97c9-12b7a8271e46)\r\n\r\n\r\nI'll have a brief look if there is something we can do to patch this. Long term fix would be https://github.com/dask/dask/issues/9969"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-06-05T09:47:26Z",
+   "body": "> As mentioned above, this is already being split up into partials. Do you want to split this up further?\r\n\r\nNo, if it is already split up, that's great."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-06-05T09:49:29Z",
+   "body": "RE: further splitting up\r\n\r\nEven though I wrote it down, I wasn't really registering that we are dealing with one year slices here. I was thinking about the case where the time slice is over the entire dataset. I wonder if these situations could be improved as well"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-06-05T10:01:47Z",
+   "body": ">  I was thinking about the case where the time slice is over the entire dataset. I wonder if these situations could be improved as well\r\n\r\nThe only case where I could see this help us is in the worst-case scenario of miniature shards. We'd still have to store all of the data somewhere, so I think we can only minimize metadata overhead."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-06-05T10:03:01Z",
+   "body": "Regarding pre-emptive upscaling: I saw the cluster suggest 4-7 workers during the first couple of minutes of the P2P rechunking. That should've been enough in this case. (Though it wouldn't have worked if we had only a single partial.)"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-06-05T12:02:34Z",
+   "body": "Re: performance of unpacking the tasks\r\n\r\nI can rewrite this code and can get it a little faster by about 20-30%. That's not nothing (in this case almost 2min faster) but it is clearly not sufficient. The inherent problem is that we cannot distinguish tuples from \"tuples that are task definitions which could reference other tasks\", i.e. https://github.com/dask/dask/issues/9969\r\n\r\nWhy this is so bad for P2P rechunking is we are including very large tuples as arguments for the tasks.\r\n\r\nConsider this task https://github.com/dask/distributed/blob/7aea988722f285e9fc5a67a817f664bd14ef47a5/distributed/shuffle/_rechunk.py#L444-L452\r\n\r\nwhich is defining the transfer task. It includes `partial_index`, `partial_new`, `partial_old` which are all tuples that describe the old/new chunking to some extend (and are again nested tuples). In this case, however, `partial_old` contains one tuple that has 8760 elements. Therefore, unpacking this task alone takes about 50ms. Multiplying this by all transfer tasks... is a lot.\r\n\r\nThere are two quick fixes we can implement\r\n1. wrap the `partial_*` tuples with a tuple subclass to tell the unpack algorithm that these are not the droids it's looking for\r\n2. Not passing those to the task but instead putting it into the rechunk extension since this is redundant information and subject to the currently active rechunk (this would also safe some redundancy in the graph)"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-06-05T14:07:09Z",
+   "body": "I wrote an issue to suggest a P2P restart if we detect a significant upscaling, see https://github.com/dask/distributed/issues/8673"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-06-05T14:42:37Z",
+   "body": "Oh, another thing that is mildly concerning me is that the graph for this small subset already has 250MB. I'll briefly check if this is expected... Might also be those tuples"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-06-05T15:18:28Z",
+   "body": "It looks like the graph size is also a bit unnatural. All of the data is actually stemming from the large indices that we're now bypassing during unpacking but this should be somewhat be compensated by pickle dedup + compression.\r\n\r\nIndeed, when I manually `dumps` the graph w/ compression I am getting only a fifth of the payload in size. I wonder if this is a bad side effect of https://github.com/dask/distributed/pull/7768 or if it is related to how we're pickling the graph. I will create a follow up ticket"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-06-05T15:31:45Z",
+   "body": "I think I have to step back from this statement a little. The graph is indeed unreasonably large and compression is not kicking in but compression also doesn't help that much. After verifying this again, compression only shaves off about 10% which is why we're just ending up sending the raw data"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-06-05T15:46:07Z",
+   "body": "See https://github.com/dask/distributed/issues/8676"
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "dask/dask",
+  "default_branch": "main",
+  "commit_sha": "8813859beb12517facb0620b7d45a22557f3cd12",
+  "as_of": "2024-06-05T09:03:55Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_dask_dask_11162"
+}

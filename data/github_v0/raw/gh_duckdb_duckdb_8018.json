@@ -1,0 +1,144 @@
+{
+ "repo": "duckdb/duckdb",
+ "number": 8018,
+ "url": "https://github.com/duckdb/duckdb/issues/8018",
+ "title": "union_by_name is vastly slower/fails over httpfs",
+ "state": "closed",
+ "labels": [],
+ "reporter": "reporter",
+ "created_at": "2023-06-20T20:41:51Z",
+ "closed_at": "2024-11-08T14:06:40Z",
+ "body": "### What happens?\n\nA query as simple as `select max(date) from read_parquet('s3://bucket/**/*.parquet', hive_partitioning=true, union_by_name=true)` becomes unusably slow, seemingly, as the set of files to scan increases.\r\n\r\n* I am enabling `union_by_name` preemptively, because i know that the set of columns being written to these files may increase over time, which will lead to historically written files lacking newer columns.\r\n\r\n* by \"unusably slow\" i mean, firstly it takes a long time, but also it begins producing `duckdb.IOException: IO Error: Connection error for HTTP HEAD to <bucket http url>`\r\n\r\n* In my particular example `date` is a hive partition key, which **should** mean (i think) that there's not even any data to scan.\n\n### To Reproduce\n\nS3 bucket with structure like:\r\n\r\n```\r\ndate=2023-01-01/part0.parquet\r\ndate=2023-01-02/part0.parquet\r\n...\r\ndate=2023-06-20/part0.parquet\r\n```\r\n\r\nFile can be as simple as (parquet equivalent): `date, id\\n{date},1`\r\n\r\nFor 300 dates worth of this ^: locally, `select max(date) from read_parquet('s3://bucket/**/*.parquet', hive_partitioning=true, union_by_name=true)` takes ~4m, whereas `union_by_name=false` is essentially instant.\n\n### OS:\n\naarch64\n\n### DuckDB Version:\n\n0.8.0/0.8.1\n\n### DuckDB Client:\n\nPython\n\n### Full Name:\n\nDan Cardin\n\n### Affiliation:\n\nKnown\n\n### Have you tried this on the latest `master` branch?\n\n- [X] I agree\n\n### Have you tried the steps to reproduce? Do they include all relevant data and configuration? Does the issue you report still appear there?\n\n- [X] I agree",
+ "comments": [
+  {
+   "author": "reporter",
+   "created_at": "2023-06-20T20:43:46Z",
+   "body": "Perhaps relatedly, a query like so:\r\n```\r\nSELECT * FROM read_parquet('s3://bucket/**/*.parquet', hive_partitioning=true, union_by_name=true)\r\nWHERE date = (SELECT max(date) FROM read_parquet('s3://bucket/**/*.parquet', hive_partitioning=true, union_by_name=true))\r\n```\r\nThis seems to similarly be scanning all files for columns, regardless of whether they're included, which further explodes the query time/makes it fail.\r\n\r\nPerhaps a \"better\" way to perform this second query might be to execute the subquery first, then choose a specific partition key path rather than globs. And maybe that'll be the thing to do, depending on your response.\r\n\r\n---\r\nAlso perhaps also of note, if the partitions contain multiple parts, it also appears to be scanning all of the files therein. I guess I would have expected it to only scan the first one, if any.\r\n\r\n> Connection error for HTTP GET Range to 'https://s3.amazonaws.com/bucket/date%3D2023-04-28/part-10.parquet'"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-06-21T06:18:49Z",
+   "body": "Thanks for the report!\r\n\r\nThis is expected because `UNION_BY_NAME` requires scanning the metadata of all files in order to find out the schema of the table. Even if the files are pruned due to the hive partitioning, the pruned files can still change the schema of the result and hence must be inspected.\r\n\r\nYou can enable the Parquet metadata cache to alleviate this somewhat as the metadata for each file will only need to be read once (`SET enable_object_cache=true;`)."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-06-21T14:58:12Z",
+   "body": "I kind of figured there would be **some** sort of unavoidable slowdown due to union_by_name...but!\r\n\r\n* Even if I were willing to accept the slowdown, I seem to be unable to get it to function in practice. It eventually times out (seemingly through the `http_timeout` setting), which feels odd because any individual file is definitely not exceeding this timeout\r\n   * Sidebar, there's a limit to how high one can set the http_timeout. 100000000 immediately times out, while 10000000 executes but times out after ~13m (which seems very much too short)\r\n* I tried `SET enable_object_cache=true;` after your suggestion, but it's apparently still slow enough that it still times out.\r\n* (obviously i dont know the internals here but) It **feels** like if I'm referencing specific columns rather than *, then the schema should be able to be inferred by seeking just enough files to find the columns in question?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-06-21T15:06:07Z",
+   "body": "> (obviously i dont know the internals here but) It feels like if I'm referencing specific columns rather than *, then the schema should be able to be inferred by seeking just enough files to find the columns in question?\r\n\r\nThat doesn't align with the internals and wouldn't really work in practice. We need to scan files to know if the column is even in there - and we need to know the type of the column as well. The type can only be found in `union_by_name` by looking through all files. If one file has the column as a `VARCHAR`, the column is promoted to `VARCHAR`, even if the others have the column as `INTEGER`. \r\n\r\n> Even if I were willing to accept the slowdown, I seem to be unable to get it to function in practice. It eventually times out (seemingly through the http_timeout setting), which feels odd because any individual file is definitely not exceeding this timeout\r\n\r\nThat does seem odd indeed and should probably be investigated."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-06-21T15:34:41Z",
+   "body": "Is there a world where some additional `read_parquet(...)` option or `SET` mode or something could exist? For my particular example, I'd be happy to accept the first-found type for a given column, or to need to explicitly cast all my output columns (and query-time fail, if it were invalid), or for pruned files to not be able to affect the schema (and thus be able to be ignored)\r\n\r\nBasically it seems like as-is `union_by_name` (perhaps only with httpfs) cannot realistically be used as the number of source files increases. The workarounds I'm aware of for avoiding the need for union_by_name seem to force a lot of extra non-sql special casing to be instrumented.\r\n\r\nAnd one more sidebar, `EXPLAIN`ing the OP's query implies it's scanning 0 bytes (due to the hive partition column), which the execution time and fact that it **is** scanning a bunch of files. This seems perhaps misleading?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-06-23T15:02:13Z",
+   "body": "Two things that come to mind as realistic could be:\r\n\r\n* Manually providing the schema as a set of columns, similar to the CSV reader (`read_parquet(..., columns={'a': INT, 'b': INT})`\r\n* Providing a file explicitly that is used to determine the result schema, e.g. (`read_parquet('*.parquet', schema_file='myfile.parquet')`). The metadata from that file is then used to determine the result schema of the file.\r\n\r\nBoth of these would allow for schema evolution by having other files that e.g. don't have certain columns fill in `NULL` values for those entries, but both involve some form of manual work."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-06-23T15:40:05Z",
+   "body": "The first option would work for my uses, for whatever that's worth. No idea if it's possible/realistic, but it **seems** like you could (perhaps optionally) infer the schema from any excplit casts `a::int` on the columns.\r\n\r\nThe second option, would (at least for me) be way less convenient than just spelling it out in `read_parquet`, again, for whatever that's worth"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-06-29T20:48:41Z",
+   "body": "I guess I should also say again, in a bunch of cases for us, the only referenced columns are hive partition columns which (as far as i know) are necessarily going to be string columns, so that could perhaps be another optimization, wherein you shouldn't need to seek all the files for such queries?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-07-07T08:44:11Z",
+   "body": "> I guess I should also say again, in a bunch of cases for us, the only referenced columns are hive partition columns which (as far as i know) are necessarily going to be string columns, so that could perhaps be another optimization, wherein you shouldn't need to seek all the files for such queries?\r\n\r\nThe way the system is currently setup is to load all present columns and their types eagerly to avoid having to read metadata multiple times. Reworking that to lazily load column names and types so hive partitioned columns could be found and queried without reading Parquet metadata is possible, but involves a rather large rework of the system for (what I think is) a rare use case. In most situations figuring out if column A exists is as expensive as figuring out if column B exists, after all. Hive partitioning is the only exception.\r\n\r\n>  No idea if it's possible/realistic, but it seems like you could (perhaps optionally) infer the schema from any excplit casts a::int on the columns.\r\n\r\nInferring the schema from what happens in a query is only possible for simple queries with a single source, and gets ambiguous very quickly once queries involve multiple tables or joins.\r\n\r\n\r\n"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-07-24T11:09:41Z",
+   "body": "+1 I am hitting this issue as well, which is that reading with \"union_by_name\" over hive partitioned  parquet files on S3 is very slow causing a connection error or timeout after about  14 minutes. \r\n\r\n```\r\nInvalid Error: IO Error: Connection error for HTTP HEAD to https://....amazonaws.com/....\r\n```"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-10-06T15:00:40Z",
+   "body": "👍 Im also running into issues around this when it comes to schema evolution for longitudinal datasets. Any of the two solutions suggested in https://github.com/duckdb/duckdb/issues/8018#issuecomment-1604409779 would work for my use case."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-10-06T15:13:08Z",
+   "body": "We actually merged a commit adding support for the `schema` parameter to `read_parquet` yesterday - see https://github.com/duckdb/duckdb/pull/9123"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-10-06T17:59:12Z",
+   "body": "At least for my original usecase, it will need to support hive partitioning. But once it does, i think i'll be happy to swap and close this issue, assuming `union_by_name` being slow cannot otherwise be avoided; since this schema seems like an incompatible alternative."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-10-17T07:02:31Z",
+   "body": "> We actually merged a commit adding support for the `schema` parameter to `read_parquet` yesterday - see #9123\r\n\r\nFantastic! Great work!\r\n\r\nI would also need hive partitioning and nested type support for this feature to use it in our production environment. I will start to test it out though."
+  },
+  {
+   "author": "github-actions[bot]",
+   "created_at": "2024-01-16T00:30:50Z",
+   "body": "This issue is stale because it has been open 90 days with no activity. Remove stale label or comment or this will be closed in 30 days."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-01-16T13:09:55Z",
+   "body": "as i said above, once schemas support hive partitioning, im happy for this to be closed, thus not stale."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-05-25T20:43:05Z",
+   "body": "just want to second (or third) that I would also love to use the `schema` parameter, once it supports hive partitioning. "
+  },
+  {
+   "author": "github-actions[bot]",
+   "created_at": "2024-08-24T00:29:23Z",
+   "body": "This issue is stale because it has been open 90 days with no activity. Remove stale label or comment or this will be closed in 30 days."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-08-24T20:42:49Z",
+   "body": "this stale bot is honestly just obnoxious...lack of activity doesn't make an issue solved or not. "
+  },
+  {
+   "author": "participant5",
+   "created_at": "2024-08-30T17:07:29Z",
+   "body": "We have a similar use case  to load parquets with different schemas, but require hive_partitioning support to go live in production. \r\nAre we expecting this support anytime soon ?\r\n"
+  },
+  {
+   "author": "participant6",
+   "created_at": "2024-11-08T14:03:59Z",
+   "body": "Is there any plan to implement some of the ideas discussed?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-11-08T14:06:40Z",
+   "body": "This has already been implemented - `union_by_name` no longer keeps files open since https://github.com/duckdb/duckdb/pull/12730 solving the too many open files error, and `union_by_name` is parallel since https://github.com/duckdb/duckdb/pull/12957"
+  },
+  {
+   "author": "participant7",
+   "created_at": "2024-11-08T20:53:28Z",
+   "body": "We just experienced the same problem reported in the OP, using the [NodeJS client v1.1.1](https://www.npmjs.com/package/duckdb/v/1.1.1) against a S3 bucket. The error is\r\n```\r\nError: IO Error: Connection error for HTTP GET Range to 'https://...parquet']\r\nerrno: -1,\r\ncode: 'DUCKDB_NODEJS_ERROR',\r\nerrorType: 'IO'\r\n```\r\n\r\nThe same query works well when removing `union_by_name`, which fortunately works in this specific case. \r\n\r\nAfter studying the [full changelog for v1.1.1](https://github.com/duckdb/duckdb/compare/v1.1.0...v1.1.1) it seems like https://github.com/duckdb/duckdb/pull/12730 and https://github.com/duckdb/duckdb/pull/12957 are included in that release, which makes me conclude that this issue is not solved as hoped.\r\n\r\n@participant1 care to reopen this, or do you prefer me to open a new issue?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-11-09T12:11:31Z",
+   "body": "The issue reported here is a `HTTP HEAD error` which was caused by having too many concurrent open connections. That issue has been resolved since `union_by_name` no longer keeps connections to all files open.\r\n\r\nTrying this out myself, this works correctly for me when querying 2500 Parquet files hosted on S3:\r\n\r\n```sql\r\ncreate table local_tbl as SELECT * FROM read_parquet('s3://test-s3-lineitem/lineitem_sf10_partitioned_shipdate/**/*.parquet', union_by_name=True);\r\n```\r\n\r\nSo the original issue has been fixed and is no longer reproducible (as that triggered already when running with 300 files). \r\n\r\nThere may well be different issues with `union_by_name` or S3 access remaining here. If you can open a different issue with a detailed reproducer we can investigate.\r\n"
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "duckdb/duckdb",
+  "default_branch": "main",
+  "commit_sha": "a618f5979e8b7e1c0e8d964dc84cc6f254de7c00",
+  "as_of": "2023-06-20T20:41:51Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_duckdb_duckdb_8018"
+}

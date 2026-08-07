@@ -1,0 +1,102 @@
+{
+ "repo": "pingcap/tidb",
+ "number": 46850,
+ "url": "https://github.com/pingcap/tidb/issues/46850",
+ "title": "snap_backup: snapshot backup isn't compatible with importing ",
+ "state": "closed",
+ "labels": [
+  "type/bug",
+  "severity/major",
+  "component/br",
+  "feature/developing",
+  "affects-6.5",
+  "affects-7.1",
+  "affects-7.5"
+ ],
+ "reporter": "reporter",
+ "created_at": "2023-09-11T06:32:39Z",
+ "closed_at": "2024-03-06T13:35:08Z",
+ "body": "## Bug Report\r\n\r\nPlease answer these questions before submitting your issue. Thanks!\r\n\r\n### 1. Minimal reproduce step (Required)\r\n1. Run importing.\r\n2. Run snapshot backup.\r\n3. Restore the backup.\r\n\r\n<!-- a step by step guide for reproducing the bug. -->\r\n\r\n### 2. What did you expect to see? (Required)\r\nThe restore should be success, because the backup has succeeded.\r\n\r\n### 3. What did you see instead (Required)\r\nThe restored cluster (sometimes) keep panicking due to `ingest sst not found`.\r\n\r\n### 4. What is your TiDB version? (Required)\r\ncurrent master.\r\n\r\n",
+ "comments": [
+  {
+   "author": "reporter",
+   "created_at": "2023-09-11T07:17:47Z",
+   "body": "Applying the raft command `Ingest` requires external context (the SST to be ingested must be in the local disk) beyond the raft log. But snapshot restoring only guards the consistency of raft state machine. Any outer events might be unordered. (That is reasonable in most cases, because the consistency of TiKV itself is basically based on raft.)\r\n\r\nFor example, one of the error-prone event sequence (order is defined by the wall clock) would be:\r\n```\r\n[1] ----^-------|-$--->\r\n[2] --------|-^---$--->\r\n\r\nLegends\r\n^: `write` or `download` RPC done (which creates the SST to be imported).\r\n|: the snapshot taken.\r\n$: the node applied the `Ingest` command.\r\n```\r\nHere, the `Ingest` command is applied by the Node 1, hence it will try to replicate it to all of its followers once restored. But when the Node 2 is taking the snapshot, there isn't that SST. Once trying to apply the `Ingest` command, it will panic."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-09-11T07:34:10Z",
+   "body": "Trivially wait lightning exit will be fine because `tidb-lightning` and `br` internally kept the order of `download`ing, `write`ing and `ingest`ing. And exiting `tidb-lightning` should imply that no further events relates to it will happen.\r\n\r\nSo, given the \"importing context\"(The state of SSTs to be ingested and the `Ingest` command of a `(instant, node_id)` tuple, for all `node_id`s.) is consistent and will no longer being changed after `tidb-lightning` or `br` exits. It is easy to prove that for each node, choosing ANY instant from each node after stopping them the \"importing context\" is consistent.\r\n\r\n```\r\nFor each nodes:\r\n\r\n[Many events triggered by importing]-->Exit\r\n                                       ^ Consistent kept here here.\r\n                                         And no further events will break the consistent.                       \r\n```"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-09-11T07:59:46Z",
+   "body": "So `RegisterTask` is very critical to support this check. Will it return error when keepalive fails?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-09-11T08:02:36Z",
+   "body": "And lightning task may run for multiple hours, is it acceptable that RPO is larger due to import? Backup or import, which has higher priority?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-09-11T08:08:40Z",
+   "body": "> And lightning task may run for multiple hours, is it acceptable that RPO is larger due to import? Backup or import, which has higher priority?\r\n\r\nI think given taking snapshot backup lasts for a tiny time period(the CreateVolumeSnapshot request usually response within seconds), It might be acceptable to temporarily stop importing? (thanks to checkpoints)"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-09-11T08:11:29Z",
+   "body": "> > And lightning task may run for multiple hours, is it acceptable that RPO is larger due to import? Backup or import, which has higher priority?\r\n> \r\n> I think given taking snapshot backup lasts for a tiny time period(the CreateVolumeSnapshot request usually response within seconds), It might be acceptable to temporarily stop importing? (thanks to checkpoints)\r\n\r\nLGTM, I think you can ask PM to make a final decision. Maybe let SSTImporter return some error message to let lightning restart from `write` API"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-09-11T08:22:19Z",
+   "body": "> So RegisterTask is very critical to support this check. Will it return error when keepalive fails?\r\n\r\nUnfortunately, not for now. It just print errors and retry to register itself. I think an `onError` hook for register might be useful.\r\n\r\n"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-09-11T16:40:18Z",
+   "body": "/component br"
+  },
+  {
+   "author": "ti-chi-bot[bot]",
+   "created_at": "2023-09-11T16:40:21Z",
+   "body": "@participant2: The label(s) `component/backup-restore` cannot be applied, because the repository doesn't have them.\n\n<details>\n\nIn response to [this](https://github.com/pingcap/tidb/issues/46850#issuecomment-1714233783):\n\n>/component backup-restore\n\n\nInstructions for interacting with me using PR comments are available [here](https://<redacted-host>/command-help).  If you have questions or suggestions related to my behavior, please file an issue against the [ti-community-infra/tichi](https://github.com/ti-community-infra/tichi/issues/new?title=Prow%20issue:) repository.\n</details>"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-11-06T15:06:30Z",
+   "body": "@reporter I think we can close this issue."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-11-06T15:10:21Z",
+   "body": "@participant2 let me check if lightning handles this new behaviour tomorrow "
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-11-07T05:39:22Z",
+   "body": "lightning side will see a ~\"ServerIdBusy\"~ error with the message of ~`imports are suspended for {time_to_lease_expire:?}`~ `Suspended { time_to_lease_expire: 292.97s }`, and lightning will retry ingest later, no changes need to be made."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-11-21T05:44:50Z",
+   "body": "lightning see RPC error instead of a RPC response with error fields. Although lightning can handle it as a default error, some unnecessary retry can be skipped and we should record this error to display to user."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-11-21T17:18:35Z",
+   "body": "It retry from beginning instead of checkpoint which impact the speed of ingestion. This problem is severe because backup is taken every 30 min. \r\nEven though we are talking about master here, i would assume that it exist in 6.5 as well. "
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "pingcap/tidb",
+  "default_branch": "master",
+  "commit_sha": "02ceded78bac34285d3ce1aceda86b848bad673d",
+  "as_of": "2023-09-11T06:32:39Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_pingcap_tidb_46850"
+}

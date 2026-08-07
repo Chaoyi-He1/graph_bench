@@ -4,40 +4,42 @@
 
 - source: https://github.com/ollama/ollama/issues/6685
 - kind: LLM draft (needs review)
-- reviewed: `True`
+- reviewed: `False`
 - graph: `data/github_v0/graphs/gh_ollama_ollama_6685.json` · raw thread: `data/github_v0/raw/gh_ollama_ollama_6685.json`
 
 ```mermaid
 flowchart LR
     N0["<b>N0 ROCm inference failure reported</b><br/><small>info: 5</small>"]
-    N1["<b>N1 container device access checked</b><br/><small>info: 7</small>"]
-    N1_x["<b>N1_x device passthrough alone aftermath</b><br/><small>info: 8</small>"]
-    N2["<b>N2 HSA failure details collected</b><br/><small>info: 10</small>"]
-    N2_x["<b>N2_x privileged-container aftermath</b><br/><small>info: 11</small>"]
-    N2_y["<b>N2_y gfx-override aftermath</b><br/><small>info: 12</small>"]
-    N3["<b>N3 container group mapping isolated</b><br/><small>info: 14</small>"]
-    N_terminal["<b>terminal GPU inference working</b><br/><small>info: 14</small>"]
-    N0 -.->|"❓ host_kfd_and_dri_devices_exist_with_video_render_groups, container_rocminfo_cannot_open_kfd_read_write"| N1
+    N1["<b>N1 host device nodes inspected</b><br/><small>info: 6</small>"]
+    N1_x["<b>N1_x explicit device passthrough aftermath</b><br/><small>info: 7</small>"]
+    N2["<b>N2 graphics-version override probes completed</b><br/><small>info: 8</small>"]
+    N3["<b>N3 HSA failure evidence collected</b><br/><small>info: 10</small>"]
+    N4_x["<b>N4_x privileged-container aftermath</b><br/><small>info: 11</small>"]
+    N5["<b>N5 container device-group mismatch exposed</b><br/><small>info: 14</small>"]
+    N_terminal["<b>terminal GPU inference working</b><br/><small>info: 15</small>"]
+    N0 -.->|"❓ host_kfd_and_dri_devices_owned_by_video_and_render"| N1
     linkStyle 0 stroke:#3b82f6,stroke-width:2px
-    N1 ==>|"💥 blind: Pass the AMD KFD and DRI device paths into the ROCm container."| N1_x
+    N1 ==>|"💥 blind: Pass the AMD KFD and DRM devices explicitly into the ROCm container."| N1_x
     linkStyle 1 stroke:#ef4444,stroke-width:2px
-    N1_x -.->|"❓ amd_debug_log_hsa_init_1008_and_hip_no_device, host_dmesg_kfd_created_one_gpu_node"| N2
+    N1_x -.->|"❓ gfx_override_probe_all_values_same_failure"| N2
     linkStyle 2 stroke:#3b82f6,stroke-width:2px
-    N2 ==>|"💥 blind: Run the Ollama container as privileged to bypass container device-access restrictions."| N2_x
-    linkStyle 3 stroke:#ef4444,stroke-width:2px
-    N2_x ==>|"💥 blind: Work around a presumed GPU architecture mismatch by overriding the HSA gfx version."| N2_y
+    N2 -.->|"❓ amd_debug_log_hsa_init_1008_and_hip_no_device, host_dmesg_reports_kfd_node_and_gpu_added"| N3
+    linkStyle 3 stroke:#3b82f6,stroke-width:2px
+    N3 ==>|"💥 blind: Run the ROCm container as privileged to test whether broad container privileges restore GPU access."| N4_x
     linkStyle 4 stroke:#ef4444,stroke-width:2px
-    N2_y -.->|"❓ ollama_container_maps_kfd_and_card_to_bin_group, pytorch_container_group_probe_accesses_gpu"| N3
+    N4_x -.->|"❓ rocminfo_inside_ollama_reports_kfd_permission_denied, ollama_container_device_nodes_map_to_bin_and_daemon_groups, pytorch_container_group_probe_can_access_gpu"| N5
     linkStyle 5 stroke:#3b82f6,stroke-width:2px
-    N3 ==>|"⚡ Grant the Ollama container effective access to the mapped AMD device nodes by passing both `/dev/kfd` and `/dev/dri` and adding the group that owns those nodes inside the Ollama container; for this reporter that group is `bin`."| N_terminal
+    N5 ==>|"⚡ Give the Ollama container the supplemental group that owns the mapped AMD device nodes inside that container, while passing both `/dev/kfd` and `/dev/dri`, then verify GPU inference."| N_terminal
     linkStyle 6 stroke:#f97316,stroke-width:2px
+    N0 ==>|"🚀 Correct the ROCm device permissions by passing both AMD device paths and adding the supplemental group that owns those mapped nodes inside the Ollama container, then verify inference. (skip 9)"| N_terminal
+    linkStyle 7 stroke:#0ea5e9,stroke-width:2px
     class N0 start
     class N1 normal
     class N1_x normal
     class N2 normal
-    class N2_x normal
-    class N2_y normal
     class N3 normal
+    class N4_x normal
+    class N5 normal
     class N_terminal terminal
     classDef start fill:#fee2e2,stroke:#b91c1c,color:#000
     classDef terminal fill:#dcfce7,stroke:#15803d,color:#000
@@ -46,47 +48,41 @@ flowchart LR
 
 ## Opening (body)
 
-> I installed the AMD drivers on Ubuntu 24.04.1 LTS and have ROCm 6.2.0, a Ryzen 9 7950X3D, and a Radeon RX 7900 XTX. I started Ollama 0.3.9 with `docker run --gpus=all -v ollama:/root/.ollama -p 11434:11434 --name ollama ollama/ollama:rocm`, successfully pulled `llama3.1`, and then ran it with debug logging. The container appears to detect the GPU initially, but inference fails with `Could not initialize Tensile host: No devices found`. I linked the Ollama log.
+> I installed the AMD drivers on Ubuntu 24.04.1 LTS and am using ROCm 6.2.0, a Ryzen 9 7950X3D, and a Radeon RX 7900 XTX. With Ollama 0.3.9, I started the ROCm container using `docker run --gpus=all -v ollama:/root/.ollama -p 11434:11434 --name ollama ollama/ollama:rocm`. After successfully pulling llama3.1, running it ends with `Could not initialize Tensile host: No devices found`. The startup log appears to detect the GPU correctly, but inference cannot use it.
 
 ## Satisfaction conditions
 
-1. Must identify the root cause as container permission/group mapping for `/dev/kfd` and the DRI devices: Ollama's sysfs discovery could see the RX 7900 XTX, but the ROCm HSA runtime could not open the device and returned status 1008 and `hipErrorNoDevice`.
-2. The diagnosis must be grounded in the collected evidence: host KFD creation, in-container `rocminfo` permission denial, AMD debug output, and the differing device groups visible inside the Ollama and ROCm base images.
-3. The working configuration must pass both `/dev/kfd` and `/dev/dri` and add the group owning the relevant device nodes inside the container; for the reporter's Ollama image this was `--group-add bin`.
-4. Must not treat `--device` alone, `--privileged`, or `HSA_OVERRIDE_GFX_VERSION` as the fix because each was tried without resolving the failure.
-5. Must ask the reporter to verify that `rocminfo` enumerates the GPU and that llama3.1 completes inference before declaring the issue resolved.
+1. Must identify the accepted root cause: the ROCm container could see GPU metadata through sysfs but could not open the passed-through AMD device nodes because its root process lacked the supplemental group owning those mapped nodes inside the container.
+2. Diagnosis must be grounded in the collected evidence: host KFD initialization succeeded, ROCm reported HSA status 1008/no device, `rocminfo` inside the container reported `/dev/kfd` permission denied, and the container-side device ownership mapped to groups such as `bin` and `daemon`.
+3. The fix must pass both `/dev/kfd` and `/dev/dri` and add the device-owning supplemental group visible inside the affected container; on the reporter's Ollama image that working group was `bin`.
+4. Must not treat a graphics-version override, explicit device passthrough alone, or `--privileged` alone as the fix; each was tried without clearing the error.
+5. Must ask the reporter to verify access with `rocminfo` and an actual Ollama GPU inference run before declaring the issue resolved.
 
 ## Edges
 
 | edge | type | gates / info | payload |
 |---|---|---|---|
-| `e1_N0__N1` | clarification_only | asks: host_kfd_and_dri_devices_exist_with_video_render_groups, container_rocminfo_cannot_open_kfd_read_write | On the host, `/dev/kfd` and `/dev/dri/card1` are owned by `root:video`, and `/dev/dri/renderD128` is `root:ren / `rocminfo` inside the container prints `Unable to open /dev/kfd read-write: Permission denied`. It also says r |
-| `e2_N1__N1_x` | solution_only **BLIND** | req_info: radeon_7900_xtx_gfx1100, host_kfd_and_dri_devices_exist_with_video_render_groups<br>elements: passes_dev_kfd, passes_dev_dri | Pass the AMD KFD and DRI device paths into the ROCm container. |
-| `e3_N1_x__N2` | clarification_only | asks: amd_debug_log_hsa_init_1008_and_hip_no_device, host_dmesg_kfd_created_one_gpu_node | With `AMD_LOG_LEVEL=3`, I get `Initializing HSA stack`, `hsa_init failed with 1008`, `Runtime initialization f / The host log says KFD allocated memory, `Total number of KFD nodes to be created: 1`, and `added device 1002:7 |
-| `e4_N2__N2_x` | solution_only **BLIND** | req_info: amd_debug_log_hsa_init_1008_and_hip_no_device<br>elements: adds_privileged_flag | Run the Ollama container as privileged to bypass container device-access restrictions. |
-| `e5_N2_x__N2_y` | solution_only **BLIND** | req_info: radeon_7900_xtx_gfx1100<br>elements: uses_hsa_override_gfx_version | Work around a presumed GPU architecture mismatch by overriding the HSA gfx version. |
-| `e6_N2_y__N3` | clarification_only | asks: ollama_container_maps_kfd_and_card_to_bin_group, pytorch_container_group_probe_accesses_gpu | Inside the Ollama container, root initially has only group 0. `/dev/kfd` and `/dev/dri/card1` show user 65534  / In `rocm/pytorch:latest`, `docker run -it --device=/dev/kfd --device=/dev/dri --group-add daemon ... rocminfo` |
-| `e7_N3__terminal` | solution_only | req_info: radeon_7900_xtx_gfx1100, llama31_pull_succeeds_but_inference_reports_no_devices, host_kfd_and_dri_devices_exist_with_video_render_groups, container_rocminfo_cannot_open_kfd_read_write, amd_debug_log_hsa_init_1008_and_hip_no_device, host_dmesg_kfd_created_one_gpu_node, ollama_container_maps_kfd_and_card_to_bin_group, pytorch_container_group_probe_accesses_gpu<br>elements: passes_both_kfd_and_dri_devices, adds_the_container_visible_device_group, uses_bin_for_this_reporters_ollama_image, explains_that_startup_sysfs_detection_does_not_prove_rocm_device_access, asks_user_to_verify_rocminfo_gpu_enumeration_and_llama_inference | Grant the Ollama container effective access to the mapped AMD device nodes by passing both `/dev/kfd` and `/dev/dri` and adding the group that owns those nodes inside the Ollama container; for this reporter that group is `bin`. |
+| `e1_N0__N1` | clarification_only | asks: host_kfd_and_dri_devices_owned_by_video_and_render | On the host, `/dev/kfd` and `/dev/dri/card1` are owned by `root:video` with mode `crw-rw----`, while `/dev/dri |
+| `e2_N1__N1_x` | solution_only **BLIND** | req_info: ollama_0_3_9_rocm_container_started_with_gpus_all, host_kfd_and_dri_devices_owned_by_video_and_render<br>elements: passes_both_kfd_and_dri_devices | Pass the AMD KFD and DRM devices explicitly into the ROCm container. |
+| `e3_N1_x__N2` | clarification_only | asks: gfx_override_probe_all_values_same_failure | I tried `gfx1102`, `11.0.2`, and then scripted a sweep of GFX 11, 10, 9, 8, and 7 version values. Every run fa |
+| `e4_N2__N3` | clarification_only | asks: amd_debug_log_hsa_init_1008_and_hip_no_device, host_dmesg_reports_kfd_node_and_gpu_added | With `AMD_LOG_LEVEL=3`, I get `hsa_init failed with 1008`, `Runtime initialization failed`, and `hipGetDeviceC / The host log says KFD allocated memory, created one node, and `added device 1002:744c`. |
+| `e5_N3__N4_x` | solution_only **BLIND** | req_info: llama31_fails_with_tensile_no_devices, amd_debug_log_hsa_init_1008_and_hip_no_device<br>elements: runs_container_with_privileged_flag | Run the ROCm container as privileged to test whether broad container privileges restore GPU access. |
+| `e6_N4_x__N5` | clarification_only | asks: rocminfo_inside_ollama_reports_kfd_permission_denied, ollama_container_device_nodes_map_to_bin_and_daemon_groups, pytorch_container_group_probe_can_access_gpu | Inside the Ollama container, `rocminfo` says `Unable to open /dev/kfd read-write: Permission denied`. It initi / Inside the Ollama image, root has only group 0. The passed-through nodes show user 65534; `/dev/kfd` and `/dev / In `rocm/pytorch:latest`, passing both devices and adding the `daemon` group makes `rocminfo` list a GPU. With |
+| `e7_N5__N_terminal` | solution_only | req_info: ollama_0_3_9_rocm_container_started_with_gpus_all, ollama_startup_reports_gpu_detected, amd_debug_log_hsa_init_1008_and_hip_no_device, host_dmesg_reports_kfd_node_and_gpu_added, rocminfo_inside_ollama_reports_kfd_permission_denied, ollama_container_device_nodes_map_to_bin_and_daemon_groups, pytorch_container_group_probe_can_access_gpu<br>elements: identifies_container_device_group_permission_mismatch, passes_both_kfd_and_dri_devices, adds_the_group_owning_the_mapped_devices_inside_the_container, does_not_assume_video_or_render_is_always_the_container_group, asks_user_to_verify_with_rocminfo_and_gpu_inference | Give the Ollama container the supplemental group that owns the mapped AMD device nodes inside that container, while passing both `/dev/kfd` and `/dev/dri`, then verify GPU inference. |
+| `e8_N0__N_terminal` | solution_only | req_info: ollama_0_3_9_rocm_container_started_with_gpus_all, llama31_fails_with_tensile_no_devices, ollama_startup_reports_gpu_detected<br>elements: identifies_container_device_group_permission_mismatch, passes_both_kfd_and_dri_devices, adds_the_group_owning_the_mapped_devices_inside_the_container, asks_user_to_verify_with_rocminfo_and_gpu_inference | Correct the ROCm device permissions by passing both AMD device paths and adding the supplemental group that owns those mapped nodes inside the Ollama container, then verify inference. |
 
 ## Nodes
 
 | node | terminal | volunteered | images | symptoms |
 |---|---|---|---|---|
-| `N0` |  | 1 | 0 | The ROCm container initially reports my Radeon RX 7900 XTX as a supported gfx1100 GPU with about 24 GiB, but running llama3.1 terminates wit |
-| `N1` |  | 0 | 0 | The host has `/dev/kfd`, `/dev/dri/card1`, and `/dev/dri/renderD128`, but `rocminfo` inside the Ollama container says it cannot open `/dev/k |
-| `N1_x` |  | 1 | 0 | After recreating the container with both `/dev/kfd` and `/dev/dri` passed through, llama3.1 still terminates with `Could not initialize Tens |
-| `N2` |  | 0 | 0 | With AMD debug logging enabled, the container prints `hsa_init failed with 1008`, `Runtime initialization failed`, and `hipGetDeviceCount: R |
-| `N2_x` |  | 1 | 0 | The privileged container still prints the same HSA initialization and no-device errors when I run llama3.1. |
-| `N2_y` |  | 1 | 0 | The container continues to report the same no-device failure after I try the gfx1100-series overrides and a long list of older `HSA_OVERRIDE |
-| `N3` |  | 0 | 0 | Inside the Ollama image, `/dev/kfd` and `/dev/dri/card1` appear with group `bin`, while a ROCm PyTorch container can access the GPU when I a |
-| `N_terminal` | ✓ | 0 | 0 | With both AMD device paths passed through and the container-visible `bin` group added, llama3.1 runs on the GPU and replies normally instead |
-
-## Machine review (audit pass, adversarially verified)
-
-Auditor verdict: **n/a** · 0 of 0 findings survived independent refutation.
-
-__
-
+| `N0` |  | 1 | 0 | The ROCm container starts and reports my Radeon RX 7900 XTX, but running llama3.1 terminates with `Could not initialize Tensile host: No dev |
+| `N1` |  | 0 | 0 | The container still starts and reports the GPU, but llama3.1 cannot initialize a ROCm device. |
+| `N1_x` |  | 1 | 0 | After restarting the container with both `/dev/kfd` and `/dev/dri` passed through, llama3.1 still terminates with the same Tensile `No devic |
+| `N2` |  | 0 | 0 | Every tested HSA graphics-version override still ends with `Could not initialize Tensile host: No devices found`. |
+| `N3` |  | 0 | 0 | With AMD debugging enabled, the run prints `hsa_init failed with 1008`, `Runtime initialization failed`, and `hipGetDeviceCount: Returned hi |
+| `N4_x` |  | 1 | 0 | The privileged container still prints `hsa_init failed with 1008` and terminates with the same Tensile `No devices found` error. |
+| `N5` |  | 0 | 0 | Inside the Ollama container, `rocminfo` says it cannot open `/dev/kfd` read-write because permission is denied. The passed-through device no |
+| `N_terminal` | ✓ | 0 | 0 | With both `/dev/kfd` and `/dev/dri` passed through and the Ollama container given the `bin` supplemental group, llama3.1 runs on the GPU and |
 
 ## Review checklist
 

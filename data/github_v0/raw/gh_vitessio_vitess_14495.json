@@ -1,0 +1,87 @@
+{
+ "repo": "vitessio/vitess",
+ "number": 14495,
+ "url": "https://github.com/vitessio/vitess/issues/14495",
+ "title": "Feature Request: Add support for foreign key mode `managed` to vttestserver",
+ "state": "closed",
+ "labels": [
+  "Type: Feature",
+  "Type: Testing"
+ ],
+ "reporter": "reporter",
+ "created_at": "2023-11-08T16:04:13Z",
+ "closed_at": "2023-11-09T11:27:37Z",
+ "body": "### Feature Description\n\n[v18](https://github.com/vitessio/vitess/releases/tag/v18.0.0) added `Experimental Foreign Key Support`, via the `managed` mode:\r\n\r\n> `managed` [EXPERIMENTAL] -\r\nIn this experimental mode, Vitess is fully aware of foreign key relationships and actively tracks foreign key constraints using the schema tracker. VTGate will handle DML operations with foreign keys and correctly cascade updates and deletes.\r\nIt will also verify restrict constraints and validate the existence of parent rows before inserting child rows.\r\nThis ensures that all child operations are logged in binary logs, unlike the InnoDB implementation of foreign keys.\r\nThis allows the usage of VReplication workflows with foreign keys.\r\nImplementation details are documented in the https://github.com/vitessio/vitess/issues/12967.\r\n\r\nUnfortunately that does not seem to be supported in vttestserver yet. From the CLI output:\r\n\r\n```\r\n--foreign_key_mode string      This is to provide how to handle foreign key constraint in create/alter table. Valid values are: allow, disallow (default \"allow\")\r\n```\r\n\r\nAnd the docker container script:\r\nhttps://github.com/vitessio/vitess/blob/225fc70d58aae86da7b9172d65d8017e0fbdcaab/docker/vttestserver/run.sh#L40\r\n\r\nIt would be great if this would be expended to also support the new experimental `managed` mode.\n\n### Use Case(s)\n\nWe are using `vttestserver` at Prisma to run tests that pretend to be PlanetScale like:\r\nhttps://github.com/prisma/prisma/blob/8fdb2bcb5b2944d9f4b6dd1a9efa20c88f0b5ab4/docker/docker-compose.yml#L77-L94\r\nNote that we use `FOREIGN_KEY_MODE: 'disallow'` right now, and of course want to to `managed` soon.",
+ "comments": [
+  {
+   "author": "reporter",
+   "created_at": "2023-11-08T16:08:24Z",
+   "body": "Learning a bit more now, so this is a bit more involved probably:\r\n\r\nFrom https://github.com/vitessio/vitess/releases/tag/v18.0.0:\r\n\r\n> A new optional field `foreignKeyMode` has been added to the VSchema. This field can be provided for each keyspace. The VTGate flag `--foreign_key_mode` has been deprecated in favor of this field.\r\n\r\nand\r\n\r\n> After upgrading from v17 to v18, users should specify the correct foreign key mode for all their keyspaces in the VSchema using the new property.\r\nOnce this change has taken effect, the deprecated flag `--foreign_key_mode` can be dropped from all VTGates. Note that this is only required if running in disallow mode.\r\n\r\nAnd vttestserver is currently using `--foreign_key_mode`:\r\nhttps://github.com/vitessio/vitess/blob/225fc70d58aae86da7b9172d65d8017e0fbdcaab/docker/vttestserver/run.sh#L40\r\n\r\nSo we'll need to figure out how to replace the VTGate config with a VSchema field, that can still be configured via an environment variable."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-11-08T16:28:30Z",
+   "body": "Digging further, I think the challenge is deeper and vttest is involved:\r\nhttps://github.com/vitessio/vitess/blob/225fc70d58aae86da7b9172d65d8017e0fbdcaab/go/vt/vttest/local_cluster.go#L138-L139\r\nProbably that is then handed further down even."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-11-08T17:21:55Z",
+   "body": "(Related question: Is there a way to output the configured value of the new ForeignKeyMode via a SQL query?)"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-11-09T11:27:37Z",
+   "body": "@reporter Like you said, `foreignKeyMode` is a Vschema property that can be specified for each keyspace. So, we don't need to add any environment variable or a flag to vttestserver.\r\n\r\n`vttestserver` already takes in the flag `schema_dir`, with the following description - \r\n```\r\n      --schema_dir string                                                Directory for initial schema files. Within this dir, there should be a subdir for each keyspace. Within each keyspace dir, each file is executed as SQL after the database is created on each shard. If the directory contains a vschema.json file, it will be used as the vschema for the V3 API.\r\n```\r\n\r\nSo, all you need to do is add a vschema.json file in the directory of your keyspace and specify the `foreignKeyMode` and you're good. \r\n\r\nFor reference as to what the vschema should look like, you can see what we are using in our tests at https://github.com/vitessio/vitess/blob/main/go/test/endtoend/vtgate/foreignkey/unsharded_vschema.json.\r\n\r\nI am closing this issue, because there doesn't seem to be any change required on our end. Please reopen if you have follow up questions."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-11-09T11:58:19Z",
+   "body": "Thanks for the response, I could not connect these dots as I do not know enough about vschema and so on, it seems.\r\n\r\n---\r\n\r\nMy investigation into this:\r\n\r\nIn the vttestserver Docker container we are using this path seems to be hardcoded via `--schema_dir=\"/vt/schema/\"`:\r\nhttps://github.com/vitessio/vitess/blob/225fc70d58aae86da7b9172d65d8017e0fbdcaab/docker/vttestserver/run.sh#L46C16-L46C27\r\n\r\nThe subfolders for the keyspaces seem to be created automatically on startup via this script, and a `vschema.json` is created if there are more than 1 keyspaces:\r\nhttps://github.com/vitessio/vitess/blob/225fc70d58aae86da7b9172d65d8017e0fbdcaab/docker/vttestserver/setup_vschema_folder.sh#L49-L59\r\n\r\nI guess I will try to access that directory and its subfolders, and put a `vschema.json` with the necessary file there before the server starts, somehow.\r\n\r\nHow can I best confirm this worked? Is there a query I can run to confirm that the configuration was picked up?\r\n\r\n--- \r\n\r\nI sense trouble though, as our Docker container setup mentions that the keyspace config from their is not actually used:\r\nhttps://github.com/prisma/prisma/blob/8fdb2bcb5b2944d9f4b6dd1a9efa20c88f0b5ab4/docker/docker-compose.yml#L84-L85\r\n```\r\n      KEYSPACES: 'unsharded' # unused in testing, but required by vttestserver\r\n      NUM_SHARDS: '1' # unused in testing, but required by vttestserver\r\n```\r\nOur tests create a lot of databases dynamically during testing, to get isolation between the different test cases."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-11-09T23:50:01Z",
+   "body": "Ok, took me a bit to wrap my head around how to get the `vschema.json` into the container, but in the end it was as simple as:\r\n\r\n```\r\n    environment:\r\n      PORT: '33804' \r\n      KEYSPACES: 'unsharded'\r\n      NUM_SHARDS: '1' \r\n      FOREIGN_KEY_MODE: 'allow' # --foreign-key-mode\r\n      ...\r\n    volumes:\r\n      - ./vitess:/vt/schema/unsharded\r\n```\r\n  \r\nAnd having a `vitess/vschema.json`:\r\n  \r\n```\r\n{\r\n\t\"sharded\": false,\r\n\t\"foreignKeyMode\": \"managed\"\r\n}\r\n```\r\n\r\nThat starts successfully.\r\n\r\nBut how can I confirm that the keyspace indeed is running with `foreignKeyMode=managed` now? Is there any command on how I can check that the foreign keys are now indeed managed properly by Vitess and not just by the underlying database because of the old `--foreign-key-mode=allow`? What difference should I be able to observer vs. the old `allow`?\r\n\r\n(Setting `foreignKeyMode` to an invalid value crashes the vttestserver start, so that already is a good sign.)"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-11-10T07:14:26Z",
+   "body": "@reporter Yes! Great! You figured out how to specify the Vschema file. I should have probably listed the steps the first time around itself.\r\n\r\n> But how can I confirm that the keyspace indeed is running with foreignKeyMode=managed now?\r\n\r\nThe only way to know that the foreign key mode is managed by Vitess is to just check the VSchema that the `vtgate` is using. This is visible in the `/debug/vschema` page.\r\n\r\nThe purpose of the managed mode is that Vitess does the cascades, but the final result should be indistinguishable from the case where the foreign keys were just allowed. So I don't think there are any queries that you can run to distinguish the two cases.\r\n\r\n> Setting foreignKeyMode to an invalid value crashes the vttestserver start, so that already is a good sign.\r\n\r\nThis is probably the best test you could have run for now 😆 \r\n\r\n@participant2 Should we add a query that allows users to know which foreign key mode they are in?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-11-10T08:10:18Z",
+   "body": "> (Related question: Is there a way to output the configured value of the new ForeignKeyMode via a SQL query?)\r\n\r\n@reporter I have made a PR that adds a new query like `SHOW VSCHEMA KEYSPACES` and that might be the solution - https://github.com/vitessio/vitess/pull/14505, because this will just allow you to run a query and it will tell you exactly what the foreign key mode is that vitess is running in.\r\n\r\nIf you don't add a Vschema and are running with `--foreign-key-mode=allow`, then it would be `unmanaged` otherwise it would be `managed` as we see in the description of the PR."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-11-10T10:06:14Z",
+   "body": "Thanks, the query you have proposed to add seems like the perfect solution. \r\nWe could then gain confidence by running that query to confirm the configuration of our Docker setup.\r\n\r\n---\r\n\r\nThe one still open questio, is if `CREATE DATABASE foo` will create a keyspace with the same foreign key mode or not (which I could not confidently confirm because I could not figure out the state of a keyspace). We create the databases dynamically in our tests for isolation, and for `--foreign-key-mode=disallow` they would inherit the disabled foreign keys setting. I hope they will also inherit the `foreignKeyMode=managed` so we can keep creating databases dynamically."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-11-13T03:26:32Z",
+   "body": "You'll have to add vschema for all the databases you create before hand. I don't think there is any other way."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-11-13T19:51:53Z",
+   "body": "Ok, I see `SHOW VSCHEMA KEYSPACES` is now available via the Docker container for vttestserver, so we'll try that out now."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-12-02T08:20:51Z",
+   "body": "Indeed, only the configured keyspaces/databases get the mode. That makes it _really_ hard for us.\r\n\r\n2 follow up issues:\r\nhttps://github.com/vitessio/vitess/issues/14660\r\nhttps://github.com/vitessio/vitess/issues/14661"
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "vitessio/vitess",
+  "default_branch": "main",
+  "commit_sha": "225fc70d58aae86da7b9172d65d8017e0fbdcaab",
+  "as_of": "2023-11-08T16:04:13Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_vitessio_vitess_14495"
+}

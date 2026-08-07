@@ -1,0 +1,172 @@
+{
+ "repo": "caddyserver/caddy",
+ "number": 6275,
+ "url": "https://github.com/caddyserver/caddy/issues/6275",
+ "title": "`reverse_proxy` leads to duplicate `Server` headers",
+ "state": "closed",
+ "labels": [
+  "declined :<nick>:",
+  "discussion :<nick>:"
+ ],
+ "reporter": "reporter",
+ "created_at": "2024-04-26T20:15:13Z",
+ "closed_at": "2024-04-30T22:41:58Z",
+ "body": "When using Caddy’s `reverse_proxy` in front of a server that sets a `Server` header, Caddy prepends its own `Server` header rather than replacing it, leading to duplicate `Server` headers. This violates [RFC 9110 §5.3](https://<redacted-host>/rfc/rfc9110.html#section-5.3-3):\r\n\r\n> This means that, aside from the well-known exception noted below, a sender MUST NOT generate multiple field lines with the same name in a message (whether in the headers or trailers) or append a field line when a field line of the same name already exists in the message, unless that field's definition allows multiple field line values to be recombined as a comma-separated list (i.e., at least one alternative of the field's definition allows a comma-separated list, such as an ABNF rule of #(values) defined in [Section 5.6.1](https://<redacted-host>/rfc/rfc9110.html#abnf.extension)).\r\n\r\nas `Server` is [not defined as comma-separated](https://<redacted-host>/rfc/rfc9110.html#name-server).\r\n\r\n`Caddyfile` for self-contained reproduction:\r\n\r\n```caddy\r\nhttp://localhost:1234 {\r\n\treverse_proxy http://localhost:1235\r\n}\r\n\r\nhttp://localhost:1235 {\r\n\treverse_proxy http://localhost:1236\r\n}\r\n\r\nhttp://localhost:1236 {\r\n\theader Server \"MyServer\"\r\n\trespond \"Hello\"\r\n}\r\n```\r\n\r\n```console\r\n# caddy version\r\nv2.7.6 h1:w0NymbG2m9PcvKWsrXO6EEkY9Ru4FJK8uQbYcev1p3A=\r\n# caddy run\r\n2024/04/26 20:13:00.317\tINFO\tusing adjacent Caddyfile\r\n2024/04/26 20:13:00.318\tINFO\tadmin\tadmin endpoint started\t{\"address\": \"localhost:2019\", \"enforce_origin\": false, \"origins\": [\"//localhost:2019\", \"//[::1]:2019\", \"//127.0.0.1:2019\"]}\r\n2024/04/26 20:13:00.318\tINFO\ttls.cache.maintenance\tstarted background certificate maintenance\t{\"cache\": \"0xc0000b6000\"}\r\n2024/04/26 20:13:00.319\tINFO\thttp.log\tserver running\t{\"name\": \"srv0\", \"protocols\": [\"h1\", \"h2\", \"h3\"]}\r\n2024/04/26 20:13:00.319\tINFO\thttp.log\tserver running\t{\"name\": \"srv1\", \"protocols\": [\"h1\", \"h2\", \"h3\"]}\r\n2024/04/26 20:13:00.319\tINFO\thttp.log\tserver running\t{\"name\": \"srv2\", \"protocols\": [\"h1\", \"h2\", \"h3\"]}\r\n2024/04/26 20:13:00.319\tINFO\tautosaved config (load with --resume flag)\t{\"file\": \"/root/.config/caddy/autosave.json\"}\r\n2024/04/26 20:13:00.319\tINFO\tserving initial configuration\r\n2024/04/26 20:13:00.365\tWARN\ttls\tstorage cleaning happened too recently; skipping for now\t{\"storage\": \"FileStorage:/root/.local/share/caddy\", \"instance\": \"29a71809-9042-40ac-854b-3b22247b7194\", \"try_again\": \"2024/04/27 20:13:00.365\", \"try_again_in\": 86399.999998755}\r\n2024/04/26 20:13:00.365\tINFO\ttls\tfinished cleaning storage units\r\n^Z\r\n[1]+  Stopped                 caddy run\r\n# bg\r\n[1]+ caddy run &\r\n# curl -i http://localhost:1234\r\nHTTP/1.1 200 OK\r\nContent-Length: 5\r\nContent-Type: text/plain; charset=utf-8\r\nDate: Fri, 26 Apr 2024 20:13:10 GMT\r\nServer: Caddy\r\nServer: Caddy\r\nServer: MyServer\r\n\r\nHello\r\n```",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2024-04-26T21:02:02Z",
+   "body": "This is working as intended. This behaviour makes it a really useful debugging tool to determine how the request was routed. If you want to drop the Server header, you can just do `header -Server`."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-04-26T21:02:56Z",
+   "body": "That was initially intentional, but RFC 9110 didn't exist at the time either.\r\n\r\nWe can probably update our behavior now that RFC 9110 clearly states that origin servers generate this header, not proxies.\r\n\r\nIt is extremely useful for simple debugging/tracing, but that can also be done with something like `header +Proxy-Server Caddy` or something."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-04-26T21:03:18Z",
+   "body": "Oh, Francis beat me to it. (Dang GitHub not telling me there's a reply while I'm typing.) I'm going to reopen this until we fix it."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-04-26T21:05:23Z",
+   "body": "> We can probably update our behavior now that RFC 9110 clearly states that origin servers generate this header, not proxies.\r\n\r\nNginx's opinion is that a _reverse proxy_ (not \"proxy\", as in forward) is an origin, and therefore generates its own Server header. In fact, Nginx's default behaviour is to ignore upstream's `Server` header and only write its own, unless you add a `proxy_pass` config line for it."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-04-26T21:10:26Z",
+   "body": "That's true, but also antiquated. RFC 9110 conveniently defines origin servers (as opposed to intermediates) for us: https://<redacted-host>/rfc/rfc9110.html#name-origin-server"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-04-27T05:35:38Z",
+   "body": "Now, I'm one to be quick to want to comply with the standard. So is Francis. So Francis and I discussed this in Slack, and I actually find his arguments quite compelling.\r\n\r\n- **We are already conforming with the de-facto standard behaviour.** This is true, nginx has done this for years and years, and is what a lot of the Web expects, even though the latest standard potentially says otherwise. (It does leave some room for interpretation, read on.)\r\n- **A reverse proxy is an origin.** The same RFC 9110 says in Section 3.7:\r\n  > A \"gateway\" (a.k.a. \"reverse proxy\") is an intermediary that acts as an origin server for the outbound connection but translates received requests and forwards them inbound to another server or servers.\r\n  \r\n  I was under the impression that a proxy is just a relay/intermediate, but the spec actually says reverse proxies act as origins, thus it follows that they should be allowed to set a Server header. (I can see how a forward proxy would NOT be an origin. But a reverse proxy? It is an authority to respond for its domain.)\r\n- **What is the actual problem?** We are not sure what problem this is causing (as it is not new behavior, by a long shot) and what changing this would really fix. But we do know that changing this would actually cause us some problems... next point:\r\n- **The current behaviour is the most useful, and can be opted-out very easily.** As Francis said to me, \"The amount of times I've been able to successfully debug things on the forums because of `Server: Caddy` appearing twice... very very useful. If we hid it by default when proxying then we have no way to prove that the request did get handled by Caddy, especially when people have their DNS wrong and they think they're hitting Caddy but they're not.\" Having this current behaviour be the default is highly advantageous to our helpers.\r\n- **The RFC strictness on multiple header fields is intended for other use cases.** I believe, IIRC, that our Server header is actually ordered appropriately, for one thing. So that part is still in compliance with the RFC regarding order mattering. While it does seem to suggest that only list-formatted fields can appear multiple times, the Server field is kind of a list, it's just space-separated instead of comma-separated, purely for compatibility reasons I suppose. But the semantics are similar. \r\n\r\nWhile I definitely don't want to cause breakage, I can see both sides of the argument here. The RFC does seem to say that there should only be 1 Server header, but distinguishing comma-separated lists from space-separated lists seems silly in this context. It also seems that a reverse proxy is, in itself, an origin, even before considering the de-facto standard behavior today. The presence of our Server header is also extremely useful in helping people.\r\n\r\nIs the current behavior causing some sort of problem?"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-01-10T20:15:15Z",
+   "body": "Duplicate Server header is not compatible with the aiohttp Python library.\n\nWhen a server return an extra Server header I have an exception:\n\n400, message=\"Duplicate 'Server' header found.\"\n\nfrom this line: https://github.com/aio-libs/aiohttp/blob/9482755b40ce69814eea6f65bfbd4c12d1878174/aiohttp/http_parser.py#L512"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-01-10T20:19:39Z",
+   "body": "@participant3 I don't know what aiohttp is, but it sounds like you could file a bug report with them."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-01-10T21:07:27Z",
+   "body": "[aiohttp](https://pypi.org/project/aiohttp/) is the most popular async HTTP library for Python, with [49 million](https://pypistats.org/packages/aiohttp) weekly downloads.\n\nWhen the server violates a MUST requirement of the standard, the bug is not in the client."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-01-10T21:21:27Z",
+   "body": "I already explained above why Caddy is not in violation. When acting as a reverse proxy it acts as an origin server and is thus allowed to set a Server header. The Server header is a list of values, and list-valued header fields can be split out until multiple."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-01-10T21:30:54Z",
+   "body": "The MUST in the RFC is explicitly clear that only fields that can be recombined as a _comma-separated_ list are permitted. “Kind of a list” is not good enough. (I understand you think this is a silly distinction, but it is nonetheless what the RFC mandates.)"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-01-10T21:57:05Z",
+   "body": "I also think the argument being made is not in spirit with what the RFC intended. If so, it introduced a huge breaking change across millions of servers that have been deployed for decades, contrary to the guidance in previous RFCs. In practice, many responses on the Internet still have multiple Server headers, including from nginx.\n\nI wonder why multiple headers breaks aiohttp (other than acting like the police and deliberately producing an error). Like what actual technical problem is it creating with aiohttp?\n\nIn any case, I'm not convinced that we have anything to fix here, and I'm not convinced that the spec authors intended to break millions of deployed servers overnight."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-01-10T22:04:32Z",
+   "body": "This was not an overnight change. The same requirement was present in [HTTP 1.0](https://www.w3.org/Protocols/HTTP/1.0/spec.html#Message-Headers) and 1.1 ([RFC 2068 §4.2](https://datatracker.ietf.org/doc/html/rfc2068#section-4.2) and [RFC 2616 §4.2](https://datatracker.ietf.org/doc/html/rfc2616#section-4.2)):\n\n> Multiple message-header fields with the same field-name MAY be present in a message if and only if the entire field-value for that header field is defined as a comma-separated list [i.e., `#(values)`]. It MUST be possible to combine the multiple header fields into one \"field-name: field-value\" pair, without changing the semantics of the message, by appending each subsequent field-value to the first, each separated by a comma."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-01-10T22:16:32Z",
+   "body": "That seems to contract where it says, \"An origin server MAY generate a Server field in its responses.\" (full-stop, no qualifications)\n\nServer is not defined as a hop-by-hop header, therefore the proxy -- acting as an origin server (according to spec) -- must pass them through as well, unchanged."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-01-10T22:44:28Z",
+   "body": "The statement that we “MAY generate a Server field” does not grant us a free pass to ignore the validity requirements on that field. Unless specified otherwise, a standard requires us to satisfy the conjunction of all its requirements, even if they aren’t all written in a single sentence.\n\nIf we take the position that we are acting as an origin server, then we accept the responsibility for generating valid responses that an origin server would generate. We’re not obligated to pass through anything (that’s an internal implementation detail behind the origin server), but if we do choose to pass through certain headers because we deem them useful, we are obligated to do so in a way that complies with the RFC’s requirements.\n\n(As @participant1 pointed out, nginx generates a single Server field without forwarding an extra value from upstream, unless explicitly configured otherwise, in which case the configuration violates the RFC—ideally that shouldn’t be allowed, but at least there’s no violation by default.)"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-01-10T23:05:35Z",
+   "body": "That creates an impossible condition for a correct HTTP reverse proxy, then, because there would be no way to reconcile the upstream's Server header versus the proxy's Server header. Again, I don't think that's in spirit of the RFC nor what the standards authors intended."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-01-10T23:29:48Z",
+   "body": "There’s no impossibility. Possible reconciliations include\n\n1. Discard the upstream `Server` header, and set our own `Server`.\n2. Pass through the upstream `Server` header unchanged, and don’t set our own `Server`.\n3. Rename the upstream `Server` header to (say) `X-Upstream-Server`, which we define to be comma-separated to allow multiple values, and set our own `Server`.\n4. Modify the upstream `Server` header, such as by adding a prefix or suffix.\n\nAs an origin server, we have the freedom to choose any of these."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-01-11T15:08:22Z",
+   "body": "> Discard the upstream `Server` header, and set our own `Server`.\n\nI'm pretty sure this is what most implementations do, such as nginx.\n\nThe reason we started rejecting this in aiohttp is that allowing multiple singleton headers can lead to HTTP request smuggling attacks. This is particularly true of headers like Content-Length; maybe treating Server as a singleton is overkill, but we just looked through the spec for all headers it defined as singletons. But, if the spec hasn't been changed in over 25 years to make the header not a singleton, then it seems safer to treat it the same way in case there are any security concerns around it.\n\nFYI, the security fix was merged and released Oct 2023 and this is the first time we've had a legitimate use reported against this."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-01-11T15:45:38Z",
+   "body": "@reporter I'm afraid none of those solutions are acceptable.\n\n> 1. Discard the upstream Server header, and set our own Server.\n> 3. Rename the upstream Server header to (say) X-Upstream-Server, which we define to be comma-separated to allow multiple values, and set our own Server.\n> 4. Modify the upstream Server header, such as by adding a prefix or suffix.\n\nThese result in a broken HTTP proxy, so they're out.\n\n> 2. Pass through the upstream Server header unchanged, and don’t set our own Server.\n\nThis results in confusion when troubleshooting and inconsistent behavior in production, sometimes the Server header is from one instance, sometimes it's from another.\n\n@participant4 \n\nWelcome!\n\n> HTTP request smuggling attacks.\n\nInteresting, can you demonstrate a security exploit by smuggling the Server header?"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-01-11T16:18:53Z",
+   "body": "> These result in a broken HTTP proxy, so they're out.\n\nIn what way? The first option seems to be exactly what every other reverse proxy I've seen does. I don't think I've ever seen a proxy send multiple headers before.\n\n> Interesting, can you demonstrate a security exploit by smuggling the Server header?\n\nAs I said, we just made a list of all singleton headers in the spec as a precaution, without trying to evaluate each individual header. If it were expected to send multiple Server headers, I'd have expected this change to be reflected in the more recent specs (since this was specified in the 1997 spec and is still present in the 2022 spec)."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-01-11T17:16:49Z",
+   "body": "> In what way? The first option seems to be exactly what every other reverse proxy I've seen does. I don't think I've ever seen a proxy send multiple headers before.\n\nWell, it's uncouth of a proxy to drop headers that aren't hop-by-hop headers, or to modify original header values.\n\nI should note that users absolutely can configure which headers are allowed to pass up/down through the proxy.\n\n> As I said, we just made a list of all singleton headers in the spec as a precaution, without trying to evaluate each individual header.\n\nFair; anyway, if someone can prove a potent security exploit (that the proxy is responsible for) by abusing Server headers, I'm open to reconsidering.\n\n>  If it were expected to send multiple Server headers, I'd have expected this change to be reflected in the more recent specs (since this was specified in the 1997 spec and is still present in the 2022 spec).\n\nThe way these processes work is usually just cut-and-pasting from older specs, changing the portions that have undergone heavy discussion in working groups / mailing lists. (I've participated extensively in some such discussions, and hardly made any progress or had virtually no substantial impact as a result.) It's likely that no one noticed who cared enough to bring it up."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2025-01-11T17:18:29Z",
+   "body": "The \"server\" field takes a single entry. Sending several fields with the same name can lead to:\n\n- components ignoring the first one\n- components ignoring the last one\n- components combining them with \",\", causing a broken field value\n- components ignoring the field values as invalid\n- components dropping the complete message as invalid\n\nSo adding a new Server response field to a response that already has one is an extremely bad idea, and recipients can rightfully reject them. Actually, they should."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2025-01-11T17:23:35Z",
+   "body": "> The way these processes work is usually just cut-and-pasting from older specs, changing the portions that have undergone heavy discussion in working groups / mailing lists. (I've participated extensively in some such discussions, and hardly made any progress or had virtually no substantial impact as a result.) It's likely that no one noticed who cared enough to bring it up.\n\nLet me disagree.\n\nDid you ask the IETF HTTP Working Group about this case? Maybe on the WG's mailing list? Or with a Github issue? (That would be interesting to see whether and how it was discussed)\n\nFWIW: contact information was on the first page of the drafts; see <https://greenbytes.de/tech/webdav/draft-ietf-httpbis-semantics-19.html#rfc.note.1>"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-01-11T17:31:55Z",
+   "body": "> Sending several fields with the same name can lead to:\n\nI was about to mention this too. At the moment aiohttp is an outlier in that we actually present multiple fields to users with a multidict. But, most implementations (and the prescribed behaviour in the spec) is to merge duplicate headers as a comma separated list. We're planning to change this in aiohttp to match the behaviour elsewhere (which I believe includes Caddy), so would likely result in invalid field values if we now allow the duplicates.\n\nFrom the discussion where we started looking at changing this, someone tested and produced these results (this is generally, not sure if Server has different logic in some implementations):\n> Servers that join the duplicate headers by default: Apache httpd, Caddy, Gunicorn, H2O, IIS, Lighttpd, Nginx, Node.js, Puma.\n> Servers that accept the duplicate headers without joining them: aiohttp (currently), Boost::Beast, Mongoose, Tornado\n\nI think the requests library also joins headers.\n\nSo, while I'm not 100% against removing Server from our check, the end result will likely never produce a sensible, expected result as long as you're sending multiple headers (and that inconsistency is the cause of HTTP request smuggling attacks).\n\n> FWIW: contact information was on the first page of the drafts; see https://greenbytes.de/tech/webdav/draft-ietf-httpbis-semantics-19.html#rfc.note.1\n\nYou can also submit errata through their form at the bottom of the errata page (it should then get added as verified or rejected):\nhttps://<redacted-host>/errata_search.php?rfc=9110"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2025-01-11T18:35:00Z",
+   "body": "> You can also submit errata through their form at the bottom of the errata page (it should then get added as verified or rejected):\nhttps://<redacted-host>/errata_search.php?rfc=9110\n\nYes, but errata are for concrete bugs, not for \"I'd like this to be different\".\n\nFor that we have mailing lists and issue trackers."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-01-12T00:13:53Z",
+   "body": "> @reporter I'm afraid none of those solutions are acceptable.\n\nLet’s be clear about the context of this thread within the discussion. You claimed that the RFC’s requirement must have been unintentional because it “creates an impossible condition for a correct HTTP reverse proxy”. But I showed you that there are plenty of possible reconciliations. From that perspective, the point is not whether you personally accept any of those reconciliations. The point is that reconciliations do exist, there is no impossible condition, and so there is no justification for assuming the RFC’s requirement is unintentional, ignoring it, and generating invalid responses.\n\n> These result in a broken HTTP proxy, so they're out.\n\nHere’s what RFC 9110 has to say about [correctness of reverse proxies](https://<redacted-host>/rfc/rfc9110.html#section-3.7-6):\n\n> A \"gateway\" (a.k.a. \"reverse proxy\") is an intermediary that acts as an origin server for the outbound connection but translates received requests and forwards them inbound to another server or servers. Gateways are often used to encapsulate legacy or untrusted information services, to improve server performance through \"accelerator\" caching, and to enable partitioning or load balancing of HTTP services across multiple machines.\n>\n> **All HTTP requirements applicable to an origin server also apply to the outbound communication of a gateway.** A gateway communicates with inbound servers using any protocol that it desires, including private extensions to HTTP that are outside the scope of this specification. However, an HTTP-to-HTTP gateway that wishes to interoperate with third-party HTTP servers needs to conform to user agent requirements on the gateway's inbound connection.\n\nIf a reverse proxy needs to reformat its translated responses to comply with the requirements of HTTP, such reformatting is *mandatory*, not broken.\n\n> This results in confusion when troubleshooting,\n\nThe point of a troubleshooting mechanism is to identify and fix problems that show up in practice. We have now identified a problem that shows up in practice. We should fix it."
+  },
+  {
+   "author": "participant6",
+   "created_at": "2025-01-12T22:57:31Z",
+   "body": "FWIW -- sending multiple `Server` headers is indeed violating the HTTP specification, for the reasons cited. If caddy is acting as an intermediary, the appropriate place to carry this information is the `Via` header field. When it acts as a reverse proxy (aka Surrogate Origin Server, Gateway), it would be appropriate to drop the existing Server header field (or move it to a different field) and insert its own _single_ server value."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2025-01-13T08:20:52Z",
+   "body": "@participant2 - what does your component do when the upstream server sends multiple \"Sender\" response fields?"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-01-14T18:19:19Z",
+   "body": "@participant6 `Via` looks like it will do. :+1:"
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "caddyserver/caddy",
+  "default_branch": "master",
+  "commit_sha": "1b9042bcdd03b4edea8447355f970e1c5aff8c10",
+  "as_of": "2024-04-26T20:15:13Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_caddyserver_caddy_6275"
+}

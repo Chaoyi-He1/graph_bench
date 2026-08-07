@@ -1,0 +1,199 @@
+{
+ "repo": "langchain-ai/langchain",
+ "number": 4678,
+ "url": "https://github.com/langchain-ai/langchain/issues/4678",
+ "title": "Split by Tokens instead of characters: RecursiveCharacterTextSplitter",
+ "state": "closed",
+ "labels": [],
+ "reporter": "reporter",
+ "created_at": "2023-05-14T18:16:05Z",
+ "closed_at": "2024-06-21T16:37:57Z",
+ "body": "### Feature request\r\n\r\nLLM usually limits text by Tokens. \r\nIt may be useful to split a large text into chunks according to the number of Tokens rather than the number of characters.\r\nFor example, if LLM allows us to use 8000 tokens, and we want to split the text into chunks of up to 4000-tokens, then we can call\r\n```python\r\ntext_splitter = RecursiveCharacterTextSplitter(chunk_tokens = 4000, ...\r\n```\r\n\r\n\r\n### Motivation\r\n\r\nIf we split a text by number of characters, it is not obvious how many tokens these chunks will be.\r\nAnd at the same time if we want to split a text into bigger possible chunks and keep these chunks under certain LLM tokens limit, we cannot operate by number of characters.\r\n\r\n### Your contribution\r\n\r\nAs an example of the `RecursiveCharacterTextSplitter(chunk_tokens` implementation it is very useful libraries that helps to split text into tokens:\r\nhttps://github.com/openai/tiktoken\r\n\r\n```python\r\nimport tiktoken\r\n\r\ndef split_large_text(large_text, max_tokens):\r\n    enc = tiktoken.get_encoding(\"cl100k_base\")\r\n    tokenized_text = enc.encode(large_text)\r\n\r\n    chunks = []\r\n    current_chunk = []\r\n    current_length = 0\r\n\r\n    for token in tokenized_text:\r\n        current_chunk.append(token)\r\n        current_length += 1\r\n\r\n        if current_length >= max_tokens:\r\n            chunks.append(enc.decode(current_chunk).rstrip(' .,;'))\r\n            current_chunk = []\r\n            current_length = 0\r\n\r\n    if current_chunk:\r\n        chunks.append(enc.decode(current_chunk).rstrip(' .,;'))\r\n\r\n    return chunks\r\n```\r\n",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2023-05-27T16:51:22Z",
+   "body": "The LLMs in langchain have a token count function. Easier to use that than bringing in another library that doesn't know the specifics of the model.\n\nThat said I noticed most of the LLMs don't implement their own, and rely on the base LLM class instead which uses the transformers library to count the tokens.\n\nI've been using llama.cpp and have been meaning to add a pull request for the addition of its built in token counting. It's ~3-4 lines of code.\n\nTLRD I agree the default should be token count rather than character count. I'd prefer an alternate implementation."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-05-30T21:00:38Z",
+   "body": "RecursiveCharacterTextSplitter (and others inheriting from TextSplitter) all support custom length functions, and even have the convenient `from_hugginface_tokenizer`/`from_tiktoken_encoder` classmethods.\r\n\r\nIssue I've noticed with those is that there's no way to take advantage of batch tokenization, instead each split is tokenized separately (and then re-tokenized during merge). Which is particularly problematic for huggingface \"fast\" tokenizers, where you can get significant speed improvements from batching.\r\n\r\nLooking at adding batched length function to the TextSplitter. Experimentally I've found it can run 5x faster than with the current implementation."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-06-25T21:31:11Z",
+   "body": "Some preliminary thoughts here:\r\nSplitting recursively on \\n\\n \\n etc for openai (tiktoken), I noticed that there are lots of edge cases to consider:\r\n-\\n\\n is a singular token\r\n-\\n is a token\r\n-many words appear both with leading space and without (different tokens).\r\n"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2023-09-03T13:22:55Z",
+   "body": "@reporter \r\nIf I understand your requirement properly, you are looking for a way to use RecursiveCharacterTextSplitter with a restriction in the count of tokens per chunk, \r\nyou can do that by using the lengthfunction parameter from the class RecursiveCharacterTextSplitter\r\nlook at the example below:\r\n\r\n\r\n```\r\nfrom nltk.tokenize import word_tokenize\r\nfrom langchain.text_splitter import RecursiveCharacterTextSplitter\r\nfrom transformers import BartTokenizer\r\n\r\ntok = BartTokenizer.from_pretrained(\"facebook/bart-large\")\r\nbart_tok_len = lambda x: len(tok(x)[\"input_ids\"])\r\n\r\n\r\ndef chunkify_bart(text):\r\n    text_splitter = RecursiveCharacterTextSplitter(\r\n        chunk_size=1024,\r\n        chunk_overlap=50,\r\n        length_function=lambda x: len(tok(x)[\"input_ids\"]),\r\n        is_separator_regex=False,\r\n    )\r\n    chunks = text_splitter.create_documents([text])\r\n\r\n    print((\" \").join([chunk.page_content for chunk in chunks]))\r\n    print([len(tok(chunk.page_content)[\"input_ids\"]) for chunk in chunks])\r\n\r\n\r\nchunkify_bart(open(\"text.txt\").read())\r\n```"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-09-03T15:04:50Z",
+   "body": "@participant4 \r\nThanks a lot for the answer.\r\n1. Looks a bit overcomplicated.\r\n2. chunk_size - in chars that limit functionality.\r\n3. chunk_overlap - in chars.\r\n\r\nOr `chunk_size` and `chunk_overlap` are not in char and set up by the `length_function` ?\r\nIt is not clear from documantation currently:\r\n`Recursively split by character`\r\nhttps://<redacted-host>/docs/modules/data_connection/document_transformers/text_splitters/recursive_text_splitter\r\n\r\nIt could be nice to have an option to pass tokens count instead chars count in this functions.\r\n"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2023-09-03T19:40:30Z",
+   "body": "So, the length function determines the way chunks are counted for size and over lap.\n\nBy default lengthfunction calculates char by char.\n\nIn my example chunk size and overlap will be counted by tokens "
+  },
+  {
+   "author": "participant4",
+   "created_at": "2023-09-05T06:39:27Z",
+   "body": "Found an easier alternative, please check https://stackoverflow.com/a/77042212/13717851"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2023-09-15T20:03:23Z",
+   "body": "I struggled with this too, and decided to subclass NLTK with a tiktoken length function, then just init the super with that as the length_function kwarg. Works exactly how I expected. You can also do the same with separators. By I'd just plan on using NLTK since it gives you full sentences. Much better chunking"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2023-10-31T04:27:48Z",
+   "body": "Really? Of all the solutions I found this the easiest, would you like to elaborate where is the issue?\r\nI am using this in all my projects now on as it is a basic fundamental for all my llm projects.\r\n\r\n```\r\ntext_splitter = CharacterTextSplitter.from_tiktoken_encoder(\r\n    chunk_size=1024, chunk_overlap=50\r\n)\r\n\r\nchunks = text_splitter.split_text(long_text)\r\n```"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2023-10-31T14:06:13Z",
+   "body": "I believe the issue is still the length function being str length. Does that actually chunk on token length and not character length? That's the crux"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-11-06T15:33:16Z",
+   "body": "`from_toktoken_encoder` and `from_huggingface_tokenizer` classmethods both use a token-based length_function"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-11-06T16:11:35Z",
+   "body": "> `from_toktoken_encoder` and `from_huggingface_tokenizer` classmethods both use a token-based length_function\n\nMy particular ask is to have it called as a class method so that each LLM can provide it's appropriate tokenizer since they are not all the same. Also not all setups and workflows allow for online access to the mentioned tokenizers"
+  },
+  {
+   "author": "participant6",
+   "created_at": "2023-11-07T15:36:10Z",
+   "body": "It would be great to be able to mix the benefit of `RecursiveCharacterTextSplitter` (i.e. splitting by useful things like sentences and paragraphs) with custom tokenisers (i.e. the knowledge that a chunk is making the best use of a particular embedding model or LLM).\r\n\r\nSee [AutoTokenizer](https://huggingface.co/docs/transformers/model_doc/auto#transformers.AutoTokenizer) as another class that retrieves that tokenising knowledge for a particular model."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-11-07T15:52:35Z",
+   "body": "It does work with any tokenizer. That's why there's a `length_function` kwarg, so you can define the length of a string in any way that you choose. `from_tiktoken_encoder` and `from_huggingface_tokenizer` are just helper classsmethods that define that function for you based on the particular type of tokenizer.\r\n\r\ne.g. with AutoTokenizer.....\r\n```\r\ntokenizer = AutoTokenizer.from_pretrained(\"some/model\")\r\nsplitter = RecursiveTextCharacterSplitter.from_huggingface_tokenizer(tokenizer)\r\n```\r\n\r\n\r\nor for a custom tokenizer\r\n```\r\ntokenizer = MyCustomTokenizer(...)\r\n\r\n\r\ndef custom_length_function(text):\r\n  return len(tokenizer.encode(text))\r\n\r\n\r\nsplitter = RecursiveTextCharacterSplitter(length_function=custom_length_function)\r\n```"
+  },
+  {
+   "author": "participant6",
+   "created_at": "2023-11-07T15:59:26Z",
+   "body": "Thanks a lot @participant2, it wasn't clear to me that it worked for the subclasses like RCTS so I'm very happy to have that confirmed."
+  },
+  {
+   "author": "participant6",
+   "created_at": "2023-11-08T14:17:19Z",
+   "body": "@participant2 Are there recommendations for settings we need to apply to the splitter or tokenizer when attempting to using `RecursiveTextCharacterSplitter` with a custom length function? The calculation isn't coming out correctly and I think it's because of the classification tokens that are included in each token calculation.\r\n\r\nFor example, see the example below which we would expect to divide the input text into probably 2 splits, given the `thenlper/gte-small` tokenizer splits by word most of the time:\r\n```python\r\nfrom langchain.text_splitter import RecursiveCharacterTextSplitter\r\nfrom langchain.schema import Document\r\nfrom transformers import AutoTokenizer\r\n\r\ntext = \"This is some text. It should be split into chunks that don't exceed a limit of 40. When I say 'chunks', they're not necessarily on word boundaries but are defined by the tokenizer of the embedding model itself.\"\r\nmy_tokenizer = AutoTokenizer.from_pretrained(\"thenlper/gte-small\")\r\ndisplay(\"Number of tokens in entire input string:\", len(my_tokenizer(text).tokens()))\r\n\r\nmy_splitter = RecursiveCharacterTextSplitter.from_huggingface_tokenizer(tokenizer=my_tokenizer, chunk_size=40, chunk_overlap=0)\r\nmy_documents = [Document(page_content=text)]\r\n\r\nmy_splits = my_splitter.split_documents(my_documents)\r\ndisplay(\"Splits:\", my_splits)\r\ndisplay(\"Split lengths in terms of tokens:\", list(map(lambda x: len(my_tokenizer(x.page_content).tokens()), my_splits)))\r\n```\r\n\r\n```plain\r\nNumber of tokens in entire input string: 53\r\n\r\nSplits:\r\n[Document(page_content='This is some text. It should be split'),\r\n Document(page_content=\"into chunks that don't exceed a limit of\"),\r\n Document(page_content=\"40. When I say 'chunks', they're not\"),\r\n Document(page_content='necessarily on word boundaries but are defined by'),\r\n Document(page_content='the tokenizer of the embedding model itself.')]\r\n\r\nSplit lengths in terms of tokens: [11, 12, 15, 10, 13]\r\n```\r\n\r\nThere are more splits, and they're way shorter than expected, and doing a bit of debugging I think that's because of the classification tokens that are used are also added in the calculations.\r\n\r\nFor example, the tokenizer takes the first token as 'this' but the full encoding of it is `['[CLS]', 'this', '[SEP]']`, which has a cost of 3 towards my budget of 40 chunks, then the next is `['[CLS]', 'is', '[SEP]']` and again that adds another three, whereas in reality that's not how the sentence as a whole would be embedded."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-11-08T15:55:47Z",
+   "body": "```\r\ndef length_function(text):\r\n  return len(tokenizer.encode(text, add_special_tokens=False))\r\n\r\nsplitter = RecursiveTextChararcterSplitter(length_function=length_function, ...)\r\n```\r\n\r\nshould do the trick"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-11-08T15:58:30Z",
+   "body": "Also worth noting, the recursive splitter does tend towards over-splitting. A split of exactly chunk length will be split again if it can be (not sure why that was chosen, but that's the way it is last I checked)"
+  },
+  {
+   "author": "participant6",
+   "created_at": "2023-11-08T16:04:02Z",
+   "body": "Ah, nice! \r\n\r\nLittle tweak, just need to count the list length:\r\n\r\n```python\r\ndef length_function(text):\r\n  return len(tokenizer.encode(text, add_special_tokens=False))\r\n```\r\n\r\nThank you!"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-11-08T16:06:02Z",
+   "body": "ah yeah forgot that part"
+  },
+  {
+   "author": "participant7",
+   "created_at": "2023-11-17T22:22:51Z",
+   "body": "@participant2 Thanks for implementing this. I tested it with a script and it seems to work fine. To do this, I checked out the PR #5589 and used the result locally with my script. I haven't measured the speedup, still it is quite noticeable. The example code I used is in this [GitHub repo](https://github.com/participant7/async_summarize/tree/batched-tokenizer)."
+  },
+  {
+   "author": "participant7",
+   "created_at": "2023-11-19T07:49:17Z",
+   "body": "@participant2 Sorry, I have to take that back. I repeated the steps with the method of defining tokenizer via kwargs in RecursiveCharacterTextSplitter and then measured my script  execution duration, which then needs to do a lot of tokenizations in parallel because it's using the text splitter.\r\n\r\nLooking at the results, the method of using the Huggingface AutoTokenizer.from_pretrained(), implementing a custom length function, which measures the fragments in units of tokens, and then defining that via the kwargs `length_function=lambda x: get_length_of_chunk_in_tokens(x)` in the RecursiveCharacterTextSplitter (as shown in posts above mine) gives me the faster results, compared to defining my RecursiveCharacterTextSplitter with the tokenizer keyword argument directly. I added the results of my measurements to the bottom of the GitHub page linked above."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-11-20T15:49:12Z",
+   "body": "@participant7  Did you mean https://github.com/langchain-ai/langchain/pull/5583?\r\n\r\nYour results are interesting. Are the different documents all the same? Doesn't quite make sense if they are, since I would expect the first and third to take roughly the same amount of time (as you noted on your repo, the default batched mode from my PR only works with a fast tokenizer).\r\n\r\n```\r\nstory-0904-analysis-jondurbin_airoboros-m-7b-3.1.2-0023.json:\r\n    \"use_fast\": false,\r\n    \"use_batched_tokenization\": false,\r\n    \"tokenizer.is_fast\": false,\r\n    \"summarize_duration_seconds\": 95.42\r\n\r\nstory-0904-analysis-jondurbin_airoboros-m-7b-3.1.2-0024.json:\r\n    \"use_fast\": true,\r\n    \"use_batched_tokenization\": false,\r\n    \"tokenizer.is_fast\": true,\r\n    \"summarize_duration_seconds\": 34.86\r\n\r\nstory-0904-analysis-jondurbin_airoboros-m-7b-3.1.2-0025.json:\r\n    \"use_fast\": false,\r\n    \"use_batched_tokenization\": true,\r\n    \"tokenizer.is_fast\": false,\r\n    \"summarize_duration_seconds\": 37.23\r\n\r\nstory-0904-analysis-jondurbin_airoboros-m-7b-3.1.2-0026.json:\r\n    \"use_fast\": true,\r\n    \"use_batched_tokenization\": true,\r\n    \"tokenizer.is_fast\": true,\r\n    \"summarize_duration_seconds\": 43.5\r\n```\r\n\r\nIf they are different documents, or different sections of the same document, then the durations are not necessarily directly comparable. The number of times it needs to tokenize and the amount of batching that can be done is heavily dependent on the splits that get created for a given section of text."
+  },
+  {
+   "author": "participant7",
+   "created_at": "2023-11-21T15:41:07Z",
+   "body": "@participant2 Hello, thanks for your reply.\r\n\r\nMaybe I am not using the text splitter correctly, yet, or have not been clear. Yeah, I've used the same text as input and ran that with different ways to instantiate the RecursiveCharacterTextSplitter.\r\n\r\nIn this experiment, I was trying to find the best way to do my tokenization tasks by running a script, which makes heavy use of the tokenization indirectly (because it is splitting a lot), and **the same input file** (pg84 is Frankenstein, story-0904 was another random text I chose because of its size in KB/tokens).\r\n\r\nThe fastest results I can get at the moment, is when I am supplying the RecursiveCharacterTextSplitter class with a custom length function, that is based on the HF fast tokenizer. In the length function I just use the tokenizer() and count the elements of the input_ids result. The number of coordinates in the result vector is roughly the size of chunk measured in units of tokens special to the model, which is the \"length\" the splitter is looking for. It is shown in this thread how it works, already.\r\n\r\nWhen using RecursiveCharacterTextSplitter with a tokenizer = AutoTokenizer.from_pretrained(model, use_fast=True) instead, my results weren't great, yet.\r\n\r\nCurrently, I see my script.py running as 1 process with ~18 threads. I guess that is my error. I need to run many tokenizers in parallel, to speed things up, and also make sure each of my RecursiveCharacterTextSplitter instances has 1 cpu for itself? Or how am I supposed to get the most out of this new \"batched\" feature? Has that been covered in a previous conversation or is there some example code, that makes use of the batching and parallelism?\r\n\r\nI'd like to understand this better, because the tokenization is so expensive computationally in my script, but it's just a free time project.\r\n\r\nThanks for any hints on the topic.\r\n\r\n\r\nRegards\r\n\r\n```python\r\ndef get_length_of_chunk_in_tokens(my_chunk: str, buck_slip: dict) -> int:\r\n    my_result = buck_slip[\"tokenizer\"](my_chunk)\r\n    input_ids = my_result.input_ids\r\n    length_of_chunk_in_tokens = len(input_ids)\r\n\r\n    return length_of_chunk_in_tokens\r\n\r\n\r\ndef get_tokenizer(buck_slip: dict) -> LlamaTokenizerFast:\r\n    tokenizer = AutoTokenizer.from_pretrained(\r\n        buck_slip[\"model_identifier\"], use_fast=buck_slip[\"use_fast\"]\r\n    )\r\n    ic(type(tokenizer))\r\n    ic(tokenizer.is_fast)\r\n    buck_slip[\"tokenizer.is_fast\"] = tokenizer.is_fast\r\n\r\n    encoding = tokenizer(\"My name is Sylvain and I work at Hugging Face in Brooklyn.\")\r\n    ic(type(encoding))\r\n    ic(encoding.is_fast)\r\n    buck_slip[\"encoding.is_fast\"] = encoding.is_fast\r\n\r\n    return tokenizer\r\n\r\n\r\ndef get_text_splitter(\r\n    buck_slip: dict, custom_chunk_size: int, custom_chunk_overlap: int\r\n) -> TextSplitter:\r\n    batched_tokenization = buck_slip[\"use_batched_tokenization\"]\r\n\r\n    if batched_tokenization is True:\r\n        text_splitter = RecursiveCharacterTextSplitter.from_huggingface_tokenizer(\r\n            tokenizer=buck_slip[\"tokenizer\"],\r\n            chunk_size=custom_chunk_size,\r\n            chunk_overlap=custom_chunk_overlap,\r\n        )\r\n    else:\r\n        text_splitter = RecursiveCharacterTextSplitter(\r\n            chunk_size=custom_chunk_size,\r\n            chunk_overlap=custom_chunk_overlap,\r\n            length_function=lambda x: get_length_of_chunk_in_tokens(x, buck_slip),\r\n        )\r\n    ic(type(text_splitter))\r\n\r\n    return text_splitter\r\n```\r\n\r\n"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-11-21T23:49:18Z",
+   "body": "This wasn't an official feature, just something I put together based on my own observations. And since it wasn't getting any traction from reviewers I moved on to other things.\r\n\r\nAs noted in this article https://huggingface.co/learn/nlp-course/chapter6/3 the fast tokenizer's batching really only starts to shine when it is getting large batches. So it's definitely possible that for some texts there's simply not enough chunks per batch to make it worthwhile. I'll revisit this PR at some point and see if I can improve upon the original idea."
+  },
+  {
+   "author": "participant8",
+   "created_at": "2023-12-05T08:57:31Z",
+   "body": "```\r\nimport pandas as pd\r\nfrom transformers import AutoTokenizer\r\nfrom langchain.text_splitter import RecursiveCharacterTextSplitter\r\n\r\ntokenizer = AutoTokenizer.from_pretrained('intfloat/multilingual-e5-large')\r\n\r\ndef length_function(text):\r\n    return len(tokenizer.encode(text, add_special_tokens=False))\r\n\r\ntext_splitter = RecursiveCharacterTextSplitter(\r\n    length_function=length_function,\r\n    chunk_size=250,\r\n    chunk_overlap=0\r\n)\r\n\r\n\r\n```\r\n\r\nmake error about \r\n\r\n```\r\nToken indices sequence length is longer than the specified maximum sequence length for this model (549 > 512). Running this sequence through the model will result in indexing errors\r\n---------------------------------------------------------------------------\r\nKeyError                                  Traceback (most recent call last)\r\n[/usr/local/lib/python3.10/dist-packages/pandas/core/indexes/base.py](https://localhost:8080/#) in get_loc(self, key, method, tolerance)\r\n   3801             try:\r\n-> 3802                 return self._engine.get_loc(casted_key)\r\n   3803             except KeyError as err:\r\n\r\n10 frames\r\npandas/_libs/hashtable_class_helper.pxi in pandas._libs.hashtable.PyObjectHashTable.get_item()\r\n\r\npandas/_libs/hashtable_class_helper.pxi in pandas._libs.hashtable.PyObjectHashTable.get_item()\r\n\r\nKeyError: 'para'\r\n\r\nThe above exception was the direct cause of the following exception:\r\n\r\nKeyError                                  Traceback (most recent call last)\r\nKeyError: 'para'\r\n\r\nDuring handling of the above exception, another exception occurred:\r\n\r\nKeyboardInterrupt                         Traceback (most recent call last)\r\n[/usr/local/lib/python3.10/dist-packages/pandas/core/indexes/base.py](https://localhost:8080/#) in __getitem__(self, key)\r\n   5320             return getitem(key)\r\n   5321 \r\n-> 5322         if isinstance(key, slice):\r\n   5323             # This case is separated from the conditional above to avoid\r\n   5324             # pessimization com.is_bool_indexer and ndim checks.\r\n\r\nKeyboardInterrupt:\r\n\r\n\r\n```\r\n\r\nwhy it makes  \"maximum sequence length for this model (549 > 512) \" error.\r\nI set chunk_size = 250"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-01-04T17:46:42Z",
+   "body": "That's just a warning from the huggingface tokenizer. It tokenizes the full text in order to determine where to split it, then splits down to chunk size. You can safely ignore that warning when the tokenizer is used in this way, it only matters when you are using the tokens as input to the associated model."
+  },
+  {
+   "author": "participant9",
+   "created_at": "2024-03-11T11:40:16Z",
+   "body": "I read this thread but I'm still confused, I have the following code:\r\n```\r\ntext_splitter = RecursiveCharacterTextSplitter.from_tiktoken_encoder( separators=[\"\\n\\n\", \"\\n\", \" \"], chunk_size=500, chunk_overlap=50)\r\ntexts = text_splitter.split_documents(documents)\r\n```\r\n\r\nBut it still splits on character # instead of tokens amount. So is this not a viable method? Am I missing some arguments? "
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-03-11T17:15:45Z",
+   "body": "Less familiar with tiktoken, but looking at the function def it appears to be doing the right thing (note the `_tiktoken_encoder` function that gets passed into `length_function` for the splitter). \r\n\r\nAre you using the right encoding_name? Default is `gpt2`, which may be closer to character split than longer tokens for your documents."
+  },
+  {
+   "author": "participant8",
+   "created_at": "2024-03-12T00:39:06Z",
+   "body": "@participant9 hi \r\nhttps://github.com/langchain-ai/langchain/pull/16435\r\n\r\nI noticed that the sentences were being cut differently than I intended, so I checked the code. It turned out that the implementation was adding to the total length (total) directly, instead of always measuring the token length. So, I modified that part to let the tokenizer calculate the length, and then I was able to get the desired results. Could you check if it’s the same issue and try modifying the code on your end? I’d appreciate it if you could also share the results after you’ve tried."
+  },
+  {
+   "author": "participant8",
+   "created_at": "2024-03-12T00:43:57Z",
+   "body": "I think \" _merge_splits\" function within langchain.text_splitter has problem"
+  },
+  {
+   "author": "participant9",
+   "created_at": "2024-03-13T09:26:29Z",
+   "body": "@participant2 \r\n\r\nYes, I tried multiple encodings. I tried other splitters as well but even the TokenTextSplitter does not give me good results. I might just write by own splitter.\r\n\r\n@participant8 \r\n\r\nCould you be a little more specific in the part you modified and post your own code? Do you mean the _length_function or the _merge_splits?"
+  },
+  {
+   "author": "participant8",
+   "created_at": "2024-03-14T02:45:16Z",
+   "body": "@participant9 \r\n\r\nLooking at the splitter, there's a process where it cuts sentences and checks their lengths before combining them. However, in the existing combination process (def _merge_splits), the length of the sentence is checked just once through the tokenizer and then added to the previous sentence. I believe that after merging the sentences, we should recalculate the length using the tokenizer again. This is because, in some languages, the token length can differ when words are combined compared to when they are separate.\r\n\r\nFor example, the current method is like this: total = len(word1) + len(word2), but I think it should be changed to total = len(word1 + word2), where len is the length measured by the tokenizer.\r\n\r\n\r\ndef _merge_splits\r\n- https://github.com/langchain-ai/langchain/blob/master/libs/text-splitters/langchain_text_splitters/base.py#L106\r\n\r\ntotal = 0\r\n        for d in splits:\r\n            _len = self._length_function(d)\r\n            if (\r\n                total + _len + (separator_len if len(current_doc) > 0 else 0)\r\n                > self._chunk_size\r\n            ):\r\n\r\n\r\nmy opinion \r\n- https://github.com/langchain-ai/langchain/pull/16435/files\r\n\r\n\r\ntotal = 0\r\n        for d in splits:\r\n            current_text = self._join_docs(current_doc, separator)\r\n            total = self._length_function(current_text)\r\n            _len = self._length_function(d)\r\n"
+  },
+  {
+   "author": "participant8",
+   "created_at": "2024-03-14T02:47:39Z",
+   "body": "@participant9 \r\n\r\nI'm not sure if this aligns exactly with the problem you're facing, but I encountered an issue where the sentences were being cut differently than the length calculated by the tokenizer. The sentences were being split shorter than when I calculated separately. When I changed it to recalculate the length on the combined sentences rather than merging the words separately, the issue was resolved.\r\n\r\nIf the problem you have is different, could you share an example sentence? I've become curious while responding."
+  },
+  {
+   "author": "participant9",
+   "created_at": "2024-03-15T12:38:13Z",
+   "body": "@participant8 \r\nThank you, I will try and implement some of your solutions and get back to you. The text I'm working with is actually German language, so this may be a factor in the problems I am having. \r\n"
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "langchain-ai/langchain",
+  "default_branch": "master",
+  "commit_sha": "243886be93d7d091bee8c0ebb1002182e57dc43c",
+  "as_of": "2023-05-14T18:16:05Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_langchain-ai_langchain_4678"
+}

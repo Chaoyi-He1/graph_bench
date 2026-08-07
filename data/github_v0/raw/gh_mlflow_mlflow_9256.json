@@ -1,0 +1,147 @@
+{
+ "repo": "mlflow/mlflow",
+ "number": 9256,
+ "url": "https://github.com/mlflow/mlflow/issues/9256",
+ "title": "[FR] Support for Huggingface PEFT model",
+ "state": "closed",
+ "labels": [
+  "enhancement",
+  "area/model-registry"
+ ],
+ "reporter": "reporter",
+ "created_at": "2023-08-09T05:55:39Z",
+ "closed_at": "2024-03-04T09:55:22Z",
+ "body": "### Willingness to contribute\r\n\r\nYes. I can contribute this feature independently. Any suggestions on where to look is welcome.\r\n\r\n### Proposal Summary\r\n\r\nThe HuggingFace PEFT library allows you to fine-tune an adapter that is then attached to a base model. Currently the only way to log a PEFT model is to save the whole base model which is 10s of GB in size. The adapter is only 20mb with a config file.\r\n\r\n\r\n### Motivation\r\n\r\n> #### What is the use case for this feature?\r\nUsing LoRa adapters are a cheap way to fine-tune models. By supporting the PEFT library you can minimise the storage required to save a model while also enabling the use of the new MLFlow Evaluate library which allows you to compare LLM prompts.\r\n\r\n> #### Why is this use case valuable to support for MLflow users in general?\r\nIt will allow the use of mlflow.evaluate for PEFT models which are a very cheap way to fine-tune models and helps with evaluating the prompt engineering between adapters.\r\n\r\n> #### Why is this use case valuable to support for your project(s) or organization?\r\nUnable to use the evaluate function. Experimentation with models leads to TB of storage if I do not save them as just artifacts.\r\n\r\n> #### Why is it currently difficult to achieve this use case?\r\nThe kernal often fails when trying to save the whole model as a pyfunc model.\r\n\r\n\r\n### Details\r\n\r\nhttps://huggingface.co/blog/peft\r\n\r\n### What component(s) does this bug affect?\r\n\r\n- [ ] `area/artifacts`: Artifact stores and artifact logging\r\n- [ ] `area/build`: Build and test infrastructure for MLflow\r\n- [ ] `area/docs`: MLflow documentation pages\r\n- [ ] `area/examples`: Example code\r\n- [ ] `area/gateway`: AI Gateway service, Gateway client APIs, third-party Gateway integrations\r\n- [X] `area/model-registry`: Model Registry service, APIs, and the fluent client calls for Model Registry\r\n- [ ] `area/models`: MLmodel format, model serialization/deserialization, flavors\r\n- [ ] `area/recipes`: Recipes, Recipe APIs, Recipe configs, Recipe Templates\r\n- [ ] `area/projects`: MLproject format, project running backends\r\n- [ ] `area/scoring`: MLflow Model server, model deployment tools, Spark UDFs\r\n- [ ] `area/server-infra`: MLflow Tracking server backend\r\n- [ ] `area/tracking`: Tracking Service, tracking client APIs, autologging\r\n\r\n### What interface(s) does this bug affect?\r\n\r\n- [ ] `area/uiux`: Front-end, user experience, plotting, JavaScript, JavaScript dev server\r\n- [ ] `area/docker`: Docker use across MLflow's components, such as MLflow Projects and MLflow Models\r\n- [ ] `area/sqlalchemy`: Use of SQLAlchemy in the Tracking Service or Model Registry\r\n- [ ] `area/windows`: Windows support\r\n\r\n### What language(s) does this bug affect?\r\n\r\n- [ ] `language/r`: R APIs and clients\r\n- [ ] `language/java`: Java APIs and clients\r\n- [ ] `language/new`: Proposals for new client languages\r\n\r\n### What integration(s) does this bug affect?\r\n\r\n- [ ] `integrations/azure`: Azure and Azure ML integrations\r\n- [ ] `integrations/sagemaker`: SageMaker integrations\r\n- [ ] `integrations/databricks`: Databricks integrations",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2023-08-10T01:51:49Z",
+   "body": "Hi @participant10 Could you provide design details ? "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-08-10T02:06:50Z",
+   "body": "@participant1 \r\n\r\nThe PEFT library saves 2 files:\r\n- A JSON config file that stores all the adapters settings, including which base model to pull down.\r\n```\r\n{\r\n  \"auto_mapping\": null,\r\n  \"base_model_name_or_path\": \"tiiuae/falcon-7b\",\r\n  \"bias\": \"none\",\r\n  \"fan_in_fan_out\": false,\r\n  \"inference_mode\": true,\r\n  \"init_lora_weights\": true,\r\n  \"layers_pattern\": null,\r\n  \"layers_to_transform\": null,\r\n  \"lora_alpha\": 32,\r\n  \"lora_dropout\": 0.05,\r\n  \"modules_to_save\": null,\r\n  \"peft_type\": \"LORA\",\r\n  \"r\": 16,\r\n  \"revision\": null,\r\n  \"target_modules\": [\r\n    \"query_key_value\"\r\n  ],\r\n  \"task_type\": \"CAUSAL_LM\"\r\n}\r\n```\r\n- A .bin file that contains the adapters weights (about 20mb).\r\n\r\nTo save a Peft file, all you need to do is call `model.save_pretrained(\"<model URI to save files into>\")`\r\n\r\nTo load a Peft model, you need to load the Peft json config. Download the base model, and then wrap it in a PeftModel:\r\n```\r\n# Need to figure out how to load model\r\nPEFT_MODEL_URI = \"trained-model\"\r\n\r\nconfig = PeftConfig.from_pretrained(PEFT_MODEL_URI)\r\nmodel = AutoModelForCausalLM.from_pretrained(\r\n    config.base_model_name_or_path,\r\n    return_dict=True,\r\n    quantization_config=bnb_config,\r\n    device_map=\"auto\",\r\n    trust_remote_code=True\r\n)\r\n\r\nmodel = PeftModel.from_pretrained(model, PEFT_MODEL_URI)\r\n```\r\n\r\nThe pyfunc I have to do this looks like this (unfortunately it saves the whole base model with it which is the issue and I can't even use it??):\r\n```\r\nclass PeftAdapterModel(mlflow.pyfunc.PythonModel):\r\n    \r\n    def __init__(self, model, artifacts_uri):\r\n        self.model = model\r\n    \r\n    def load_finetuned_model(self, peft_loc):\r\n        config = PeftConfig.from_pretrained(peft_loc)\r\n        model = AutoModelForCausalLM.from_pretrained(\r\n            config.base_model_name_or_path,\r\n            return_dict=True,\r\n            load_in_8bit=True, # Actually faster to train in 4 bit and inference in 8 bit\r\n            device_map=\"auto\",\r\n            trust_remote_code=True\r\n        )\r\n\r\n        peft_model = PeftModel.from_pretrained(model, peft_loc)  \r\n        return peft_model\r\n    \r\n    def load_context(self, context):\r\n        os.environ[\"CUDA_VISIBLE_DEVICES\"] = \"0\"\r\n        self.model = self.load_finetunes_model(adapter_uri)\r\n\r\n    def predict(self, context, model_input):\r\n        device = \"cuda:0\"\r\n        encoding = tokenizer(model_input, return_tensors=\"pt\").to(device)\r\n        \r\n        with torch.inference_mode():\r\n            outputs = self.model.generate(\r\n                input_ids=encoding.input_ids,\r\n                attention_mask=encoding.attention_mask,\r\n                generation_config=gen_config,\r\n                do_sample=False,\r\n                use_cache=False # Seems to throw a mass amount of errors, slows down generation\r\n            )\r\n            \r\n        return tokenizer.decode(outputs[0], skip_special_tokens=True)\r\n```\r\nThis is not exactly working just yet. I am still working out pyfunc models. It saves the whole model into a pickel file however I still need to then run the peft function which will download the base model again?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-08-10T02:31:22Z",
+   "body": "Is there a way that it just saves the python function and the adapter artifacts?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-08-10T02:47:24Z",
+   "body": "For logging PEFT model as a pyfunc model, you need to customize the saving logic to only save the \"PEFT config\" and the adapter weights. You can modify code here: https://github.com/mlflow/mlflow/blob/8e8d25b4298051e690c4f07ada5db3ce597ab352/mlflow/transformers.py#L209\r\n\r\n\r\nWhen loading PEFT pyfunc model , you need to customize the loading func logic, you can modify code here:\r\nhttps://github.com/mlflow/mlflow/blob/8e8d25b4298051e690c4f07ada5db3ce597ab352/mlflow/transformers.py#L1531 \r\nto load the Peft json config, Download the base model, and then wrap it in a PeftModel\r\n\r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-08-10T04:23:06Z",
+   "body": "Thank you! @participant1 "
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-08-15T05:25:30Z",
+   "body": "Hi @participant1, we are currently creating functions to save, log and load a PEFT adapter. When using the base `model.log()` function for our own `log_model()` function we need to specify a flavor module. Is there an existing Model Flavour that we can us, otherwise how can we create our own PEFT Model Flavor? Thanks!"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-08-15T06:35:11Z",
+   "body": "I think we can reuse transformers flavor, i.e., we can directly modify `mlflow.transformers.log_model` to make it support logging PEFT adapter. CC @participant11 "
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-08-17T00:17:14Z",
+   "body": "<!-- assign-maintainer -->\n@mlflow/mlflow-team Please assign a maintainer and start triaging this issue."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-08-17T01:12:46Z",
+   "body": "@participant1 The PEFT model does not inherit from the transformers, it's more of a wrapper. This causes issues as it cannot be added to a Huggingface pipeline and throws errors when running `mlflow.transformers.save_model / .log_model ` with the model stored in a dictionary.\r\n\r\nI think we need to make a new peft file? 🤔"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-08-17T04:38:22Z",
+   "body": "Hi @participant1, in this method `_validate_submitted_types ` in the transformers.py file:\r\nhttps://github.com/mlflow/mlflow/blob/master/mlflow/transformers.py#L1470\r\n\r\nWould it be possible for us to include `PeftModelForCausalLM` or `PeftModel` as a valid model type?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-08-17T12:32:07Z",
+   "body": "> https://github.com/mlflow/mlflow/blob/master/mlflow/transformers.py#L1470\r\n\r\nI think this makes sense, we can check the passed in model class type in `mlflow.transformers.save_model`"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-08-29T02:02:38Z",
+   "body": "Hi @participant1 , saving and logging models seem to work by adding Peft imports to the transformers.py file. However, load_model still does not allow for PeftModels because in the `_load_model()` function, calling `getattr` on the transformers library causes an AttributeError when passing in a PeftModelForCausalLM. This is because it is not a module in the this huggingface [transformers file](https://github.com/huggingface/transformers/blob/686c68f64c9d0181bd54d4d2e2446543c3eca1fa/src/transformers/__init__.py). Do you have any ideas to work around this?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-08-29T03:32:47Z",
+   "body": "> Hi @participant1 , saving and logging models seem to work by adding Peft imports to the transformers.py file. However, load_model still does not allow for PeftModels because in the `_load_model()` function, calling `getattr` on the transformers library causes an AttributeError when passing in a PeftModelForCausalLM. This is because it is not a module in the this huggingface [transformers file](https://github.com/huggingface/transformers/blob/686c68f64c9d0181bd54d4d2e2446543c3eca1fa/src/transformers/__init__.py). Do you have any ideas to work around this?\r\n\r\nWe can directly update `mlflow.transformers. _load_model` code for PEFT model case to make it work."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-09-05T05:59:53Z",
+   "body": "Hi @participant1 ,\r\n\r\nI have created a codespace in which I have made changes to  transformers.py to support the PeftModel. I plan to write pytests for the changes I have made to support PeftModels. However, I am running into trouble when getting set up to contribute. \r\nIn the codespace, when I run:\r\n```\r\n    ./dev/run-python-tests.sh\r\n```\r\nThere are multiple tests that fail even before I make changes to the transformers file.\r\nAnother problem which I am running into is that when I run:\r\n```\r\n    pytest tests/transformers\r\n```\r\nI still have in import error on the package `optuna` coming from the file test_transformers_autolog.py. This package does not seem to appear in any of the requirement files at the moment. \r\nIf I install the package within my mlflow-dev venv and run the pytests it also fails multiple tests, but it also fails to complete, terminating and citing the error: Low disk space (<5%).\r\nIs this a problem that others have ran into, and if so how do I resolve it to run the pytests? Thanks!\r\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-09-06T07:46:01Z",
+   "body": "@participant12 You don't need to install all dependencies, for transformers testing code, you can install these dependencies:\r\nhttps://github.com/mlflow/mlflow/blob/0206a2392aa9773a5c8d6eb865da67bfc1ace065/mlflow/ml-package-versions.yml#L489\r\nand https://github.com/mlflow/mlflow/blob/0206a2392aa9773a5c8d6eb865da67bfc1ace065/mlflow/ml-package-versions.yml#L513"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2023-10-17T05:02:02Z",
+   "body": "Hey, any progress on this fix? When is it going to be part of a release?"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2023-10-20T10:13:13Z",
+   "body": "I am also interested in this feature"
+  },
+  {
+   "author": "participant6",
+   "created_at": "2023-12-22T20:16:39Z",
+   "body": "Hi, any progress on this fix? Is anyone actively working on this?"
+  },
+  {
+   "author": "participant7",
+   "created_at": "2024-01-29T06:49:13Z",
+   "body": "Hi, is there any progress on this issue thus far? I'm really hoping this feature's released soon."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-01-29T09:53:03Z",
+   "body": "@participant10 Any progress on this task ? \r\n\r\nIf you are busy, would you mind reassigning this task to @participant12 or other volunteers ? :) \r\n\r\nThanks!"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-01-29T14:15:09Z",
+   "body": "Our team @participant8 is doing some work relating to this. I will assign this task to him to avoid complication. :) "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-01-29T23:16:26Z",
+   "body": "@participant1 We ended up leveraging PyFunc Models as we we couldn't find a pattern that was generic enough to cover most base models. Thank you for continuing the thread though."
+  },
+  {
+   "author": "participant8",
+   "created_at": "2024-03-04T09:55:22Z",
+   "body": "PEFT is now officially supported since the release of MLflow 2.11🤗\r\nPlease check [the documentation](https://mlflow.org/docs/latest/llms/transformers/guide/index.html#peft-models-in-mlflow-transformers-flavor) and [the new tutorial](https://mlflow.org/docs/latest/llms/transformers/tutorials/fine-tuning/transformers-peft.html) to try it out, and let us know if you have any idea to make this integration more useful!"
+  },
+  {
+   "author": "participant9",
+   "created_at": "2024-04-09T02:44:30Z",
+   "body": "#11643 wanted to create a link.\r\nIs there a way to reference `base_model_name_or_path` to a model_uri stored in databricks UC / workspace model registry?"
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "mlflow/mlflow",
+  "default_branch": "master",
+  "commit_sha": "aaef69e6ab503103357fc9da61b86be84ec9f6d2",
+  "as_of": "2023-08-09T05:55:39Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_mlflow_mlflow_9256"
+}

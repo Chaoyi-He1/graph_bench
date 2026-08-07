@@ -1,0 +1,120 @@
+{
+ "repo": "streamlit/streamlit",
+ "number": 13530,
+ "url": "https://github.com/streamlit/streamlit/issues/13530",
+ "title": "Streamlit triggers full load of packages that implement lazy loading. ",
+ "state": "closed",
+ "labels": [
+  "type:bug",
+  "area:performance",
+  "status:confirmed",
+  "priority:P3"
+ ],
+ "reporter": "reporter",
+ "created_at": "2026-01-07T13:12:44Z",
+ "closed_at": "2026-02-05T17:45:04Z",
+ "body": "### Checklist\n\n- [x] I have searched the [existing issues](https://github.com/streamlit/streamlit/issues) for similar issues.\n- [x] I added a very descriptive title to this issue.\n- [x] I have provided sufficient information below to help reproduce this issue.\n\n### Summary\n\nAfter importing a heavy module, AppTest.run() heavily balloons the memory usage. The first .run() is also very slow. See small script below.\n\n### Reproducible Code Example\n\n```Python\n# /// script\n# requires-python = \">=3.12\"\n# dependencies = [\n#     \"psutil==7.2.1\",\n#     \"pulumi-aws==7.15.0\",\n#     \"streamlit==1.52.2\",\n# ]\n# ///\n\nfrom contextlib import contextmanager\nfrom time import perf_counter\nfrom typing import Generator, Callable\nimport psutil\n\n\nfrom streamlit.testing.v1 import AppTest\n\n@participant4\ndef measure_time(description: str) -> Generator[Callable[[], float], None, None]:\n    \"\"\"Context manager for timing stuff.\"\"\"\n    start = perf_counter()\n    try:\n        yield lambda: perf_counter() - start\n    finally:\n        process = psutil.Process()\n        memory_bytes = process.memory_info().rss\n        print(f\"{description} time: {perf_counter() - start:.4f} secs memory: {memory_bytes / 1024 ** 2:.2f} MB\")\n\n\ndef streamlit_app():\n    import streamlit as st\n    st.title(\"Hello\")\n    st.write(\"World\")\n\n\nwith measure_time(\"CREATE_TEST_APP\"):\n    at = AppTest.from_function(streamlit_app, default_timeout=10)\n\nwith measure_time(\"IMPORT:\"):\n    import pulumi_aws\n    pass\n\n\n\n\ndef test_app():\n    # at = AppTest.from_file(\"app.py\", default_timeout=10)\n    with measure_time(\"RUN_APP:1\"):\n        at.run()\n    with measure_time(\"RUN_APP:2\"):\n        at.run()\n    assert not at.exception\n    assert at.title[0].value == \"Hello\"\n    print(\"END?\")\n\n\ntest_app()\n```\n\n### Steps To Reproduce\n\n```\nuv run script.py\n```\n\n### Expected Behavior\n\nI didn't expect the memory usage to grow so much. What might be the reason for that?\n\n### Current Behavior\n\nOrigianl code:\n```\n❯ uv run script.py\nReading inline script metadata from `script.py`\n2026-01-07 14:07:03.148 WARNING streamlit.runtime.scriptrunner_utils.script_run_context: Thread 'MainThread': missing ScriptRunContext! This warning can be ignored when running in bare mode.\nCREATE_TEST_APP time: 0.0005 secs memory: 38.25 MB\nIMPORT: time: 0.0726 secs memory: 57.12 MB\nRUN_APP:1 time: 2.9615 secs memory: 397.40 MB\nRUN_APP:2 time: 0.0021 secs memory: 397.40 MB\nEND?\n```\n\nCommenting `import pulumi_aws` has different output:\n```\n❯ uv run script.py\nReading inline script metadata from `script.py`\n2026-01-07 14:10:53.885 WARNING streamlit.runtime.scriptrunner_utils.script_run_context: Thread 'MainThread': missing ScriptRunContext! This warning can be ignored when running in bare mode.\nCREATE_TEST_APP time: 0.0005 secs memory: 38.25 MB\nIMPORT: time: 0.0000 secs memory: 38.25 MB\nRUN_APP:1 time: 0.0246 secs memory: 40.41 MB\nRUN_APP:2 time: 0.0028 secs memory: 40.41 MB\nEND?\n\n```\n\n### Is this a regression?\n\n- [ ] Yes, this used to work in a previous version.\n\n### Debug info\n\n- Operating System: Ubuntu 22.04\n\n\n### Additional Information\n\n_No response_",
+ "comments": [
+  {
+   "author": "github-actions[bot]",
+   "created_at": "2026-01-07T13:12:54Z",
+   "body": "**If this issue affects you, please react with a 👍 (thumbs up emoji) to the initial post.**\n\nYour feedback helps us prioritize which bugs to investigate and address first.\n\n![Views](https://<redacted-host>/badge/st-issue-13530)\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2026-01-07T13:54:35Z",
+   "body": "Thank you for the detailed report, @reporter! 🙏\n\nAfter investigating this, the memory increase is expected behavior rather than an AppTest bug. Here's what's happening:\n\nWhen `AppTest.run()` executes your script, Python's import system fully initializes `pulumi_aws`. The package uses lazy loading—the initial 19 MB import is just the top-level module, but during execution it loads hundreds of AWS service submodules and builds internal registries, growing to ~340 MB.\n\nThe fact that the second run shows no additional growth (staying at 397 MB) confirms this is one-time initialization, not a leak.\n\n### Workarounds\n\nIf the memory usage is problematic for your tests:\n\n1. **Mock the import** instead of using the real package:\n```python\nfrom unittest.mock import MagicMock\nimport sys\nsys.modules['pulumi_aws'] = MagicMock()\n```\n\n2. **Import inside functions** to control when loading happens:\n```python\ndef use_pulumi():\n    import pulumi_aws\n    # use it here\n```\n\n3. **Profile the actual allocation** to see what pulumi_aws is loading:\n```bash\npython -m memory_profiler your_test.py\n```\n\nThe ~340 MB footprint reflects pulumi_aws's size when fully loaded—AppTest runs real Python code with real memory consumption."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-01-07T14:04:52Z",
+   "body": "> When AppTest.run() executes your script, Python's import system fully initializes pulumi_aws.\n\nBut why do that? Isn't breaking lazy-importing considered a bug?"
+  },
+  {
+   "author": "github-actions[bot]",
+   "created_at": "2026-01-07T14:54:44Z",
+   "body": "**If this issue affects you, please react with a 👍 (thumbs up emoji) to the initial post.**\n\nYour feedback helps us prioritize which bugs to investigate and address first.\n\n![Views](https://<redacted-host>/badge/st-issue-13530)\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2026-01-07T14:54:49Z",
+   "body": "@reporter thanks for clarifying the expected behaviour. I'm doing a bit more analysis on how to triage this issue, but I have done some testing demonstrating that full importing is being triggered specifically by Streamlit. "
+  },
+  {
+   "author": "github-actions[bot]",
+   "created_at": "2026-01-07T14:58:04Z",
+   "body": "This issue reports that `AppTest.run()` causes significant memory growth (~340MB to 397MB) and slow execution on the first run when a heavy module (like `pulumi_aws`) is imported before the test runs. Subsequent runs are fast with no additional memory growth. Based on the maintainer's investigation, this appears to be related to `AppTest.run()` triggering full initialization of lazily-loaded modules rather than respecting their lazy-loading mechanisms. The user has raised a valid concern about whether breaking lazy-importing behavior should be considered a bug, and further analysis is being performed.\n\n**Root Cause Analysis:** The issue likely stems from how `AppTest` executes scripts via Python's `exec()` function in `script_runner.py`. When the script runs, it sets up a new `__main__` module (`sys.modules[\"__main__\"] = module`) and executes the code within that context. This execution may trigger Python's import machinery to fully resolve and initialize modules that were previously lazily loaded. The `pulumi_aws` package uses extensive lazy loading, but when accessed during `AppTest.run()`, it appears that Streamlit's execution environment causes the full module tree to be loaded, resulting in significant memory and time overhead on the first run.\n\n### Related Issues\n\n- **#6602** - [Long-lived session support (memory reduction)](https://github.com/streamlit/streamlit/issues/6602): Related to memory management concerns for apps running over extended periods, including potential memory leaks or accumulation.\n- **#12045** - [Memory leak when using `@participant5.saving.register_keras_serializable` with Streamlit](https://github.com/streamlit/streamlit/issues/12045): Another case where a specific library (Keras) causes memory issues due to how Streamlit handles or retains references to objects across reruns.\n- **#5798** - [Optimize Streamlit core static files and library imports to reduce app startup time](https://github.com/streamlit/streamlit/issues/5798): Related to import and startup time optimization, suggesting improvements to reduce initial load times.\n\n---\n*This is an automated triage comment. Please verify the suggested labels and related issues.*\n"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2026-01-17T00:16:33Z",
+   "body": "Hey @reporter ! I was able to trace the root cause. So pulumi-aws overrides the `__get_attribute__` which overrides basically every getattr on the module. We use some checks when detecting changes in modules. I have a solution that seems to work. You can try it out https://core-previews.s3-us-west-2.amazonaws.com/pr-13614/streamlit-1.53.0-py3-none-any.whl"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-01-19T08:17:59Z",
+   "body": "Hi @participant2 \n\nI'm getting the same results with your custom wheel file (tested the script in issue and my test framework). \n\nDid you test against my script in the issue body? I ran with these commands (assuming `script.py` filename):\n\n```\nuv remove \"streamlit\" --script=script.py\nuv add \"streamlit @ https://core-previews.s3-us-west-2.amazonaws.com/pr-13614/streamlit-1.53.0-py3-none-any.whl\" --script=script.py\n```\n\n```\n❯ uv run script.py\nReading inline script metadata from `script.py`\n2026-01-19 09:14:34.257 WARNING streamlit.runtime.scriptrunner_utils.script_run_context: Thread 'MainThread': missing ScriptRunContext! This warning can be ignored when running in bare mode.\nCREATE_TEST_APP time: 0.0005 secs memory: 38.25 MB\nIMPORT: time: 0.0777 secs memory: 56.44 MB\nRUN_APP:1 time: 2.9639 secs memory: 396.39 MB\nRUN_APP:2 time: 0.0020 secs memory: 396.39 MB\nEND?\n```"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2026-01-22T22:06:39Z",
+   "body": "Hey @reporter You can try the latest wheel here https://core-previews.s3-us-west-2.amazonaws.com/pr-13614/streamlit-1.53.0-py3-none-any.whl I was testing the import only but a streamlit command inadvertently triggered the lazy load.\n\nThe latest change should address your script, but I will admit this is a bit of a whack-a-mole situation, and I wouldn't be shocked if another scenario accidentally loads the package. We'll address it as we see them."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2026-01-22T22:08:42Z",
+   "body": "Here's my logs:\n\n```\nIMPORT: time: 0.2153 secs memory: 90.33 MB\nRUN_APP:1 time: 0.0011 secs memory: 90.39 MB\nRUN_APP:2 time: 0.0006 secs memory: 90.41 MB\nEND?\n```"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-01-23T15:31:03Z",
+   "body": "@participant3 hmm, it still runs the same for me.\n\n```\n✦ ❯ uv run script.py\nReading inline script metadata from `script.py`\n3.12.12 (main, Oct 10 2025, 08:52:57) [GCC 11.4.0]\nLinux-6.8.0-90-generic-x86_64-with-glibc2.35\n{'NAME': 'Ubuntu', 'ID': 'ubuntu', 'PRETTY_NAME': 'Ubuntu 22.04.5 LTS', 'VERSION_ID': '22.04', 'VERSION': '22.04.5 LTS (Jammy Jellyfish)', 'VERSION_CODENAME': 'jammy', 'ID_LIKE': 'debian', 'HOME_URL': 'https://www.ubuntu.com/', 'SUPPORT_URL': 'https://help.ubuntu.com/', 'BUG_REPORT_URL': 'https://<redacted-host>/ubuntu/', 'PRIVACY_POLICY_URL': 'https://www.ubuntu.com/legal/terms-and-policies/privacy-policy', 'UBUNTU_CODENAME': 'jammy'}\n2026-01-23 16:28:13.203 WARNING streamlit.runtime.scriptrunner_utils.script_run_context: Thread 'MainThread': missing ScriptRunContext! This warning can be ignored when running in bare mode.\nCREATE_TEST_APP time: 0.0006 secs memory: 38.00 MB\nIMPORT: time: 0.0741 secs memory: 56.62 MB\nRUN_APP:1 time: 2.9758 secs memory: 396.13 MB\nRUN_APP:2 time: 0.0017 secs memory: 396.13 MB\nEND?\n\n```\n\nHere is the script again just to be sure we're using the same file (set exact python version 3.12.12, your latest wheel file, prints python/os info):\n\n[script.py](https://github.com/user-attachments/files/24824047/script.py)"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2026-01-26T00:42:57Z",
+   "body": "@reporter I probably should have clarified. I modified to not include the apptesting aspect but just run the app.\n\nBut I still ran the script as you run it, and it produces reasonable memory with my changes. I am doing this on macos, but I'd imagine that wouldn't be the difference.\n\n```\n~/P/test-scripts $ uv run script.py                                                                        16:40:10\n3.12.12 (main, Jan 23 2026, 08:37:39) [Clang 17.0.0 (clang-1700.6.3.2)]\nmacOS-26.2-arm64-arm-64bit\n2026-01-25 16:40:12.128 WARNING streamlit.runtime.scriptrunner_utils.script_run_context: Thread 'MainThread': missing ScriptRunContext! This warning can be ignored when running in bare mode.\nCREATE_TEST_APP time: 0.0081 secs memory: 43.59 MB\nIMPORT: time: 1.5914 secs memory: 80.66 MB\nRUN_APP:1 time: 0.1163 secs memory: 82.00 MB\nRUN_APP:2 time: 0.0020 secs memory: 82.00 MB\nEND?\n~/P/test-scripts $ uv run script.py                                                                        16:40:14\n3.12.12 (main, Jan 23 2026, 08:37:39) [Clang 17.0.0 (clang-1700.6.3.2)]\nmacOS-26.2-arm64-arm-64bit\n2026-01-25 16:40:18.625 WARNING streamlit.runtime.scriptrunner_utils.script_run_context: Thread 'MainThread': missing ScriptRunContext! This warning can be ignored when running in bare mode.\nCREATE_TEST_APP time: 0.0024 secs memory: 43.61 MB\nIMPORT: time: 0.1073 secs memory: 62.16 MB\nRUN_APP:1 time: 0.0116 secs memory: 63.48 MB\nRUN_APP:2 time: 0.0019 secs memory: 63.55 MB\nEND?\n~/P/test-scripts $ uv run script.py                                                                        16:40:18\n3.12.12 (main, Jan 23 2026, 08:37:39) [Clang 17.0.0 (clang-1700.6.3.2)]\nmacOS-26.2-arm64-arm-64bit\n2026-01-25 16:40:22.820 WARNING streamlit.runtime.scriptrunner_utils.script_run_context: Thread 'MainThread': missing ScriptRunContext! This warning can be ignored when running in bare mode.\nCREATE_TEST_APP time: 0.0021 secs memory: 43.70 MB\nIMPORT: time: 0.1092 secs memory: 62.17 MB\nRUN_APP:1 time: 0.0118 secs memory: 63.52 MB\nRUN_APP:2 time: 0.0018 secs memory: 63.56 MB\nEND?\n```\n\nPerhaps you want to force re-install?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-01-26T09:38:00Z",
+   "body": "> Perhaps you want to force re-install?\n\nWeird, after `uv clean` it worked. Maybe the metadata was the same and uv was re-using the cache of old version?\n\nThis fix doesn't work in my complex app though, I need to build a new reproducible script.\n\n\n```\n❯ uv run script.py\nReading inline script metadata from `script.py`\n3.12.12 (main, Oct 10 2025, 08:52:57) [GCC 11.4.0]\nLinux-6.8.0-90-generic-x86_64-with-glibc2.35\n{'NAME': 'Ubuntu', 'ID': 'ubuntu', 'PRETTY_NAME': 'Ubuntu 22.04.5 LTS', 'VERSION_ID': '22.04', 'VERSION': '22.04.5 LTS (Jammy Jellyfish)', 'VERSION_CODENAME': 'jammy', 'ID_LIKE': 'debian', 'HOME_URL': 'https://www.ubuntu.com/', 'SUPPORT_URL': 'https://help.ubuntu.com/', 'BUG_REPORT_URL': 'https://<redacted-host>/ubuntu/', 'PRIVACY_POLICY_URL': 'https://www.ubuntu.com/legal/terms-and-policies/privacy-policy', 'UBUNTU_CODENAME': 'jammy'}\n2026-01-26 09:24:13.655 WARNING streamlit.runtime.scriptrunner_utils.script_run_context: Thread 'MainThread': missing ScriptRunContext! This warning can be ignored when running in bare mode.\nCREATE_TEST_APP time: 0.0005 secs memory: 39.25 MB\nIMPORT: time: 0.0743 secs memory: 57.37 MB\nRUN_APP:1 time: 0.0087 secs memory: 58.37 MB\nRUN_APP:2 time: 0.0028 secs memory: 58.37 MB\nEND?\n```"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2026-01-26T18:28:22Z",
+   "body": "Hey @reporter Glad that it worked. I can work to merge the changes.\n\nAs for new reproducible. Perhaps what would be easier is for you to do some memory analysis with your setup. We use `memray`, so you can install `memray` then run:\n\n```\nmemray run -o output.bin -m uv run script.py\nmemray flamegraph output.bin\nopen memray-flamegraph-output.html\n```\n\nYou should see where the import call is and find the call from Streamlit that triggered it. You can share with me, and I can try to fix whack-a-mole style.\n\nArguably I would also file an issue on pulumi here because most often we are retrieving values that should not require the lazy load and perhaps they should be a little more conservative here."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-02-03T08:18:01Z",
+   "body": "I generated this flamegraph but I don't get it where/why it happens (it's 2 test cases running in pytest)\n\n[memray-flamegraph-output.html](https://github.com/user-attachments/files/25039696/memray-flamegraph-output.html)"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2026-02-03T17:47:34Z",
+   "body": "Ah. I looked at this. This is tied to our custom components code looking at the module and potentially touching one of those `__file__` descriptors. I can get a change in here. I also created a PR on Pulumi to not load the world for these checks. Let me see if I can advance that.\n\n<img width=\"605\" height=\"156\" alt=\"image\" src=\"https://github.com/user-attachments/assets/7e63d2d1-1142-428a-9b1d-2c5e026af60d\" />\n"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2026-02-05T17:45:05Z",
+   "body": "Good news @reporter I got the change merged on Pulumi side that will ignore loading for these module level checks we do. I believe this should resolve all your issues. Not sure about their release cycle, but keep track of that and try it out.\n\nGoing to close this issue as resolved in the meantime. If you still see issues, please reach out again."
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "streamlit/streamlit",
+  "default_branch": "develop",
+  "commit_sha": "f4671dc70e0262ab1deca2c5119d88ce0c41b077",
+  "as_of": "2026-01-07T13:12:44Z",
+  "method": "github_commits_until"
+ },
+ "images": [
+  {
+   "where": "c15",
+   "source_url": "https://github.com/user-attachments/assets/7e63d2d1-1142-428a-9b1d-2c5e026af60d",
+   "file": "gh_streamlit_streamlit_13530_img0.png"
+  }
+ ],
+ "slug": "gh_streamlit_streamlit_13530"
+}

@@ -1,6 +1,6 @@
 # Review: gh_curl_curl_12327
 
-**libcurl.dll memory leak**
+**libcurl.dll memory growth during repeated multithreaded downloads on Windows**
 
 - source: https://github.com/curl/curl/issues/12327
 - kind: LLM draft (needs review)
@@ -9,18 +9,18 @@
 
 ```mermaid
 flowchart LR
-    N0["<b>N0 repeated-download memory growth reported</b><br/><small>info: 4</small>"]
-    N1["<b>N1 simplified reproduction measured</b><br/><small>info: 7</small>"]
-    N2["<b>N2 growth pattern and version comparison collected</b><br/><small>info: 10</small>"]
-    N3["<b>N3 static OpenSSL build isolates the condition</b><br/><small>info: 13</small>"]
-    N_terminal["<b>terminal memory growth resolved</b><br/><small>info: 15</small>"]
-    N0 -.->|"❓ simplified_single_transfer_thread_reproducer, memory_1600kb_to_6700kb_after_1000_downloads"| N1
+    N0["<b>N0 repeated-download memory growth reported</b><br/><small>info: 5</small>"]
+    N1["<b>N1 memory observation and DLL lifecycle clarified</b><br/><small>info: 8</small>"]
+    N2["<b>N2 simplified reproducer scales with completed transfers</b><br/><small>info: 12</small>"]
+    N3["<b>N3 growth isolated to the static OpenSSL build</b><br/><small>info: 15</small>"]
+    N_terminal["<b>terminal per-thread OpenSSL cleanup verified</b><br/><small>info: 18</small>"]
+    N0 -.->|"❓ task_manager_memory_grows_after_each_download, libcurl_dll_loaded_once"| N1
     linkStyle 0 stroke:#3b82f6,stroke-width:2px
-    N1 -.->|"❓ memory_1500kb_6600kb_12000kb_at_0_1000_2000_laps, curl_versions_745_769_stable_782_84_grow"| N2
+    N1 -.->|"❓ single_thread_easy_cleanup_1000_downloads_grows_1_6_to_6_7_mb, commenting_out_easy_perform_avoids_growth, memory_reaches_12_mb_after_2000_downloads, curlopt_buffersize_5000_does_not_change_growth"| N2
     linkStyle 1 stroke:#3b82f6,stroke-width:2px
-    N2 -.->|"❓ self_built_dll_with_static_openssl_grows, same_dll_build_without_ssl_stays_stable"| N3
+    N2 -.->|"❓ version_matrix_745_769_stable_782_840_grow, static_ssl_build_grows_build_without_ssl_stays_stable"| N3
     linkStyle 2 stroke:#3b82f6,stroke-width:2px
-    N3 ==>|"⚡ Clean up OpenSSL's per-thread state whenever each short-lived download thread exits when OpenSSL is statically linked into the libcurl DLL, then verify that repeated transfers no longer increase memory."| N_terminal
+    N3 ==>|"⚡ Clean up OpenSSL's per-thread state when each short-lived download thread exits. For a Windows libcurl DLL containing statically linked OpenSSL, call OPENSSL_thread_stop through an appropriate wrapper before the worker returns, or perform the equivalent cleanup from the DLL thread-detach path."| N_terminal
     linkStyle 3 stroke:#f97316,stroke-width:2px
     class N0 start
     class N1 normal
@@ -34,34 +34,35 @@ flowchart LR
 
 ## Opening (body)
 
-> I have noticed what looks like a long-standing, version-independent memory leak in libcurl.dll on Windows. My Visual Studio C test project downloads a file repeatedly in an endless loop, using 64 threads to make the problem appear faster. After 15–30 minutes, Task Manager shows memory consumption increasing many times over. I am using curl 8.4.0. If I am failing to release curl resources in time, please tell me what I should change.
+> I see memory consumption continually increase while using libcurl.dll 8.4.0 on Windows. My Visual Studio test repeatedly downloads a file in an endless loop, splitting it across 64 threads; after 15–30 minutes, memory usage grows many times over. I linked a test project. If I am failing to release curl resources promptly, I would like to know the correct cleanup.
 
 ## Satisfaction conditions
 
-1. Must identify the root cause as OpenSSL per-thread resources not being released when OpenSSL is statically linked into the Windows libcurl DLL and short-lived application threads repeatedly perform HTTPS transfers.
-2. The diagnosis must be grounded in the controlled evidence: memory grows with repeated transfers, the static-OpenSSL build grows, and the otherwise similar no-SSL build remains stable.
-3. Must recommend calling OPENSSL_thread_stop for every affected worker thread before it terminates, either through an application-accessible wrapper or suitable DLL thread-detach handling.
-4. Must not treat curl_easy_cleanup, curl_global_cleanup, FreeLibrary, or a smaller CURLOPT_BUFFERSIZE as sufficient substitutes for the required per-thread OpenSSL cleanup.
-5. Must ask the reporter to rerun the repeated-download test with the rebuilt DLL and only treat the issue as resolved after memory remains stable.
+1. Must identify the accepted root cause: the affected libcurl DLL contains statically linked OpenSSL, whose per-thread state is not being released when the application's short-lived download threads terminate.
+2. The diagnosis must be grounded in the collected evidence: growth scales with completed transfers despite curl_easy_cleanup, disappears when curl_easy_perform is skipped, and occurs in the static-SSL build but not the otherwise similar build without SSL.
+3. Must recommend per-thread OpenSSL cleanup using OPENSSL_thread_stop before each worker exits, or the equivalent Windows DLL thread-detach handling; ordinary curl_easy_cleanup is not sufficient for this thread-local state.
+4. Must not describe this as a version-independent generic libcurl leak: the reporter's own version and build matrix contradicts that claim.
+5. Must not recommend changing CURLOPT_BUFFERSIZE as the fix, since setting it to 5000 did not alter the observed growth.
+6. Must have the reporter rerun the repeated-download loop and observe stable memory before declaring the issue resolved.
 
 ## Edges
 
 | edge | type | gates / info | payload |
 |---|---|---|---|
-| `e1_N0__N1` | clarification_only | asks: simplified_single_transfer_thread_reproducer, memory_1600kb_to_6700kb_after_1000_downloads | I made a smaller test. It creates one Windows thread, calls curl_easy_init, downloads a 1.3 MB file with curl_ / The initial memory is about 1.600 MB. After 1,000 downloads it is about 6.700 MB, so the growth is about 5 MB. |
-| `e2_N1__N2` | clarification_only | asks: memory_1500kb_6600kb_12000kb_at_0_1000_2000_laps, curl_versions_745_769_stable_782_84_grow | Start memory is 1,500 KB, after 1,000 laps it is 6,600 KB, and after 2,000 laps it is 12,000 KB. / With 8.4 I see the memory growth. With 7.45 and 7.69 I do not see it. With 7.82 I see it. |
-| `e3_N2__N3` | clarification_only | asks: self_built_dll_with_static_openssl_grows, same_dll_build_without_ssl_stays_stable | I built the curl DLL myself. This build shows the memory growth: nmake.exe /f Makefile.vc mode=dll VC=14 ENABL / The similar command without WITH_SSL does not show the memory growth: nmake.exe /f Makefile.vc mode=dll VC=14  |
-| `e4_N3__N_terminal` | solution_only | req_info: windows_libcurl_dll_memory_grows_during_repeated_downloads, memory_1500kb_6600kb_12000kb_at_0_1000_2000_laps, curl_versions_745_769_stable_782_84_grow, self_built_dll_with_static_openssl_grows, same_dll_build_without_ssl_stays_stable<br>elements: identifies_static_openssl_per_thread_state_as_the_source, calls_OPENSSL_thread_stop_for_each_exiting_worker_thread, distinguishes_thread_cleanup_from_easy_handle_or_global_cleanup, asks_user_to_verify_with_repeated_downloads_after_rebuilding | Clean up OpenSSL's per-thread state whenever each short-lived download thread exits when OpenSSL is statically linked into the libcurl DLL, then verify that repeated transfers no longer increase memory. |
+| `e1_N0__N1` | clarification_only | asks: task_manager_memory_grows_after_each_download, libcurl_dll_loaded_once | I cannot identify the allocations inside the external DLL with the Visual Studio debugger. I am watching Windo / I load libcurl.dll once at program startup. The loop repeatedly creates downloads; it is not repeatedly loadin |
+| `e2_N1__N2` | clarification_only | asks: single_thread_easy_cleanup_1000_downloads_grows_1_6_to_6_7_mb, commenting_out_easy_perform_avoids_growth, memory_reaches_12_mb_after_2000_downloads, curlopt_buffersize_5000_does_not_change_growth | I made a one-thread test that downloads a 1.3 MB file repeatedly. It calls curl_easy_init, curl_easy_perform a / If I comment out the curl_easy_perform line, I do not see the memory increase. / It does not plateau in that test. I start around 1.5 MB, reach about 6.6 MB after 1000 laps, and about 12 MB a / I set CURLOPT_BUFFERSIZE to 5000. It did not affect the result in any way. |
+| `e3_N2__N3` | clarification_only | asks: version_matrix_745_769_stable_782_840_grow, static_ssl_build_grows_build_without_ssl_stays_stable | With my DLLs, 8.4 and 7.82 show the memory increase. I do not see it with 7.45 or 7.69. / I built the DLL myself. With `WITH_ZLIB=static WITH_NGHTTP2=static WITH_SSL=static`, I see the memory increase |
+| `e4_N3__N_terminal` | solution_only | req_info: reported_memory_growth_after_repeated_dll_downloads, curl_840_on_windows, endless_64_thread_ranged_download_loop, single_thread_easy_cleanup_1000_downloads_grows_1_6_to_6_7_mb, commenting_out_easy_perform_avoids_growth, memory_reaches_12_mb_after_2000_downloads, version_matrix_745_769_stable_782_840_grow, static_ssl_build_grows_build_without_ssl_stays_stable<br>elements: identifies_statically_linked_openssl_thread_state_as_the_source, calls_openssl_thread_stop_for_each_terminating_worker_or_on_dll_thread_detach, distinguishes_per_thread_tls_cleanup_from_curl_easy_cleanup, asks_user_to_verify_with_the_repeated_download_loop | Clean up OpenSSL's per-thread state when each short-lived download thread exits. For a Windows libcurl DLL containing statically linked OpenSSL, call OPENSSL_thread_stop through an appropriate wrapper before the worker returns, or perform the equivalent cleanup from the DLL thread-detach path. |
 
 ## Nodes
 
 | node | terminal | volunteered | images | symptoms |
 |---|---|---|---|---|
-| `N0` |  | 0 | 0 | While my Windows program repeatedly downloads a file through libcurl.dll, Task Manager shows its memory consumption increasing many times ov |
-| `N1` |  | 1 | 0 | In my simplified test, memory rises from about 1.6 MB to 6.7 MB over 1,000 downloads. If I comment out curl_easy_perform, the gradual memory |
-| `N2` |  | 1 | 0 | Memory is about 1.5 MB initially, 6.6 MB after 1,000 downloads, and 12 MB after 2,000 downloads. The same test stays stable with curl 7.45 a |
-| `N3` |  | 1 | 0 | My DLL built with static zlib, nghttp2, and OpenSSL shows the memory growth. The otherwise similar DLL built without SSL support does not sh |
-| `N_terminal` | ✓ | 1 | 0 | After rebuilding the DLL with a wrapper that calls OPENSSL_thread_stop for the worker threads, I no longer see the memory growth. |
+| `N0` |  | 1 | 0 | While my program repeatedly downloads a file through libcurl.dll using 64 threads, Windows shows its memory consumption growing many times o |
+| `N1` |  | 1 | 0 | I see the process memory increase after each file download in Windows Task Manager, and it does not return to its starting level. My write c |
+| `N2` |  | 0 | 0 | In the simplified one-thread loop, memory rises from about 1.6 MB to 6.7 MB after 1000 downloads and to about 12 MB after 2000 downloads, ev |
+| `N3` |  | 1 | 0 | The repeated-download memory increase occurs with my 7.82 and 8.4 DLLs, but not with 7.45 or 7.69. A DLL I build with static SSL support sho |
+| `N_terminal` | ✓ | 1 | 0 | After rebuilding with a wrapper that performs the TLS cleanup for each terminating worker thread, I no longer see memory continually increas |
 
 ## Machine review (audit pass, adversarially verified)
 

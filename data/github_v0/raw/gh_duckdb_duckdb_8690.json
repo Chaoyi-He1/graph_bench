@@ -1,0 +1,196 @@
+{
+ "repo": "duckdb/duckdb",
+ "number": 8690,
+ "url": "https://github.com/duckdb/duckdb/issues/8690",
+ "title": "Too many open files error using temp directory on large CSV",
+ "state": "closed",
+ "labels": [
+  "needs more info"
+ ],
+ "reporter": "reporter",
+ "created_at": "2023-08-25T23:47:18Z",
+ "closed_at": "2023-11-13T09:52:17Z",
+ "body": "### What happens?\n\nI have a Mac M1 Max with 32 GB of RAM.  \r\nI wrote the following code that tries to do the following for each of 93 CSV files:\r\n\r\n1. create a temp table with the correct column names and types;\r\n2. copy a single CSV into that temp table, using the correct options; and\r\n3. copy the loaded table back out to a corresponding Parquet file.\r\n\r\nThe CSV files have the following characteristics:\r\n\r\n- 93 files totalling 750 GB uncompressed;\r\n- the smallest file is 125 MB; the largest file is 40 GB; and\r\n- about 20 files are larger than 10 GB.\r\n\r\nFor each CSV file, I run the following SQL code using the DuckDB CLI.\r\n\r\n```sql\r\nPRAGMA memory_limit = '24GB';\r\nPRAGMA temp_directory = 'data/temp/';\r\n  \r\nCREATE TEMP TABLE t1 (reference_pool_id VARCHAR, loan_identifier VARCHAR, monthly_reporting_period DATE, <more columns>);\r\nCOPY t1 FROM 'data/stage/2000Q1.csv' (\r\n  HEADER FALSE, DATEFORMAT '%m%Y', DELIM '|', SAMPLE_SIZE 500000);\r\nCOPY t1 TO 'data/parquet/2000Q1.parquet' (FORMAT PARQUET);\r\nDROP table t1;\r\n```\r\n\r\nI’m able to run this code successfully for 91 of the 93 CSV files.\r\nHowever, the two largest files - 33 GB and 39 GB - I get the following type of error:\r\n\r\n> Error: near line 83: IO Error: Cannot open file \"data/temp//duckdb_temp_storage-252.tmp\": Too many open files\r\n\r\nSo, it appears that loading the largest CSVs via the COPY statement opens up too many temp files.\r\n\r\nI also noticed some other interesting behavior with the temp files.\r\nDuring the run, the temp directory grows to about 300 GB and 252 files, then duckdb crashes.\r\nI don’t have any idea why a 30GB CSV file generates over 300GB of temp files and a crash.\r\n\r\n\n\n### To Reproduce\n\nUnfortunately, the data is proprietary.  I don't have time to figure out how to simulate a similar sized CSV using faker or the like; my apologies.  I just thought that I should report the \"too many temp files\" error, since most current use cases may not use such large files.  Thanks for all the hard work on DuckDB!\n\n### OS:\n\nmacOS Ventura 13.4.1\n\n### DuckDB Version:\n\n0.8.1\n\n### DuckDB Client:\n\nDuckDB CLI\n\n### Full Name:\n\nKyle Lundstedt\n\n### Affiliation:\n\nIndustryVault\n\n### Have you tried this on the latest `main` branch?\n\nI have tested with a main build\n\n### Have you tried the steps to reproduce? Do they include all relevant data and configuration? Does the issue you report still appear there?\n\n- [X] Yes, I have",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2023-08-26T06:54:05Z",
+   "body": "Did you try the `parallel=false` option of the [`read_csv_auto` function](https://duckdb.org/docs/data/csv/overview.html#read_csv_auto-function)?\r\n\r\nThere's a new (thoroughly) reworked CSV reader coming in a few weeks (as part of 0.9.0), so you may want to also try that once it comes out."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-08-26T07:09:23Z",
+   "body": "try `set threads=1` and `copy (select column from 'a.csv') to 'a.parquet'`\r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-08-29T00:55:41Z",
+   "body": "Thanks for the quick replies @participant1 and @participant2!\r\n\r\nHere's what I've found.\r\n\r\nSetting `parallel = false` in the `read_csv_auto` function does allow me to load the two largest CSVs via the COPY statement.  However, if I try to expand the copy statement to multiple files (e.g., `COPY t1 FROM 'data/stage/2*.csv'`, then I still get the \"too many temp files\" error.\r\n\r\nIf I add `set threads = 1;`, then my code works for the largest CSVs as well.  However, when expanding it to multiple files, the DuckDB CLI just crashes.  Adding `parallel = false` does not seem to make a difference here.\r\n\r\nWith threads still = 1, if I go straight from CSV to parquet (e.g., `copy (select column from 'a.csv') to 'a.parquet'`), I'm able to copy ALL the CSVs into a single parquet table.  Nice!\r\n\r\nHowever, it does take about 4 hours on my M1 Max laptop due to single threading.  Also, I could not get the COLUMNS struct that I tried to add (e.g., COLUMNS = {'reference_pool_id': 'VARCHAR', 'loan_identifier': 'VARCHAR', ...}`) to work for the CSV reader.  Thus my big parquet table didn't have the desired column names and types.\r\n\r\nI appreciate the help from both of you, and think that I can muddy along with `set threads = 1` for now.  I'm looking forward to DuckDB 0.9 and the reworked CSV reader.\r\n\r\nSo appreciative of this great piece of software!"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-08-29T02:53:36Z",
+   "body": "@reporter \r\nyou may set the datatype and column name by\r\n`select column0::VARCHAR reference_pool_id, column1::VARCHAR loan_identifier from 'a.csv'`"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-08-29T04:02:44Z",
+   "body": "```sql\r\nD copy (select '1' reference_pool_id, 'a' loan_identifier ) to 'ref.csv';\r\nD select * from 'ref.csv';\r\n┌─────────┬─────────┐\r\n│ column0 │ column1 │\r\n│  int64  │ varchar │\r\n├─────────┼─────────┤\r\n│       1 │ a       │\r\n└─────────┴─────────┘\r\nD .system type ref.csv\r\n1,a\r\nD copy(select column0::VARCHAR reference_pool_id, column1::VARCHAR loan_identifier from 'ref.csv') to 'ref.parquet';\r\nD select * from 'ref.parquet';\r\n┌───────────────────┬─────────────────┐\r\n│ reference_pool_id │ loan_identifier │\r\n│      varchar      │     varchar     │\r\n├───────────────────┼─────────────────┤\r\n│ 1                 │ a               │\r\n└───────────────────┴─────────────────┘\r\n```"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-08-29T15:41:02Z",
+   "body": "Gave that approach a try.\r\nI had to put the column names in single quotes since one was \"index\" (a reserved word, I think).  With that fixed, I then get\r\n\r\n`Conversion Error: date field value out of range: \"032009\", expected format is (YYYY-MM-DD)`\r\n\r\nSo, it appears that casting as date (e.g., `SELECT ..., column2::DATE reporting_date`) happens before the DATEFORMAT option in the read_csv_function is applied.  Does that seem right?"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-08-29T16:11:42Z",
+   "body": "> I had to put the column names in single quotes since one was \"index\" (a reserved word, I think).\n\nSingle quotes would create a string literal, double quotes would make a column reference"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-08-29T20:48:04Z",
+   "body": "Thanks for the fix, @participant3.\r\n\r\nI now run the following code with index in double quotes.\r\n\r\n```sql\r\nSET threads = 1;\r\nPRAGMA memory_limit = '24GB';\r\nPRAGMA temp_directory = 'data/temp/';\r\nCOPY (\r\n  SELECT column000::VARCHAR reference_pool_id, column001::VARCHAR loan_identifier, column002::DATE monthly_reporting_period, ... column093::VARCHAR \"index\", ...\r\n  FROM read_csv_auto('data/stage/*.csv',\r\n\t  HEADER = FALSE, DATEFORMAT = '%m%Y', DELIM = '|', SAMPLE_SIZE = 500000)\r\n) TO 'data/public/performance.parquet' (FORMAT PARQUET);  \r\n```\r\n\r\nIf I just try to read the first four files (e.g., `read_csv_auto('data/stage/2000*.csv' ...`), the code runs fine.  Nice!\r\n\r\nHowever, when I try to expand the glob to read all of the files (e.g., `read_csv_auto('data/stage/*.csv' ...`), I get a version of the \"Conversion error\" above.\r\n\r\n`\"Conversion Error: date field value out of range: \"072021\", expected format is (YYYY-MM-DD)\"`\r\n\r\nI don't understand why the DATEFORMAT option somehow stops working when applied to all 93 files via globbing."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-09-05T08:01:22Z",
+   "body": "@reporter I accidentally stumbled upon this same issue. My data sets is publicly available (it's produced by the [LDBC Datagen](https://github.com/ldbc/ldbc_snb_datagen_spark/)). I passed this along to the team.\r\n\r\nRegarding the date problem, this seems to be a separate issue. Did you find any workarounds since last week?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-09-07T07:25:01Z",
+   "body": "Hi @participant1!  I haven't found a workaround. Given DuckdB 0.9 is two weeks away, and has a new CSV reader, I thought that I would try again with 0.9. "
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-09-07T07:37:05Z",
+   "body": "I believe PR #8812 has fixed this issue. It will be indeed included in 0.9.0. The nightly build is broken at the moment but you may build you own DuckDB CLI client if you wish, see https://duckdb.org/dev/building#macos."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-09-28T16:47:13Z",
+   "body": "Good news and bad news.\r\n\r\nI downloaded v0.9.0, hot off the presses, and tried re-running the query that worked in v0.8.1 on the smaller data set with THREADS = 1.\r\n\r\nThe good news is that, using 0.9.0, this query still works when run on four files and DOES NOT need THREADS = 1.  Hooray!\r\n\r\n```sql\r\nPRAGMA memory_limit = '24GB';\r\nPRAGMA temp_directory = 'data/temp/';\r\nCOPY (\r\n  SELECT column000::VARCHAR reference_pool_id, column001::VARCHAR loan_identifier, column002::DATE monthly_reporting_period, ... column093::VARCHAR \"index\", ...\r\n  FROM read_csv_auto('data/stage/2000*.csv',\r\n\t  HEADER = FALSE, DATEFORMAT = '%m%Y', DELIM = '|', SAMPLE_SIZE = 500000)\r\n) TO 'data/public/performance.parquet' (FORMAT PARQUET);  \r\n```\r\n\r\nThe bad news is that, using 0.9.0, this query does not run when expanding the glob from four files (2000*.csv) to forty files (200*.csv).  I get this error:\r\n\r\n```\r\nError: Out of Memory Error: failed to allocate data of size 36.6MB (27.4GB/27.4GB used)\r\n```\r\n\r\nGiven the \"out of memory\" problem, it's not clear whether 0.9.0 fixes the \"Conversion error\" reported above.\r\n\r\nNo temp files get generated, and I can't figure out why I'd run out of memory.  Is duckdb trying to load all forty files into memory somehow?\r\n\r\nJust in case, I tried running the same SQL from within a duckdb database (e.g., running `duckdb performance.db` at the CLI, and executing the SQL therein).  I get the same Out of Memory error."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-09-29T02:02:14Z",
+   "body": "try to reduce threads to 2 to see if oom"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-09-29T03:02:52Z",
+   "body": "Thanks for the proposed solution, @participant2!\r\nAlas, SET THREADS = 2 leads to the same out of memory error.\r\nIs it just the overall size of the combined CSVs (e.g., a couple of 100 GBs) just the issue?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-09-29T23:51:06Z",
+   "body": "More bad news.  I tried going back to THREADS = 1 to see if THREADS is the only issue, or if the Conversion error that I identified [above](https://github.com/duckdb/duckdb/issues/8690#issuecomment-1698107219) persists.\r\n\r\n```\r\nD SET threads = 1;\r\nD PRAGMA memory_limit = '24GB';\r\nD PRAGMA temp_directory = 'data/temp/';\r\nD COPY (\r\n> native_delinquency_resolution, column106::NUMERIC alternative_delinquency_resolution_count, column107::NUMERIC total_deferral_amount\r\n>   FROM read_csv_auto('data/stage/200*.csv',\r\n>   HEADER = FALSE, DATEFORMAT = '%m%Y', DELIM = '|', SAMPLE_SIZE = 500000)\r\n> ) TO 'data/public/performance200.parquet' (FORMAT PARQUET);\r\n 33% ▕███████████████████▊                                        ▏ Error: Conversion Error: date field value out of range: \"092006\", expected format is (YYYY-MM-DD)\r\n```\r\n\r\nUnfortunately, I still get the Conversion Error.\r\n\r\nAs before, the error message does not make sense to me, since the DATEFORMAT option seems to correctly represent the error value that is described as \"out of range\"."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-10-01T03:59:09Z",
+   "body": "I want to separate out the \"out of memory\" (o.o.m.) issues from the \"Conversion error\" issues.  So, I went back to the simplest form of the code that uses ALL_VARCHAR = 1 to eliminate potential Conversion error issues.  \r\n\r\nI also went back to the shortest version of the code, which tries to read all 93 files (750 GB total) using `read_csv_auto` and simultaneously output them in a single step to Parquet.  Based on the Parquet tips in the docs, I also added PER_THREAD_OUTPUT TRUE.\r\n\r\nThe code looks like the following:\r\n```\r\nSET THREADS = 1;\r\nPRAGMA MEMORY_LIMIT = '4GB';\r\nCOPY (\r\n  SELECT * FROM read_csv_auto('data/stage/*.csv',\r\n\t  HEADER = FALSE, DATEFORMAT = '%m%Y', DELIM = '|', ALL_VARCHAR = 1)\r\n) TO 'data/public/performance' (\r\n    FORMAT PARQUET, PER_THREAD_OUTPUT TRUE); \r\n```\r\n\r\nI ran several combinations of THREADS and MEMORY_LIMIT to see what happens.  I got the following results:\r\n\r\n```\r\n-- THREADS = 1, MEMORY_LIMIT = '4GB': 170 min\r\n-- THREADS = 2, MEMORY_LIMIT = '4GB': 90 min\r\n-- THREADS = 4, MEMORY_LIMIT = '4GB': 48 min\r\n-- THREADS = 4, MEMORY_LIMIT = '6GB': 48 min\r\n-- THREADS = 6, MEMORY_LIMIT = '4GB': o.o.m.\r\n-- THREADS = 6, MEMORY_LIMIT = '6GB': o.o.m.\r\n-- THREADS = 8, MEMORY_LIMIT = '2GB': o.o.m.\r\n-- THREADS = 8, MEMORY_LIMIT = '4GB': o.o.m.\r\n```\r\n\r\nSo, it's nice to see that several combinations actually work using ALL_VARCHAR = 1 and PER_THREAD_OUTPUT = TRUE!\r\n\r\nHowever, it seems like I can't run more than 4 threads without running out of memory, even though my Mac could run up to 10 threads.\r\n\r\nAlso, increasing the MEMORY_LIMIT from 4GB to 6GB had no impact on the runtime, holding THREADS constant at 4.\r\n\r\nSo, I can solve the o.o.m. error by using only 4 threads, but I really would appreciate it if anyone could educate me as to why that is the limit in this case.\r\n\r\nI'll do some experiments on the \"Conversion Error\" tomorrow."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-10-01T06:50:29Z",
+   "body": "Hey, thanks for the super detailed report, that's for sure going to help a ton!\n\nMy first thought for the OOM issue would be to see if disabling the preservation of insertion order would help.\n\nThat is likely the cause of it trying to consume so much RAM"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-10-01T20:25:07Z",
+   "body": "Hi @participant5!  \r\n\r\nI too noticed that issue #9027 reported by @participant6 might be related to this issue.  I ran the \"THREADS = 4, MEMORY_LIMIT = 4GB\" and the \"THREADS = 6, MEMORY_LIMIT = 4GB\" variations, and re-ran them using `SET preserve_insertion_order = false;`.\r\n\r\nThe 4&4 option still works, and the 6x4 option still goes o.o.m.  So, unfortunately, the o.o.m. issue does NOT seem related to insertion order.  \r\n\r\n\r\nI also noticed that the temp directory that I setup never got used, in spite of the o.o.m. errors.\r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-10-14T22:58:51Z",
+   "body": "Good news; **v0.9.1 solves the remaining out-of-memory issues**.  (I'm still using `ALL_VARCHAR = 1` to avoid the \"Conversion error\" issue.)\r\n\r\n```\r\nCOPY (\r\n  SELECT *\r\n  FROM read_csv_auto('data/stage/*.csv',\r\n  \t HEADER = FALSE, DATEFORMAT = '%m%Y', DELIM = '|', ALL_VARCHAR = 1)\r\n) TO 'data/public/performance' (\r\n    FORMAT PARQUET, PER_THREAD_OUTPUT TRUE);\r\n```\r\n\r\nWith 0.9.1, there's no need to set either THREADS or MEMORY_LIMIT.  Based on some testing, it looks like the \"no THREADS or MEMORY_LIMIT\" option is  equivalent to running with `THREADS = 8, MEMORY_LIMIT = '4GB'`.  Both version runs in 26 minutes, use about 18GB RAM at peak, and do not use any temp files.  \r\n\r\nIncreasing the MEMORY_LIMIT has no impact.  \r\n\r\nThe `PER_THREAD_OUTPUT TRUE` is **critical**.  Not using that option causes the out-of-memory issue to return."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-10-15T03:09:09Z",
+   "body": "Given the out-of-memory issue is solved by 0.9.1, I also want to see if the \"Conversion error\" issue is solved too.\r\n\r\nTo establish a benchmark using 0.9.1, I went back to the \"three step\" process of first creating a table in a permanent database with the correct columns and types, then copying all the CSV files into the table, then copying the table into a Parquet file.\r\n\r\n```\r\nCREATE OR REPLACE TABLE t1 (reference_pool_id VARCHAR, loan_identifier VARCHAR, monthly_reporting_period DATE, <more columns>);\r\nCOPY t1 FROM 'data/stage/*.csv' (\r\n  HEADER FALSE, DATEFORMAT '%m%Y', DELIM '|', SAMPLE_SIZE 500000);\r\nCOPY t1 TO 'data/public/t1.parquet' (FORMAT PARQUET, PER_THREAD_OUTPUT TRUE);\r\n```\r\n\r\nUsing 0.9.1, this \"three step\" code executes perfectly with no \"Conversion error\" issues; nice!  The overall permanent database file is around 105 GB, and the run produces a 43 GB Parquet file(s) in about 2 hours.  In particular, the first COPY has no problems in loading all 93 CSV files into the pre-defined DuckDB table.\r\n\r\nNow, I want to see if I can consolidate the \"three step\" process into the more efficient \"one step\" process.\r\n\r\n```\r\nCOPY (\r\n  SELECT column000::VARCHAR reference_pool_id, column001::VARCHAR loan_identifier, column002::DATE monthly_reporting_period, <more columns> column093::VARCHAR \"index\", , <more columns>\r\n  FROM read_csv_auto('data/stage/*.csv',\r\n\t  HEADER = FALSE, DATEFORMAT = '%m%Y', DELIM = '|', SAMPLE_SIZE = 500000)\r\n) TO 'data/public/t1.parquet' (FORMAT PARQUET, PER_THREAD_OUTPUT TRUE);  \r\n```\r\n\r\nUnfortunately, the \"Conversion error\" pops back up.\r\n\r\n```\r\nError: near line 7: Conversion Error: date field value out of range: \"062015\", expected format is (YYYY-MM-DD)\r\n```\r\n\r\nI can't figure out why the \"three step\" code works fine, the \"single step\" code version using ALL_VARCHAR = 1 works fine, but the \"single step\" code version using column names and types in the SELECT clause does not work."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2023-10-15T08:35:00Z",
+   "body": "Looks like `read_csv_auto` ignores the `DATEFORMAT` directive? "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-10-16T20:33:33Z",
+   "body": "Hi @participant4!  I don't think that the `read_csv_auto` function is ignoring the DATEFORMAT, but I can't be sure.  \r\n\r\nWhen I did the single threat testing [previously](https://github.com/duckdb/duckdb/issues/8690#issuecomment-1698107219), the `read_csv_auto` function worked correctly, parsing the DATEFORMAT on the first four CSV files.\r\n\r\nHowever, when expanding to all 93 CSV files, I do get the date field-related Conversion errors.  So, I'm not sure how to debug at this point."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-10-16T23:05:27Z",
+   "body": "@participant1, did your [LDBC data](https://github.com/duckdb/duckdb/issues/8690#issuecomment-1706133573) issue get solved by 0.9.1.?  Also, do you have any date field-related Conversion errors?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-10-16T23:08:13Z",
+   "body": "@participant2, do you see any issues with my \"single step\" code above?  I'm trying to leverage your [suggested approach](https://github.com/duckdb/duckdb/issues/8690#issuecomment-1696692331) because it's such an efficient way (disk space and time) to convert directly from CSVs to Parquet."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-10-17T03:45:54Z",
+   "body": "ref http://duckdb.org/docs/data/csv/overview\r\ntry the syntax `SELECT * FROM read_csv('flights.csv', delim='|', header=true, columns={'reference_pool_id': 'VARCHAR', 'loan_identifier': 'VARCHAR', 'monthly_reporting_period': 'DATE'});`\r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-10-17T19:15:40Z",
+   "body": "Wow!  I re-tried the \"single step\" code, changing the syntax per @participant2's suggestion.  Given I'm using the COLUMNS option, I changed the function from `read_csv_auto` to `read_csv`.  Here's the code:\r\n\r\n```\r\ncopy (\r\n  select * from read_csv('data/stage/*.csv',\r\n    HEADER = FALSE, DATEFORMAT = '%m%Y', DELIM = '|',\r\n    COLUMNS = {'reference_pool_id': 'VARCHAR', <more columns>} )\r\n) to 'data/public/performance' (\r\n    FORMAT PARQUET, PER_THREAD_OUTPUT TRUE);\r\n```\r\n\r\nSummarizing the results:\r\n\r\n- I'm using Mac M1 Max (10 cores) with 32 GB of RAM, running DuckDB 0.9.1.\r\n- I'm converting 93 CSV files (750 GB uncompressed) to Parquet, writing an output file per thread.\r\n- My code snippet runs in **22 minutes**, and produces a 43 GB Parquet folder (10 files, 1 per thread).\r\n\r\nMany thanks to @participant2, @participant1, @participant3, and @participant4 for their help in sorting through the out-of-memory and conversion date issues here.\r\n\r\nKudos to the entire DuckDB team on v0.9.1.  **What an amazing tool**!\r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-10-17T20:41:25Z",
+   "body": "Whoops; spoke (closed) too soon!\r\n\r\nThe previous [code snippet](https://github.com/duckdb/duckdb/issues/8690#issuecomment-1767013277) works great when you use the PER_THREAD_OUTPUT option.  The Parquet output is split into 10 files, corresponding to the 10 threads I can run on my Mac.  However, I realized that randomly outputting records into those 10 Parquet files is not what I want.\r\n\r\nI want to take advantage of DuckDB's filter pushdown when reading the Parquet files, so I need to do a partitioned write.  Unfortunately, I discovered that you can't use PER_THREAD_OUTPUT simultaneously with PARTITION_BY.\r\n\r\nFirst, I naively tried to partition by 'monthly_reporting_period', replacing `PER_THREAD_OUTPUT` in the code with `PARTITION_BY (monthly_reporting_period)`.\r\n\r\n```\r\ncopy (\r\n  select * from read_csv('data/stage/*.csv',\r\n    HEADER = FALSE, DATEFORMAT = '%m%Y', DELIM = '|',\r\n    COLUMNS = {'reference_pool_id': 'VARCHAR', <more columns>} )\r\n) to 'data/public/performance' (\r\n    FORMAT PARQUET, PARTITION_BY (monthly_reporting_period));\r\n```\r\n\r\nUnfortunately, there are 279 distinct monthly reporting periods in the data.  So, when I run the modified code above, it eats up more than 1 TB of disk space (all I've got!) and the job dies.  If I run the same code for just four of the CSV files (about 7 GB uncompressed), the database .tmp file grows to over 58 GB!  So, the native partitioning strategy just isn't practical in this case.\r\n\r\nAlternatively, I could partition annually, rather than monthly, which reduces the distinct files to 23.  However, when I try to modify the above code to `PARTITION_BY ( year(monthly_reporting_period) )`, I get a syntax error.\r\n\r\nIs the explosion in the size of the database .tmp file something that is expected?  Is there a different syntax that's possible for use in the PARTITION_BY function?"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-10-18T00:32:39Z",
+   "body": "try to add a year column\r\n```\r\ncreate table orders(m int,v int);\r\ninsert into orders select i%12+1,i from range(100)t(i);\r\ncopy (select 2000+(v//12)y,m,v from orders) TO 'orders1' (FORMAT PARQUET, PARTITION_BY (y));\r\n```"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-10-18T21:58:40Z",
+   "body": "Thanks @participant2.  Based on your suggestion, I ran the following code:\r\n\r\n```\r\ncopy (\r\n  select *, year(period) as period_year, month(period) as period_month,\r\n  from read_csv('data/stage/*.csv',\r\n    HEADER = FALSE, DATEFORMAT = '%m%Y', DELIM = '|', FILENAME = TRUE,\r\n    COLUMNS = {\r\n      'reference_pool_id': 'VARCHAR', 'loan_identifier': 'VARCHAR',\r\n      'period': 'DATE', <more columns> } )\r\n) to 'data/public/performance' (\r\n    FORMAT PARQUET, COMPRESSION GZIP,\r\n    PARTITION_BY (period_year, period_month) );\r\n```\r\n\r\nUnfortunately, I can't partition by period_year OR by period_year and period_month.\r\n\r\nIn both cases, the permanent database file `file.db` creates a `file.db.tmp` folder when the code first runs.  Then, the code gets about 15-20% completed, then the job runs out of hard disk space.\r\n\r\nWithin the `file.db.tmp` folder, regardless of how I partition, the code generates a series of .tmp files where each .tmp file appears to be about twice as big as the last .tmp file.  See below for an example:\r\n\r\n<img width=\"593\" alt=\"image\" src=\"https://github.com/duckdb/duckdb/assets/3020028/6ed26203-9c9b-40fb-be28-c74ef54e2412\">\r\n\r\nI'm no database expert, but I do find it strange that this process appears to require multiple TBs to complete; particularly, given the \"non-partitioned\" version uses only ~50 GB.\r\n\r\nIf this behavior is expected, I'll just have to buy a bigger external hard drive.  :).  I appreciate any insight you can offer."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-10-19T02:42:10Z",
+   "body": "it seems a series of power(2,n), maybe the designer of this feature could say it why.\r\n2\r\n4\r\n8\r\n16"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2023-10-19T05:56:09Z",
+   "body": "Does the partitioned write work fine in the three step option?\r\n\r\nDoes the single query variant work l when you read from a non-partitioned parquet, that you write out first? "
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-10-19T12:01:52Z",
+   "body": "try to use 10 no partitioned parquet files to ouput the partitioned files. Use filename as the extra partition key. \r\nsuch as\r\ncopy (select 'file1' filename,*from 'file1.parquet' ) to TO 'orders1' (FORMAT PARQUET, PARTITION_BY (filename,y));\r\ncopy (select 'file2' filename,*from 'file2.parquet' ) to TO 'orders1' (FORMAT PARQUET, PARTITION_BY (filename,y));\r\n…\r\n"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-10-22T00:09:35Z",
+   "body": "try to make partitioned files by hand using following script\r\n```\r\n.header off\r\n.mode c\r\nselect 'set threads=1;';\r\nselect 'copy (from ''orders.parquet'' where m='||m||' and y='||y||') to ''ord_m='||m||'_y='||y||'.parquet'';' from (select distinct m,y from 'orders.parquet');\r\n```\r\nvi a.sql\r\n\r\ntime ./duckdb <a.sql |./duckdb"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-11-12T09:34:04Z",
+   "body": "Hi @reporter, somehow I missed the updates on this thread. But were a lot of things being discussed here (partitioning, memory, conversion), could you please create a new issue if [your last comment](https://github.com/duckdb/duckdb/issues/8690#issuecomment-1769436555) is still relevant?"
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "duckdb/duckdb",
+  "default_branch": "main",
+  "commit_sha": "09e961df8a08ce3dfcfa128d19ba0e7a1dc6c0ba",
+  "as_of": "2023-08-25T23:47:18Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_duckdb_duckdb_8690"
+}

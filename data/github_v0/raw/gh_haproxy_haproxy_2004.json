@@ -1,0 +1,333 @@
+{
+ "repo": "haproxy/haproxy",
+ "number": 2004,
+ "url": "https://github.com/haproxy/haproxy/issues/2004",
+ "title": "QUIC protocol error with Chrome-based browsers",
+ "state": "closed",
+ "labels": [
+  "type: bug",
+  "status: feedback required"
+ ],
+ "reporter": "reporter",
+ "created_at": "2023-01-18T11:28:36Z",
+ "closed_at": "2023-04-28T06:59:10Z",
+ "body": "### Detailed Description of the Problem\r\n\r\nOn our dev environment, where we have QUIC enabled, we regularly get images failing to be served on Chromium-based browsers, with the `net::ERR_QUIC_PROTOCOL_ERROR 200` error code.\r\n\r\nThis eventually makes the browser refuse to use QUIC with our origin for a while as well.\r\n\r\nObviously this isn't a lot of information to go off of, so I included some quic traces (see below).\r\n\r\n### Expected Behavior\r\n\r\nNo error\r\n\r\n### Steps to Reproduce the Behavior\r\n\r\nNot entirely clear at this stage.\r\n\r\nOur best reproducer so far is to load a page full of images (doesn't seem to happen regularly with plain HTML and other smaller payloads). Such a way we can reproduce it on our dev environment is as follows:\r\n1. Start chromium forcing QUIC to the origin: `chromium-browser --enable-quic --origin-to-force-quic-on=<redacted-host>:443`\r\n1. Accessing a page with a lot of images, like https://<redacted-host>/titles\r\n2. Set the view mode to grid so larger (& thus bigger) thumbnails are loaded\r\n![2023-01-18 10_50_19](https://user-images.githubusercontent.com/875533/213152658-067cd16c-0bef-4420-932b-443394896bbb.png)\r\n3. Go to the next page until it happens (pagination at the bottom, usually I hit it after 1 or 2 pages only)\r\n\r\nNote: if you try to repro, use the pagination for new images, rather than disabling the browser cache and refreshing the page, JS assets loading spam will get you rate-limited after a few refreshes otherwise due to a bug in our dev environment rate-limiting config.\r\n\r\n### Do you have any idea what may have caused this?\r\n\r\n_No response_\r\n\r\n### Do you have an idea how to solve the issue?\r\n\r\n_No response_\r\n\r\n### What is your configuration?\r\n\r\n```haproxy\r\nring ring-shm-quic\r\n  format timed\r\n  maxlen 3072\r\n  size 134217728 # 128MB\r\n  backing-file /dev/shm/haproxy-quic\r\n\r\nglobal\r\n  ...\r\n\r\n  expose-experimental-directives\r\n  trace quic sink ring-shm-quic\r\n  trace quic level developer\r\n  trace quic start now\r\n\r\n  tune.bufsize 32768\r\n\r\ndefaults defaults-base\r\n  ...\r\n  timeout client          5s\r\n  timeout connect         3s\r\n\r\nfrontend mdex-public-direct from defaults-base\r\n    bind 45.129.229.21:80 tfo\r\n    bind 45.129.229.21:443 ssl strict-sni crt /etc/haproxy/ssl/mangadex.dev.pem alpn h2,http1.1 tfo allow-0rtt\r\n    bind quic4@45.129.229.21:443 ssl strict-sni crt /etc/haproxy/ssl/mangadex.dev.pem alpn h3 allow-0rtt shards by-thread\r\n\r\ndefault defaults-mangadex-uploads from defaults-base\r\n    ...\r\n    http-request normalize-uri fragment-strip\r\n    http-request normalize-uri path-merge-slashes\r\n    http-request normalize-uri path-strip-dotdot full\r\n    http-request normalize-uri path-strip-dot\r\n    http-request normalize-uri percent-decode-unreserved strict\r\n    http-request normalize-uri percent-to-uppercase strict\r\n    http-request normalize-uri query-sort-by-name\r\n\r\nbackend mdex_uploads_covers from defaults-mangadex-uploads\r\n    server local-nginx unix@/nginx.sock check\r\n    server mtc-xyz redacted:80 check slowstart 5s\r\n    server-template image-origin-lb- 8 redacted:80 check resolvers xlbdns init-addr none backup\r\n    server-template app-wrk-lb-      8 redacted:80 check resolvers xlbdns init-addr none backup\r\n```\r\n\r\n\r\n### Output of `haproxy -vv`\r\n\r\n```plain\r\nHAProxy version 2.8-dev1-86aac23+mangadex-4672057 2023-01-18T10:15+00:00 - https://haproxy.org/\r\nStatus: development branch - not safe for use in production.\r\nKnown bugs: https://github.com/haproxy/haproxy/issues?q=is:issue+is:open\r\nRunning on: Linux 5.15.0-56-generic #62-Ubuntu SMP Tue Nov 22 19:54:14 UTC 2022 x86_64\r\nBuild options :\r\n  TARGET  = linux-glibc\r\n  CPU     = generic\r\n  CC      = cc\r\n  CFLAGS  = -O2 -ggdb3 -gdwarf-4 -Wall -Wextra -Wundef -Wdeclaration-after-statement -Wfatal-errors -Wtype-limits -Wshift-negative-value -Wnull-dereference -fwrapv -Wno-unknown-warning-option -Wno-address-of-packed-member -Wno-unused-label -Wno-sign-compare -Wno-unused-parameter -Wno-clobbered -Wno-missing-field-initializers -Wno-cast-function-type -Wno-string-plus-int -Wno-atomic-alignment -DMAX_SESS_STKCTR=5\r\n  OPTIONS = USE_PCRE2=1 USE_PCRE2_JIT=1 USE_STATIC_PCRE2=1 USE_LIBCRYPT=1 USE_OPENSSL=1 USE_LUA=1 USE_SLZ=1 USE_TFO=1 USE_NS=1 USE_SYSTEMD=1 USE_QUIC=1 USE_PROMEX=1\r\n  DEBUG   = -DDEBUG_MEMORY_POOLS -DDEBUG_STRICT\r\n\r\nFeature list : -51DEGREES +ACCEPT4 +BACKTRACE -CLOSEFROM +CPU_AFFINITY +CRYPT_H -DEVICEATLAS +DL -ENGINE +EPOLL -EVPORTS +GETADDRINFO -KQUEUE -LIBATOMIC +LIBCRYPT +LINUX_SPLICE +LINUX_TPROXY +LUA +MATH -MEMORY_PROFILING +NETFILTER +NS -OBSOLETE_LINKER +OPENSSL -OPENSSL_WOLFSSL -OT -PCRE +PCRE2 +PCRE2_JIT -PCRE_JIT +POLL +PRCTL -PROCCTL +PROMEX -PTHREAD_EMULATION +QUIC +RT +SHM_OPEN +SLZ +SSL -STATIC_PCRE +STATIC_PCRE2 +SYSTEMD +TFO +THREAD +THREAD_DUMP +TPROXY -WURFL -ZLIB\r\n\r\nDefault settings :\r\n  bufsize = 16384, maxrewrite = 1024, maxpollevents = 200\r\n\r\nBuilt with multi-threading support (MAX_TGROUPS=16, MAX_THREADS=256, default=8).\r\nBuilt with OpenSSL version : OpenSSL 1.1.1s+quic-mangadex-4672057 18 Jan 2023\r\nRunning on OpenSSL version : OpenSSL 1.1.1s+quic-mangadex-4672057 18 Jan 2023\r\nOpenSSL library supports TLS extensions : yes\r\nOpenSSL library supports SNI : yes\r\nOpenSSL library supports : TLSv1.0 TLSv1.1 TLSv1.2 TLSv1.3\r\nBuilt with Lua version : Lua 5.4.4\r\nBuilt with the Prometheus exporter as a service\r\nBuilt with network namespace support.\r\nSupport for malloc_trim() is enabled.\r\nBuilt with libslz for stateless compression.\r\nCompression algorithms supported : identity(\"identity\"), deflate(\"deflate\"), raw-deflate(\"deflate\"), gzip(\"gzip\")\r\nBuilt with transparent proxy support using: IP_TRANSPARENT IPV6_TRANSPARENT IP_FREEBIND\r\nBuilt with PCRE2 version : 10.40 2022-04-14\r\nPCRE2 library supports JIT : yes\r\nEncrypted password support via crypt(3): yes\r\nBuilt with clang compiler version 14.0.6\r\n\r\nAvailable polling systems :\r\n      epoll : pref=300,  test result OK\r\n       poll : pref=200,  test result OK\r\n     select : pref=150,  test result OK\r\nTotal: 3 (3 usable), will use epoll.\r\n\r\nAvailable multiplexer protocols :\r\n(protocols marked as <default> cannot be specified using 'proto' keyword)\r\n       quic : mode=HTTP  side=FE     mux=QUIC  flags=HTX|NO_UPG|FRAMED\r\n         h2 : mode=HTTP  side=FE|BE  mux=H2    flags=HTX|HOL_RISK|NO_UPG\r\n       fcgi : mode=HTTP  side=BE     mux=FCGI  flags=HTX|HOL_RISK|NO_UPG\r\n         h1 : mode=HTTP  side=FE|BE  mux=H1    flags=HTX|NO_UPG\r\n  <default> : mode=HTTP  side=FE|BE  mux=H1    flags=HTX\r\n       none : mode=TCP   side=FE|BE  mux=PASS  flags=NO_UPG\r\n  <default> : mode=TCP   side=FE|BE  mux=PASS  flags=\r\n\r\nAvailable services : prometheus-exporter\r\nAvailable filters :\r\n        [BWLIM] bwlim-in\r\n        [BWLIM] bwlim-out\r\n        [CACHE] cache\r\n        [COMP] compression\r\n        [FCGI] fcgi-app\r\n        [SPOE] spoe\r\n        [TRACE] trace\r\n```\r\n\r\n\r\n### Last Outputs and Backtraces\r\n\r\n```plain\r\nn/a\r\n```\r\n\r\n\r\n### Additional Information\r\n\r\nAttached is a QUIC developer trace around one such event\r\n\r\n[haproxy-quic-protocol-error-1117.gz](https://github.com/haproxy/haproxy/files/10445324/haproxy-quic-protocol-error-1117.gz)\r\n\r\nIt *might* be loosely related to a backend exhibiting symptoms of https://github.com/haproxy/haproxy/issues/1992 . In this case, the images are proxy-cached by nginx from our prod, which is running 2.7.1 and thus affected by it (until a 2.7.2 bundling it is issued). Without forcing the origin, the browser will downgrade from QUIC to H2, and you'll get those instead of the QUIC errors. On one hand you could say we should try with prod on 2.8-dev + that fix, but on the other hand it's rather odd for haproxy to be affected like that by a faulty backend (even if it's nginx->haproxy in that case).\r\n\r\nThough to be completely honest that one occasional quic error has been happening for a while, so it might be a coincidence and go way back.\r\n\r\nAnother interesting aspect is that the browser eventually retries the H3 request and gets a 206 back (from nginx's cache in such cases). Maybe ranges responses are somehow not very nicely handled. Hard to say.",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2023-01-20T08:46:55Z",
+   "body": "Hello,  error 200 QUIC error protocol looks like the h3 application error code H3_NO_ERROR meaning \"no error\".\r\n\r\nAbout the traces, I would like to know if you stripped some information. The transport parameters (TP) traces are missing. I ask that because there are suspect trace for 0x78657805b410 QUIC connection (without TP dump). haproxy received the last 1RTT here without any remaining packet in flight:\r\n\r\n<0>2023-01-18T11:17:11.617894+00:00 [02|quic|2|c_conn.c:2777] RX frame : qc@participant4 frm@participant5 PADDING\r\n\r\nThen after about 60s of inactivity it closes only the mux:\r\n\r\n<0>2023-01-18T11:17:12.608935+00:00 [02|quic|5|prt_quic.c:26] quic_close(): entering : qc@participant4\r\n<0>2023-01-18T11:17:12.608953+00:00 [02|quic|5|c_conn.c:1599] qc_check_close_on_released_mux(): entering : qc@participant4\r\n<0>2023-01-18T11:17:12.608955+00:00 [02|quic|5|c_conn.c:1607] qc_check_close_on_released_mux(): leaving : qc@participant4\r\n<0>2023-01-18T11:17:12.608957+00:00 [02|quic|5|prt_quic.c:39] quic_close(): leaving : qc@participant4\r\n\r\nA few minutes later:\r\n\r\n<0>2023-01-18T11:17:18.283501+00:00 [02|quic|5|c_conn.c:5801] retrieve_qc_conn_from_cid(): entering\r\n<0>2023-01-18T11:17:18.283508+00:00 [02|quic|5|c_conn.c:5837] retrieve_qc_conn_from_cid(): leaving : qc@participant4 err_code=0x100\r\n\r\nhaproxy set its application error code to H3_NO_ERROR.\r\n\r\nThen haproxy receives new STREAM frames. As the connection is not released contrary to the mux haproxy sends STOP_SENDING for STREAM it receives new data. Even for h3 Control Stream with 10 as ID which is a unidirectional stream open by the client if I remember well.\r\n\r\nChrome does not seems happy to receive such a STOP_SENDING for the h3 Control stream:\r\n\r\n<0>2023-01-18T11:17:18.293377+00:00 [02|quic|2|c_conn.c:2777] RX frame : qc@participant4 frm@participant5 CONNECTION_CLOSE_APP error_code=260 reason_phrase_len=47 reason_phrase: '156:STOP_SENDING received for QPACK send stream'\r\n\r\nError 260 is this one about the h3 RFC:\r\n\r\n`H3_CLOSED_CRITICAL_STREAM (0x104):  A stream required by the HTTP/3\r\n      connection was closed or reset.`\r\n\r\nAbout h3 Control streams:\r\n\r\n`\r\n6.2.1 Control streams\r\nThe\r\n   sender MUST NOT close the control stream, and the receiver MUST NOT\r\n   request that the sender close the control stream.\r\n`\r\nI do not know if such an error may lead the client to never come back."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-01-20T08:47:49Z",
+   "body": "To me we should at least modify our code to never send STOP_SENDING frames for h3 Control stream."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-01-20T08:58:11Z",
+   "body": "> About the traces, I would like to know if you stripped some information. The transport parameters (TP) traces are missing. I ask that because there are suspect trace for participant4 QUIC connection (without TP dump).\r\n\r\nHmm unless haproxy sometimes spans traces over 2 lines (defeating the grep-ing) that shouldn't be the case; I generated the trace extract off the ring file like so: `haring -f haproxy-quic | grep 'T11:17' > haproxy-quic-protocol-error-1117` then gzipped that.\r\n\r\n> To me we should at least modify our code to never send STOP_SENDING frames for h3 Control stream.\r\n\r\nI can always try a patch w/ that change and see if that fixes it; since it's trivially reproducible on our dev environment in seconds that's not a problem"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-01-20T09:35:21Z",
+   "body": "So, it does seem like some of the lines are not time-prefixed at times, which might be why you were surprised. Also I made sure to not close the browser (maybe that caused the client-initiated closes of the earlier traces) before copying the traces.\r\n\r\nThere should be 2 events in here, one around 09:26-09:27, and one at 09:29 (and maybe more events before, but I don't know for sure).\r\n\r\n[haproxy-quic-protocol-error-0929.gz](https://github.com/haproxy/haproxy/files/10465047/haproxy-quic-protocol-error-0929.gz)\r\n\r\nTo make sure nothing was cut I didn't filter anything, so the traces start a bit earlier (but maybe there's other interesting things to find in there as well). Also this is in haring format (not sure what you call it), rather than post-haring+grep text."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-01-20T14:51:39Z",
+   "body": "I have just pushed a fix here:\r\nhttps://github.com/haproxytech/quic-dev/commit/d18025eeef03dd82d60860d60245c93dc4feadb7"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-01-20T14:57:48Z",
+   "body": "> So, it does seem like some of the lines are not time-prefixed at times, which might be why you were surprised. Also I made sure to not close the browser (maybe that caused the client-initiated closes of the earlier traces) before copying the traces.\r\n\r\nAh, yes TP are dumped with a  newline character between each of them. So, without timestamp."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-01-20T15:31:04Z",
+   "body": "> I have just pushed a fix here\r\n\r\nUnfortunately still happens. Traces here: [haproxy-quic-protocol-error-1523.gz](https://github.com/haproxy/haproxy/files/10467593/haproxy-quic-protocol-error-1523.gz)\r\n\r\nMaybe of interest, I notice that the log line for it (ie in haproxy logs) is output at the error level, despite being a 200 (ie the 7 red ones in the screenshot below; though Chrome reported 5 errors in this case). So it seems like HAProxy itself is aware of something going wrong.\r\n\r\n![2023-01-20 15_28_47](https://user-images.githubusercontent.com/875533/213736473-9167cfde-b888-42e2-a067-9bd1d0f7b588.png)\r\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-01-20T16:06:33Z",
+   "body": "Il would be interesting to have the mux and h3 enabled."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-01-20T16:08:01Z",
+   "body": "For the mux:\r\n\r\n   trace qmux sink ring-shm-quic\r\n   trace qmux level developer\r\n   trace qmux start now\r\n\r\nand h3:\r\n\r\n    trace h3 sink ring-shm-quic\r\n    trace h3 level developer\r\n    trace h3 start now\r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-01-20T16:08:58Z",
+   "body": "I'll do that right now, should have the traces back shortly"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-01-20T16:12:50Z",
+   "body": "Here you go: [haproxy-quic-protocol-error-1611.gz](https://github.com/haproxy/haproxy/files/10467992/haproxy-quic-protocol-error-1611.gz)\r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-01-20T16:19:53Z",
+   "body": "(also I cannot express how much more convenient having the trace directives in the global section is; it's a real blessing)"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-01-20T16:55:37Z",
+   "body": "No more STOP_SENDING frames are sent for h3 unidirectional streams. But this does not fix the issue.\r\nBut there are often STOP_SENDING, RESET_STREAM frames received from Chrome. Do not know why at this time."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-01-20T16:58:58Z",
+   "body": "There are also data sent on unidirectional streams by Chrome, in the middle of the stream requests. Do not know what it is at this time. (id=6)."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-01-23T13:02:39Z",
+   "body": "This is very difficult for us to understand the issue here as we have no way to reproduce it. Given your observation and the provided traces, it may be caused by our mux-quic sending unnecessary `RESET_STREAM`. Can you test the attached patch on top of the current master tip and tell us if this improves the situation ?\r\n\r\nBTW, for `qmux` traces, can you set verbosity to `minimal` please ? This will ensure all info are provided.\r\n\r\n[0001-MINOR-mux-quic-do-not-reset-stream-on-shutw.patch.txt](https://github.com/haproxy/haproxy/files/10479936/0001-MINOR-mux-quic-do-not-reset-stream-on-shutw.patch.txt)\r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-01-23T13:04:46Z",
+   "body": "Sure I will do that 👍 (As usual, I'm also happy to assist more directly if that might help you diagnose it somehow)"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-01-23T13:09:20Z",
+   "body": "Sorry the patch was incomplete, here is an updated version.\r\n[0001-MINOR-mux-quic-do-not-reset-stream-on-shutw.patch.txt](https://github.com/haproxy/haproxy/files/10479976/0001-MINOR-mux-quic-do-not-reset-stream-on-shutw.patch.txt)\r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-01-23T14:01:38Z",
+   "body": "> BTW, for qmux traces, can you set verbosity to minimal please ? This will ensure all info are provided.\r\n\r\n@participant2 I get `'trace': No such trace level` as an error when trying that"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-01-23T14:05:00Z",
+   "body": "This is for the verbosity line not the level :\r\n```\r\ntrace qmux sink stdout\r\ntrace qmux level developer\r\ntrace qmux verbosity minimal\r\ntrace qmux start now\r\n```\r\n\r\nFYI, level will filter events. Verbosity will extend the infos displayed on each line."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-01-23T14:05:40Z",
+   "body": "Right, my bad."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-01-23T14:14:34Z",
+   "body": "Alright so with your patch the frequency of the errors is much lower. From once every ~30 images to once every ~150 images.\r\n\r\nHowever I do notice that it also introduces some kind of stalling. ie some requests get stalled for 4-5 seconds before going through (close to the same rate where they would error out before).\r\n\r\nEither way, here's the traces: [haproxy-quic-202301231411.gz](https://github.com/haproxy/haproxy/files/10480474/haproxy-quic-202301231411.gz)\r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-01-23T14:28:32Z",
+   "body": "Funny thing looking at those traces. It seems like the few first lines of the file (until 2023-01-23T14:10:17.852537+00:00) are malformed (or haring output for them is anyway); not too sure why.\r\n\r\nie\r\n```\r\n$ haring -f haproxy-quic-202301231411\r\nWARNING: header in file is 72 bytes long vs 64 expected!\r\n550058290m<0>2023-01-23T14:11:28.600806+00:00 [02|quic|5|c_conn.c:7549] qc_notify_close(): enteri\r\n : qc@participant6<0>2023-01-23T14:11:28.600808+00:00 [02|quic|5|c_conn.c:7565] qc_notify_close():\r\naving : qc@participant7<0>2023-01-23T14:11:28.600811+00:00 [02|quic|5|c_conn.c:4978] quic_conn_re\r\nase(): entering : qc@participant8<0>2023-01-23T14:11:28.600950+00:00 [02|quic|5|c_conn.c:4583] qu\r\n_conn_enc_level_uninit(): entering : qc@participant9<0>2023-01-23T14:11:28.600954+00:00 [02|qui\r\n5|c_conn.c:4594] quic_conn_enc_level_uninit(): leaving : qc@participant8<0>2023-01-23T14:11:28.600958+00:00 [02|quic|5|c\r\nonn.c:4583] quic_conn_enc_level_uninit(): entering : qc@participant9<0>2023-01-23T14:11:28.6009\r\n+00:00 [02|quic|5|c_conn.c:4594] quic_conn_enc_l\r\nel_uninit(): leaving : qc@participant8<0>2023-01-23T14:11:28.600968+00:00 [02|quic|5|c_conn.c:4583] quic_conn_enc_\r\nvel_uninit(): entering : qc@participant9<0>2023-01-23T14:11:28.600971+00:00 [02|quic|5|c_conn.c:4\r\n4\r\n[...]\r\n<0>2023-01-23T14:10:17.852537+00:00 [06|quic|5|c_conn.c:3072] qc_prep_app_pkts(): entering : qc@participant10\r\n<0>2023-01-23T14:10:17.852540+00:00 [06|quic|5|c_conn.c:3080] qc_prep_app_pkts(): in : qc@participant10 qel=A state=HCF ack?0 cwnd=34524 ppif=21746 pif=21746 if=21746 pp=0 off=0\r\n<0>2023-01-23T14:10:17.852541+00:00 [06|quic|5|c_conn.c:3131] qc_prep_app_pkts(): leaving : qc@participant10\r\n<0>2023-01-23T14:10:17.852542+00:00 [06|quic|5|c_conn.c:4115] qc_send_app_pkts(): leaving : qc@participant10\r\n<0>2023-01-23T14:10:17.852543+00:00 [06|quic|5|c_conn.c:4358] quic_conn_app_io_cb(): leaving : qc@participant10\r\n<0>2023-01-23T14:10:17.852545+00:00 [06|qmux|5|x_quic.c:2000] qc_io_cb(): entering : qcc=0x72b54c05cb50(F) qc=0x72b54c057060\r\n<0>2023-01-23T14:10:17.852547+00:00 [06|qmux|5|x_quic.c:1726] qc_send(): entering : qcc=0x72b54c05cb50(F) qc=0x72b54c057060\r\n<0>2023-01-23T14:10:17.852549+00:00 [06|qmux|5|x_quic.c:1311] qcs_xfer_data(): entering : qcc=0x72b54c05cb50(F) qc=0x72b54c057060 qcs=0x72b54c0896f0 .id=8 .st=HCR\r\n```"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-01-24T08:39:11Z",
+   "body": "> Alright so with your patch the frequency of the errors is much lower. From once every ~30 images to once every ~150 images.\r\n> \r\n> However I do notice that it also introduces some kind of stalling. ie some requests get stalled for 4-5 seconds before going through (close to the same rate where they would error out before).\r\n> \r\n> Either way, here's the traces: [haproxy-quic-202301231411.gz](https://github.com/haproxy/haproxy/files/10480474/haproxy-quic-202301231411.gz)\r\n\r\nYou mentionned that error rates decreases but still present. Does that still induce chrome to disable H3 ?"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-01-24T09:25:13Z",
+   "body": "BTW, it could be useful to also activate `h3` traces to have the complete picture : \r\n```\r\ntrace h3 sink stdout\r\ntrace h3 level developer\r\ntrace h3 verbosity minimal\r\ntrace h3 start now\r\n```"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-01-24T14:35:32Z",
+   "body": "> Does that still induce chrome to disable H3 ?\r\n\r\n@participant2 Yes; you can see very clearly where the stalls happen (the batch of 10+ seconds images) and then the regression to H2\r\n\r\n<details>\r\n<summary>chrome network tab</summary>\r\n\r\n![2023-01-24 14_23_16](https://user-images.githubusercontent.com/875533/214319986-b29f5110-fa78-4727-9a5c-b85cd80079a4.png)\r\n\r\n![2023-01-24 14_23_28](https://user-images.githubusercontent.com/875533/214320002-8a2cd2f4-7592-4fa1-8844-1fad8a71800e.png)\r\n\r\n</details>\r\n\r\n> BTW, it could be useful to also activate `h3` traces to have the complete picture\r\n\r\nSure; for the record this is what I now have:\r\n```\r\ntrace h3 sink ring-shm-quic\r\ntrace h3 level developer\r\ntrace h3 verbosity minimal\r\ntrace h3 start now\r\ntrace qmux sink ring-shm-quic\r\ntrace qmux level developer\r\ntrace qmux verbosity minimal\r\ntrace qmux start now\r\ntrace quic sink ring-shm-quic\r\ntrace quic level developer\r\ntrace quic start now\r\n```\r\n\r\nAnd here are the traces (session is from ~14:27 up to ~14:28): [haproxy-quic-202301241429.gz](https://github.com/haproxy/haproxy/files/10490855/haproxy-quic-202301241429.gz)\r\n\r\n<details>\r\n<summary>chrome network tab for the session with h3 verbosity</summary>\r\n\r\n![2023-01-24 14_28_07](https://user-images.githubusercontent.com/875533/214321853-53903d03-beb1-4579-87d2-e07e9cc33075.png)\r\n\r\n- First page loads all fine\r\n- Second page has 3 stalled requests (each being a 10s stall => QUIC protocol error => chrome retry => then OK)\r\n\r\n---\r\n\r\n![2023-01-24 14_28_54](https://user-images.githubusercontent.com/875533/214322313-a535e56a-4846-4e33-9c7d-a929eff4b628.png)\r\n\r\n- Third page has 10 stalled requests\r\n\r\n---\r\n\r\n![2023-01-24 14_29_01](https://user-images.githubusercontent.com/875533/214322575-175a7893-4fb1-4cf4-ae6e-af75b3e9c0ff.png)\r\n\r\n- Fourth page all 32 requests get stalled\r\n\r\n</details>"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-01-24T15:08:49Z",
+   "body": "Also I'm not sure if this is of interest, but these are the CPU and UDP stats of the LB VM in question (tis purely for dev purposes, so it's the least busy thing imaginable, which shows as we have no UDP errors external to QUIC whatsoever nor any CPU/memory pressure)\r\n\r\n![2023-01-24 15_06_49](https://user-images.githubusercontent.com/875533/214330683-a01b381f-f46c-4d57-9de9-df167d4338b6.png)\r\n\r\n![2023-01-24 15_06_33](https://user-images.githubusercontent.com/875533/214330680-2fc9a252-3e2e-4fef-850a-ef1048df5ad5.png)\r\n"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-01-25T15:17:15Z",
+   "body": "I did not have much time to work on this issue and it's not easy to understand chrome behavior as I failed in reproduce the issue locally with web services on my own.\r\n\r\nRegarding the stalled requests, maybe this is caused due to a recent regression which prevent the H3 GOAWAY emission. I merged a fix for this in the master branch so you may perform a new test it with the previous patch applied.\r\n\r\nIf you still have issue, you can replace the patch by the new version provided in this comment. This is refined version with `RESET_STREAM` sent under certain condition instead of an empty STREAM with FIN set. This is experimental as it's not easy to test these conditions.\r\n[0001-MINOR-mux-quic-do-not-reset-stream-on-shutw.patch.txt](https://github.com/haproxy/haproxy/files/10500669/0001-MINOR-mux-quic-do-not-reset-stream-on-shutw.patch.txt)"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-01-25T15:19:03Z",
+   "body": "I will try and do that. If I somehow still reproduce it I’ll try to make a locally-usable reproducer"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-01-25T16:51:35Z",
+   "body": "Well I messed up with my last commits so you will probably encounter a segfault on the latest master tip on connection init :/ I'm merging a fix ASAP."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-01-25T17:03:23Z",
+   "body": "I just pushed a fix it should be back to normal sorry for the inconvenient."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-01-25T19:59:19Z",
+   "body": "No worries, I hadn't had time to try it yet. I triggered new builds and will try in this order:\r\n1. b4d119f0c75ce7c5a977ece18dc975e14f9b460c + the patch from https://github.com/haproxy/haproxy/issues/2004#issuecomment-1400312105\r\n2. b4d119f0c75ce7c5a977ece18dc975e14f9b460c + the patch from https://github.com/haproxy/haproxy/issues/2004#issuecomment-1403780350\r\n3. Try to come up with a local repro; it will probably be a bit messy but oh well"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-01-25T20:11:45Z",
+   "body": "So option 1. failed, but I imagine this is just an interop bug with the old patch and the new tip of master, since it instantly failed with a QUIC handshake failure within the first 11 requests (for a class of small images that didn't fail before)\r\n\r\n![2023-01-25 20_10_10](https://user-images.githubusercontent.com/875533/214678937-b2e93821-5007-45ef-890b-15cb077f6a73.png)\r\n\r\nTraces here: [haproxy-quic-202301252007.gz](https://github.com/haproxy/haproxy/files/10503285/haproxy-quic-202301252007.gz)\r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-01-26T00:18:08Z",
+   "body": "Guess option 2. is a fail too. It started off really well, doing ~220 good fetches, then I had one or two stalls (but approximately 5s this time, compared to the previous 10s in https://github.com/haproxy/haproxy/issues/2004#issuecomment-1402050837 ), then the next page was handshake failures like option 1.\r\n\r\nNo idea exactly what causes this all but here's the stalls (going to the next page caused the same handshake failures as above, so not including a screenshot of that):\r\n![2023-01-26 00_13_15](https://user-images.githubusercontent.com/875533/214723785-2d25d524-263f-45fd-a463-1578265b83d2.png)\r\n\r\nAnd here's the traces: [haproxy-quic-202301260014.gz](https://github.com/haproxy/haproxy/files/10504781/haproxy-quic-202301260014.gz)\r\n"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-01-26T10:58:43Z",
+   "body": "> So option 1. failed, but I imagine this is just an interop bug with the old patch and the new tip of master, since it instantly failed with a QUIC handshake failure within the first 11 requests (for a class of small images that didn't fail before)\r\n> \r\n> ![2023-01-25 20_10_10](https://user-images.githubusercontent.com/875533/214678937-b2e93821-5007-45ef-890b-15cb077f6a73.png)\r\n> \r\n> Traces here: [haproxy-quic-202301252007.gz](https://github.com/haproxy/haproxy/files/10503285/haproxy-quic-202301252007.\r\n\r\nThis result is really surprising to me. Chrome reports handshake failure but at first glance on the traces I saw two connection opened and each behaves normally with a lot of streams opened and closed over a period of time so this does not match with an handshake failure."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-01-26T21:00:43Z",
+   "body": "> at first glance on the traces I saw two connection opened and each behaves normally\r\n\r\nhaven’t checked those in-depth but it could be pre-update traces? I use a 128MB ring on there, so there’s often « old » traces at the top; only the 2 last minutes (when I poke around before making a copy of the ring) are really relevant \r\n\r\nif you said it while accounting for that then idk tho 😅"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-02-07T22:57:24Z",
+   "body": "> [0001-MINOR-mux-quic-do-not-reset-stream-on-shutw.patch.txt](https://github.com/haproxy/haproxy/files/10500669/0001-MINOR-mux-quic-do-not-reset-stream-on-shutw.patch.txt)\r\n\r\nBtw this patch doesn't build anymore with the current tip of 2.8-dev @participant2, see https://gitlab.com/mangadex-pub/haproxy/-/jobs/3731595725\r\n\r\n```\r\n  CC      src/quic_tls.o\r\nsrc/h3.c:1674:13: warning: unused function 'h3_reset' [-Wunused-function]\r\nstatic void h3_reset(struct qcs *qcs)\r\n            ^\r\nsrc/mux_quic.c:2475:21: fatal error: no member named 'reset' in 'struct qcc_app_ops'\r\n                if (qcc->app_ops->reset)\r\n                    ~~~~~~~~~~~~  ^\r\n1 error generated.\r\nmake[2]: *** [Makefile:988: src/mux_quic.o] Error 1\r\n```"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-02-07T23:14:48Z",
+   "body": "In other news, running 2.8-dev ( d85227fca20a5c793857c1632283ef4a2120285a ) I get some QUIC protocol errors.\r\n\r\n![2023-02-07 23_08_42](https://user-images.githubusercontent.com/875533/217387817-9cad0fe5-2edc-4050-a302-c7c96c81ce17.png)\r\n\r\nBut the good news is that I triggered those while setting up a reproducer for this issue as a whole\r\n\r\nHere's the hacky configuration I came to https://github.com/reporter/haproxy-bug-repros/blob/issue-2004/haproxy.cfg\r\n\r\nUnfortunately it's a bit tricky to even run correctly without accidentally having some H2 fallbacks triggering left and right...\r\n\r\nYou need to ensure the following:\r\n1. You're using the local haproxy as an entrypoint (some /etc/hosts editing should do the trick)\r\n2. You're forcing H3 etc on chrome (`chromium-browser --ignore-certificate-errors --enable-quic --origin-to-force-quic-on=localhost:443 --origin-to-force-quic-on=<redacted-host>:443 --origin-to-force-quic-on=<redacted-host>:443` is my complete CLI command)\r\n3. You can then access https://localhost which should load a proxied copy of our dev website\r\n\r\nProbably you'll run into QUIC issues. But maybe not either. If not, then I have no good repro. I merely see it happen on 50% of chrome sessions; sometimes entirely breaking, sometimes images, sometimes working flawlessly. Hard to say for sure tbh..."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-04-15T06:19:02Z",
+   "body": "Is this issue still relevant or should we close it ?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-04-15T06:29:55Z",
+   "body": "Unfortunately it still happens (albeit less often than before). We get a couple of end-user reports a day about it... Alas, I still have no idea of how to reproduce it and mostly hope it ends up \"fixing itself\" as a side-effect of something else..."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-04-15T06:37:12Z",
+   "body": "OK thanks!\r\n"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-04-15T06:37:44Z",
+   "body": "I'll mark it as \"waiting for feedback\" so that we think about having a look periodically and asking for any observed change."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-04-19T07:10:12Z",
+   "body": "Note that there was a person on the mailing list with an apparently reproducible test case of this just yesterday"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-04-19T07:11:12Z",
+   "body": "Indeed. Waiting for his answer."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-04-26T15:59:18Z",
+   "body": "For your information, I have pushed two fixes which should remove/reduce the number of spurrious RESET_STREAM frames. I hope it can improve the current issue."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-04-26T16:11:24Z",
+   "body": "Nice stuff, I'll give it a try soon-ish 👍 "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-04-26T16:44:59Z",
+   "body": "Got exciting news to share! My previous reproducer in our dev environment doesn't work anymore with these patches!\r\n\r\nSo while that might not have caught *all* cases, at least it seems to have caught a chunk of them indeed 🎉 "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-04-26T17:30:38Z",
+   "body": "The only caveat is that I don't have good options to monitor the results of these further (besides user complaints)... Wish I had setup a NEL collector but that's been on the very long todo list for 2 years now... 🥲 "
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-04-28T06:59:10Z",
+   "body": "Indeed it's difficult to know for sure if a RESET_STREAM emitted by haproxy is justified or not. Anyway, above patches have been backported and released through 2.7.7 so I propose to close this issue for now :)"
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "haproxy/haproxy",
+  "default_branch": "master",
+  "commit_sha": "86aac23e6b5f8efde8950573705f494642c11f82",
+  "as_of": "2023-01-18T11:28:36Z",
+  "method": "github_commits_until"
+ },
+ "images": [
+  {
+   "where": "opening",
+   "source_url": "https://user-images.githubusercontent.com/875533/213152658-067cd16c-0bef-4420-932b-443394896bbb.png",
+   "file": "gh_haproxy_haproxy_2004_img0.png"
+  },
+  {
+   "where": "c6",
+   "source_url": "https://user-images.githubusercontent.com/875533/213736473-9167cfde-b888-42e2-a067-9bd1d0f7b588.png",
+   "file": "gh_haproxy_haproxy_2004_img1.png"
+  },
+  {
+   "where": "c24",
+   "source_url": "https://user-images.githubusercontent.com/875533/214319986-b29f5110-fa78-4727-9a5c-b85cd80079a4.png",
+   "file": "gh_haproxy_haproxy_2004_img2.png"
+  },
+  {
+   "where": "c24",
+   "source_url": "https://user-images.githubusercontent.com/875533/214320002-8a2cd2f4-7592-4fa1-8844-1fad8a71800e.png",
+   "file": "gh_haproxy_haproxy_2004_img3.png"
+  },
+  {
+   "where": "c24",
+   "source_url": "https://user-images.githubusercontent.com/875533/214321853-53903d03-beb1-4579-87d2-e07e9cc33075.png",
+   "file": "gh_haproxy_haproxy_2004_img4.png"
+  },
+  {
+   "where": "c24",
+   "source_url": "https://user-images.githubusercontent.com/875533/214322313-a535e56a-4846-4e33-9c7d-a929eff4b628.png",
+   "file": "gh_haproxy_haproxy_2004_img5.png"
+  },
+  {
+   "where": "c24",
+   "source_url": "https://user-images.githubusercontent.com/875533/214322575-175a7893-4fb1-4cf4-ae6e-af75b3e9c0ff.png",
+   "file": "gh_haproxy_haproxy_2004_img6.png"
+  },
+  {
+   "where": "c25",
+   "source_url": "https://user-images.githubusercontent.com/875533/214330683-a01b381f-f46c-4d57-9de9-df167d4338b6.png",
+   "file": "gh_haproxy_haproxy_2004_img7.png"
+  },
+  {
+   "where": "c25",
+   "source_url": "https://user-images.githubusercontent.com/875533/214330680-2fc9a252-3e2e-4fef-850a-ef1048df5ad5.png",
+   "file": "gh_haproxy_haproxy_2004_img8.png"
+  },
+  {
+   "where": "c31",
+   "source_url": "https://user-images.githubusercontent.com/875533/214678937-b2e93821-5007-45ef-890b-15cb077f6a73.png",
+   "file": "gh_haproxy_haproxy_2004_img9.png"
+  },
+  {
+   "where": "c32",
+   "source_url": "https://user-images.githubusercontent.com/875533/214723785-2d25d524-263f-45fd-a463-1578265b83d2.png",
+   "file": "gh_haproxy_haproxy_2004_img10.png"
+  },
+  {
+   "where": "c33",
+   "source_url": "https://user-images.githubusercontent.com/875533/214678937-b2e93821-5007-45ef-890b-15cb077f6a73.png",
+   "file": "gh_haproxy_haproxy_2004_img11.png"
+  },
+  {
+   "where": "c36",
+   "source_url": "https://user-images.githubusercontent.com/875533/217387817-9cad0fe5-2edc-4050-a302-c7c96c81ce17.png",
+   "file": "gh_haproxy_haproxy_2004_img12.png"
+  }
+ ],
+ "slug": "gh_haproxy_haproxy_2004"
+}

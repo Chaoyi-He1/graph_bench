@@ -1,0 +1,149 @@
+{
+ "repo": "participant1/fzf",
+ "number": 3777,
+ "url": "https://github.com/participant1/fzf/issues/3777",
+ "title": "Calling fzf#run with a list as source fail (n)vim is used from git bash",
+ "state": "closed",
+ "labels": [],
+ "reporter": "reporter",
+ "created_at": "2024-05-07T02:02:13Z",
+ "closed_at": "2024-05-07T11:20:15Z",
+ "body": "### Checklist\n\n- [X] I have read through the manual page (`man fzf`)\n- [X] I have searched through the existing issues\n- [X] For bug reports, I have checked if the bug is reproducible in the latest version of fzf\n\n### Output of `fzf --version`\n\n0.51.0-devel (c5fb0c4)\n\n### OS\n\n- [ ] Linux\n- [ ] macOS\n- [X] Windows\n- [ ] Etc.\n\n### Shell\n\n- [X] bash\n- [X] zsh\n- [ ] fish\n\n### Problem / Steps to reproduce\n\nI noticed some issues running `:Lines` or `:BLines` when using nvim under bash from git. The source of the issueis that when the `source` in the options passed to `fzf#run` is a list, the `source_command` will use the **type** command to get the content of the temporary file. This works fine if called from powershell or cmd as `type` will do the expected action but for bash (and zsh if you install it) it will fail as type is a shell built-in.\r\n\r\n![image](https://github.com/participant1/fzf/assets/49035812/ba7dafbe-7ad4-4e96-b3ae-29ef11f25734)\r\n\r\n```diff\r\n  if has_key(dict, 'source')\r\n    let source = remove(dict, 'source')\r\n    let type = type(source)\r\n    if type == 1\r\n      let source_command = source\r\n    elseif type == 3\r\n      let temps.input = s:fzf_tempname()\r\n      call s:writefile(source, temps.input)\r\n+     let source_command = (s:is_win ? 'type ' : 'cat ').fzf#shellescape(temps.input)\r\n    else\r\n      throw 'Invalid source type'\r\n    endif\r\n  else\r\n```\r\n\r\nI've manually changed the command from `type` to `cat` and that fixes the issue but it is hard to identify when bash/zsh is the current interactive shell. I'd suggest to provide some global variable like `g:fzf_cat` that if present, it will be used instead of choosing between `type` and `cat`.\r\n\r\nIf the detection route is preferred, checking for the environment variable `$SHELL` should work as it won't be set neither from cmd nor powershell.\r\n",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2024-05-07T08:14:38Z",
+   "body": "I wonder if this patch fixes your issue:\r\n\r\n```diff\r\ndiff --git a/plugin/fzf.vim b/plugin/fzf.vim\r\nindex b73f2aa..02dd60c 100644\r\n--- a/plugin/fzf.vim\r\n+++ b/plugin/fzf.vim\r\n@@ -508,19 +508,19 @@ try\r\n   endif\r\n \r\n   if has_key(dict, 'source')\r\n-    let source = remove(dict, 'source')\r\n+    let source = dict.source\r\n     let type = type(source)\r\n     if type == 1\r\n-      let source_command = source\r\n+      let prefix = '('.source.')|'\r\n     elseif type == 3\r\n       let temps.input = s:fzf_tempname()\r\n       call s:writefile(source, temps.input)\r\n-      let source_command = (s:is_win ? 'type ' : 'cat ').fzf#shellescape(temps.input)\r\n+      let prefix = (s:is_win ? 'type ' : 'cat ').fzf#shellescape(temps.input).'|'\r\n     else\r\n       throw 'Invalid source type'\r\n     endif\r\n   else\r\n-    let source_command = ''\r\n+    let prefix = ''\r\n   endif\r\n \r\n   let prefer_tmux = get(g:, 'fzf_prefer_tmux', 0) || has_key(dict, 'tmux')\r\n@@ -544,11 +544,7 @@ try\r\n   endif\r\n   \" Respect --border option given in $FZF_DEFAULT_OPTS and 'options'\r\n   let optstr = join([s:border_opt(get(dict, 'window', 0)), s:extract_option($FZF_DEFAULT_OPTS, 'border'), optstr])\r\n-  let prev_default_command = $FZF_DEFAULT_COMMAND\r\n-  if len(source_command)\r\n-    let $FZF_DEFAULT_COMMAND = source_command\r\n-  endif\r\n-  let command = (use_tmux ? s:fzf_tmux(dict) : fzf_exec).' '.optstr.' > '.temps.result\r\n+  let command = prefix.(use_tmux ? s:fzf_tmux(dict) : fzf_exec).' '.optstr.' > '.temps.result\r\n \r\n   if use_term\r\n     return s:execute_term(dict, command, temps)\r\n@@ -559,14 +555,6 @@ try\r\n   call s:callback(dict, lines)\r\n   return lines\r\n finally\r\n-  if exists('source_command') && len(source_command)\r\n-    if len(prev_default_command)\r\n-      let $FZF_DEFAULT_COMMAND = prev_default_command\r\n-    else\r\n-      let $FZF_DEFAULT_COMMAND = ''\r\n-      silent! execute 'unlet $FZF_DEFAULT_COMMAND'\r\n-    endif\r\n-  endif\r\n   let [&shell, &shellslash, &shellcmdflag, &shellxquote] = [shell, shellslash, shellcmdflag, shellxquote]\r\n endtry\r\n endfunction\r\n@@ -596,8 +584,8 @@ function! s:fzf_tmux(dict)\r\n       endif\r\n     endfor\r\n   endif\r\n-  return printf('LINES=%d COLUMNS=%d %s %s - --',\r\n-    \\ &lines, &columns, fzf#shellescape(s:fzf_tmux), size)\r\n+  return printf('LINES=%d COLUMNS=%d %s %s %s --',\r\n+    \\ &lines, &columns, fzf#shellescape(s:fzf_tmux), size, (has_key(a:dict, 'source') ? '' : '-'))\r\n endfunction\r\n \r\n function! s:splittable(dict)\r\n@@ -727,7 +715,8 @@ function! s:execute(dict, command, use_height, temps) abort\r\n     let a:temps.shellscript = shellscript\r\n   endif\r\n   if a:use_height\r\n-    call system(printf('tput cup %d > /dev/tty; tput cnorm > /dev/tty; %s < /dev/tty 2> /dev/tty', &lines, command))\r\n+    let stdin = has_key(a:dict, 'source') ? '' : '< /dev/tty'\r\n+    call system(printf('tput cup %d > /dev/tty; tput cnorm > /dev/tty; %s %s 2> /dev/tty', &lines, command, stdin))\r\n   else\r\n     execute 'silent !'.command\r\n   endif\r\n```\r\n\r\nIt's basically reverting what I did in 7411da8d5a37b94b2171920c82c0dafe6f9115b6.\r\n\r\n`fzf#run` forces using `cmd.exe` via `s:use_sh`\r\n\r\nhttps://github.com/participant1/fzf/blob/4bedd33c593ab0cb750e17c42750048904fdf7fb/plugin/fzf.vim#L447-L458\r\n\r\nso `type` should be available, but instead of directly executing the command, we're setting `$FZF_DEFAULT_COMMAND` so that fzf launches the process instead. And the behavior depends on `$SHELL`.\r\n\r\nAnother option would be to temporarily switch `$SHELL` as well in `s:use_sh`. But this is probably not a good idea.\r\n\r\n```diff\r\ndiff --git a/plugin/fzf.vim b/plugin/fzf.vim\r\nindex b73f2aa..aa0ac02 100644\r\n--- a/plugin/fzf.vim\r\n+++ b/plugin/fzf.vim\r\n@@ -447,6 +447,7 @@ endfunction\r\n function! s:use_sh()\r\n   let [shell, shellslash, shellcmdflag, shellxquote] = [&shell, &shellslash, &shellcmdflag, &shellxquote]\r\n   if s:is_win\r\n+    let $SHELL = 'cmd.exe'\r\n     set shell=cmd.exe\r\n     set noshellslash\r\n     let &shellcmdflag = has('nvim') ? '/s /c' : '/c'\r\n@@ -567,7 +568,7 @@ finally\r\n       silent! execute 'unlet $FZF_DEFAULT_COMMAND'\r\n     endif\r\n   endif\r\n-  let [&shell, &shellslash, &shellcmdflag, &shellxquote] = [shell, shellslash, shellcmdflag, shellxquote]\r\n+  let [$SHELL, &shell, &shellslash, &shellcmdflag, &shellxquote] = [shell, shell, shellslash, shellcmdflag, shellxquote]\r\n endtry\r\n endfunction\r\n \r\n```"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-05-07T11:22:40Z",
+   "body": "I decided to apply the first patch, as I don't really think temporarily swapping `$FZF_DEFAULT_COMMAND` is a good idea, and a typical source command will terminate itself when its output stream is broken. Please update and see if it helps."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-05-07T21:09:25Z",
+   "body": "Yes, it does fixes the issue. Thanks!"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-05-14T19:11:48Z",
+   "body": "Dear @reporter , would you mind specifying your Windows version? Using latest fzf 0.52.1 and Git Bash, I can run `:FZF` from Vim in Git Bash in Windows 11, but not under Windows 10. Under Windows 10, only an empty `cmd` prompt shows up that can be exited to return to Vim. Fzf works fine in Git Bash itself. I am out of ideas why this does not work on Windows 10."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-05-14T19:16:51Z",
+   "body": "Okay, the solution is given in the open issue https://github.com/participant1/fzf/issues/1983 \r\nNot sure why the fix is not applied?\r\nI also wonder why Windows 11 does not suffer from this"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-05-14T19:22:33Z",
+   "body": "I have windows 11. I think I've encounter the issue described in #1983 and I called `cmd` as `cmd.exe //c` from git bash."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-05-14T19:30:22Z",
+   "body": "@participant2 what do you get if you echo `$MSYSTEM`? I kind of remember that it may be an issue if get `MSYS` and not `MINGW` as the value.\r\n\r\nCould you try starting git bash like this from powershell and test if :FZF works for you?\r\n\r\n```powershell\r\n& \"$env:PROGRAMFILES/Git/usr/bin/env.exe\" MSYS=enable_pcon MSYSTEM=MINGW64 enable_pcon=1 /usr/bin/bash -il\r\n```"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-05-14T19:33:43Z",
+   "body": "Thank you for your assistance. The same issue persisted.\r\n\r\nWhat works wonders is either adding the suggested environment variable or rather doubling the initial slashes\r\n\r\n```vim\r\nlet command = 'cmd.exe ///C '.fzf#shellescape('set \"TERM=\" & start /WAIT sh -c '.shellscript)\r\n```"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-05-14T19:37:05Z",
+   "body": "Curiously, this breaks `:FZF` under Windows 11. So a case distinction is in order?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-05-14T19:43:51Z",
+   "body": "Do you have same git version? Recent versions of git change the MSYS runtime which could cause those differences you experience.\r\nIs git bash in your path in both PCs?\r\n"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-05-14T19:46:31Z",
+   "body": "What works under both versions, 10 and 11, is `MSYS_NO_PATHCONV=1` as proposed in https://github.com/participant1/fzf/issues/1983\r\n"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-05-14T19:47:46Z",
+   "body": "I tried with the same latest git, vim and fzf version by scoop.\r\nHow did you get it working under Windows 10?"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-05-14T19:48:58Z",
+   "body": "I find it rather likely that issue #1983, probably using Windows 10 as it is from April 2020, is still open "
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-05-14T19:50:38Z",
+   "body": "> Recent versions of git change the MSYS runtime\r\n\r\nWould you mind explaining how this affects this issue?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-05-14T19:56:24Z",
+   "body": "> How did you get it working under Windows 10?\r\n\r\nI don't have windows 10. I mentioned above I use windows 11.\r\n\r\n> Would you mind explaining how this affects this issue?\r\n\r\nSure, at some point I started experiencing https://github.com/dandavison/delta/issues/1318. The root cause came from some changes in MSYS which git bash uses. https://github.com/dscho/msys2-runtime/commit/10e99fe74bcbbf3fa7ff78b4849329b7595683a9\r\n"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-05-14T20:01:50Z",
+   "body": "> I don't have windows 10. I mentioned above I use windows 11\r\n\r\nAs it works fine under Windows 11 with the exact same setup, but not under Windows 10,\r\nI find it unlikely that MSYS is the cause, but rather (Conhost ?!) differences between the Windows versions."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-05-14T20:09:49Z",
+   "body": "> I find it unlikely that MSYS is the cause\r\n\r\nI asked about the git version to rule out this. Conhost is the terminal but I don't think it influences the environment. You could try the git bash terminal (I think it is MinTTY) or Windows Terminal to see if anything changes."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-05-14T20:13:54Z",
+   "body": "> You could try the git bash terminal (I think it is MinTTY) or Windows Terminal to see if anything changes.\r\n\r\nYes, I tried other terminals, notably the latest Git Bash terminal. Nothing changes. That's why I'd have appreciated your testing on Windows 10 to confirm. "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-05-14T23:26:29Z",
+   "body": "@participant2 I figured out your issue. I got the clue from #1983 as the addition for `MSYS_NO_PATHCONV` checks for the following `has('win32unix')`. It is only true in the version of `vim` that comes with git bash (and probably with cygwing as per the help description). I found that I have `neovim` and `vim` from scoop higher in my path which return false to that feature check but they return true to `has('win32')`.\r\n\r\nIf I load fzf and fzf.vim in the vim from git bash it does what you describe, it goes directly into cmd.exe.\r\nCould you try downloading neovim (to avoid confusion with vim) and try there? If `has('win32unix')` is false, it should work fine.\r\n"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-05-15T05:15:44Z",
+   "body": "> It is only true in the version of vim that comes with git bash (and probably with cygwing as per the help description)\r\n\r\nYes, the fix only applies for Vim in Git Bash which sets `has('win32unix')`. \r\nSince this issue's title contained \r\n\r\n> vim is used from git bash\r\n\r\nI thought it to be about Vim from git bash.\r\n\r\nThere's no issue for any other Vim executable, say that installed by Scoop;\r\nit worked fine in any other terminal, but not for Git Bash, which I however use by preference.\r\n\r\nFor some reason, the issue for Vim in Git Bash is gone in Windows 11 on my computer, but yet there in Windows 10, as one expects if bash converts any arguments containing `/` such as in `cmd /c` to a path.\r\nInteresting that you can reproduce it for Vim in Git Bash in Windows 11. (I can't.) Are you using the latest versions?\r\n\r\nIn view of this, replacing `/C` by `///C` or adding `MSYS_NO_PATHCONV=1`  might fix be considered a universal fix. Could you try it in https://github.com/participant1/fzf/blob/030428ba43671cf951712de41be6d3bfb84117c3/plugin/fzf.vim#L714 ?"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-05-15T07:44:35Z",
+   "body": "Since `MSYS_NO_PATHCONV=1` also refrains from converting paths passed in `s:command`, but only `/C` should not be converted, doubling `/` in `/C` is the finer solution. Could you check that it works for you? Seemingly, depending on the environment, slashes had to be quadrupled."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-05-15T11:39:42Z",
+   "body": "In my case I can see the same issue happening in windows 11 (make sure in your window 11 pc you are calling the same vim). I imagine it happens on the cygwin version of vim specifically (as the description of the feature `had('win32unix')` implies).\r\n\r\nI have other vim excutables due to other issues happening in the provided vim with git bash, thus I ensured to have it lower in my path.\r\n\r\n> Could you try it in\r\n\r\nI'll try that later."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-05-15T11:48:53Z",
+   "body": "Thank you for your testing. I am testing in a Windows 10 VM, where, as for participant1, doubling the forward slash works wonders. However, on the Windows 11 machine no slash was needed, whereas the Windows 10 machine demanded three of them. Since this has been merged, it would be good to have some proven record."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-05-16T02:40:39Z",
+   "body": "When I open git bash's vim executable and I run something like `:FZF` or `:LINES` (from `fzf.vim`), it opens a new window terminal with the fzf. You can choose something and the selection will open back to the initial terminal window.\r\n\r\nI believe that's the expected behavior. If so, it should be working fine."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-05-16T06:04:50Z",
+   "body": "Good news, yes, that's also how it's been behaving for me. It's also working fine on Windows 10 and 11 here. Let it remain a mystery why it worked on Windows 11 in the first place."
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "participant1/fzf",
+  "default_branch": "master",
+  "commit_sha": "c5fb0c43f9222e72ff00290162b68e34a8f0d5d7",
+  "as_of": "2024-05-07T02:02:13Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_participant1_fzf_3777"
+}

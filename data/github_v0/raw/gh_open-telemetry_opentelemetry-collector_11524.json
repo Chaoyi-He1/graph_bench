@@ -1,0 +1,122 @@
+{
+ "repo": "open-telemetry/opentelemetry-collector",
+ "number": 11524,
+ "url": "https://github.com/open-telemetry/opentelemetry-collector/issues/11524",
+ "title": "Should ConfigValidator be in confmap?",
+ "state": "closed",
+ "labels": [
+  "area:component",
+  "area:confmap"
+ ],
+ "reporter": "reporter",
+ "created_at": "2024-10-23T15:39:16Z",
+ "closed_at": "2025-02-04T22:46:52Z",
+ "body": "**Is your feature request related to a problem? Please describe.**\r\n\r\nCurrently the `ConfigValidator` is part of the `component` package, and for example in `mdatagen` where we use confmap it is a bit strange to depend on the `component.ConfigValidator` for config validation.\r\n\r\n**Describe the solution you'd like**\r\n<!-- A clear and concise description of what you want to happen. -->\r\n\r\nProvide the configuration `Validator` as part of the `confmap` repository, and probably make it part of `Conf.Unmarshal` (configurable) to also do validation.\r\n\r\n**Describe alternatives you've considered**\r\n<!-- A clear and concise description of any alternative solutions or features you've considered. -->\r\n\r\nLeave where it is right now.\r\n",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2024-10-24T17:22:05Z",
+   "body": "Is it correct to say from a component developer perspective it doesn't matter where it lives?"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-10-24T18:01:56Z",
+   "body": "> Is it correct to say from a component developer perspective it doesn't matter where it lives?\r\n\r\nYes, but if we want to use confmap in other places like I said in `mdatagen` it is confusing. "
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-10-24T20:20:31Z",
+   "body": "I agree `confmap` seems like a better place for it"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-10-25T09:33:32Z",
+   "body": "I don't have a strong opinion on this (which makes me lean slightly into \"leave it as it is\")"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-11-04T17:25:54Z",
+   "body": "> probably make it part of Conf.Unmarshal (configurable) to also do validation.\r\n\r\nToday I believe that `otelcol` is our collector's use of `ConfigValidator`. What problem would we be solving by adding something configurable to `Conf.Unmarshal`? "
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-12-11T12:54:09Z",
+   "body": "Thinking about this again, I feel like it makes sense to move this to `confmap` since this should evolve with `confmap` and if we do a `confmap/v2` we would want to be able to change this interface alongside it"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-12-11T16:43:39Z",
+   "body": "@reporter If we were to move this, what would we do with `component.ValidateConfig`?"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-12-15T21:46:57Z",
+   "body": "Do we even need `component.ValidateConfig`? I can't see any value in it..."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-12-17T10:10:48Z",
+   "body": "@participant3 Here are the places where this is used: https://github.com/search?q=org%3Aopen-telemetry+language%3AGo+component.ValidateConfig&type=code\r\n\r\nThere are a lot of usages that could be avoided/converted, but I am not confident that we would be able to remove all of them."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2025-01-06T16:33:34Z",
+   "body": "We discussed this issue during the stability SIG meeting of 1/6 and came up with the following suggestions:\r\n1. Move the validation code out of component to an experimental package (prefixed with x)\r\n2. Look at whether this validation code should be moved to stable, or use a new approach, using for example https://github.com/go-playground/validator so we don't implement our own validation framework. A new issue for this will be cut to continue the work."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-01-06T16:36:29Z",
+   "body": "I'll submit a PR to move validation stuff to `xcomponent`."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-01-06T17:45:20Z",
+   "body": "@reporter @participant5 @participant3 would adding support for https://github.com/go-playground/validator be a breaking change? Config validation is an important part of collector 1.0 and the Validator interface is a sufficient solution. I think we could move forward with our Validator interface for 1.0 and add support for https://github.com/go-playground/validator as a feature add after."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-01-06T18:34:32Z",
+   "body": "Thinking about `ConfigValidator` and `ValidateConfig` some more I would prefer not to move `ConfigValidator` to an `xcomponent` as I don't believe it should be considered experimental. `ConfigValidator` is implemented widely by end-user's custom components and it is a sufficient solution for component developers to enforce config validation.\r\n\r\nIf we must move `ConfigValidator`, I'd prefer to move it directly to `confmap` instead of `xcomponent`.\r\n\r\n`ValidateConfig` is a helper function that allows checking if a `Config` (`any`) implements `ConfigValidator`, and executes `Validate()` it if it can. This is used in `otelcol` and a lot of tests. While `otelcol` and all those test functions could implement this feature themselves, I believe it is beneficial to provide this capability to our users. \r\n\r\nComponent also defines the public `type Config any` that `ValidateConfig` config uses, but is also used throughout otelcol modules to denote component config, such as in `otelcol.Config`:\r\n\r\n```go\r\n// Config defines the configuration for the various elements of collector or agent.\r\ntype Config struct {\r\n\t// Receivers is a map of ComponentID to Receivers.\r\n\tReceivers map[component.ID]component.Config `mapstructure:\"receivers\"`\r\n\r\n\t// Exporters is a map of ComponentID to Exporters.\r\n\tExporters map[component.ID]component.Config `mapstructure:\"exporters\"`\r\n\r\n\t// Processors is a map of ComponentID to Processors.\r\n\tProcessors map[component.ID]component.Config `mapstructure:\"processors\"`\r\n\r\n\t// Connectors is a map of ComponentID to connectors.\r\n\tConnectors map[component.ID]component.Config `mapstructure:\"connectors\"`\r\n\r\n\t// Extensions is a map of ComponentID to extensions.\r\n\tExtensions map[component.ID]component.Config `mapstructure:\"extensions\"`\r\n\r\n\tService service.Config `mapstructure:\"service\"`\r\n}\r\n```\r\n\r\nI agree that if `confmap` could do what `ValidateConfig` does as part of its unmarshal then we may not need it anymore.\r\n\r\nHere is what I propose we do to move forward without any experimental packages.\r\n\r\n1. Continue with the PoC of https://github.com/go-playground/validator. Validation with tags would be cool and could help with doc generation. I believe this is a feature-add that should be worked independently of this issue - there are too many custom components in the world today for us to abandon the ConfigValidator interface entirely.\r\n2. Duplicate `ConfigValidator` in `confmap` and add the functionality that `ValidateConfig` provides directly to `Conf.Unmarshal`.\r\n3. If we like the solution from step 2, deprecate and eventually remove `component.ConfigValidator` and `component.ValidateConfig`.\r\n\r\nThis plan leaves `component.Config` in kind of an awkward place as there wont be anything in `component` that uses it. The ergonomics it provides to otelcol, connectors, and other public structs is really nice tho, so I say leave it."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2025-01-06T18:40:34Z",
+   "body": "> @reporter @participant5 @participant3 would adding support for https://github.com/go-playground/validator be a breaking change? Config validation is an important part of collector 1.0 and the Validator interface is a sufficient solution. I think we could move forward with our Validator interface for 1.0 and add support for https://github.com/go-playground/validator as a feature add after.\r\n\r\nI think we can build a shim with a ConfigValidator impl that calls out to Validator as part of a POC to see what the end user experience is."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2025-01-06T18:47:23Z",
+   "body": "https://github.com/open-telemetry/opentelemetry-collector/issues/12027 is open for the validator POC."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-01-06T22:35:14Z",
+   "body": "I ran into an issue today while implementing validation in the Unmarshal. While it does work for invoking the `Validate` function of components and Service, we would need to make some changes to the way `otelcol` handles config unmarshalling in order to get `otelcol.Config.Validate` to be invoked. \r\n\r\nThis is because `otelcol` doesn't ask `confmap` to unmarshal into a `otelcol.Config` but into a `otelcol.configSettings`, which `otelcol` then uses to create the `otelcol.Config`. `otelcol` then manually calls `otelcol.Config.Validate`. There is validation logic in `otelcol.Config.Validate`, such has checking that pipelines list only configured components, that we need to invoke, so we'd either need to keep that particular check in place or modify `otelcol`'s unmarshaling logic to use a `otelcol.Config`.\r\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-01-06T22:56:14Z",
+   "body": "There is also an issues when components implement custom Unmarshal functions. \r\n\r\nFor example, the otlpreceiver implements a [custom unmarshaller](https://github.com/open-telemetry/opentelemetry-collector/blob/6c99ba0558590f9ddfb345079af3953de1db345b/receiver/otlpreceiver/config.go#L63) than requires that the user have set `grpc` or `http` in their config. If the user supplies \r\n\r\n```yaml\r\nreceivers:\r\n  otlp:\r\n```\r\n\r\nthe collector should fail validation.\r\n\r\nThe custom unmarshaller first calls `confmap.Unmarshal`, which, assuming we've updated confmap to handle invoking `Validate()`, will then calls the receiver's `Validate` function. When this happens the current `cfg` value is the receiver's default config, so validation passes. Then the custom unmarshal logic removes the default http/grpc values since the user did not provide their keys, resulting in an invalid config that passed validation.\r\n\r\n "
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-01-06T23:25:37Z",
+   "body": "I was able to work around the custom unmarshal issue by updating the cases in the reflective `validate` logic. The confmap hook handling the custom unmarshalling logic does resolve as part of `decodeConfig`, which means the resulting unmarshalled object can get passed correctly into confmap's validate logic after the custom unmarshal has been complete.\r\n\r\nThis means the components validate function may get executed multiple times. I believe that is safe. "
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-01-07T21:52:21Z",
+   "body": "Created https://github.com/open-telemetry/opentelemetry-collector/pull/12031 to add `ConfigValidator` to confmap and hook it up. After working on it and seeing some complications because of how otelcol does unmarshalling I'm not convinced this is enough of an improvement over the existing solution to warrant the effort."
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "open-telemetry/opentelemetry-collector",
+  "default_branch": "main",
+  "commit_sha": "cb19e1d59f6f06110872de5387a58787c37b46c0",
+  "as_of": "2024-10-23T15:39:16Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_open-telemetry_opentelemetry-collector_11524"
+}

@@ -1,0 +1,177 @@
+{
+ "repo": "duckdb/duckdb",
+ "number": 5920,
+ "url": "https://github.com/duckdb/duckdb/issues/5920",
+ "title": "Excessive memory use in aggregations with order by clause",
+ "state": "closed",
+ "labels": [
+  "stale"
+ ],
+ "reporter": "reporter",
+ "created_at": "2023-01-16T20:24:08Z",
+ "closed_at": "2023-08-28T00:32:09Z",
+ "body": "### What happens?\r\n\r\nUsing an `order by` clause in an aggregate leads to many 10's of GB of RAM usage rendering it unusable on Linux based cloud instances without extreme amounts of memory.\r\n\r\n### To Reproduce\r\n\r\nThe following sequence uses 40GB of RAM on my test machine and takes well over a minute\r\n\r\n```\r\ncreate table t (a integer, b integer, c varchar);\r\ninsert into t select a.*, b.*, c.generate_series::varchar from generate_series(1, 500) as a join generate_series(1, 500) as b on true join generate_series(1, 50) as c on true;\r\nselect a, b, list(c order by c) from t group by 1, 2;\r\n```\r\n\r\nthis query returns almost immediately and uses very little RAM (a few MBs).\r\n\r\n```\r\nselect a, b, list(c) from t group by 1, 2;\r\n```\r\n\r\nUsing `list_sort()` does not help as it causes a SEGFAULT (!).\r\n\r\n```\r\nselect a, b, list_sort(list(c)) from t group by 1, 2;\r\nSegmentation fault: 11\r\n```\r\n\r\n### OS:\r\n\r\nx64 (OS X, but tested on Linux as well)\r\n\r\n### DuckDB Version:\r\n\r\n0.6.1\r\n\r\n### DuckDB Client:\r\n\r\nCLI\r\n\r\n### Full Name:\r\n\r\nBrendan Younger\r\n\r\n### Affiliation:\r\n\r\nPersonal\r\n\r\n### Have you tried this on the latest `master` branch?\r\n\r\n- [X] I agree\r\n\r\n### Have you tried the steps to reproduce? Do they include all relevant data and configuration? Does the issue you report still appear there?\r\n\r\n- [X] I agree",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2023-01-17T08:47:25Z",
+   "body": "Thanks for the report! Perhaps @participant3 can have a look at this issue?\r\n\r\n> Using list_sort() does not help as it causes a SEGFAULT (!).\r\n\r\nHave you tried this on the latest master? There was a recent fix for this (#5823) and it seems to work correctly for me."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-01-17T22:32:07Z",
+   "body": "I can confirm that the list_sort() issue is fixed on the latest master (but not present in the automated builds for OSX from Github Actions)."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-02-17T10:54:07Z",
+   "body": "I continue to see this problem on current master (commit 73ea444b6b) with the STRING_AGG function. \r\n\r\nMy dataset has about 11M rows with about 0.8M distinct groups. The query below takes around 11G of RAM and a minute of time to complete\r\n\r\n````\r\nCREATE TABLE HISTS AS \r\n    SELECT HH_ID, MEM_ID, STRING_AGG(EMPLOYMENT_STATUS ORDER BY WAVE_NO) \r\n    FROM '/home/<user>/code/cphs/infilled_histories.parquet' \r\n    GROUP BY HH_ID,MEM_ID;\r\n````\r\n\r\nRemoving the `ORDER BY` clause makes the query run instantaneously. \r\n\r\nThe `EMPLOYMENT_STATUS` column has single-character values.\r\n\r\nThe source being a parquet file or not does not make a difference.\r\n"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-02-17T17:14:56Z",
+   "body": "The way `ORDER BY` is implemented is to cache all the values for both the arguments and the ordering clause until `Finalize`, when the sort is performed and the aggregate computed. This means that at least two ~250KB buffer pages are allocated per group. If the number of groups is large, this will lead to the type of memory explosion you are seeing. We can have a look at adaptively reducing the allocation."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-02-17T17:35:31Z",
+   "body": "I think the simplest fix here is to just defer allocation of the `ColumnDataCollection`s until they overflow the two corresponding `DataChunk` members. That would buffer 2048 values very compactly, which would cover the common case here of building short strings."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-03-02T17:16:42Z",
+   "body": "Amusingly we were already doing this. The problem is that each (small) group buffers the sort key (4 bytes) and the strings (16 bytes) in a minimum chunk size of 2048 rows. 800K * 2048 * (4 + 16) = ~32GB.\r\n\r\nThe fix is to reduce the buffer size to 16 rows, grow it to 2048 and then start dumping them into `ColumnDataCollection`s. This will \"only\" consume 256M.\r\n\r\n(It is worth mentioning here that ordered aggregation like this is going to be expensive because of the buffering, but the current implementation is certainly excessive!)"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-03-02T17:37:25Z",
+   "body": "The `LIST` aggregate has a good buffering strategy (implemented by #4265). Perhaps this could be re-used for the ordered aggregates?"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-03-02T18:15:10Z",
+   "body": "Interesting question about reusing the list aggregation. One thing that concerns me about it is that it seems to keep all the data in memory so it can't spool at scale? Another is that linked lists are typically much slower than resized vectors these days? Plus, ordered aggregates have to sink into sort buffers eventually, so there would be a bunch of copying from the LL to data chunks to sort states, and that seems slow too."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-03-02T18:30:55Z",
+   "body": "It's a linked list but it uses exponentially growing allocations, so you get batches of `4 -> 8 -> 16 -> 32 -> ..`. The difference between that and a vector is minimal as you are typically only dealing with a few batches.\r\n\r\nI would say the actual sorting would dominate the cost of copying the data around most likely, no?\r\n\r\nThe spooling to disk is a fair point - but that is something we should solve for the `LIST` as well I think."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-03-07T22:28:31Z",
+   "body": "@reporter Does the latest build work better?"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2023-03-10T08:58:35Z",
+   "body": "> We can have a look at adaptively reducing the allocation.\r\n\r\nIn practice, could this be even more efficient and \"quick win\" with #2548 or even, as a first step, by taking into account an existing PRIMARY KEY constraint?\r\nIn my usage all aggregations are performed on tables that are already naturally sorted (timeseries with timestamp column as primary key) and noticed the same ballooning memory usage.\r\n\r\nIn the simple testcase below, using ORDER BY on primary key takes 25x longer (+ allocations).\r\nPerhaps sorting could be completely avoided in such cases and this should also greatly benefit aggregations (and thus related allocations) perhaps? \r\n\r\n```sql\r\nCREATE TABLE series (i INT64 NOT NULL, PRIMARY KEY (i));\r\nINSERT INTO series SELECT * FROM generate_series(10000000);\r\n\r\nSELECT * FROM series;\r\n-- Run Time (s): real 0.007 user 0.026780 sys 0.008383\r\n\r\nSELECT * FROM series ORDER BY i;\r\n-- Run Time (s): real 0.180 user 0.810616 sys 0.245748\r\n```\r\n"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-03-10T18:36:17Z",
+   "body": "Yes this would help a lot, but we need to architect operators to take advantage of this under parallelism etc. (And the timestamp use case is near and dear to my heart!)"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-03-11T03:59:41Z",
+   "body": "The issue does not appear to be fixed.  I tested with `v0.7.2-dev586 23ee8b036a` on OS X.\r\n\r\nSpecifically, `select a, b, list(c order by c) from t group by 1, 2;` still takes 15GB and close to a minute to process.\r\n\r\nBoth `select a, b, list_sort(list(c)) from t group by 1, 2;` and `select a, b, list(c) from t group by 1, 2;` use less than 2GB and complete in a few seconds."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-03-13T01:11:28Z",
+   "body": "My apologies - I seem to have committed Donald Knuth's sin of only proving it was a fix instead of testing it. I think there is a second problem with repartitioning the hash table and the `combine` operation chewing up memory unnecessarily."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-03-14T21:44:39Z",
+   "body": "Nope, it's just spending all its time allocating memory. Time to reuse the list concatenation code."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-03-14T22:10:22Z",
+   "body": "One thing that bears mentioning is that `list_sort(list(c))` is much simpler to implement than `list(c ORDER BY <expr>)` The former can only sort the list using the existing values and can pretty much sort the list in place one row at a time, but the latter can sort the list by _any_ ordered set of pre-aggregate expressions. The `ORDER BY` version has to store all the arguments _and_ the sort values for each aggregate row until finalize time, when it can sort and dispose of the intermediates. I can do a lot of things to reduce the memory footprint, but ultimately the `ORDER BY` version will use twice the memory because it can't assume that the values and the sort key are the same. "
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-03-14T22:16:25Z",
+   "body": "We could add an optimizer pass that would transform to list_sort(list()) if the order by key is the same as the argument to list."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-03-14T22:25:45Z",
+   "body": "Yeah that occurred to me, but it would still be nice to improve the perf of the general case."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-03-14T22:28:21Z",
+   "body": "Definitely "
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-03-15T20:06:08Z",
+   "body": "Add the rewrite to `TransformFunction` (optimizer doesn't like converting aggregates to wrapped aggregates...) Benchmark went from 23.5s to 4.32s."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-03-15T22:45:38Z",
+   "body": "One small issue - how do we decide whether to use perfect aggregation? Is there a spot in the optimizer where we could do this?"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2023-03-23T10:18:43Z",
+   "body": "> participant2\r\n\r\nI've also had memory issues with `string_agg` in 0.7.1 when trying to order the aggregated list"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-03-25T15:06:56Z",
+   "body": "I think I will take a second pass at this. The common case that everyone runs into is `AGG(x ORDER BY x)`, which we can accelerate two ways without cheesy rewrites like the one I added:\r\n\r\n* Only make one copy of the data (since the data and the sort key are the same.) This will reduce memory consumption by 50%.\r\n* Use @participant6's linked list library for smaller numbers of single keys. This will defer (or eliminate) the memory overhead of creating and growing single column `DataChunk`s for each state.\r\n\r\nWith these in place I think we should remove the rewrite."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-03-26T01:22:11Z",
+   "body": "Well I (finally) found the problem, Each ordered aggregate state had its own selection vector for scattering. Switching to using one SV per call to `Update` reduced the memory footprint 90% (17GB => 2GB) and reduced the `string_agg` benchmark runtime by another factor of 2.5 (15s => 6s)."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-04-05T22:06:21Z",
+   "body": "* Sorting all the aggregate inputs for a chunk once instead of per aggregate in the chunk drops the run time by ⅓. \r\n* Increasing the number of threads that can process the aggregation finalization drops the run time for both approaches \r\n\r\n![image](https://user-images.githubusercontent.com/13156216/230222424-cc551c1c-b344-44e7-aa88-c437c450c168.png)\r\n"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-04-05T22:07:21Z",
+   "body": "One takeaway here is that we do not allocate more threads for computing slow aggregates, which impacts both functions."
+  },
+  {
+   "author": "github-actions[bot]",
+   "created_at": "2023-07-29T00:29:27Z",
+   "body": "This issue is stale because it has been open 90 days with no activity. Remove stale label or comment or this will be closed in 30 days."
+  },
+  {
+   "author": "github-actions[bot]",
+   "created_at": "2023-08-28T00:32:09Z",
+   "body": "This issue was closed because it has been stale for 30 days with no activity."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-01-28T18:57:53Z",
+   "body": "Just tried this on 1.1.4 and it runs on my MacBook in about 1.5s. Memory appears to peak at about 1.2 GB."
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "duckdb/duckdb",
+  "default_branch": "main",
+  "commit_sha": "9d7cafd187d8b25e98e8bdfa5ac6c8539917f1d6",
+  "as_of": "2023-01-16T20:24:08Z",
+  "method": "github_commits_until"
+ },
+ "images": [
+  {
+   "where": "c24",
+   "source_url": "https://user-images.githubusercontent.com/13156216/230222424-cc551c1c-b344-44e7-aa88-c437c450c168.png",
+   "file": "gh_duckdb_duckdb_5920_img0.png"
+  }
+ ],
+ "slug": "gh_duckdb_duckdb_5920"
+}

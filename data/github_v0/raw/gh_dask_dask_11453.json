@@ -1,0 +1,96 @@
+{
+ "repo": "dask/dask",
+ "number": 11453,
+ "url": "https://github.com/dask/dask/issues/11453",
+ "title": "6x Performance regression from dask 2024.8.0 onwards ",
+ "state": "closed",
+ "labels": [
+  "needs info"
+ ],
+ "reporter": "reporter",
+ "created_at": "2024-10-22T10:42:30Z",
+ "closed_at": "2024-11-04T22:21:43Z",
+ "body": "\r\n**Describe the issue**:\r\nI am seeing a huge performance regression for certain operations using `dask>=2024.8.0`.  The below example runs over 6 times faster in 2024.7.1 than in 2024.8.0. The only difference between the two environments are the dask and distributed version.\r\nSee the timeit output:\r\n`2024.7.1: 151 ms ± 19.3 ms per loop (mean ± std. dev. of 7 runs, 1 loop each)`\r\n`2024.8.0: 1.05 s ± 39.9 ms per loop (mean ± std. dev. of 7 runs, 1 loop each)`\r\n\r\nThe example is relative complex and is using an [xclim](https://github.com/Ouranosinc/xclim) function that [generates hourly temperatures from daily min and max temperatures](https://github.com/Ouranosinc/xclim/blob/main/xclim/indices/helpers.py#L730). \r\n\r\nI didn't manage to narrow it down further but suspect it has something to do with the hourly resampling.\r\n\r\n**Minimal Complete Verifiable Example**:\r\n\r\n```python\r\nimport pandas as pd\r\nimport numpy as np\r\nimport xarray as xr\r\nfrom xclim.indices.helpers import make_hourly_temperature\r\n\r\ntimes = pd.date_range(\"2000-01-01\", \"2010-12-31\", name=\"time\")\r\nannual_cycle = np.sin(2 * np.pi * (times.dayofyear.values / 365.25 - 0.28))\r\n\r\nbase = 10 + 15 * annual_cycle.reshape(-1, 1)\r\ntmin_values = base + 3 * np.random.randn(annual_cycle.size, 3)\r\ntmax_values = base + 10 + 3 * np.random.randn(annual_cycle.size, 3)\r\n\r\nds = xr.Dataset(\r\n    {\r\n        \"tasmin\": ((\"time\", \"location\"), tmin_values),\r\n        \"tasmax\": ((\"time\", \"location\"), tmax_values),\r\n    },\r\n    {\"time\": times, \"location\": [\"IA\", \"IN\", \"IL\"]},\r\n)\r\nds = ds.assign_coords(lat=(\"location\", [43.2, 40.1, 41.7]))\r\nds = ds.assign_coords(lat=ds.lat.assign_attrs(units=\"degrees_north\"))\r\nds[\"tasmin\"] = ds.tasmin.assign_attrs(units=\"degC\")\r\nds[\"tasmax\"] = ds.tasmax.assign_attrs(units=\"degC\")\r\nds = ds.chunk(time=360, location=1)\r\n```\r\n\r\n```python\r\n%%timeit\r\n\r\nmake_hourly_temperature(ds.tasmin, ds.tasmax).compute()\r\n```\r\n\r\n**Environment**:\r\n\r\n- Dask version:2024.7.1/2024.8.0\r\n- Python version: 3.11.6\r\n- Operating System: MacOS\r\n- Install method (conda, pip, source): PDM (pip)\r\n",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2024-10-22T21:02:25Z",
+   "body": "Hi,\r\n\r\nIs it intentional that you are using xarray backed by numpy until the Chunk command?\r\n\r\n\r\nWe made a change that keeps chunk sizes consistent internally for an operation that you are using, so we are preserving 360, 1 as chunk sizes. This is generally tiny, you should choose larger chunks and performance will get back to normal"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-10-23T08:07:20Z",
+   "body": "I just took an example from the xarray tutorial. So the array creation is in numpy but then of course to trigger dask. I need to have a dask array so I chunk. I will try and create a larger array."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-11-04T22:21:43Z",
+   "body": "Closing this for now, please ping to reopen if you have an example with reasonably sized chunks"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-11-06T11:54:17Z",
+   "body": "Alright @participant1, I increased DataArray and  chunksize to 3650, 100 or 2.78 MiB and computation time is still ~2x slower in 2024.8 then 2024.7.\r\n\r\n```python\r\ntimes = pd.date_range(\"2000-01-01\", \"2050-12-31\", name=\"time\")\r\nannual_cycle = np.sin(2 * np.pi * (times.dayofyear.values / 365.25 - 0.28))\r\nlocations = np.arange(1000)\r\nbase = 10 + 15 * annual_cycle.reshape(-1, 1)\r\ntmin_values = base + 3 * np.random.randn(annual_cycle.size, locations.size)\r\ntmax_values = base + 10 + 3 * np.random.randn(annual_cycle.size, locations.size)\r\n\r\nds = xr.Dataset(\r\n    {\r\n        \"tasmin\": ((\"time\", \"location\"), tmin_values),\r\n        \"tasmax\": ((\"time\", \"location\"), tmax_values),\r\n    },\r\n    {\"time\": times, \"location\": locations},\r\n)\r\nds = ds.assign_coords(lat=(\"location\", [43.2]*locations.size))\r\nds = ds.assign_coords(lat=ds.lat.assign_attrs(units=\"degrees_north\"))\r\nds[\"tasmin\"] = ds.tasmin.assign_attrs(units=\"degC\")\r\nds[\"tasmax\"] = ds.tasmax.assign_attrs(units=\"degC\")\r\nds = ds.chunk(time=10*365, location=100)\r\n```\r\n\r\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-11-06T12:36:31Z",
+   "body": "You should choose something around 100-200MiB, that’s a good chunksize, 2MiB is still way too small"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-11-06T12:36:55Z",
+   "body": "That said, you still aren’t doing anything, it’s just recording the graph "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-11-06T13:44:27Z",
+   "body": "The operation that is taking long is still the same as in the original post so I didn't post it again\r\n```python\r\n%%timeit\r\nmake_hourly_temperature(ds.tasmin, ds.tasmax).compute()\r\n```"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-11-06T13:54:31Z",
+   "body": "Xarray mentions chunks of a minimal chunksize of a 1M (1000x1000) so that's what I have been aiming so far.\r\nIn fact, if I change the chunks to something like 10*365 and 1000, I am getting a warning\r\n```python\r\nPerformanceWarning: Slicing is producing a large chunk. To accept the large\r\nchunk and silence this warning, set the option\r\n    >>> with dask.config.set(**{'array.slicing.split_large_chunks': False}):\r\n    ...     array[indexer]\r\n ```\r\nin 2024.7.1.\r\n\r\n\r\nI am also quite surprised that, so much chunk optimisation is necessary to get good results on a minimal example? Would it make sense to raise a warning for small chunks. Since to me it came as quite a (hard to trace) surprise when my tests started taking much longer after I updated my environments.\r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-11-06T13:56:29Z",
+   "body": "I assume its this change that leads to the regression for chunks that are \"too small\" ?\r\nhttps://<redacted-host>/en/stable/changelog.html#improve-scheduling-efficiency-for-xarray-groupby-reduce-patterns"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-11-06T14:06:26Z",
+   "body": "The change is this one: https://<redacted-host>/en/stable/changelog.html#improve-efficiency-and-performance-of-slicing-with-positional-indexers\r\n\r\npreviously, your example created large chunks with small inputs, which is pretty bad since it's not something you can predict. Now, you get input chunk size = output chunk size. Small input chunks will lead to small output chunks, hurting performance. \r\n\r\nThe default chunk size behind auto is 128MiB, if you use that you should be good,\r\n\r\nThe warning is now gone since the algorithm behaves better naturally, so no warning needed anymore"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-11-06T14:45:02Z",
+   "body": "So if upsample like in this case where I go from daily to hourly, the chunk size stays the same?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-11-06T14:49:23Z",
+   "body": "Yes correct\r\n\r\nreporter ***@***.***> schrieb am Mi. 6. Nov. 2024 um\r\n15:45:\r\n\r\n> So if upsample like in this case where I go from daily to hourly, the\r\n> chunk size stays the same?\r\n>\r\n> —\r\n> Reply to this email directly, view it on GitHub\r\n> <https://github.com/dask/dask/issues/11453#issuecomment-2459943848>, or\r\n> unsubscribe\r\n> <https://github.com/notifications/unsubscribe-auth/AOYQZGCB6XCIRLLQMVT455LZ7ITQLAVCNFSM6AAAAABQMFX5I2VHI2DSMVQWIX3LMV43OSLTON2WKQ3PNVWWK3TUHMZDINJZHE2DGOBUHA>\r\n> .\r\n> You are receiving this because you were mentioned.Message ID:\r\n> ***@***.***>\r\n>\r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-11-06T15:00:46Z",
+   "body": "Ok cool. I will try and see whether I can fix the slowness in my \"real world\" example and report back"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-11-06T15:01:52Z",
+   "body": "Great, I’d recommend aiming for 100MiB chunks or using auto and see how this performs "
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "dask/dask",
+  "default_branch": "main",
+  "commit_sha": "652665b20bdbe0b406a973091066f3d43f3f8d36",
+  "as_of": "2024-10-22T10:42:30Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_dask_dask_11453"
+}

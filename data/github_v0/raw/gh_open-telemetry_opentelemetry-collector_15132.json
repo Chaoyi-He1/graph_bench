@@ -1,0 +1,144 @@
+{
+ "repo": "open-telemetry/opentelemetry-collector",
+ "number": 15132,
+ "url": "https://github.com/open-telemetry/opentelemetry-collector/issues/15132",
+ "title": "[exporter/exporterhelper] Support multiple limits at once in `batch`",
+ "state": "closed",
+ "labels": [],
+ "reporter": "reporter",
+ "created_at": "2026-04-16T15:40:40Z",
+ "closed_at": "2026-06-02T14:07:47Z",
+ "body": "### Component(s)\n\nexporter/exporterhelper/internal/queuebatch\n\n### Is your feature request related to a problem? Please describe.\n\nCurrently, a sending queue batch can be sized as one of `requests`, `bytes`, or `items` with accompanying integers representing the chosen units for min and max size. While preparing recommendations and guides for Google Cloud Observability's new OTLP Log Ingestion, we found that what we really want is to configure two different limits with different units, to match the API's [quotas and limits](https://docs.cloud.google.com/stackdriver/quotas#telemetry-api-log-limits); we want the batch to be considered at limit if it reaches 8192 items **or** 5 MiB (configured to allow for other overhead in the request, something like 4.8MiB). In a logging scenario there are scenarios where you may hit one of these limits before the others because logs by nature vary heavily in size. There could be a payload where there are a few large logs, and we end up well below the item limit but hitting the overall byte limit. The opposite would happen in a scenario where there are a lot of small logs.\n\n### Describe the solution you'd like\n\nThe thought I had to not completely break config was to introduce a new `sizer` value called `compound`, and have a new field separate from `queue_size` that would allow you to specify any combination of the 3 different limit types. This would look something like:\n\n```yaml\notlp:\n  sending_queue:\n    batch:\n      sizer: compound\n      queue_compound_size:\n        num_min_items: 8192\n        num_min_bytes: 5M # maybe we should make it so this can finally take size specifiers :)\n        # maximums for both\n```\n\n### Describe alternatives you've considered\n\nFor now I think we're telling people to configure one limit or the other depending on their own workloads (i.e. if logs are smaller on average the more likely limit is the number of items). But we would really like a way to protect both.\n\nIn terms of alternate config designs, I thought something like an array of sizer limits might be kind of nice. There might be a way to implement that without breaking config. I'm not sure which is nicer.\n\n### Additional context\n\nI have vibe-coded a proof of concept of the config as described in the desired solution, but it's ugly. Much of the code around sizing assumes that it can do comparisons around some generic single int value of varying units, and the AI's attempts did not come up with a nice way to refactor it. It probably needs deeper human thought to come up with something nice, but I decided to hold off on going deeper until I got some discussion from other maintainers on the higher-level concept.\n\n### Edit History\n\n- May 6, 2026: Updated config suggestion to be more like actual batch configuration. I wrote it originally as if it was for queue size which wasn't the intention, I had just mixed myself up between the two config schemas.\n\n### Tip\n\n<sub>[React](https://github.blog/news-insights/product-news/add-reactions-to-pull-requests-issues-and-comments/) with 👍 to help prioritize this issue. Please use comments to provide useful context, avoiding `+1` or `me too`, to help us triage it. Learn more [here](https://opentelemetry.io/community/end-user/issue-participation/).</sub>",
+ "comments": [
+  {
+   "author": "github-actions[bot]",
+   "created_at": "2026-04-16T15:41:03Z",
+   "body": "Pinging code owners:\n- exporter/exporterhelper: @participant7 @participant5\n\n See [Adding Labels via Comments](https://github.com/open-telemetry/opentelemetry-collector/blob/main/CONTRIBUTING.md#adding-labels-via-comments) if you do not have permissions to add labels yourself.\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-04-16T15:41:55Z",
+   "body": "My teammate @participant4 is interested in doing the engineering work for this if the request is acceptable."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2026-04-16T16:55:24Z",
+   "body": "I see this as a valid and useful feature request. The configuration proposal shown above is acceptable."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-04-16T17:43:29Z",
+   "body": "One thing I meant to bring up in the issue description that someone could reasonably think of as a counterpoint:\n\nThe linked API Limits also show a per-entry limit. One might consider at a glance that this per-entry limit would be set in a way such that the a full set of the largest possible entries would fit within the full request limit. This is not the case for GCP's OTLP Logging API; the per-entry limit is 256 KiB, and the overall limit is 5 MiB. Assuming every single log entry coming in hit the theoretical limit, only 20 max-sized 256 KiB items could actually fit within the overall 5 MiB request limit. That's why we want to protect against both limits at the batch level to ensure robustness."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2026-04-17T11:52:42Z",
+   "body": "How about something like this?\n```\notlp:\n  sending_queue:\n    batch:\n      sizer: compound\n      queue_compound_size:\n         - sizer: items\n            value: 8192\n         - sizer: bytes\n           value: 5M\n```\n\nWith this, if new batching sizer is being added, we don't need to change the configuration struct.\nNot pushing hard for this approach, just providing some idea."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-04-17T13:12:57Z",
+   "body": "Yeah I had thought of that, I like that it doesn't change the configuration struct when adding a new sizer unit. I had two reservations:\n\n1. Not super obvious what happens if someone opts to configure it strangely, i.e. configuring multiple `items` limits in the same compound size array\n2. Size specifiers for `bytes` requires a string, so to enable that feature we would need to switch all `value` inputs to be string or implement some unmarshaling construct.\n\nI think those are both solvable problems though via validation. So I could go either way. It depends how we feel on the tradeoff of simpler implementation vs future proofing."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2026-04-20T03:29:26Z",
+   "body": "Throwing out one more option to consider:\n - deprecate and remove sizer, min_size, max_size from batch config\n - add min_items, max_items, min_bytes, max_bytes\n\n```yaml\notlp:\n  sending_queue:\n    batch:\n      min_items: 8192\n      min_bytes: 5M\n```\n\nThe _queue_ size would say as it is, since I don't think you would want to define capacity in multiple terms (?)"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2026-04-20T06:19:04Z",
+   "body": "> The _queue_ size would say as it is, since I don't think you would want to define capacity in multiple terms (?)\n\nAnd how do you define what is the term (bytes, items, requests) used?"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2026-04-20T06:20:36Z",
+   "body": "@participant2 I meant you would continue using `sizer`/`queue_size` for the queue size, only batch config would change."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2026-04-24T19:42:16Z",
+   "body": "I propose the following:\n\n1. Deprecate sizer, min_size, and max_size from the batch configuration.\n2. Add a new field, `sizers`, which is a map of sizers. \n\ne.g:\n\n```\nexporters:\n  otlp:\n    endpoint: \"localhost:4317\"\n    sending_queue:\n      enabled: true\n      queue_size: 1000\n    \n    batch:\n      flush_timeout: 200ms\n      sizers:\n        items:\n          min_size: 1000\n          max_size: 8192\n        bytes:\n          min_size: 1048576 # 1MB\n          max_size: 5242880 # 5MB\n```\n\nonly one of `batch::sizer` and `batch::sizers` can be defined.\n"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2026-04-24T23:30:14Z",
+   "body": "We assume that `OR` operator is always applied, but is it possible that someone would want batches with let's say at least `100 items AND 1MB`? "
+  },
+  {
+   "author": "participant4",
+   "created_at": "2026-04-25T02:56:49Z",
+   "body": "> We assume that `OR` operator is always applied, but is it possible that someone would want batches with let's say at least `100 items AND 1MB`?\n\n\nIn my [proposal](https://github.com/open-telemetry/opentelemetry-collector/issues/15132#issuecomment-4315815668), the `AND` operator should be applied when a user defines multiple sizers in batch::sizers. For example:\n```\nexporters:\n  otlp:\n    endpoint: \"localhost:4317\"\n    sending_queue:\n      enabled: true\n      queue_size: 1000\n    \n    batch:\n      flush_timeout: 200ms\n      sizers:\n        items:\n          min_size: 1000\n        bytes:\n          min_size: 1048576 # 1MB\n```\nIn this case, a batch must contain both at least 1,000 items and a minimum size of 1MB before being sent.\n\n\n\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-05-05T13:24:16Z",
+   "body": "> Deprecate sizer, min_size, and max_size from the batch configuration.\n\nI am not sure whether we want to deprecate the original options as that implies we're going to remove them eventually breaking config. This needs @open-telemetry/collector-maintainers to weigh in, since this is a library shared by a huge number of exporters.\n\nMy 2 cents: The config needs to change somehow to allow this feature to work (the current design of `exporterhelper` assumes it's comparing against a single `int64` of some size defined by `sizer`, so it's incompatible with a more complex sizing scheme). \n\nThe question is whether:\n\nA) We adopt the approach suggested by @participant4 (similar to what @participant3 also proposed) which results in a nicer config but requires breakage.  \nB) We take either mine or @participant2's proposals that leverage a `sizer` type `compound` that results in a less nice config experience but slots into the current `sizer` scheme and doesn't require us to deprecate and remove those fields.\nC) Take the approach suggested by @participant4 but NOT deprecating the existing options.\n\nI am most in favour of option A personally, but I want to be as delicate as possible when touching such a widely shared config (especially one as crucial as this, given our recent direction to attempt deprecation of the `batch` processor).\n\n---\n\n> In this case, a batch must contain both at least 1,000 items and a minimum size of 1MB before being sent.\n\nI don't think that's the right approach for the problem we're trying to solve. It needs to be `OR`. The biggest problem we're attempting to solve is size skew, i.e. is the current load just a bunch of small entries or a few large entries? In the former case, the `items::min_size` would be hit first, and the exporterhelper should NOT wait for the `bytes` limit to also be hit. I think it has to be an `OR`, and whichever `min_size` is hit first triggers a send.\n\n"
+  },
+  {
+   "author": "participant6",
+   "created_at": "2026-05-05T14:23:56Z",
+   "body": "My personal opinion is that the batch sizing config would definitely benefit from breakage before 1.0. It's not very extensible and a bit confusing as-is, especially the fallback behavior of `sizer`, as the discussion in [this PR](https://github.com/open-telemetry/opentelemetry-collector/pull/14695) makes clear.\n\nTo throw my hat in the ring, my proposal would be:\n1. Add a new `sizer` value _and_ deprecate the old ones\n2. When that new `sizer` value is selected, the existing `min_size` / `max_size` keys change from integers to a more flexible type:\n```yaml\n# maybe a string (OTTL somehow?)\n# this would make the transition very simple for users (just append the unit)\nbatch:\n  sizer: complex\n  min_size: 1000 items or 1048576 bytes\n# or perhaps a map as suggested above\nbatch:\n  sizer: complex\n  min_size:\n    or: # this approach also allows supporting AND if it turns out to be a use case\n      items: 1000\n      bytes: 1048576\n```"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2026-05-05T16:52:02Z",
+   "body": "> > Deprecate sizer, min_size, and max_size from the batch configuration.\n> \n> I am not sure whether we want to deprecate the original options as that implies we're going to remove them eventually breaking config. This needs [@open-telemetry/collector-maintainers](https://github.com/orgs/open-telemetry/teams/collector-maintainers) to weigh in, since this is a library shared by a huge number of exporters.\n> \n> My 2 cents: The config needs to change somehow to allow this feature to work (the current design of `exporterhelper` assumes it's comparing against a single `int64` of some size defined by `sizer`, so it's incompatible with a more complex sizing scheme).\n> \n> The question is whether:\n> \n> A) We adopt the approach suggested by [@participant4](https://github.com/participant4) (similar to what [@participant3](https://github.com/participant3) also proposed) which results in a nicer config but requires breakage. B) We take either mine or [@participant2](https://github.com/participant2)'s proposals that leverage a `sizer` type `compound` that results in a less nice config experience but slots into the current `sizer` scheme and doesn't require us to deprecate and remove those fields. C) Take the approach suggested by [@participant4](https://github.com/participant4) but NOT deprecating the existing options.\n> \n> I am most in favour of option A personally, but I want to be as delicate as possible when touching such a widely shared config (especially one as crucial as this, given our recent direction to attempt deprecation of the `batch` processor).\n> \n> > In this case, a batch must contain both at least 1,000 items and a minimum size of 1MB before being sent.\n> \n> I don't think that's the right approach for the problem we're trying to solve. It needs to be `OR`. The biggest problem we're attempting to solve is size skew, i.e. is the current load just a bunch of small entries or a few large entries? In the former case, the `items::min_size` would be hit first, and the exporterhelper should NOT wait for the `bytes` limit to also be hit. I think it has to be an `OR`, and whichever `min_size` is hit first triggers a send.\n\nThe evaluation of `max_size` across sizers should use `AND` logic. Does it make sense to apply `OR` for `min_size`, and`AND` for `max_size`?"
+  },
+  {
+   "author": "participant6",
+   "created_at": "2026-05-05T17:11:01Z",
+   "body": "I suspect there may be some miscommunication on what is meant by \"AND / OR logic\". The same `max_size` compound criterion could be expressed as \"a batch _must_ be emitted once the buffer reaches X items OR Y bytes\", but also as \"an emitted batch _must_ be at most X items AND Y bytes\". I would call that \"OR logic\" personally."
+  },
+  {
+   "author": "participant7",
+   "created_at": "2026-05-05T18:20:03Z",
+   "body": "@participant4 @reporter @participant1 - I think the functionality is good. I am struggling with finding the right config, some thoughts initially:\n1. Do we still need to specify a sizer if we go in this direction? I am thinking that the single sizer should use same config style if possible.\n2. How \"complex\" conditions do we need to support?\n\n\n"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2026-05-05T21:02:43Z",
+   "body": "To answer your questions:\n1. In my [proposal](https://github.com/open-telemetry/opentelemetry-collector/issues/15132#issuecomment-4315815668), the `sizer` field is deprecated in favor of the new `sizers` field, which is a map of sizers (e.g., item, bytes).  This approach works for both scenarios: a single sizer and combo sizers. \n\n2. One real-world scenario that we want to handle is when a request is constrained by two sizers of different unit ( e.g: [5MB and 8192 LogRecords](https://docs.cloud.google.com/stackdriver/quotas#telemetry-api-log-limits)). In this case we want to size a queue batch with two sizers at the same time: an `item` sizer, and a `bytes` sizer.  The proposal allows a batch to be sized based on any number of sizers, provided that each sizer uses a different unit.\n\n\n\n> [@participant4](https://github.com/participant4) [@reporter](https://github.com/reporter) [@participant1](https://github.com/participant1) - I think the functionality is good. I am struggling with finding the right config, some thoughts initially:\n> \n> 1. Do we still need to specify a sizer if we go in this direction? I am thinking that the single sizer should use same config style if possible.\n> 2. How \"complex\" conditions do we need to support?\n\n"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2026-05-06T15:20:28Z",
+   "body": "btw: I'm trying to add this to the SDKs too https://github.com/open-telemetry/opentelemetry-specification/issues/5068 (thank you @participant1 for linking)."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-05-06T20:05:43Z",
+   "body": "I'd love to work out a consistent agreement between SDK config and what we end up doing here (maybe not in the literal shared code sense, but adopting the same strategy). Batching is hard and a consistent pain point for users, so a similar config surface for both with a broader blog post that covers both would be really useful for the community.\n\nI'll hop into the discussion on the spec repo issue and see if we can't organize a proper discussion including both camps."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-05-06T20:14:34Z",
+   "body": "My current thoughts re: @participant7 \n\n> 1. Do we still need to specify a sizer if we go in this direction? I am thinking that the single sizer should use same config style if possible.\n\n@participant4's original proposal would allow for this, since within the `sizers` map you could just specify one sizer sub-map which would be functionally the same as the current single-sizer config. That would allow the existing fields to be marked deprecated with the new config being chosen.\n\nMy [previous hesitancy](https://github.com/open-telemetry/opentelemetry-collector/issues/15132#issuecomment-4379663858) was mostly that I wanted to be delicate about deprecating and changing such an important config; the community has been thrashed around already between whether they should use `batch` processor or `sending_queue::batch` and may have already made a big lift, so it didn't sit well with me that we'd be asking people to make another fundamental jump. \n\nHowever, if we can work with the SDK to come to an agreement on a similar config strategy for batching across both the Collector and SDK, that changes my feelings a bit. That can be communicated project-wide in a really positive way and I think the benefits would be very obvious to users. So I am more on board with a migration to an entirely new format if it's designed by SDK and Collector together.\n\n> 2. How \"complex\" conditions do we need to support?\n\nI am also curious about this. I found @participant6's proposal very interesting because it enables way more combinations than the primary one I'm concerned with, so it might be more flexible long-term. But, accounting for the fact that my vision might be too narrow here, I am struggling to think of a use-case for anything other than the logical `OR` case that I initially opened the issue for."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2026-05-13T23:39:19Z",
+   "body": "> to be delicate about deprecating and changing such an important config; the community has been thrashed around already\n\nAgree! It would be nice if user-level configuration could be preserved with a graceful transition period."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2026-05-15T02:48:33Z",
+   "body": "I like the OTTL-style syntax as @participant6 suggested. \n\nIt's backward compatible and we don't even have to cover all the possible scenarios from the beginning. We can cover `OR` in min_size for now only.\n\n```\nbatch:\n  sizer: complex\n  min_size: 1000 items or 1048576 bytes\n```\n\nFurther deprecation of `sizer` sounds good as well"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-06-02T14:07:47Z",
+   "body": "This remains a capability we want to introduce, but the scope expanded due to similar activity happening on batching in SDKs at the same time. I decided to organize a separate project for aligning the Collector and SDK Batching under a shared specification for expected capabilities (of which this will hopefully be one): https://github.com/open-telemetry/community/pull/3477\n\nI think I will close this issue for now. It remains important for the discussions that occurred and will be referred back to during the project's work, but I don't want to clog the open issues queue (lest an overzealous open claw decides they want to jump in 🙂)"
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "open-telemetry/opentelemetry-collector",
+  "default_branch": "main",
+  "commit_sha": "307e3abdbae90f3b9f5ccec7d4d50087be7f9f67",
+  "as_of": "2026-04-16T15:40:40Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_open-telemetry_opentelemetry-collector_15132"
+}

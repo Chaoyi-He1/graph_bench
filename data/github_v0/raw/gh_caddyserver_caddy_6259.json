@@ -1,0 +1,186 @@
+{
+ "repo": "caddyserver/caddy",
+ "number": 6259,
+ "url": "https://github.com/caddyserver/caddy/issues/6259",
+ "title": "lb_retries apparently not working",
+ "state": "closed",
+ "labels": [
+  "bug :<nick>:"
+ ],
+ "reporter": "reporter",
+ "created_at": "2024-04-21T12:46:08Z",
+ "closed_at": "2024-04-22T19:21:32Z",
+ "body": "I'd like to be able to recreate/restart Docker services that are hooked into Caddy via `reverse_proxy` without downtime. Usually a (POST) request takes about 10 seconds to complete. My config is super simple:\r\n\r\n```\r\nexample.com {\r\n        log {\r\n                format console\r\n                output stdout\r\n        }\r\n\r\n        root * /srv\r\n\r\n        file_server {\r\n                precompressed br gzip\r\n        }\r\n\r\n        reverse_proxy /-/proxy1 http://docker_container1:9292 {\r\n                lb_retries 3\r\n                lb_try_interval 1s\r\n        }\r\n        reverse_proxy /-/proxy2 http://docker_container2:9292 {\r\n                lb_retries 3\r\n                lb_try_interval 1s\r\n        }\r\n}\r\n```\r\n\r\nWhen running a bunch of requests and restarting the container before the responses were returned, I always get `502` errors, despite the `lb_retries` directive.\r\n\r\nThe error messages look like this:\r\n\r\n```\r\n2024/04/21 12:35:27.404 ERROR   http.log.access.log0    handled request {\"request\": {\"remote_ip\": \"62.153.218.40\", \"remote_port\": \"44362\", \"client_ip\": \"62.153.218.40\", \"proto\": \"HTTP/1.1\", \"method\": \"POST\", \"host\": \"example.com\", \"uri\": \"/-/proxy1\", \"headers\": {\"Accept-Encoding\": [\"gzip, compress, deflate, br\"], \"Connection\": [\"keep-alive\"], \"Accept\": [\"application/json, text/plain, */*\"], \"Content-Type\": [\"application/json\"], \"User-Agent\": [\"axios/1.6.7\"], \"Content-Length\": [\"67993\"]}, \"tls\": {\"resumed\": true, \"version\": 772, \"cipher_suite\": 4865, \"proto\": \"\", \"server_name\": \"example.com\"}}, \"bytes_read\": 0, \"user_id\": \"\", \"duration\": 1.014601761, \"size\": 0, \"status\": 502, \"resp_headers\": {\"Server\": [\"Caddy\"], \"Alt-Svc\": [\"h3=\\\":443\\\"; ma=2592000\"]}}\r\n\r\n{\"level\":\"error\",\"ts\":1713702927.4045582,\"logger\":\"http.log.error.log0\",\"msg\":\"readfrom tcp 172.18.0.2:34872->172.18.0.3:9292: http: invalid Read on closed Body\",\"request\":{\"remote_ip\":\"62.153.218.40\",\"remote_port\":\"44362\",\"client_ip\":\"62.153.218.40\",\"proto\":\"HTTP/1.1\",\"method\":\"POST\",\"host\":\"example.com\",\"uri\":\"/-/proxy1\",\"headers\":{\"Accept-Encoding\":[\"gzip, compress, deflate, br\"],\"Connection\":[\"keep-alive\"],\"Accept\":[\"application/json, text/plain, */*\"],\"Content-Type\":[\"application/json\"],\"User-Agent\":[\"axios/1.6.7\"],\"Content-Length\":[\"67993\"]},\"tls\":{\"resumed\":<nick>,\"version\":772,\"cipher_suite\":4865,\"proto\":\"\",\"server_name\":\"example.com\"}},\"duration\":1.014601761,\"status\":502,\"err_id\":\"cr390dupf\",\"err_trace\":\"reverseproxy.statusError (reverseproxy.go:1267)\"}\r\n```",
+ "comments": [
+  {
+   "author": "reporter",
+   "created_at": "2024-04-21T13:06:23Z",
+   "body": "Never mind, it seems this works as expected (or doesn't, rather): https://caddy.community/t/retries-for-post-requests-with-body/23478"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-04-21T13:53:51Z",
+   "body": "Okay, I would really like to see this. How much would it cost to sponsor development of this feature, @participant1 ?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-04-21T17:15:55Z",
+   "body": "See https://caddyserver.com/sponsor, you can reach out that way to get a quote."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-04-22T19:21:32Z",
+   "body": "I got the email. Thank you for reaching out!\r\n\r\nWhile investigating this, I realized this should already work:\r\n\r\n```\r\n:1234 {\r\n\treverse_proxy 127.0.0.1:1235 {\r\n\t\t# same as the OP's original config\r\n\t\tlb_retries 3\r\n\t\tlb_try_interval 1s\r\n\r\n\t\t# only retry request if the app will treat it as idempotent\r\n\t\t# (GETs are considered idempotent by default, POSTs aren't)\r\n\t\tlb_retry_match header Idempotency-Key *\r\n\r\n\t\t# enable buffering sufficient to fit the request body\r\n\t\trequest_buffers 128K\r\n\r\n\t\t# optional, just to see what's going on\r\n\t\tverbose_logs\r\n\t}\r\n}\r\n```\r\n\r\nI start the proxy, and then I fire off a request:\r\n\r\n\r\n```\r\n$ curl -v \"http://localhost:1234\" -H 'Idempotency-Key: asdf' -d 'foobar'\r\n```\r\n\r\nand then quickly, before the load balancer gives up, I bring up the simulated backend:\r\n\r\n```\r\n$ caddy respond --listen 127.0.0.1:1235 'Request body: {http.request.body}'\r\n```\r\n\r\nBut I was getting `readFrom` errors, because the request body was being closed... but it was definitely being fully read into the buffer! So closing the request body shouldn't matter.\r\n\r\nAnyway, all I had to do was patch half a line of code: 613d544a4775b831595f223028fee76b980aa003\r\n\r\nSeems to work now."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-04-22T21:23:45Z",
+   "body": "Actually, just following up with d93e027e01905406671ed8df295d5e48d16645c2 which also preserves the body in case one of the backends partially (or totally) depletes it before having the connection severed."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-04-23T05:37:01Z",
+   "body": "Awesome, thank you!"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-04-23T09:23:20Z",
+   "body": "@participant2 I noticed two minor issues while playing around with this on 2.7.6 with GET requests:\r\n\r\n- After successfully retrying, Caddy responds with two \"Server: Caddy\" headers\r\n- Using the `lb_retry_match` directive doesn't seem to do anything with regard to GET requests? No matter what, the retries are always attempted."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-04-23T09:33:10Z",
+   "body": "From the official documentation of `lb_retry_match`:\r\n\r\n> If the connection to the upstream failed, a retry is always allowed.\r\n\r\nDoesn't this kind of defeat its purpose, at least for my use case?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-04-23T10:07:57Z",
+   "body": "> After successfully retrying, Caddy responds with two \"Server: Caddy\" headers\r\n\r\nAre you sure this is because of the retry? Are you not just proxying to another Caddy server?\r\n\r\n> Using the lb_retry_match directive doesn't seem to do anything with regard to GET requests? No matter what, the retries are always attempted.\r\n\r\nWhat do you mean? What did you try to set it to? What's your goal?\r\n\r\n> Doesn't this kind of defeat its purpose, at least for my use case?\r\n\r\nIn what way? Connection failures are always retryable, because obviously the request wasn't sent anywhere yet."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-04-23T10:18:25Z",
+   "body": "Okay, here's a reproduction of the issue:\r\n\r\nCaddyfile:\r\n```\r\n:1234 {\r\n\treverse_proxy 127.0.0.1:1235 {\r\n\t\tlb_retries 5\r\n\t\tlb_try_interval 1s\r\n\r\n\t\tlb_retry_match header X-Idempotent-Retry true\r\n\r\n\t\trequest_buffers 256K\r\n\r\n\t\tverbose_logs\r\n\t}\r\n}\r\n```\r\n\r\nI run this with `caddy run`\r\n\r\nThen I run `curl -v \"http://localhost:1234\"` in another tab.\r\n\r\nAnd 1 second afterwards `caddy respond --listen 127.0.0.1:1235 'Hi there!'` in another tab.\r\n\r\nI would expect to receive a 502 error with curl, even though the proxy went up after a second. That's because the request didn't have \"X-Idempotent-Retry: true\" as a header.\r\n\r\nIf I would run `curl -v \"http://localhost:1234\" -H 'X-Idempotent-Retry: true'` I would expect to get a 200 with \"Hi there!\" after 2 seconds.\r\n\r\nAaand you are right about the dual \"Server: Caddy\" response. That's because I use Caddy as a reverse proxy, obviously - sorry."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-04-23T10:21:27Z",
+   "body": "My use case is very similar to this simple reproduction:\r\n\r\nI have a bunch of Docker containers as proxies and I'd like to have a zero-downtime restart/deployment for requests that are idempotent. But only for those, so that we don't have a retry on a POST that was already partly processed (which could happen now, with this fix/addition)."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-04-23T10:24:10Z",
+   "body": "> And 1 second afterwards `caddy respond --listen 127.0.0.1:1235 'Hi there!'` in another tab.\r\n\r\n> Aaand you are right about the dual \"Server: Caddy\" response. That's because I use Caddy as a reverse proxy, obviously - sorry.\r\n\r\nYeah, exactly, you're running Caddy behind Caddy, so of course it'll have two copies of the `Server: Caddy` header. That's working as intended. Each server adds their own `Server` header.\r\n\r\n> I would expect to receive a 502 error with curl, even though the proxy went up after a second. That's because the request didn't have \"X-Idempotent-Retry: true\" as a header.\r\n\r\nSo you want to _not_ retry even connection problems? But why? I can't think of any reason why that would be helpful.\r\n\r\nThe logic for retries is here:\r\n\r\nhttps://github.com/caddyserver/caddy/blob/6a0299905479083f250c39d5780c305f82863273/modules/caddyhttp/reverseproxy/reverseproxy.go#L1013-L1071"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-04-23T10:32:01Z",
+   "body": "> So you want to not retry even connection problems? But why? I can't think of any reason why that would be helpful.\r\n\r\nOkay, so the \"always retry, no matter what `lb_retry_match` says\"-behaviour only happens if Caddy was never able to initially connect to the upstream? That would be safe then, I guess. I figured it would also do that if it did connect initially and the upstream connection broke while processing the request. If that's not the case and the `lb_retry_match` is taken into account in those cases, that's fine."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-04-23T10:47:05Z",
+   "body": "Yeah, connection failures (before the HTTP request is written upstream) is always allowed to retry, because we know it's always safe. The `lb_retry_match` is for enabling retries other than just `GET` if it fails after connecting."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-04-23T13:05:51Z",
+   "body": "Thanks for the discussion here -- let me know if there's anything else needed!"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-04-24T11:08:19Z",
+   "body": "Actually, I do have another suggestion 😆: When the `request_buffers` size is not big enough for requests, Caddy responds with a `502` error. In my eyes that's not quite accurate and a `507` error would be more appropriate. But yeah.. not exactly high prio and open for debate."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-04-24T11:17:59Z",
+   "body": "> Actually, I do have another suggestion 😆: When the `request_buffers` size is not big enough for requests, Caddy responds with a `502` error. In my eyes that's not quite accurate and a `507` error would be more appropriate. But yeah.. not exactly high prio and open for debate.\r\n\r\nThe [MDN says](https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/507) this status is limited to WebDav usage only. It can also be argued that this status from a reverse-proxy exposes more information than necessary to clients."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-04-24T11:19:57Z",
+   "body": "Yeah, actually there's no perfect fit for this. But a `502` is wrong, too. That had me scratching my head for a while, since my backend never received the request and didn't have an error. Only found out by trial and error that it's because of the request buffer size."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-04-24T11:24:26Z",
+   "body": "Perhaps [413 Content Too Large](https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/413)?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-04-24T11:31:35Z",
+   "body": "That's probably best. It's still not super obvious for the server admin, but much better than the 502 👍 "
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-04-24T13:46:48Z",
+   "body": "@reporter \r\n\r\n> Actually, I do have another suggestion 😆: When the request_buffers size is not big enough for requests, Caddy responds with a 502 error.\r\n\r\nHmm, I'm not sure if that's expected. :<nick>: That's not what happens for me. For me, it still reads the whole body and passes it upstream, it just only buffers up to the buffer size first."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-04-24T18:19:28Z",
+   "body": "Okay, interesting! Here's how you can easily reproduce it (on MacOS at least):\r\n\r\n```\r\n:1234 {\r\n        reverse_proxy 127.0.0.1:1235 {\r\n                request_buffers 256K\r\n                verbose_logs\r\n        }\r\n}\r\n```\r\n\r\nCreate a big file with dummy data: `echo '{\"data\":\"'$(openssl rand -base64 $((512*1024)) | tr -d '\\n')'\"}' > file.json`\r\n\r\nStart the upstream: `caddy respond --listen 127.0.0.1:1235 'Heyho!'`\r\n\r\nThen: `curl -v -X POST -H \"Content-Type: application/json\" -d @participant4.json http://localhost:1234`\r\n\r\nWith Caddy 2.7.6 I'm getting:\r\n\r\n```\r\n*   Trying [::1]:1234...\r\n* Connected to localhost (::1) port 1234\r\n> POST / HTTP/1.1\r\n> Host: localhost:1234\r\n> User-Agent: curl/8.4.0\r\n> Accept: */*\r\n> Content-Type: application/json\r\n> Content-Length: 699063\r\n> \r\n* We are completely uploaded and fine\r\n< HTTP/1.1 502 Bad Gateway\r\n< Server: Caddy\r\n< Date: Wed, 24 Apr 2024 18:14:51 GMT\r\n< Content-Length: 0\r\n< \r\n* Connection #0 to host localhost left intact\r\n```\r\n\r\n```\r\n2024/04/24 18:14:43.388 ERROR   http.log.error  net/http: HTTP/1.x transport connection broken: http: ContentLength=256000 with Body length 699063      {\"request\": {\"remote_ip\": \"::1\", \"remote_port\": \"58598\", \"client_ip\": \"::1\", \"proto\": \"HTTP/1.1\", \"method\": \"POST\", \"host\": \"localhost:1234\", \"uri\": \"/\", \"headers\": {\"Accept\": [\"*/*\"], \"Content-Type\": [\"application/json\"], \"Content-Length\": [\"699063\"], \"User-Agent\": [\"curl/8.4.0\"]}}, \"duration\": 0.001649833, \"status\": 502, \"err_id\": \"ekrqejxrx\", \"err_trace\": \"reverseproxy.statusError (reverseproxy.go:1267)\"}\r\n```"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-04-24T18:22:58Z",
+   "body": "@reporter Interesting, works for me:\r\n\r\n```\r\n$ curl -v -X POST -H \"Content-Type: application/json\" -d @participant4.json http://localhost:1234\r\nNote: Unnecessary use of -X or --request, POST is already inferred.\r\n* Host localhost:1234 was resolved.\r\n* IPv6: ::1\r\n* IPv4: 127.0.0.1\r\n*   Trying [::1]:1234...\r\n* Connected to localhost (::1) port 1234\r\n> POST / HTTP/1.1\r\n> Host: localhost:1234\r\n> User-Agent: curl/8.7.1\r\n> Accept: */*\r\n> Content-Type: application/json\r\n> Content-Length: 699063\r\n> \r\n* upload completely sent off: 699063 bytes\r\n< HTTP/1.1 200 OK\r\n< Content-Type: text/plain; charset=utf-8\r\n< Date: Wed, 24 Apr 2024 18:21:55 GMT\r\n< Server: Caddy\r\n< Server: Caddy\r\n< Transfer-Encoding: chunked\r\n< \r\n...\r\n```\r\n\r\n(also, Daniel the author of curl would like to remind you that `-X POST` is not necessary :<nick>: )"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-04-24T18:26:13Z",
+   "body": "Damn, and I omitted the warning so nobody would notice 😋 \r\n\r\nHow can we debug this further? I edited my post and added the Caddy logs, maybe that helps to shed a light?"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-04-24T18:35:03Z",
+   "body": "@reporter To clarify, this is separate from retries now? Because my attempt did not employ any retries (the backend was up before running curl, and there is nothing in the config to perform retries).\r\n\r\nLet me try on a Mac. I'm on Linux currently..."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-04-24T18:38:37Z",
+   "body": "It's unfortunately working for me on Mac, too:\r\n\r\n```\r\nmatt@participant5 caddy % curl -v -H \"Content-Type: application/json\" -d @participant4.json http://localhost:1234\r\n*   Trying [::1]:1234...\r\n* Connected to localhost (::1) port 1234\r\n> POST / HTTP/1.1\r\n> Host: localhost:1234\r\n> User-Agent: curl/8.4.0\r\n> Accept: */*\r\n> Content-Type: application/json\r\n> Content-Length: 699063\r\n> \r\n* We are completely uploaded and fine\r\n< HTTP/1.1 200 OK\r\n< Content-Length: 6\r\n< Content-Type: text/plain; charset=utf-8\r\n< Date: Wed, 24 Apr 2024 18:38:00 GMT\r\n< Server: Caddy\r\n< Server: Caddy\r\n< \r\n* Connection #0 to host localhost left intact\r\nHeyho!%                 \r\n```"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-04-24T18:39:47Z",
+   "body": "@participant2 Yes, just the very simple Caddyfile I posted is enough. The errors are on Linux (x86) and MacOS (ARM) for me.\r\n\r\nAre you also using 2.7.6, not master or something?"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-04-24T18:41:37Z",
+   "body": "@reporter Oh, I am using master, good point.\r\n\r\nWe're hoping to tag 2.8 (beta) this week, can you try master? That should work!"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-04-24T18:44:41Z",
+   "body": "Ahh.. that might be it! I never built any Go project, so I would like to wait a few days and try again, once the beta release is available - if that's alright :)"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-04-24T18:51:01Z",
+   "body": "You can grab the CI artifact from here\n\nhttps://github.com/caddyserver/caddy/actions/runs/8808836194#artifacts"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-04-24T18:51:04Z",
+   "body": "@reporter No need to wait, please feel free to download our pre-compiled binaries from CI artifacts: https://github.com/caddyserver/caddy/actions/runs/8808836194#artifacts :<nick>: \r\n\r\nEdit: Lightning Mohammed beat me to it again!"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-04-25T05:15:58Z",
+   "body": "Thanks guys! With master it works 🥳 "
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "caddyserver/caddy",
+  "default_branch": "master",
+  "commit_sha": "d00824f4a648238cadacd1c999cedcba5f40323e",
+  "as_of": "2024-04-21T12:46:08Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_caddyserver_caddy_6259"
+}

@@ -1,0 +1,94 @@
+{
+ "repo": "duckdb/duckdb-wasm",
+ "number": 1231,
+ "url": "https://github.com/duckdb/duckdb-wasm/issues/1231",
+ "title": "Wrong Date type check for Arrow tables",
+ "state": "closed",
+ "labels": [],
+ "reporter": "mootari",
+ "created_at": "2023-04-04T12:21:14Z",
+ "closed_at": "2024-04-03T22:32:49Z",
+ "body": "### What happens?\r\n\r\nDates with millisecond resolution in Arrow tables are misdetected as`date` instead of `date64[ms]`.\r\n\r\nWhen an Arrow table is created via \r\n```js\r\narrow.tableFromJSON([{date: new Date()}])\r\n```\r\nthe infered type is `Date` (typeId 8) with a `unit` of `1` ([source](https://github.com/apache/arrow/blob/45918a90a6ca1cf3fd67c256a7d6a240249e555a/js/src/type.ts#L319)). However, `arrowToSQLType()` checks against `DateMillisecond`(typeId -14) ([source](https://github.com/duckdb/duckdb-wasm/blob/master/packages/duckdb-wasm/src/json_typedef.ts#L30-L35)).\r\n\r\n(It is unclear whether this is a bug in the Arrow implementation or DuckDB integration.)\r\n\r\n### To Reproduce\r\n\r\nobservablehq.com example, via DuckDBClient:\r\n~~~js\r\n{\r\n  const arrow = await import(\"https://cdn.observableusercontent.com/npm/apache-arrow@11.0.0/+esm\");\r\n  const table = arrow.tableFromJSON([{date: new Date(\"2023-02-01T12:34:56Z\")}]);\r\n  const type = table.schema.fields[0].type;\r\n  const db = await DuckDBClient.of({t: table});\r\n  const result = (await db.queryRow(\"select date d from t\")).d.toISOString();\r\n  return {result, type, typeId: type.typeId};\r\n}\r\n~~~\r\n\r\n### Browser/Environment:\r\n\r\nChrome 111\r\n\r\n### Device:\r\n\r\nmacOS 13.12.1\r\n\r\n### DuckDB-Wasm Version:\r\n\r\n1.24\r\n\r\n### DuckDB-Wasm Deployment:\r\n\r\nobservablehq.com\r\n\r\n### Full Name:\r\n\r\nFabian Iwand\r\n\r\n### Affiliation:\r\n\r\nObservable",
+ "comments": [
+  {
+   "author": "domoritz",
+   "created_at": "2023-04-07T16:42:43Z",
+   "body": "I'm happy to help with getting a fix into arrow if needed. "
+  },
+  {
+   "author": "carlopi",
+   "created_at": "2023-04-07T18:01:42Z",
+   "body": "It would be very welcome, I am not familiar yet with the Arrow conversion code and it's taking way too long to investigate this."
+  },
+  {
+   "author": "domoritz",
+   "created_at": "2023-04-07T18:28:22Z",
+   "body": "I don't have time to investigate unfortunately but if there is a bug in Arrow, I can help with that. "
+  },
+  {
+   "author": "carlopi",
+   "created_at": "2023-04-07T18:39:08Z",
+   "body": "Thanks a lot! Will update with what I find."
+  },
+  {
+   "author": "mootari",
+   "created_at": "2023-04-07T20:01:47Z",
+   "body": "According to the [enum inline docs](https://github.com/apache/arrow/blob/f4446c0f99b427a513f4a18d8ca3874fd5c56cee/js/src/enum.ts#L158-L176) any type values outside 0-17 are only used within TypeScript.\r\n\r\nAm I reading that correctly to mean that the current behavior in Arrow works as designed, and that DuckDB would have to check the type's `unit` prop against `DateUnit.DAY` and `DateUnit.MILLISECOND`?"
+  },
+  {
+   "author": "mootari",
+   "created_at": "2023-04-17T15:42:52Z",
+   "body": "Hi, is there anything I can do to help?"
+  },
+  {
+   "author": "dunstan",
+   "created_at": "2023-10-18T02:08:22Z",
+   "body": "Hi there. Any updates on this? I believe I just ran into the same issue."
+  },
+  {
+   "author": "kylebarron",
+   "created_at": "2023-12-14T18:32:59Z",
+   "body": "With a small repro case [here](https://github.com/kylebarron/parquet-wasm/issues/413#issuecomment-1856379246), it look like this is a bug in Arrow JS, where it's incorrectly inferring a date type instead of datetime."
+  },
+  {
+   "author": "domoritz",
+   "created_at": "2023-12-14T20:25:35Z",
+   "body": "Let's fix it upstream. I am happy to help get a fix merged. Who wants to make a pull request? "
+  },
+  {
+   "author": "marvold-mw",
+   "created_at": "2023-12-19T19:03:57Z",
+   "body": "I'm not in any position to make the pull request, @domoritz , but I'm pretty sure the problem is at https://github.com/apache/arrow/blob/6c326db6a5686a78bc77be662b61236ddbfc66dc/js/src/factories.ts#L148C27-L148C42; I'm assuming DateMillisecond (which feels like a trap of a type, since being a Date kind of makes millisecond accuracy unimportant?) should really be TimestampMillisecond."
+  },
+  {
+   "author": "domoritz",
+   "created_at": "2024-03-29T14:31:17Z",
+   "body": "I'm trying to investigate where the issue is. \r\n\r\n```ts\r\nconst date = new Date(\"2023-02-01T12:34:56Z\");\r\nconsole.log(\"original\", date)\r\n\r\nconsole.log(\"=> vec\")\r\nconst vec = arrow.vectorFromArray([date])\r\nconsole.log(vec.type)\r\nconsole.log(vec.get(0)?.toISOString())\r\n\r\nconsole.log(\"=> vec2\")\r\nconst vec2 = arrow.vectorFromArray([date], new arrow.TimestampMillisecond)\r\nconsole.log(vec2.type)\r\nconsole.log(vec2.get(0))\r\n\r\nconsole.log(\"=> table\")\r\nconst table = arrow.tableFromJSON([{ date }])\r\nconsole.log(table.schema.fields[0].type)\r\nconsole.log(table.getChildAt(0)?.get(0).toISOString())\r\n\r\nconsole.log(\"=> table2\")\r\nconst table2 = arrow.tableFromIPC(arrow.tableToIPC(table));\r\nconsole.log(table2.schema.fields[0].type)\r\nconsole.log(table2.getChildAt(0)?.get(0).toISOString())\r\n```\r\n\r\noutputs (as of 96f686b81)\r\n\r\n```\r\noriginal 2023-02-01T12:34:56.000Z\r\n=> vec\r\nDateMillisecond {\r\n  typeId: 8,\r\n  unit: 1,\r\n  toString: [Function: toString],\r\n  ArrayType: [class Int32Array],\r\n  [Symbol(Symbol.toStringTag)]: \"Date\",\r\n  children: null,\r\n  OffsetArrayType: [class Int32Array],\r\n}\r\n2023-02-01T12:34:56.000Z\r\n=> vec2\r\nTimestampMillisecond {\r\n  typeId: 10,\r\n  unit: 1,\r\n  timezone: undefined,\r\n  toString: [Function: toString],\r\n  ArrayType: [class Int32Array],\r\n  [Symbol(Symbol.toStringTag)]: \"Timestamp\",\r\n  children: null,\r\n  OffsetArrayType: [class Int32Array],\r\n}\r\n1675254896000\r\n=> table\r\nDateMillisecond {\r\n  typeId: 8,\r\n  unit: 1,\r\n  toString: [Function: toString],\r\n  ArrayType: [class Int32Array],\r\n  [Symbol(Symbol.toStringTag)]: \"Date\",\r\n  children: null,\r\n  OffsetArrayType: [class Int32Array],\r\n}\r\n2023-02-01T12:34:56.000Z\r\n=> table2\r\nDate_ {\r\n  typeId: 8,\r\n  unit: 1,\r\n  toString: [Function: toString],\r\n  ArrayType: [class Int32Array],\r\n  children: null,\r\n  OffsetArrayType: [class Int32Array],\r\n}\r\n2023-02-01T12:34:56.000Z\r\n```\r\n\r\nLooking at the schema docs in https://github.com/apache/arrow/blob/main/format/Schema.fbs it seems like [DateMillisecond](https://github.com/apache/arrow/blob/96f686b81ba148f4d434846f0b9e161c538f131d/format/Schema.fbs#L245-L253) (date with unit milliseconds) is the right type since js dates are [timezone agnostic](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Date). However, the [Rust docs](https://docs.rs/arrow/latest/arrow/datatypes/enum.DataType.html#variant.Date64) clarify that date should only encode the days and not the time. This seems like a compatibility type and we should discourage it similar to how rust did it recently: https://github.com/apache/arrow-rs/issues/5288. So yeah, I think we should use TimestampMillisecond with no timezone. "
+  },
+  {
+   "author": "domoritz",
+   "created_at": "2024-03-29T15:50:05Z",
+   "body": "Sent a fix in https://github.com/apache/arrow/pull/40892. Please take a look to see whether it now does what you expect."
+  },
+  {
+   "author": "marvold-mw",
+   "created_at": "2024-03-29T20:11:43Z",
+   "body": "> Sent a fix in [apache/arrow#40892](https://github.com/apache/arrow/pull/40892). Please take a look to see whether it now does what you expect.\r\n\r\nWhile I'm not the original reporter, your fix *does* do what *I* would expect when using JavaScript types with Arrow and (via Arrow) with DuckDB.  The TIMESTAMP type in DuckDB now comes back, which seems like the correct mapping for JS Date semantics.  And (as your unit tests confirm) Arrow converts them back to JavaScript Dates just fine.\r\n\r\nThanks for the fix, Dom!"
+  },
+  {
+   "author": "domoritz",
+   "created_at": "2024-04-03T22:32:49Z",
+   "body": "Fixed in https://github.com/apache/arrow/issues/40891. "
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "duckdb/duckdb-wasm",
+  "default_branch": "main",
+  "commit_sha": "e401029fb3020c7a7be2c03896717c615418277e",
+  "as_of": "2023-04-04T12:21:14Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_duckdb_duckdb-wasm_1231"
+}

@@ -1,0 +1,173 @@
+{
+ "repo": "dbt-labs/dbt-core",
+ "number": 10686,
+ "url": "https://github.com/dbt-labs/dbt-core/issues/10686",
+ "title": "[Bug] Unit tests not working for incremental models",
+ "state": "closed",
+ "labels": [
+  "type:bug",
+  "duplicate",
+  "unit tests"
+ ],
+ "reporter": "CraigWilson-ZOE",
+ "created_at": "2024-09-10T15:15:30Z",
+ "closed_at": "2024-11-04T22:10:10Z",
+ "body": "### Is this a new bug in dbt-core?\n\n- [X] I believe this is a new bug in dbt-core\n- [X] I have searched the existing issues, and I could not find an existing issue for this bug\n\n### Current Behavior\n\nWhen running a unit tests for an incremental model I am getting the following error:\r\n```\r\n14:41:49    Database Error in unit_test unit_test__int_barcode_scanned_events_incremental_mode (models/silver/intermediate/food_logging/tests.yml)\r\n  Syntax error: Unexpected \".\" at [18:44]\r\n```\n\n### Expected Behavior\n\nThe unit tests to pass\n\n### Steps To Reproduce\n\n1. Environment is:\r\n* dbt 1.8.6\r\n* dbt bigquery 1.8.2\r\n* dbt-adapters 1.5.0\r\n* dbt-utils 1.3.0\r\n2. incremental model configuration:\r\n```\r\n{{\r\n    config(\r\n        materialized='incremental',\r\n        incremental_strategy='insert_overwrite',\r\n        unique_key='event_id',\r\n        partition_by={\r\n            \"field\": \"date_day\",\r\n            \"data_type\": \"date\"\r\n        }\r\n    )\r\n}}\r\n```\r\n3. Unit test config:\r\n```\r\nunit_tests:\r\n  - name: unit_test__int_barcode_scanned_events_incremental_mode\r\n    description: Unit test for int_barcode_scanned_events in incremental mode\r\n    model: int_barcode_scanned_events\r\n    overrides:\r\n      macros:\r\n        is_incremental: true\r\n    given:\r\n        - input: ref('stg_insights_mixpanel_event')\r\n          format: csv\r\n          fixture: raw_mixpanel_events\r\n        - input: this\r\n          format: csv\r\n          fixture: incremental_int_barcode_scanned_events\r\n    expect:\r\n        format: csv\r\n        fixture: expected__int_barcode_scanned_events\r\n```\n\n### Relevant log output\n\n```shell\n...\r\n15:06:35  3 of 3 ERROR int_barcode_scanned_events::unit_test__int_barcode_scanned_events_incremental_mode  [ERROR in 1.31s]\r\n...\r\n15:06:58    Database Error in unit_test unit_test__int_barcode_scanned_events_incremental_mode (models/silver/intermediate/food_logging/tests.yml)\r\n  Syntax error: Unexpected \".\" at [18:44]\n```\n\n\n### Environment\n\n```markdown\n- OS: macos 14.3.1\r\n- Python: Python 3.12.2\r\n- dbt: 1.8.6\n```\n\n\n### Which database adapter are you using with dbt?\n\nbigquery\n\n### Additional Context\n\nThe SQL that seems to be produced and is causing the error is the following:\r\n```sql\r\n/* {\"app\": \"dbt\", \"dbt_version\": \"1.8.5\", \"profile_name\": \"default\", \"target_name\": \"development\", \"node_id\": \"unit_test.dbt_bq_elt.int_barcode_scanned_events.unit_test__int_barcode_scanned_events_incremental_mode\"} */\r\n\r\n\r\n      \r\n        \r\n            select distinct\r\n                table_schema,\r\n                table_name,\r\n                \r\n            case table_type\r\n                when 'BASE TABLE' then 'table'\r\n                when 'EXTERNAL TABLE' then 'external'\r\n                when 'MATERIALIZED VIEW' then 'materializedview'\r\n                else lower(table_type)\r\n            end as `table_type`\r\n\r\n\r\n            from `dbt-development-joinzoe`..INFORMATION_SCHEMA.TABLES\r\n            where lower(table_name) like lower ('')\r\n                and lower(table_name) not like lower ('')\r\n```",
+ "comments": [
+  {
+   "author": "dbeatty10",
+   "created_at": "2024-09-11T13:49:16Z",
+   "body": "Thanks for reporting this @CraigWilson-ZOE !\r\n\r\nIf you comment out the unit test completely, does it still give you that error?\r\n\r\nThe SQL that is creating that syntax error looks like it could be coming from [`bigquery__get_catalog`](https://github.com/dbt-labs/dbt-bigquery/blob/563633bcf22557d7b33d5c48a09b375deff27ca7/dbt/include/bigquery/macros/catalog/by_schema.sql#L1) or [`bigquery__get_catalog_relations`](https://github.com/dbt-labs/dbt-bigquery/blob/563633bcf22557d7b33d5c48a09b375deff27ca7/dbt/include/bigquery/macros/catalog/by_relation.sql#L1). Did you happen to override either of those macros or any others? If so, which ones?\r\n\r\nSee below for a simplified version of the situation you described. It worked without error for me, so I'm curious if it works for you or not?\r\n\r\n<details>\r\n<summary>\r\n\r\n### Example\r\n</summary>\r\n\r\n`models/int_barcode_scanned_events.sql`\r\n\r\n```sql\r\n{{\r\n    config(\r\n        materialized='incremental',\r\n        incremental_strategy='insert_overwrite',\r\n        unique_key='event_id',\r\n        partition_by={\r\n            \"field\": \"date_day\",\r\n            \"data_type\": \"date\"\r\n        }\r\n    )\r\n}}\r\n\r\nselect 1 as event_id, cast('2002-02-02' as date) as date_day\r\n```\r\n\r\n`models/_unit_tests.yml`\r\n\r\n```yaml\r\nunit_tests:\r\n  - name: unit_test__int_barcode_scanned_events_incremental_mode\r\n    description: Unit test for int_barcode_scanned_events in incremental mode\r\n    model: int_barcode_scanned_events\r\n    overrides:\r\n      macros:\r\n        is_incremental: true\r\n    given:\r\n      - input: this\r\n        rows:\r\n          - {event_id: 1, date_day: 2001-01-01}\r\n    expect:\r\n        rows:\r\n          - {event_id: 1, date_day: 2002-02-02}\r\n```\r\n\r\nCommands to run:\r\n```shell\r\ndbt build -s int_barcode_scanned_events\r\n```\r\n\r\nOutput:\r\n\r\n```\r\n$ dbt build -s int_barcode_scanned_events    \r\n \r\n13:41:43  Running with dbt=1.8.6\r\n13:42:10  Registered adapter: bigquery=1.8.2\r\n13:42:11  Found 1 model, 473 macros, 1 unit test\r\n13:42:11  \r\n13:42:27  Concurrency: 10 threads (target='blue')\r\n13:42:27  \r\n13:42:27  1 of 2 START unit_test int_barcode_scanned_events::unit_test__int_barcode_scanned_events_incremental_mode  [RUN]\r\n13:42:33  1 of 2 PASS int_barcode_scanned_events::unit_test__int_barcode_scanned_events_incremental_mode  [PASS in 5.48s]\r\n13:42:33  2 of 2 START sql incremental model dbt_dbeatty.int_barcode_scanned_events ...... [RUN]\r\n13:42:40  2 of 2 OK created sql incremental model dbt_dbeatty.int_barcode_scanned_events . [SCRIPT (56.0 Bytes processed) in 7.21s]\r\n13:42:40  \r\n13:42:40  Finished running 1 unit test, 1 incremental model in 0 hours 0 minutes and 29.38 seconds (29.38s).\r\n13:42:40  \r\n13:42:40  Completed successfully\r\n13:42:40  \r\n13:42:40  Done. PASS=2 WARN=0 ERROR=0 SKIP=0 TOTAL=2\r\n```\r\n\r\n</details>\r\n\r\n"
+  },
+  {
+   "author": "tsafacjo",
+   "created_at": "2024-09-11T18:41:20Z",
+   "body": "can I pick it ?"
+  },
+  {
+   "author": "dbeatty10",
+   "created_at": "2024-09-11T21:33:58Z",
+   "body": "@tsafacjo We're not yet sure if this is a bug in dbt-core or if the root cause is something else.\r\n\r\nIf you're looking for a place to contribute to dbt, there's a list of issues we've labeled as \"help wanted\" [here](https://github.com/dbt-labs/dbt-core/labels/help_wanted)."
+  },
+  {
+   "author": "tsafacjo",
+   "created_at": "2024-09-11T21:42:58Z",
+   "body": "ok thanks."
+  },
+  {
+   "author": "CraigWilson-ZOE",
+   "created_at": "2024-09-30T08:51:30Z",
+   "body": "Sorry for the late reply, I have been on vacation.\r\n\r\n> If you comment out the unit test completely, does it still give you that error?\r\n\r\nI have commented out the unit test and I do not get the error anymore.\r\n\r\n> The SQL that is creating that syntax error looks like it could be coming from [bigquery__get_catalog](https://github.com/dbt-labs/dbt-bigquery/blob/563633bcf22557d7b33d5c48a09b375deff27ca7/dbt/include/bigquery/macros/catalog/by_schema.sql#L1) or [bigquery__get_catalog_relations](https://github.com/dbt-labs/dbt-bigquery/blob/563633bcf22557d7b33d5c48a09b375deff27ca7/dbt/include/bigquery/macros/catalog/by_relation.sql#L1). Did you happen to override either of those macros or any others? If so, which ones?\r\n\r\nNo we do not override any of those macros.\r\n\r\n> See below for a simplified version of the situation you described. It worked without error for me, so I'm curious if it works for you or not?\r\n\r\nI have tried with the super simple version and it passed without error.\r\n\r\n```sql\r\n{{\r\n    config(\r\n        materialized='incremental',\r\n        incremental_strategy='insert_overwrite',\r\n        unique_key='event_id',\r\n        partition_by={\r\n            \"field\": \"date_day\",\r\n            \"data_type\": \"date\"\r\n        }\r\n    )\r\n}}\r\n\r\nselect 1 as event_id, cast('2002-02-02' as date) as date_day\r\n```\r\n\r\n```yaml\r\n  - name: unit_test__int_barcode_test_increment\r\n    description: Unit test for int_barcode_test\r\n    model: int_barcode_test\r\n    overrides:\r\n      macros:\r\n        is_incremental: true\r\n    given:\r\n      - input: this\r\n        rows:\r\n          - {event_id: 1, date_day: 2001-01-01}\r\n    expect:\r\n        rows:\r\n          - {event_id: 1, date_day: 2002-02-02}\r\n```\r\n\r\nNOTE: I created a new model so I could run both at the same time. My original model still fails with the same error."
+  },
+  {
+   "author": "CraigWilson-ZOE",
+   "created_at": "2024-09-30T10:00:37Z",
+   "body": "Also worth posting here is my `packages.yml`, I have removed all unecessary packages and down to the bare minimum for the who project:\r\n```yaml\r\npackages:\r\n  - package: dbt-labs/dbt_utils\r\n    version: 1.3.0\r\n  - package: fivetran/mailchimp_source\r\n    version: [\">=0.4.0\", \"<0.6.0\"]\r\n  - package: fivetran/mailchimp\r\n    version: [\">=0.7.0\", \"<0.10.0\"]\r\n  - package: fivetran/zendesk_source\r\n    version: [\">=0.10.0\", \"<0.14.0\"]\r\n  - package: fivetran/zendesk\r\n    version: [\">=0.10.0\", \"<0.14.0\"]\r\n  - package: fivetran/google_ads_source\r\n    version: [\">=0.9.1\", \"<0.11.0\"]\r\n  - package: fivetran/google_ads\r\n    version: [\">=0.9.1\", \"<0.11.0\"]\r\n  - package: fivetran/facebook_ads\r\n    version: [\">=0.6.0\", \"<0.8.0\"]\r\n  - package: fivetran/facebook_ads_source\r\n    version: [\">=0.6.0\", \"<0.8.0\"]\r\n```"
+  },
+  {
+   "author": "dbeatty10",
+   "created_at": "2024-09-30T17:16:28Z",
+   "body": "> I have tried with the super simple version and it passed without error.\r\n\r\nOkay! The next step is to try to isolate whichever piece(s) of your model that is triggering the syntax error when it is executed via dbt unit tests.\r\n\r\nAre you able to tweak that super simple version so that it is closer and closer to your actual model until you find something that breaks the simplified version?"
+  },
+  {
+   "author": "devmessias",
+   "created_at": "2024-10-16T22:13:40Z",
+   "body": "Hi @CraigWilson-ZOE, I understand that you are sharing the compiled SQL rather than the model, correct? Could you please share it with me? I’d like to see if it’s similar to the other issues I was looking into in this PR: https://github.com/dbt-labs/dbt-core/pull/10849. If the model has any kind of var, env_var, or other thins that cames from context this can cause this kind of error during the unit test phase\r\n\r\n"
+  },
+  {
+   "author": "devmessias",
+   "created_at": "2024-10-16T22:35:38Z",
+   "body": "Why I'm saying that @CraigWilson-ZOE . Your compiled sql is wrong due the double \"..\", which will be the result of unit test if you have a model  like this\r\n\r\n```\r\nselect\r\n    count(*) as result\r\nfrom {{target.database}}.{{env_var('schema')}}.INFORMATION_SCHEMA.TABLES\r\n```\r\n\r\nresult\r\n```\r\nselect\r\n    count(*) as result\r\nfrom dbt.INFORMATION_SCHEMA.TABLES\r\n```"
+  },
+  {
+   "author": "kangshung",
+   "created_at": "2024-10-22T13:05:18Z",
+   "body": "Are there any updates on this? I have the same problem @dbeatty10 "
+  },
+  {
+   "author": "devmessias",
+   "created_at": "2024-10-22T13:38:09Z",
+   "body": "I think it's a good idea if you post the model.sql file you're having issues , @kangshung"
+  },
+  {
+   "author": "kangshung",
+   "created_at": "2024-10-24T11:40:37Z",
+   "body": "@devmessias  sure. Problem appears when both `source` and target `model` have same names, here `\"example\"`. I reproduced the problem below. This model\r\n\r\n```sql\r\n{{\r\n    config(\r\n        materialized='incremental',\r\n        incremental_strategy='merge'\r\n    )\r\n}}\r\n\r\n-- IMPORTS https://discourse.getdbt.com/t/ctes-are-passthroughs-some-research/155\r\nwith cte1 as (\r\n    select * from {{ source('my_dataset', 'example') }}\r\n),\r\n\r\n-- BUSINESS LOGIC\r\ncte2 as (\r\n    select\r\n        id,\r\n        TIMESTAMP_MILLIS(ts) as time_stamp,\r\n        val\r\n    from cte1\r\n)\r\n\r\n-- FINAL SELECT\r\nselect * from cte2\r\n\r\n\r\n{% if is_incremental() %}\r\n    where time_stamp > (select COALESCE(MAX(time_stamp), '1900-01-01') from {{ this }})\r\n{% endif %}\r\n```\r\n\r\nand unit test like this:\r\n```sql\r\nunit_tests:\r\n  - name: incremental_bug_example6\r\n    model: example\r\n    overrides:\r\n      macros:\r\n        is_incremental: true\r\n    given:\r\n      - input: source('my_dataset', 'example')\r\n        rows:\r\n          - { id: 1, ts: 1577836800000, val: 'mytext' }\r\n          - { id: 2, ts: 1577923200000, val: 'mytext' }\r\n      - input: this\r\n        # contents of current model\r\n        rows:\r\n          - { id: 1, time_stamp: '2020-01-01T00:00:00', val: 'mytext' }\r\n    expect:\r\n      # what will be inserted/merged into model\r\n      rows:\r\n        - { id: 2, time_stamp: '2020-01-02T00:00:00', val: 'mytext' }\r\n```\r\n\r\nfails to generate a proper test, because both `\"example\"` nodes overwrite each other, and the final test query has only 1 fixture, instead of 2:\r\n\r\n```sql\r\n-- IMPORTS https://discourse.getdbt.com/t/ctes-are-passthroughs-some-research/155\r\nwith  __dbt__cte__example as (\r\n\r\n-- Fixture for example\r\nselect safe_cast(1 as INT64) as id, safe_cast('''2020-01-01T00:00:00''' as TIMESTAMP) as time_stamp, safe_cast('''mytext''' as STRING) as val\r\n), cte1 as (\r\n    select * from __dbt__cte__example\r\n),\r\n\r\n-- BUSINESS LOGIC\r\ncte2 as (\r\n    select\r\n        id,\r\n        TIMESTAMP_MILLIS(ts) as time_stamp,\r\n        val\r\n    from cte1\r\n)\r\n\r\n-- FINAL SELECT\r\nselect * from cte2\r\n\r\n\r\n\r\n    where time_stamp > (select COALESCE(MAX(time_stamp), '1900-01-01') from __dbt__cte__example)\r\n```\r\n\r\nYou can see that `__dbt__cte__example` already has the time_stamp column, so `TIMESTAMP_MILLIS(ts)` transformation will always fail.\r\n\r\nIt was tested on `dbt=1.8.8` and `bigquery=1.8.3`. I would expect it to work properly or at least give any reasonable exception that this is not supported."
+  },
+  {
+   "author": "devmessias",
+   "created_at": "2024-10-25T14:36:17Z",
+   "body": "Hi @kangshung, I see! So, this seems to be a different issue from the one originally reported here, right? From my testing, it doesn’t appear to be related to the incremental setting itself, **but rather the root cause is a name collision problem** between the source and target model. I agree this is an issue. Would it make sense to open a separate issue describing this specific problem?"
+  },
+  {
+   "author": "devmessias",
+   "created_at": "2024-10-25T16:05:49Z",
+   "body": "This is a minimal example to obtain the same issue pointed by @kangshung \r\n\r\n```yaml\r\n#_unit_tests.yaml\r\nversion: 2\r\n\r\nunit_tests:\r\n  - name: test_2\r\n    model: my_model\r\n    given:\r\n      - input: source('source_name', 'my_model')\r\n        rows:\r\n          - { id: 1, my_value: 111, name: 'mytext' }\r\n          - { id: 2, my_value: 222, name: 'mytext' }\r\n      - input: this\r\n        rows:\r\n          - { id: 2, my_value: 333, name: 'mytext' }\r\n          - { id: 1, my_value: 666, name: 'mytext' }\r\n\r\n    expect:\r\n      rows:\r\n        - { id: 1, my_value: 111, name: 'mytext' }\r\n\r\n```\r\n\r\n```sql\r\n-- my_model.sql\r\nWITH something as (\r\n  select\r\n  *\r\n  from {{ source(\"source_name\", \"my_model\") }}\r\n)\r\nselect\r\n  *\r\nfrom  something\r\n    where id = (\r\n      select\r\n        id\r\n      from {{this}}\r\n      order by my_value desc\r\n      limit 1\r\n    )\r\n\r\n```\r\n\r\n```yaml\r\n# _source.yaml\r\n\r\nversion: 2\r\n\r\nsources:\r\n  - name: 'source_name'\r\n    schema: 'main'\r\n    tables:\r\n      - name: example\r\n      - name: my_model\r\n ```\r\n \r\n Test will pass if we change the source to example instead of my_model"
+  },
+  {
+   "author": "devmessias",
+   "created_at": "2024-10-25T17:21:03Z",
+   "body": "Ok, no need to create a new issue; your problem has already been described here.\" https://github.com/dbt-labs/dbt-core/issues/10433"
+  },
+  {
+   "author": "dbeatty10",
+   "created_at": "2024-10-25T22:30:32Z",
+   "body": "~Thank you all for your research finding reproduction case for this scenario 🏆~\r\n\r\n~Closing as a duplicate of https://github.com/dbt-labs/dbt-core/issues/10433.~\r\n\r\nEdit: re-opened in https://github.com/dbt-labs/dbt-core/issues/10686#issuecomment-2438971930"
+  },
+  {
+   "author": "dbeatty10",
+   "created_at": "2024-10-25T22:35:52Z",
+   "body": "Oops, I closed it too hastily!\r\n\r\n@kangshung as @devmessias said, what you reported in https://github.com/dbt-labs/dbt-core/issues/10686#issuecomment-2435041601 is a duplicate of https://github.com/dbt-labs/dbt-core/issues/10433\r\n\r\nBut we still don't have steps to reproduce for what @CraigWilson-ZOE originally reported in this issue.\r\n\r\n@CraigWilson-ZOE does https://github.com/dbt-labs/dbt-core/issues/10686#issuecomment-2418083913 look similar to your model that is having the issues with unit testing?"
+  },
+  {
+   "author": "CraigWilson-ZOE",
+   "created_at": "2024-10-29T13:53:33Z",
+   "body": "Hi All,\r\n\r\nSorry I have been away from my computer for a while.\r\n\r\nNow that I am back and had some time to dive into this, it seems like a call to an internal dbt-core macro is failing. The SQL that is being executed is:\r\n```sql\r\n            select distinct\r\n                table_schema,\r\n                table_name,\r\n                \r\n            case table_type\r\n                when 'BASE TABLE' then 'table'\r\n                when 'EXTERNAL TABLE' then 'external'\r\n                when 'MATERIALIZED VIEW' then 'materializedview'\r\n                else lower(table_type)\r\n            end as `table_type`\r\n\r\n\r\n            from `development`..INFORMATION_SCHEMA.TABLES\r\n            where lower(table_name) like lower ('')\r\n                and lower(table_name) not like lower ('')\r\n```\r\n\r\nI believe this is coming from `get_relations_by_pattern`. We use this to generate some SQL for the incremental model, and it seems like the `schema` section for this macro isn't getting set within dbt within a unit test. So it isn't directly related to the unit tests, but is a side effect of the overall environment that is setup within dbt during unit test executions.\r\n\r\nIs there a reason that the schema wouldn't be set in this instance?\r\n\r\nI have checked via logging output of the `target` and `this` objects, the `this` object is empty for all parts of the model information, whereas `target` object does have the information for the most part.\r\n\r\nI do think this is a bug and needs to be fixed otherwise we are saying that some macros cannot be used in a incremental model."
+  },
+  {
+   "author": "devmessias",
+   "created_at": "2024-10-29T14:36:25Z",
+   "body": "Hi @CraigWilson-ZOE, this seems similar to https://github.com/dbt-labs/dbt-core/issues/10891 and #10139. This is not the raw code for the model, right? Can you share the raw code? As I discuss in https://github.com/dbt-labs/dbt-core/issues/10908 maybe we should allow overriding dynamic variables\r\n"
+  },
+  {
+   "author": "devmessias",
+   "created_at": "2024-10-29T14:48:24Z",
+   "body": "In the meantime, testing a simpler model that uses the same macro in a non-incremental model might help. I tend to believe that your issue isn't related to the model being incremental or not"
+  },
+  {
+   "author": "CraigWilson-ZOE",
+   "created_at": "2024-10-29T15:13:22Z",
+   "body": "> Hi @CraigWilson-ZOE, this seems similar to https://github.com/dbt-labs/dbt-core/issues/10891 and https://github.com/dbt-labs/dbt-core/issues/10139. This is not the raw code for the model, right? Can you share the raw code? As I discuss in https://github.com/dbt-labs/dbt-core/issues/10908 maybe we should allow overriding dynamic variables\r\n\r\nYes it does look the same as https://github.com/dbt-labs/dbt-core/issues/10891 , thanks! \r\n\r\nI am not sure about overriding dynamic variables vs just having them work as expected by many people or provide an alternative.\r\n\r\n> In the meantime, testing a simpler model that uses the same macro in a non-incremental model might help. I tend to believe that your issue isn't related to the model being incremental or not\r\n\r\nI agree that it isn't related to it being incremental or not, it is due to the above issue."
+  },
+  {
+   "author": "devmessias",
+   "created_at": "2024-10-29T16:09:07Z",
+   "body": "I don't think there is an easy way to do that, as pointed in https://github.com/dbt-labs/dbt-core/issues/8499. The CTE approach will solve some limitations but will impact the performance , and  will create somo additional problems according to https://github.com/dbt-labs/dbt-core/issues/8499#issuecomment-2213188607\r\n Overriding dynamic variables using the yaml would be easier to implement as a new feature, and we could still keep the performance  for unit tests, similar to the mocked behavior in Python's unittest.\r\n \r\n But in your case, if you have just one macro call could you try to override the macro?\r\n \r\n\r\n"
+  },
+  {
+   "author": "dbeatty10",
+   "created_at": "2024-10-29T22:48:32Z",
+   "body": "@CraigWilson-ZOE could you share your line of code that you are using for `dbt_utils.get_relations_by_pattern` so we can see the `schema` argument?\r\n\r\nI'm trying to reproduce the same error you are getting, but I'm not able when I use `target.schema` for the schema within `dbt_utils.get_relations_by_pattern`."
+  },
+  {
+   "author": "devmessias",
+   "created_at": "2024-10-31T13:01:27Z",
+   "body": "There are so many issues whose root cause is this limitation, and users are incorrectly associating it with other things. Wouldn't it be helpful to improve the unit test doc to emphasize this limitation, @dbeatty10?"
+  },
+  {
+   "author": "CraigWilson-ZOE",
+   "created_at": "2024-10-31T15:21:09Z",
+   "body": "@dbeatty10 \r\n\r\nHere is a breakdown of the SQL that I have and what is causing the issue. This is a change I made to ensure that getting the latest partition data in BigQuery is much more efficient than doing a query on the target table. This has saved a lot of processing on our large tables.\r\n\r\nMacro to get the latest partition info:\r\n```sql\r\n{% macro get_latest_partition_value(table, partition_data_type=none) %}\r\n    {% if not execute %}\r\n        {{ return(modules.datetime.date.fromisoformat('2023-01-01')) }}\r\n    {% endif %}\r\n    {% if not dbt_utils.get_relations_by_pattern(table.schema, table.name) %}\r\n        {{ return(modules.datetime.date.fromisoformat('1900-01-01')) }}\r\n    {% endif %}\r\n    {% set node = graph.nodes.get(\"model.\" + project_name + \".\" + table.name) %}\r\n    {% if node is none %}\r\n        {{ return(none) }}\r\n    {% endif %}\r\n    {% if not partition_data_type %}\r\n        {% set raw_partition_by = config.get('partition_by', none) %}\r\n        {% if not raw_partition_by %}\r\n            {% do exceptions.raise_compiler_error(\"partition_by must be set in the model config to get latest partition value\") %}\r\n        {% endif %}\r\n        {% set partition_by = adapter.parse_partition_by(raw_partition_by) %}\r\n        {% set partition_data_type = partition_by.data_type %}\r\n    {% endif %}\r\n\r\n    {%- set query -%}\r\n        SELECT MAX(\r\n        {% if partition_data_type == 'date' %}\r\n            PARSE_DATE(\"%Y%m%d\",partition_id)\r\n        {% elif partition_data_type == 'timestamp'%}\r\n            PARSE_TIMESTAMP(\"%Y%m%d\",partition_id)\r\n        {% elif partition_data_type == 'datetime' %}\r\n            PARSE_DATETIME(\"%Y%m%d\",partition_id)\r\n        {% elif partition_data_type == 'int64' %}\r\n            CAST(partition_id AS INT64)\r\n        {% else %}\r\n            {% do exceptions.raise_compiler_error(\"partition_by data type must be date, timestamp, datetime or int64\") %}\r\n        {% endif %}\r\n        )\r\n        FROM {{table.database}}.{{table.schema}}.INFORMATION_SCHEMA.PARTITIONS\r\n        WHERE \r\n            table_name = '{{table.name}}' \r\n            AND partition_id IS NOT NULL \r\n            AND partition_id != '__NULL__' \r\n            AND partition_id != '__UNPARTITIONED__'\r\n            AND total_rows > 0\r\n    {% endset %}\r\n\r\n    {% set results = run_query(query) %}\r\n\r\n    {% set partition_max_value = results.columns[0].values()[0] %}\r\n    {{ return(partition_max_value) }}\r\n\r\n{% endmacro %}\r\n```\r\n\r\nAnd it is used like this (example):\r\n```sql\r\n{% set partition_date = get_latest_partition_value(this) %}\r\n{{\r\n    config(\r\n        materialized='incremental',\r\n        unique_key='correlation_id',\r\n        partition_by={\r\n            \"field\": \"search_date\",\r\n            \"data_type\": \"date\"\r\n        },\r\n        cluster_by=[\"message_type\"],\r\n    )\r\n}}\r\n\r\nWITH\r\n\r\nall_search_logs AS\r\n(\r\n    SELECT DISTINCT\r\n        correlation_id,\r\n        timestamp AS search_time,\r\n        username,\r\n        payload,\r\n        origin_service,\r\n        message_type,\r\n        DATE(timestamp) AS search_date,\r\n        COALESCE(CAST(JSON_EXTRACT_SCALAR(metadata, '$.with_scores') AS BOOL), TRUE) AS with_scores\r\n    FROM\r\n        {{ source('pubsub_dataflow', 'pubsub_to_bigquery_partitioned') }}\r\n    {% if target.name != 'production' %}\r\n        WHERE\r\n            timestamp >= (CAST(DATE_SUB(CURRENT_DATE(), INTERVAL 7 DAY) AS TIMESTAMP))\r\n    {% else %}\r\n        {% if is_incremental() and partition_date is not none %}\r\n            WHERE\r\n                timestamp >= TIMESTAMP('{{ partition_date }}')\r\n        {% endif %}\r\n    {% endif %}\r\n)\r\n\r\nSELECT * FROM all_search_logs\r\n```\r\n\r\nThe `table` parameter in the macro during the unit test execution is NULL/NONE whereas in normal running or compilation it is correctly set as the target table."
+  },
+  {
+   "author": "devmessias",
+   "created_at": "2024-10-31T16:52:15Z",
+   "body": "This will not work with the current limitations of unit tests. However, you can override the macro since it is being called only once. In that case, having a feature that allows to override a dynamic variable is not necessary.\r\n\r\n"
+  },
+  {
+   "author": "dbeatty10",
+   "created_at": "2024-11-01T21:31:11Z",
+   "body": "Thanks for providing those details @CraigWilson-ZOE ! I was able to get the same error as you with a simplified version of your scenario. And I was also able to resolve it by providing an [override](https://docs.getdbt.com/reference/resource-properties/unit-test-overrides) for the `get_latest_partition_value` macro in the unit test definition.\r\n\r\n### Explanation\r\n\r\nIt looks like these lines are the ones that won't work the way you want when you execute them in a unit test:\r\n\r\n```sql\r\n        FROM {{table.database}}.{{table.schema}}.INFORMATION_SCHEMA.PARTITIONS\r\n        WHERE \r\n            table_name = '{{table.name}}' \r\n```\r\n\r\nThere's an explanation in https://github.com/dbt-labs/dbt-core/issues/10891#issuecomment-2444663406.\r\n\r\nThe TLDR is that within the context of unit tests, [`this` is a `str` rather than a `Relation`](https://github.com/dbt-labs/dbt-core/blob/3224589fe7995a48f94cbbbb2ba295a958f3aeb4/core/dbt/context/providers.py#L1676-L1682), so things like `{{table.schema}}` will be empty.\r\n\r\n### Workaround\r\n\r\nCould you try providing an override for your `get_latest_partition_value` macro like suggested by @devmessias ?\r\n\r\nIt would look something like this:\r\n\r\n```yaml\r\n  - name: unit_test__int_barcode_scanned_events_incremental_mode\r\n    description: Unit test for int_barcode_scanned_events in incremental mode\r\n    model: int_barcode_scanned_events\r\n    overrides:\r\n      macros:\r\n        is_incremental: true\r\n        get_latest_partition_value: SOMETHING_HERE\r\n```\r\n"
+  },
+  {
+   "author": "CraigWilson-ZOE",
+   "created_at": "2024-11-04T08:25:24Z",
+   "body": "Ah that makes a lot of sense, and thanks for the example and explanation. Happy for this to be closed as I think a lot of it is covered in other issues as linked above."
+  },
+  {
+   "author": "dbeatty10",
+   "created_at": "2024-11-04T22:10:10Z",
+   "body": "Thanks again for raising this and helping home in on the root causes @CraigWilson-ZOE. Going to close this in favor of https://github.com/dbt-labs/dbt-core/issues/10891 and other relevant issues linked above."
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "dbt-labs/dbt-core",
+  "default_branch": "main",
+  "commit_sha": "1d3d315249c81dbca70452e5a14fbfd0edad6b2a",
+  "as_of": "2024-09-10T15:15:30Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_dbt-labs_dbt-core_10686"
+}

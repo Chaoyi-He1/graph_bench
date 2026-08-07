@@ -1,0 +1,152 @@
+{
+ "repo": "rclone/rclone",
+ "number": 7056,
+ "url": "https://github.com/rclone/rclone/issues/7056",
+ "title": "allow parallel/multithreaded/multipart transfers between remotes",
+ "state": "closed",
+ "labels": [
+  "enhancement",
+  "Remote: S3"
+ ],
+ "reporter": "reporter",
+ "created_at": "2023-06-14T09:43:59Z",
+ "closed_at": "2024-08-16T05:05:29Z",
+ "body": "#### What is your current rclone version (output from `rclone version`)?\r\nv1.63.0\r\n\r\n#### What problem are you are trying to solve?\r\nSpecifically, transfers from S3 to S3 are much slower than they have to be. In our case, the buckets need different credentials, so remote copying is not an option (however, in our experience remote copy is actually *slower* than local copy, and it is also not done in parallel). This happens sequentially, resulting for us in speeds of about 70MiB/s. With multithreading we can download at speeds limited only by disk and network speed. Same thing for upload using multipart.\r\nSo, actually, download to local and re-uploading is faster than a direct copy, but still half the speed we should have; AND requires more fumbling with infrastructure as the disk needs to be big enough for holding the files (> TiB).\r\n\r\nI would like to make the in-memory copy limited only by network (and maybe cpu/mem). Our main problem is S3, but I think the solution should be at least somewhat generic.\r\n\r\nSee related forum post: https://<redacted-host>/t/s3-s3-large-file-copy/18574/4\r\n\r\n\r\n#### How do you think rclone should be changed to solve that?\r\n\r\nI would actually be happy to receive some opinions on how to go about it ;-)\r\n\r\nMy initial though would be to change (or create a new) the multithreaded downloading to make it more similiar to how multipart uploads work. Instead of simply selecting threads and then using `filesize/threads` to get ranges AND threads,  we would us `chunk-size` for ranges and `download-concurrency` for number of threads.\r\n\r\nThen we could plug this into the multi-part uploading by selecting the same sizes.\r\n\r\nBut I'm fuzzy on the details, and on how to make it more generic.\r\n\r\nIs this a feasible idea? Any other approaches that might be better than the one I suggested?  \r\n\r\n\r\n\r\n",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2023-08-15T21:18:07Z",
+   "body": "Now that we've merged the first part of this - thank you @participant3 and @reporter I've had a go at the next part.\r\n\r\nThis is making the multipart upload generic.\r\n\r\nI'd really appreciate testing on this.\r\n\r\n[v1.64.0-beta.7247.5bd9e6527.multithread](https://<redacted-host>/branch/multithread/v1.64.0-beta.7247.5bd9e6527.multithread/) on branch [multithread](https://github.com/rclone/rclone/tree/multithread) (uploaded in 15-30 mins)\r\n\r\nThe main changes I've made are:\r\n\r\n- pool the memory use - this is really important for not exploding memory use\r\n- factor a multipart uploader to lib/multipart from backend/s3\r\n- tidy and polish the ChunkWriter code\r\n- don't do buffering when writing to local disk\r\n\r\nThis takes all the memory management out of the s3 backend which is what I wanted to achieve - that will also fix #7141\r\n\r\nI'd appreciate it if you would test and/or review this branch.\r\n\r\nI want to implement ChunkWriter in the following backends for v1.64 when we are sure that the interface is good.\r\n\r\n- `azureblob`\r\n- `b2`\r\n- `box`\r\n- `gcs`\r\n- `oracleobjectstorage` ( @participant5 maybe you'd like to help with this? )\r\n\r\nOther possibilities\r\n\r\n- `chunker` (see #5041)\r\n- `dropbox` (currently not parallel uploading but there is an interface)\r\n\r\nStill to do:\r\n\r\n- I note also that we probably need to implement this in some of the Overlay file systems (eg `combine`, `union`) - the integration tests are failing at the moment because of the missing implementations.\r\n- Accounting is still broken!"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-08-15T21:31:35Z",
+   "body": "Good job everyone ! I really hope someone can make this work with Dropbox (I mean the // upload part), since mono-chunck upload is kind of slow."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-08-16T10:04:29Z",
+   "body": "> Now that we've merged the first part of this - thank you @participant3 and @reporter I've had a go at the next part.\r\n> \r\n> This is making the multipart upload generic.\r\n> \r\n> I'd really appreciate testing on this.\r\n> \r\n> [v1.64.0-beta.7247.5bd9e6527.multithread](https://<redacted-host>/branch/multithread/v1.64.0-beta.7247.5bd9e6527.multithread/) on branch [multithread](https://github.com/rclone/rclone/tree/multithread) (uploaded in 15-30 mins)\r\n> \r\n> The main changes I've made are:\r\n> \r\n> * pool the memory use - this is really important for not exploding memory use\r\n> * factor a multipart uploader to lib/multipart from backend/s3\r\n> * tidy and polish the ChunkWriter code\r\n> * don't do buffering when writing to local disk\r\n> \r\n> This takes all the memory management out of the s3 backend which is what I wanted to achieve - that will also fix #7141\r\n> \r\n> I'd appreciate it if you would test and/or review this branch.\r\n> \r\n> I want to implement ChunkWriter in the following backends for v1.64 when we are sure that the interface is good.\r\n> \r\n> * `azureblob`\r\n> * `b2`\r\n> * `box`\r\n> * `gcs`\r\n> * `oracleobjectstorage` ( @participant5 maybe you'd like to help with this? )\r\n> \r\n> Other possibilities\r\n> \r\n> * `chunker` (see [chunker: add support for multi-thread uploads #5041](https://github.com/rclone/rclone/issues/5041))\r\n> * `dropbox` (currently not parallel uploading but there is an interface)\r\n> \r\n> Still to do:\r\n> \r\n> * I note also that we probably need to implement this in some of the Overlay file systems (eg `combine`, `union`) - the integration tests are failing at the moment because of the missing implementations.\r\n> * Accounting is still broken!\r\n\r\nDoes it make sense to implement something for gcs? I looked into it and my understanding was that the GCS multipart upload implementation is actually the S3 protocol. So it should already be possible to configure a GCS bucket with the S3 backend, and it would just work. Do you know something I dont, or is your point more about user friendliness (I for one would prefer to configure my GCS bucket for the gcs provider, and let it dynamically choose the S3-compatible API if that makes sense)?\r\n\r\nI would be up to implementing at least one of the listed backends, maybe azure or Dropbox. Regarding Dropbox, is the interface you meant https://github.com/dropbox/dropbox-sdk-go-unofficial/blob/master/v6/dropbox/files/client.go#L453 ?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-08-16T16:41:43Z",
+   "body": "> Does it make sense to implement something for gcs? I looked into it and my understanding was that the GCS multipart upload implementation is actually the S3 protocol. So it should already be possible to configure a GCS bucket with the S3 backend, and it would just work.\r\n\r\nYes you are right. Here is the API which says it is S3 compatible https://cloud.google.com/storage/docs/multipart-uploads - we don't currently use this so it would be quite a lot of work to add it.\r\n\r\nI think I'll scratch GCS off the list for the time being, especially since the SDK I'm using only supports the JSON interface.\r\n\r\n> I would be up to implementing at least one of the listed backends, maybe azure or Dropbox. Regarding Dropbox, is the interface you meant https://github.com/dropbox/dropbox-sdk-go-unofficial/blob/master/v6/dropbox/files/client.go#L453 ?\r\n\r\nHere is the interface https://<redacted-host>/developers/documentation/http/documentation#files-upload_session-start - you enable it with `UploadSessionType.concurrent`. We use that interface already...\r\n\r\nNote that the dropbox uploader is very complicated due to the batching but if you want to have a go that would be great! Note that this is part of https://github.com/rclone/rclone/issues/5156\r\n\r\nI did the azureblob interface as a second system and that went reasonably well...\r\n\r\nNew branch and betas for testing here with s3 and azureblob support.\r\n\r\n[v1.64.0-beta.7248.c24af0144.multithread](https://<redacted-host>/branch/multithread/v1.64.0-beta.7248.c24af0144.multithread/) on branch [multithread](https://github.com/rclone/rclone/tree/multithread) (uploaded in 15-30 mins)"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-08-21T16:37:22Z",
+   "body": " I have pushed what I hope is the final version of this here with s3, azureblob and b2 support.\r\n\r\nI had to change the `ChunkWriter` interface - it needed a `ctx` parameter on `WriteChunk` otherwise we can't cancel pending uploads properly.\r\n\r\nAny testing much appreciated :-)\r\n\r\n[v1.64.0-beta.7261.996754745.multithread](https://<redacted-host>/branch/multithread/v1.64.0-beta.7261.996754745.multithread/) on branch [multithread2](https://github.com/rclone/rclone/tree/multithread2) (uploaded in 15-30 mins)"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-08-21T16:44:05Z",
+   "body": "I don't have any of theses providers but congrats !"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-08-22T08:05:01Z",
+   "body": "hi, @participant1 , I executed some tests for S3 on an EC2 instance (linux) and on my local machine (mac) and had no issues. 🎉 🎉 \r\n\r\n\r\nEC2 m5n.2xlarge instance (100 GB file):\r\n```\r\n./rclone copyto -vv --progress --s3-no-check-bucket  --disable copy --multi-thread-cutoff 1 --multi-thread-streams 100 --s3-chunk-size=25M --multi-thread-chunk-size=25M <bucket>/test-100-GiB <bucket>/TestVideo -I\r\n...\r\n2023-08-22 07:35:15 DEBUG : test-100-GiB: Starting multi-thread copy with 4096 parts of size 25Mi with 100 parallel streams\r\n2023-08-22 07:35:15 DEBUG : test-100-GiB: multi-thread copy: stream 27/4096 (681574400-707788800) size 25Mi starting\r\n2023-08-22 07:35:15 DEBUG : test-100-GiB: multi-thread copy: stream 28/4096 (707788800-734003200) size 25Mi starting\r\n...\r\n2023-08-22 07:38:43 DEBUG : test-100-GiB: Finished multi-thread copy with 4096 parts of size 25Mi\r\n2023-08-22 07:38:43 DEBUG : Testvideo: Dst hash empty - aborting Src hash check\r\n2023-08-22 07:38:43 DEBUG : test-100-GiB: Src hash empty - aborting Dst hash check\r\n2023-08-22 07:38:43 INFO  : test-100-GiB: Multi-thread Copied (replaced existing) to: Testvideo\r\nTransferred:   \t      100 GiB / 100 GiB, 100%, 519.824 MiB/s, ETA 0s\r\nTransferred:            1 / 1, 100%\r\nElapsed time:      3m27.9s\r\n2023/08/22 07:38:43 INFO  :\r\nTransferred:   \t      100 GiB / 100 GiB, 100%, 519.824 MiB/s, ETA 0s\r\nTransferred:            1 / 1, 100%\r\nElapsed time:      3m27.9s\r\n...\r\n./rclone --version\r\nrclone v1.64.0-beta.7261.996754745.multithread2\r\n- os/version: amazon 2 (64 bit)\r\n- os/kernel: 4.14.320-243.544.amzn2.x86_64 (x86_64)\r\n- os/type: linux\r\n- os/arch: amd64\r\n- go/version: go1.21.0\r\n- go/linking: static\r\n- go/tags: none\r\n```\r\n\r\nLocal machine (1 GB file):\r\n```\r\n./rclone copyto --log-level DEBUG --progress --s3-no-check-bucket --multi-thread-cutoff=0   <bucket>/test-1-GiB <bucket>/test-1-GiB-test -I --multi-thread-streams 20 --s3-upload-cutoff=0 --disable=copy\r\n...\r\n2023-08-22 09:46:32 DEBUG : test-1-GiB: Starting multi-thread copy with 205 parts of size 5Mi with 20 parallel streams\r\n2023-08-22 09:46:32 DEBUG : test-1-GiB: multi-thread copy: stream 3/205 (10485760-15728640) size 5Mi starting\r\n2023-08-22 09:46:32 DEBUG : test-1-GiB: multi-thread copy: stream 13/205 (62914560-68157440) size 5Mi starting\r\n...\r\n2023-08-22 09:49:30 DEBUG : test-1-GiB: Finished multi-thread copy with 205 parts of size 5Mi\r\n2023-08-22 09:49:30 DEBUG : test-1-GiB-test: Dst hash empty - aborting Src hash check\r\n2023-08-22 09:49:30 DEBUG : test-1-GiB: Src hash empty - aborting Dst hash check\r\n2023-08-22 09:49:30 INFO  : test-1-GiB: Multi-thread Copied (new) to: test-1-GiB-test\r\nTransferred:            1 GiB / 1 GiB, 100%, 7.280 MiB/s, ETA 0s\r\nTransferred:            1 / 1, 100%\r\nElapsed time:      2m58.7s\r\n2023/08/22 09:49:30 INFO  : \r\nTransferred:            1 GiB / 1 GiB, 100%, 7.280 MiB/s, ETA 0s\r\nTransferred:            1 / 1, 100%\r\nElapsed time:      2m58.7s\r\n...\r\n./rclone version\r\nrclone v1.64.0-beta.7261.996754745.multithread2\r\n- os/version: darwin 13.4.1 (64 bit)\r\n- os/kernel: 22.5.0 (arm64)\r\n- os/type: darwin\r\n- os/arch: arm64 (ARMv8 compatible)\r\n- go/version: go1.21.0\r\n- go/linking: dynamic\r\n- go/tags: cmount\r\n```\r\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-08-22T12:00:26Z",
+   "body": "Thanks for testing @participant3 :-)"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-08-24T11:52:07Z",
+   "body": "I've merged all the outstanding multithread code to master now :-)\r\n\r\nI had a [question on the forum](https://<redacted-host>/t/improve-transfer-stats-calculation-for-multipart-uploads/41172/3) about this\r\n\r\n> How is --multi-thread-streams different from --s3-upload-concurrency?\r\n\r\nThat is a good question and one I'm going to have to explain in the docs. Maybe the options need simplifying here.\r\n\r\nHere is what has happened\r\n\r\n### Old rclone\r\n\r\n- if size below `--s3-upload-cutoff`  (default 200M) do single part upload\r\n- otherwise do multipart upload using `--s3-concurrency` to set the concurrency used by the uploader.\r\n\r\n### New rclone\r\n\r\n- if size below `--s3-upload-cutoff` (default 200M) do single part upload\r\n- if size below `--multi-thread-cutoff` (default 256M) do multipart upload using `--s3-concurrency` to set the concurrency used by the uploader.\r\n- otherwise do multipart upload using  `--multi-thread-streams` to set the concurrency\r\n\r\nNow that I've written that out it looks needlessly confusing.\r\n\r\nI guess the options for rationalising it are\r\n\r\n1. use `--s3-concurrency` instead of `--multi-thread-streams` to set the concurrency. This means each backend can set different concurrency levels.\r\n- this is backwards compatible with people's config\r\n- it means `--multi-thread-streams` will no longer be used (or maybe the default for backends that don't care)\r\n- this will require changing the `ChunkWriter` interface to return the desired concurrency along with the desired chunk size\r\n2. use `--multi-thread-streams` to set the concurrency everywhere. Neat, but doesn't allow different concurrency settings for different backends.\r\n- this is not backwards compatible with people's config\r\n- this will require reading the value of `--multi-thread-streams` in the backend (easy)\r\n3. use a hybrid - use the maximum of `--s3-concurrency` and `--multi-thread-streams` - this allows individual control for each backend but has a global override\r\n- this is backwards compatible with people's config\r\n- it means `--multi-thread-streams` still does something useful\r\n- this will require changing the `ChunkWriter` interface\r\n\r\nAny thoughts?\r\n\r\nPS I've pushed the 1.64 milestone back 2 weeks to allow a bit more time for this feature to settle!"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2023-08-24T12:42:30Z",
+   "body": "I noticed the [top Google result](https://<redacted-host>/t/s3-concurrency-multi-thread-streams-vs-s3-upload-concurrency/34191) for \"rclone s3 concurrency\" is confusion about `--multi-thread-streams` vs `--s3-concurrency`, so the single flag may be easier from a user perspective.\r\n\r\nWhat scenarios would benefit from backend-specific flags? Maybe there's a case where we can read chunks from one backend faster than we can write to another, so we want to have lower read concurrency vs write concurrency? (This feels unlikely - rclone will always buffer the diff in speeds. Unless there's a remote with a lower RPS limit with higher per-chunk throughput than the second remote...) Or maybe there are scenarios with `combine` setups that would benefit from this?\r\n\r\nIf there's not a good reason for backend-specific concurrency, then it seems like this could be made much simpler by moving to `--multi-thread-streams`, and deprecate `--s3-concurrency`. We don't have to break people's configs though - we could alias `--s3-concurrency` to `--multi-thread-streams`, and print a warning about the deprecation. If the user has both, I'd say go with the higher value (and maybe include that in the warning message.) Same could be done for `--s3-upload-cutoff`. This is basically option 3 that you mentioned, but I think we should probably push users to `--multi-thread-streams` to reduce confusion.\r\n\r\nThe one downside to the unified `--multi-thread-streams` flag is that it's not clear which backends it applies to. When looking for flags compatible with a backend, I typically do something like `rclone help flags|grep s3`. So maybe we could improve communication/docs for what remotes this flag affects."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2023-08-24T18:17:03Z",
+   "body": "if download and upload speed differ we can adjust the parallelisms in source and target to match their speeds up. \r\nexample if source data is in usa and destination is in england, we can have more threads to read and less threads to write."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2023-08-24T18:43:12Z",
+   "body": "Is there any benefit to that? Like if the concurrency is the same for reads and writes, would we just have some idle write workers while it’s waiting on reads?\r\n\r\nLimiting write concurrency seems like it would be done implicitly because it has workers waiting on the slow read backend. But I might be missing something"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2023-08-24T19:15:24Z",
+   "body": "you are right, we can have same number of threads in each for simplicity and it will work. \r\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-09-01T17:00:58Z",
+   "body": "I've implemented a fix for this. Any testing much appreciated! I'm hoping this is the last change before the v1.64 release.\r\n\r\n[v1.64.0-beta.7303.6c318bce4.multithread](https://<redacted-host>/branch/multithread/v1.64.0-beta.7303.6c318bce4.multithread/) on branch [multithread](https://github.com/rclone/rclone/tree/multithread) (uploaded in 15-30 mins)\r\n\r\nFrom the docs\r\n\r\n### --multi-thread-streams=N ###\r\n\r\nWhen using multi thread transfers (see above `--multi-thread-cutoff`)\r\nthis sets the number of streams to use. Set to `0` to disable multi\r\nthread transfers (Default 4).\r\n\r\nIf the backend has a `--backend-upload-concurrency` setting (eg\r\n`--s3-upload-concurrency`) then this setting will be used as the\r\nnumber of transfers instead if it is larger than the value of\r\n`--multi-thread-streams` or `--multi-thread-streams` isn't set.\r\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-09-03T10:47:39Z",
+   "body": "I've merged that to master now !"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2023-09-03T10:54:42Z",
+   "body": "One thing I noticed is that a larger `--multi-thread-chunk-size` does not override the backend-specific setting. Is this intentional? (I have chunk_size specified in my rclone.conf - not sure if that's any different from setting it via flags)\r\nedit: It's not just if it's larger - `--multi-thread-chunk-size` is ignored if the backend-specific version is set"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2023-09-03T11:07:15Z",
+   "body": "Okay never mind, looks like `--multi-thread-chunk-size` just isn't used for s3\r\ncontext:\r\nUsing `provider = Scaleway`"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-09-03T13:30:54Z",
+   "body": "> Okay never mind, looks like `--multi-thread-chunk-size` just isn't used for s3 context: Using `provider = Scaleway`\r\n\r\nThe backend overrides it - it uses its own setting `--s3-chunk-size`."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2023-09-03T13:36:36Z",
+   "body": "Should `--multi-thread-chunk-size` be used if the backend does not specify one? Currently it looks like `--multi-thread-chunk-size` does not get used at all - it uses the default of 5Mi if all I use is `--multi-thread-chunk-size`"
+  },
+  {
+   "author": "participant6",
+   "created_at": "2023-09-03T18:30:40Z",
+   "body": "@participant1 I haven't read the details of the implementation yet but can you confirm that https://github.com/rclone/rclone/pull/6179 should be rewritten to use the new `ChunkWriter` abstraction?"
+  },
+  {
+   "author": "participant6",
+   "created_at": "2023-09-03T18:34:45Z",
+   "body": "Also, is the current issue (#7056) a duplicate of #4798?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-09-03T21:12:59Z",
+   "body": "@participant7\r\n> I haven't read the details of the implementation yet but can you confirm that #6179 should be rewritten to use the new `ChunkWriter` abstraction?\r\n\r\nOnly if the chunks can be uploaded in parallel and in any order. I think this is the case! The performance gains only start to show when rclone isn't filling the upload network pipe and that requires a very fast source and a big upload pipe. For your average SSD to average upload I don't think you'll notice much speed difference.\r\n\r\n\r\n> Also, is the current issue (#7056) a duplicate of #4798?\r\n\r\nYes it looks like it! I'll close that issue now.\r\n"
+  },
+  {
+   "author": "participant6",
+   "created_at": "2023-09-03T22:23:44Z",
+   "body": "@participant1 It should help if the remote has a per-connection speed throttle right? (Can be by design or by technical limitation.)\r\n\r\nThis is why I implemented a parallel chunks upload for webdav in #6179. The upload speed per connection was too low. If I recall correctly in this PR adding parallel upload workers ×4'ed the upload speed in my case (sent from the local filesystem)."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-09-04T08:29:06Z",
+   "body": "@participant7 wrote:\r\n> It should help if the remote has a per-connection speed throttle right? (Can be by design or by technical limitation.)\r\n\r\nThe parallel uploads we have already will work already if the remote with the throttle is the destination. If the remote with the throttle is the source then this will help.\r\n\r\n> This is why I implemented a parallel chunks upload for webdav in #6179. The upload speed per connection was too low. If I recall correctly in this PR adding parallel upload workers ×4'ed the upload speed in my case (sent from the local filesystem).\r\n\r\n:+1: "
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-08-16T05:05:29Z",
+   "body": "This issue is complete now with many backends supporting multi thread transfers "
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "rclone/rclone",
+  "default_branch": "master",
+  "commit_sha": "e1162ec4408e089c6d6b78810b231c7b51deb21b",
+  "as_of": "2023-06-14T09:43:59Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_rclone_rclone_7056"
+}

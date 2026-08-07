@@ -1,0 +1,181 @@
+{
+ "repo": "open-telemetry/opentelemetry-collector",
+ "number": 10552,
+ "url": "https://github.com/open-telemetry/opentelemetry-collector/issues/10552",
+ "title": "Tracking issue for `confmap.strictlyTypedInput` feature gate",
+ "state": "closed",
+ "labels": [
+  "area:confmap"
+ ],
+ "reporter": "reporter",
+ "created_at": "2024-07-08T11:13:23Z",
+ "closed_at": "2024-08-20T08:05:00Z",
+ "body": "This issue describes the `confmap.strictlyTypedInput` feature gate, intended to address #8565 and #9532.\r\n\r\n### What is changing?\r\n\r\n1. Configurations relying on the implicit type casting behaviors listed on #9532 will start to fail.\r\n2. Configurations using URI expansion (i.e. `field: ${env:ENV}`) for string-typed fields will use the value passed in `ENV` verbatim without intermediate type casting.\r\n\r\n### What does it mean to me?\r\n\r\nStarting on v0.105.0, you may have to adapt your configuration to use the correct type on some fields. This should be a straightforward. You are able to skip the error and update your configuration at your own pace by disabling the `confmap.strictlyTypedInput` feature gate.\r\n\r\nPlease **reply below** if:\r\n- You are unsure what an error means or how to update your configuration\r\n- An error tells you that you can disable the feature gate to skip it, but this does not work. \r\n\r\n### Changelog \r\n\r\n| Collector version | Change | PR |\r\n|-------------------|--------|----|\r\n|    v0.103.0               |  Introduce feature gate as **alpha**      |  #10400  |\r\n|    v0.105.0              |   Promote feature gate to **beta** (enabled by default)     |  #10554  |\r\n|    *v0.108.0*              |   Promote feature gate to **stable** (can't be disabled)     |  #10793  |\r\n|    *v0.110.0*              |   Remove feature gate (errors out when referenced)     |    |",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2024-07-18T19:35:07Z",
+   "body": "I observe a breaking change with this newly introduced behavior.\r\n\r\nAfter the feature gate was turned on, grafana_cloud integrations via `basic_auth` extension with `confmap/provider/envprovider` now report errors like:\r\n> 'client_auth.username' expected type 'string', got unconvertible type 'int', value: '12345'\r\n\r\nAs grafana cloud usernames are often integers, seems like users running this setup with docker without hardcoding credentials might experience unexpected errors. \r\n\r\nOne of the workarounds I see could be using `bearertokenauth` and providing token as `${env:GRAFANA_CLOUD_USERNAME}:${env:GRAFANA_CLOUD_PASSWORD}`. \r\nAre there any other workarounds? Is there a correct way of providing integer-based values as strings via environment?  \r\n \r\nHere is a minimal example which allows reproducing the error:\r\n\r\n**docker-compose.yaml**\r\n```\r\nversion: '3.8'\r\nservices:\r\n  otel-collector:\r\n    image: otel/opentelemetry-collector-contrib:latest\r\n    command: [\"--config=/etc/otel-collector-config.yaml\"]\r\n    volumes:\r\n      - ./otel-collector-config.yaml:/etc/otel-collector-config.yaml\r\n    env_file:\r\n      - .secrets\r\n```\r\n\r\n**.secrets**\r\n```\r\nGRAFANA_CLOUD_USERNAME=\"12345\"\r\nGRAFANA_CLOUD_PASSWORD=\"secret\"\r\nGRAFANA_CLOUD_OTLP_ENDPOINT=\"https://<redacted-host>/otlp\"\r\n```\r\n\r\n**otel-collector-config.yaml**\r\n```\r\nextensions:\r\n  basicauth/grafana_cloud:\r\n    # https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/main/extension/basicauthextension\r\n    client_auth:\r\n      username: \"${env:GRAFANA_CLOUD_USERNAME}\"\r\n      password: \"${env:GRAFANA_CLOUD_PASSWORD}\"\r\n\r\nreceivers:\r\n  otlp:\r\n    # https://github.com/open-telemetry/opentelemetry-collector/tree/main/receiver/otlpreceiver\r\n    protocols:\r\n      grpc:\r\n        endpoint: \"0.0.0.0:4317\"\r\n  hostmetrics:\r\n    # Optional. Host Metrics Receiver added as an example of Infra Monitoring capabilities of the OpenTelemetry Collector\r\n    # https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/main/receiver/hostmetricsreceiver\r\n    scrapers:\r\n      load:\r\n      memory:\r\n\r\nprocessors:\r\n  batch:\r\n  # https://github.com/open-telemetry/opentelemetry-collector/tree/main/processor/batchprocessor\r\n  resourcedetection:\r\n    # Enriches telemetry data with resource information from the host\r\n    # https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/main/processor/resourcedetectionprocessor\r\n    detectors: [\"env\", \"system\"]\r\n    override: false\r\n  transform/add_resource_attributes_as_metric_attributes:\r\n    # https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/main/processor/transformprocessor\r\n    error_mode: ignore\r\n    metric_statements:\r\n      - context: datapoint\r\n        statements:\r\n          - set(attributes[\"deployment.environment\"], resource.attributes[\"deployment.environment\"])\r\n          - set(attributes[\"service.version\"], resource.attributes[\"service.version\"])\r\n\r\nexporters:\r\n  otlphttp/grafana_cloud:\r\n    # https://github.com/open-telemetry/opentelemetry-collector/tree/main/exporter/otlpexporter\r\n    endpoint: \"${env:GRAFANA_CLOUD_OTLP_ENDPOINT}\"\r\n    auth:\r\n      authenticator: basicauth/grafana_cloud\r\n\r\nservice:\r\n  extensions: [basicauth/grafana_cloud]\r\n  pipelines:\r\n    traces:\r\n      receivers: [otlp]\r\n      processors: [resourcedetection, batch]\r\n      exporters: [otlphttp/grafana_cloud]\r\n    metrics:\r\n      receivers: [otlp, hostmetrics]\r\n      processors: [\r\n        resourcedetection,\r\n        transform/add_resource_attributes_as_metric_attributes,\r\n        batch,\r\n      ]\r\n      exporters: [otlphttp/grafana_cloud]\r\n    logs:\r\n      receivers: [otlp]\r\n      processors: [resourcedetection, batch]\r\n      exporters: [otlphttp/grafana_cloud]\r\n\r\n```\r\n\r\n\r\n"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-07-18T20:08:13Z",
+   "body": "@participant1 you're likely experiencing the same issue as https://github.com/open-telemetry/opentelemetry-collector/issues/10659.  I haven't been able to reproduce your use-case yet either."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-07-18T21:36:33Z",
+   "body": "Not sure if relevant, but would note that my setup for this is:\r\n```\r\nOperating System: Ubuntu 22.04.4 \r\nKernel: Linux 5.15.0-83-generic\r\nArchitecture: x86-64\r\nDocker version: 24.0.7, build afdd53b\r\nDocker Compose version: v2.20.2-desktop.1\r\n```\r\n\r\nAn actual example that I'm running could be found here (just remove `--feature-gates=-confmap.strictlyTypedInput`) - https://github.com/participant1/telemetry-example/blob/master/examples/otel-collector/docker-compose.yml#L33\r\n\r\n\r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-07-19T08:33:26Z",
+   "body": ">  Is there a correct way of providing integer-based values as strings via environment?\r\n\r\n#10618 will fix this, in the mean time you can revert the feature gate\r\n"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-07-25T14:07:36Z",
+   "body": "Btw. I get the same error twice within this section:\r\n``` \r\n    transform/containerd:\r\n        log_statements:\r\n          context: log\r\n          statements:\r\n            - merge_maps(cache,ExtractPatterns(body,\"^(?P<time>[^Z]+Z) (?P<stream>stdout|stderr) (?P<logtag>[^\\\\s]*) ?(?P<log>.*)$\"), \"upsert\") where body != nil\r\n            - merge_maps(cache,ExtractPatterns(body,\"^(?P<time>\\\\d+/\\\\d+/\\\\d+\\\\s+\\\\d+:\\\\d+\\\\d+) (?P<log>.*)$\"), \"upsert\") where attributes[\"log_name\"]!= \"MeshAccessLog\" and cache[\"log\"]!= nil and not IsMap(cache[\"log\"])\r\n            - set(body,cache[\"log\"]) where cache[\"log\"] != nil\r\n            - merge_maps(cache,ParseJSON(body), \"upsert\") where IsMap(body)\r\n            - set(body,cache[\"message\"]) where cache[\"message\"] != nil\r\n            - set(body,cache[\"msg\"]) where cache[\"msg\"] != nil\r\n            - set(severity_text,cache[\"level\"]) where cache[\"level\"] != nil\r\n            - set(severity_text,cache[\"severity\"]) where cache[\"severity\"] != nil\r\n            - set(severity_number,SEVERITY_NUMBER_INFO) where cache[\"level\"] == \"INFO\"\r\n            - set(severity_number,SEVERITY_NUMBER_INFO) where cache[\"severity\"] == \"info\"\r\n            - set(attributes[\"loggerName\"],cache[\"loggerName\"]) where cache[\"loggerName\"] != nil\r\n``` \r\n\r\n``` \r\nError: failed to get config: cannot unmarshal the configuration: 1 error(s) decoding:\r\n\r\n* error decoding 'processors': error reading configuration for \"transform/containerd\": 1 error(s) decoding:\r\n\r\n* 'log_statements': source data must be an array or slice, got map\r\n\r\nHint: Temporarily restore the previous behavior by disabling\r\n      the `confmap.strictlyTypedInput` feature gate. More details at:\r\n      https://github.com/open-telemetry/opentelemetry-collector/issues/10552\r\n2024/07/25 14:02:24 collector server run finished with error: failed to get config: cannot unmarshal the configuration: 1 error(s) decoding:\r\n\r\n* error decoding 'processors': error reading configuration for \"transform/containerd\": 1 error(s) decoding:\r\n\r\n* 'log_statements': source data must be an array or slice, got map\r\n\r\nHint: Temporarily restore the previous behavior by disabling\r\n      the `confmap.strictlyTypedInput` feature gate. More details at:\r\n      https://github.com/open-telemetry/opentelemetry-collector/issues/10552\r\n``` "
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-07-25T14:45:57Z",
+   "body": "@participant3 your configuration is wrong. \r\n\r\n```yaml\r\ntransform/containerd:\r\n  log_statements:\r\n    - context: log\r\n      statements:\r\n        - ...\r\n```"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-07-25T15:10:40Z",
+   "body": "> Btw. I get the same error twice within this section:\r\n\r\nThis is not specific to this error, it happens for all errors: you get the error once in the logs and another in stdout."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-08-02T12:52:43Z",
+   "body": "same issue for \r\nhttps://github.com/open-telemetry/opentelemetry-collector-contrib/tree/main/processor/metricstransformprocessor\r\n\r\n```\r\n* 'transforms': source data must be an array or slice, got map\u001b[0;m\r\n[0;m\r\nHint: Temporarily restore the previous behavior by disabling \u001b[0;m\r\n      the `confmap.strictlyTypedInput` feature gate. More details at:\u001b[0;m\r\n      https://github.com/open-telemetry/opentelemetry-collector/issues/10552\u001b[0;m\r\n2024/08/02 11:36:40 collector server run finished with error: failed to get config: cannot unmarshal the configuration: 1 error(s) decoding:\u001b[0;m\r\n[0;m\r\n* error decoding 'processors': error reading configuration for \"metricstransform\": 1 error(s) decoding:\u001b[0;m\r\n[0;m\r\n* 'transforms': source data must be an array or slice, got map\u001b[0;m\r\n[0;m\r\nHint: Temporarily restore the previous behavior by disabling \u001b[0;m\r\n      the `confmap.strictlyTypedInput` feature gate. More details at:\u001b[0;m\r\n      https://github.com/open-telemetry/opentelemetry-collector/issues/10552\u001b[0;m\r\n\r\n```"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-08-02T13:22:25Z",
+   "body": "@participant4 `transforms` needs to be a list, not a single element, similar to the change Tyler suggested here: https://github.com/open-telemetry/opentelemetry-collector/issues/10552#issuecomment-2250522898"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2024-08-03T12:32:46Z",
+   "body": "Just came across of what I believe to be a side-effect of this issue. On a config like this:\r\n```yaml\r\nextensions:\r\n  zpages: {}\r\n  basicauth/otlp:\r\n    client_auth:\r\n      username: \"${OTLP_USER}\"\r\n      password: \"${GRAFANA_ACCESS_TOKEN}\"\r\n```\r\nThe collector will fail to start if `OTLP_USER` is numeric, e.g. `OTLP_USER=12345`, with the following error:\r\n```\r\nError: failed to get config: cannot unmarshal the configuration: decoding failed due to the following error(s):\r\n\r\nerror decoding 'extensions': error reading configuration for \"basicauth/otlp\": decoding failed due to the following error(s):\r\n\r\n'client_auth.username' expected type 'string', got unconvertible type 'int', value: '12345'\r\n\r\nHint: Temporarily restore the previous behavior by disabling \r\n      the `confmap.strictlyTypedInput` feature gate. More details at:\r\n      https://github.com/open-telemetry/opentelemetry-collector/issues/10552\r\n2024/08/03 12:29:46 collector server run finished with error: failed to get config: cannot unmarshal the configuration: decoding failed due to the following error(s):\r\n\r\nerror decoding 'extensions': error reading configuration for \"basicauth/otlp\": decoding failed due to the following error(s):\r\n\r\n'client_auth.username' expected type 'string', got unconvertible type 'int', value: '12345'\r\n\r\nHint: Temporarily restore the previous behavior by disabling \r\n      the `confmap.strictlyTypedInput` feature gate. More details at:\r\n      https://github.com/open-telemetry/opentelemetry-collector/issues/10552\r\nStream closed EOF for monit/otelcol-5f57b9d79c-kbpc9 (otelcol)\r\n```\r\n\r\nForcing this to a string in YAML as @participant2 suggested [here](https://github.com/open-telemetry/opentelemetry-collector/issues/10659#issuecomment-2237711408) ~does work~:\r\n```yaml\r\nextensions:\r\n  zpages: {}\r\n  basicauth/otlp:\r\n    client_auth:\r\n      username: str!! \"${OTLP_USER}\" # Force YAML decoder to read it as a string.\r\n      password: \"${GRAFANA_ACCESS_TOKEN}\"\r\n```\r\n\r\n---\r\n\r\nEDIT: I don't think the above is working. I think it is taking `str!! 1234` as a literal value, which will then fail to authenticate. `str!!` is not a yaml tag, `!!str` is.\r\n\r\nUsing `username: !!str \"${env:OTLP_USER}\"` does not seem to fix the problem, I get the same error:\r\n```\r\n'client_auth.username' expected type 'string', got unconvertible type 'int', value: '12345'\r\n```\r\n\r\n@participant2 Is there something I'm doing wrong here?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-08-05T08:15:33Z",
+   "body": "@participant11 Thanks for the report. What version are you using? Would you mind trying with the latest version (v0.106.1) if you haven't done so already?"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2024-08-05T13:28:42Z",
+   "body": "@reporter Thanks for taking a look! I'm on `image: otel/opentelemetry-collector-contrib:0.106.1`\r\nThe `OTLP_USER` env var is defined on a k8s secret and then mounted into the container running the image above."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-08-06T00:59:32Z",
+   "body": "@participant11 do you have then `confmap.unifyEnvVarExpansion` feature gate enabled or disabled? In 0.106.1 it is enabled by default so you'd have to be explicitly disabling it for it to be off. "
+  },
+  {
+   "author": "participant5",
+   "created_at": "2024-08-06T10:17:21Z",
+   "body": "@participant2 I don't think I'm setting that to any particular value, so I presume it should be set to whatever the default is. Am I expected to have to modify it for the snippet above to work as it used to?"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-08-06T15:47:46Z",
+   "body": "@participant11, @reporter found what the issue is.\r\n\r\nthe expandconverter is taking our struct type (that handles using the string representation of the int when the value is used in a string field), getting the original int value from it, and using that in the map instead.\r\n\r\nThe fix is the get rid of the expandconverter, which has been our plan all along.  Keep an eye out for the `v0.107.0` release next week which will hopefully include https://github.com/open-telemetry/opentelemetry-collector/pull/10508 and https://github.com/open-telemetry/opentelemetry-collector/pull/10510."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2024-08-06T20:19:18Z",
+   "body": "@participant2  That's awesome, thank you!"
+  },
+  {
+   "author": "participant6",
+   "created_at": "2024-08-12T21:41:08Z",
+   "body": "I observe an `expected type 'string', got unconvertible type 'float64'` error with this newly-introduced feature gate. I haven't been able to figure out how to correct my configuration in order to make the error go away (other than using `--feature-gates=-confmap.strictlyTypedInput` to disable it).\r\n\r\nI am declaring an environment variable in `.env`, and then passing it into various `exporters` for the `tls.min_version`.\r\n\r\nI am getting the following error **unless** I:\r\n- specify `--feature-gates=-confmap.strictlyTypedInput` \r\n- **or**, I don't use a variable and instead use a literal `min_version: \"1.2\"`\r\n\r\nIs there some other construction I should use to be able to supply the `min_version` via an env var without having to disable `confmap.strictlyTypedInput`?\r\n\r\nHere is a minimal example which allows reproducing the error:\r\n\r\n\r\n**docker compose up --build output**\r\n```\r\nError: failed to get config: cannot unmarshal the configuration: decoding failed due to the following error(s):\r\notel-collector-1  |\r\notel-collector-1  | error decoding 'exporters': error reading configuration for \"otlphttp/monitoring\": decoding failed due to the following error(s):\r\notel-collector-1  |\r\notel-collector-1  | 'tls.min_version' expected type 'string', got unconvertible type 'float64', value: '1.2'\r\notel-collector-1  |\r\notel-collector-1  | Hint: Temporarily restore the previous behavior by disabling\r\notel-collector-1  |       the `confmap.strictlyTypedInput` feature gate. More details at:\r\notel-collector-1  |       https://github.com/open-telemetry/opentelemetry-collector/issues/10552\r\n```\r\n\r\n**.env**\r\n```\r\nTLS_MIN_VERSION=1.2\r\n```\r\n\r\n**docker-compose.yaml**\r\n```\r\nversion: \"2\"\r\nservices:\r\n\r\n  # Collector\r\n  otel-collector:\r\n    image: otel/opentelemetry-collector:0.106.1\r\n    restart: always\r\n    environment:\r\n      - TLS_MIN_VERSION=${TLS_MIN_VERSION:-1.2}\r\n    \r\n    command: [\"--config=/etc/otel-collector-config.yaml\"]\r\n\r\n    # must use \"--feature-gates=-confmap.strictlyTypedInput\" unless tls.min_version is a literal in otel-collector-config.yaml\r\n    #command: [\"--config=/etc/otel-collector-config.yaml\", \"--feature-gates=-confmap.strictlyTypedInput\"]\r\n\r\n    volumes:\r\n      - ./otel-collector-config.yaml:/etc/otel-collector-config.yaml\r\n```\r\n\r\n**otel-collector-config.yaml**\r\n```\r\nreceivers:\r\n  otlp/tracing:\r\n    protocols:\r\n      grpc:\r\n        endpoint: 0.0.0.0:8518\r\n\r\nexporters:\r\n  otlphttp/monitoring:\r\n    endpoint: https://localhost:443\r\n    tls:\r\n      #min_version: ${TLS_MIN_VERSION}             # complains unless using \"--feature-gates=-confmap.strictlyTypedInput\"\r\n      #min_version: ${env:TLS_MIN_VERSION}         # complains unless using \"--feature-gates=-confmap.strictlyTypedInput\"\r\n      min_version: \"${TLS_MIN_VERSION}\"            # complains unless using \"--feature-gates=-confmap.strictlyTypedInput\"\r\n      #min_version: \"${env:TLS_MIN_VERSION}\"       # complains unless using \"--feature-gates=-confmap.strictlyTypedInput\"  \r\n      #min_version: '${TLS_MIN_VERSION}'           # complains unless using \"--feature-gates=-confmap.strictlyTypedInput\"\r\n      #min_version: '${env:TLS_MIN_VERSION}'       # complains unless using \"--feature-gates=-confmap.strictlyTypedInput\"\r\n      #min_version: \"1.2\"                          # works without complaint\r\n\r\nservice:\r\n  pipelines:\r\n    traces/kol:\r\n      receivers: [otlp/tracing]\r\n      processors: []\r\n      exporters: [otlphttp/monitoring]\r\n```\r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-08-13T09:43:58Z",
+   "body": "@participant6 Thanks for your comment! We are in the process of releasing v0.107.0, I will let you know once this is released (I think it should solve your issue)"
+  },
+  {
+   "author": "participant6",
+   "created_at": "2024-08-13T15:06:12Z",
+   "body": "> @participant6 Thanks for your comment! We are in the process of releasing v0.107.0, I will let you know once this is released (I think it should solve your issue)\r\n\r\nThank you @reporter, I will happily pull and try v107.0 and confirm ... when ready."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-08-14T11:31:52Z",
+   "body": "@participant6 v0.107.0 is out!"
+  },
+  {
+   "author": "participant6",
+   "created_at": "2024-08-14T21:04:00Z",
+   "body": "> @participant6 v0.107.0 is out!\r\n\r\n@reporter I think my initial validation test a few hours ago (which seemed to suggest that v0.107.0 resolved my previously-reported problem) was an invalid test in some way. \r\n\r\nAfter starting fresh again just now, I am now getting the same problem (`got unconvertible type` errors in log) ... except now the container is perpetually restarting as well (again, unless I use the `--feature-gates=-confmap.strictlyTypedInput`). Exact same steps as I outlined above (except now using `image: otel/opentelemetry-collector:0.107.0`, of course)."
+  },
+  {
+   "author": "participant7",
+   "created_at": "2024-08-15T00:04:54Z",
+   "body": "I have similar issue with my processor below.\r\n\r\n  experimental_metricsgeneration/ucp_internal_cpu_percent:\r\n    rules:\r\n    - name: \"cpu/usage_percent\"\r\n      unit: 1\r\n      type: scale\r\n      metric1: \"cpu/usage_percent_unscaled\"\r\n      operation: divide\r\n      scale_by: 100\r\n      \r\n   I got error message \"'rules[0].unit' expected type 'string', got unconvertible type 'int', value: '1'\". For percentage, the recommended and default unit is 1. Should I change the unit or is this also a bug of confmap.strictlyTypedInput?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-08-16T15:14:11Z",
+   "body": "> After starting fresh again just now, I am now getting the same problem (got unconvertible type errors in log) ... except now the container is perpetually restarting as well (again, unless I use the --feature-gates=-confmap.strictlyTypedInput). Exact same steps as I outlined above (except now using image: otel/opentelemetry-collector:0.107.0, of course).\r\n\r\n@participant6  Thanks for reaching out. I think I understand why this is happening. Our current test suite did not catch this, and we will likely need end to end tests. I filed #10897 to fix this and add one initial test that catches this.\r\n\r\n> I got error message \"'rules[0].unit' expected type 'string', got unconvertible type 'int', value: '1'\". For percentage, the recommended and default unit is 1. Should I change the unit or is this also a bug of confmap.strictlyTypedInput?\r\n\r\n@participant7 This is not a bug, you should put `unit: \"1\"` instead of `unit: 1`"
+  },
+  {
+   "author": "participant6",
+   "created_at": "2024-08-16T15:20:16Z",
+   "body": "Thank you for your diligence @reporter I will test again once available."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2024-08-16T18:43:01Z",
+   "body": "@reporter I think I might be hitting this again in `otel/opentelemetry-collector-contrib:0.107.0`:\r\n\r\n```\r\nError: failed to get config: cannot unmarshal the configuration: decoding failed due to the following error(s):\r\n\r\nerror decoding 'extensions': error reading configuration for \"basicauth/otlp\": decoding failed due to the following error(s):\r\n\r\n'client_auth.username' expected type 'string', got unconvertible type 'int', value: '12345'\r\n\r\nHint: Temporarily restore the previous behavior by disabling \r\n      the `confmap.strictlyTypedInput` feature gate. More details at:\r\n      https://github.com/open-telemetry/opentelemetry-collector/issues/10552\r\n2024/08/16 18:39:23 collector server run finished with error: failed to get config: cannot unmarshal the configuration: decoding failed due to the following error(s):\r\n\r\nerror decoding 'extensions': error reading configuration for \"basicauth/otlp\": decoding failed due to the following error(s):\r\n\r\n'client_auth.username' expected type 'string', got unconvertible type 'int', value: '12345'\r\n\r\nHint: Temporarily restore the previous behavior by disabling \r\n      the `confmap.strictlyTypedInput` feature gate. More details at:\r\n      https://github.com/open-telemetry/opentelemetry-collector/issues/10552\r\nStream closed EOF for monit/otelcol-94d47bdd5-sbjck (otelcol)\r\n```\r\n\r\nI have tried with both\r\n```yaml\r\n    extensions:\r\n      zpages: {}\r\n      basicauth/otlp:\r\n        client_auth:\r\n          username: !!str \"${OTLP_USER}\"\r\n          password: \"${GRAFANA_ACCESS_TOKEN}\"\r\n```\r\n\r\nAnd\r\n\r\n```yaml\r\n    extensions:\r\n      zpages: {}\r\n      basicauth/otlp:\r\n        client_auth:\r\n          username: \"${OTLP_USER}\"\r\n          password: \"${GRAFANA_ACCESS_TOKEN}\"\r\n```\r\n\r\nAnd also with `${env:OTLP_USER}` instead of `${OTLP_USER}`.\r\n\r\nWhere again, the `OTLP_USER` env var contains `12345`"
+  },
+  {
+   "author": "participant8",
+   "created_at": "2024-08-16T20:17:16Z",
+   "body": "@participant11 you're right. It wasn't fully fixed. We got https://github.com/open-telemetry/opentelemetry-collector/pull/10897 merged, which should fix it for real :) It'll be released in 0.108.0"
+  },
+  {
+   "author": "participant7",
+   "created_at": "2024-08-17T02:54:11Z",
+   "body": "Thanks @reporter! The problem got solved after I change to unit: \"1\"."
+  },
+  {
+   "author": "participant9",
+   "created_at": "2024-09-01T13:36:14Z",
+   "body": "I have a question for these changes. I'm upgrading the version from 0.97.0 to 0.108.0. I changed the env var values:\r\n- key: f5.platform.name\r\n          value: ${env:PLATFORM_NAME}\r\n          action: insert\r\n        - key: f5.platform.role\r\n          value: ${env:PLATFORM_ROLE}\r\n          action: insert\r\n, but in case this env var missing I have the warning and server failed to run:\r\n\r\n\"failed to build pipelines: failed to create \"resource/md\" processor, in pipeline \"logs/stream/ltm\": error creating AttrProc. Either field \"value\", \"from_attribute\" or \"from_context\" setting must be specified for 0-th action\r\ncollector server run finished with error: failed to build pipelines: failed to create \"resource/md\" processor, in pipeline \"logs/stream/ltm\": error creating AttrProc. Either field \"value\", \"from_attribute\" or \"from_context\" setting must be specified for 0-th action\"\r\n\r\nDo you know how I can fix it?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-09-06T12:33:38Z",
+   "body": "@participant9 What version of the Collector are you using and how? What is your full config? (please remove any sensitive details before sharing!)"
+  },
+  {
+   "author": "participant10",
+   "created_at": "2024-11-19T02:48:46Z",
+   "body": "This appears to still be an issue when running the latest image `0.113.0` as of testing this afternoon. The feature gate has been removed as well, so I needed to downgrade to v`0.107.0` in order to get things working again.\r\n\r\n```\r\nError: failed to get config: cannot unmarshal the configuration: decoding failed due to the following error(s):\r\n\r\nerror decoding 'extensions': error reading configuration for \"basicauth/metrics\": decoding failed due to the following error(s):\r\n\r\n'client_auth.username' expected type 'string', got unconvertible type 'int', value: '646202'\r\n```"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-11-19T14:12:55Z",
+   "body": "@participant10 please open a new issue with details about your situation."
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "open-telemetry/opentelemetry-collector",
+  "default_branch": "main",
+  "commit_sha": "b127da0890383628beeb30868f8b94a9a12263b1",
+  "as_of": "2024-07-08T11:13:23Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_open-telemetry_opentelemetry-collector_10552"
+}

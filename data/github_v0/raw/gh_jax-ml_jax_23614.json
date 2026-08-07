@@ -1,0 +1,171 @@
+{
+ "repo": "jax-ml/jax",
+ "number": 23614,
+ "url": "https://github.com/jax-ml/jax/issues/23614",
+ "title": "io_callback does not work with custom_vjp",
+ "state": "closed",
+ "labels": [
+  "enhancement"
+ ],
+ "reporter": "reporter",
+ "created_at": "2024-09-13T02:16:30Z",
+ "closed_at": "2024-09-14T02:53:59Z",
+ "body": "I want to save some data to disk in the forward pass, and reload them in the backward pass, and I found that only jvp example is provided in the doc. The question is can we use and how to use the io_callback with custom_vjp? The following is my implementation, but it does not work, could anyone help me with this?\r\n\r\n```python\r\ndef f(x):\r\n    return x*2+1\r\n\r\ndef fwd(x, cstep):\r\n    y = f(x)\r\n    io_callback(save2file, x, x, cstep)\r\n    return y, None\r\n\r\ndef bwd(res, g):\r\n    x, cstep = res\r\n    io_callback(loadfromfile, x, x, cstep)\r\n    return g, None\r\n\r\nf = jax.custom_vjp(f)\r\nf.defvjp(fwd, bwd)\r\n\r\ndef save2file(data, cstep):\r\n    jnp.save(f'tmp/x{cstep}.npy', data)\r\n    return data\r\n\r\ndef loadfromfile(cstep):\r\n    return jnp.load(f'tmp/x{cstep}.npy')\r\n\r\ndef step(x, cstep):\r\n    # _f.defvjp(fwd, bwd)\r\n    y = f(x)\r\n    return y, None\r\n\r\nx = jnp.array([1., 2.])\r\nnt = 5\r\n\r\n# loop over using scan\r\ninitial_carry = x\r\ncsteps = jnp.arange(10)\r\nfinal_carry, _ = lax.scan(step, initial_carry, jnp.arange(nt))\r\n\r\ndef loss(x):\r\n    return jnp.sum(x)\r\n# compute grad\r\n@participant1.jit\r\ndef cal_grad(x):\r\n    return jax.value_and_grad(loss)(x)\r\n\r\nloss, grad = cal_grad(final_carry)\r\n```",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2024-09-13T03:19:20Z",
+   "body": "`io_callback` has no autodiff rule, and so any time you use it in autodiff, you need to wrap it in `custom_vjp` or `custom_jvp`. In your case, you used `io_callback` in the `fwd` and `bwd` rules, not in `f`, and so when the autodiff transformation hits it, it doesn't know what to do.\r\n\r\nIf this is what you're hoping to do (use `io_callback` in the `fwd` and `bwd` rule of another function), then both the `fwd` function and `bwd` function would *also* have to be wrapped in `custom_jvp` or `custom_vjp`, each with their own custom autodiff rules describing the gradient of the callback functions you're using.\r\n\r\nDoes that make sense?"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-09-13T03:33:42Z",
+   "body": "In the pasted code, `f` isn't being run under autodiff. The function we're differentiating, `loss`, just calls `jnp.sum`. So there's no way we would call the autodiff rules associated with `f`."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-09-13T03:38:54Z",
+   "body": "> and I found that only jvp example is provided in the doc\r\n\r\nDid you find [this tutorial](https://participant1.readthedocs.io/en/latest/notebooks/Custom_derivative_rules_for_Python_code.html)? There are several `custom_vjp` examples in there, like [this one on gradient clipping](https://participant1.readthedocs.io/en/latest/notebooks/Custom_derivative_rules_for_Python_code.html#gradient-clipping).\r\n\r\n```python\r\ndef f(x):\r\n    return x*2+1\r\n\r\ndef fwd(x, cstep):\r\n    y = f(x)\r\n    io_callback(save2file, x, x, cstep)\r\n    return y, None\r\n```\r\n\r\n`fwd` and `f` need to have the same argument signature, but here `fwd` takes an extra argument `cstep`.\r\n\r\n```python\r\ndef bwd(res, g):\r\n    x, cstep = res\r\n    io_callback(loadfromfile, cstep)\r\n    return g, None\r\n```\r\n\r\nThe first input of `bwd` comes from the second output of `fwd`, but here `fwd` is just returning a `None` as its second output."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-09-13T04:46:46Z",
+   "body": "> > and I found that only jvp example is provided in the doc\r\n> \r\n> Did you find [this tutorial](https://participant1.readthedocs.io/en/latest/notebooks/Custom_derivative_rules_for_Python_code.html)? There are several `custom_vjp` examples in there, like [this one on gradient clipping](https://participant1.readthedocs.io/en/latest/notebooks/Custom_derivative_rules_for_Python_code.html#gradient-clipping).\r\n> \r\n> ```python\r\n> def f(x):\r\n>     return x*2+1\r\n> \r\n> def fwd(x, cstep):\r\n>     y = f(x)\r\n>     io_callback(save2file, x, x, cstep)\r\n>     return y, None\r\n> ```\r\n> \r\n> `fwd` and `f` need to have the same argument signature, but here `fwd` takes an extra argument `cstep`.\r\n> \r\n> ```python\r\n> def bwd(res, g):\r\n>     x, cstep = res\r\n>     io_callback(loadfromfile, cstep)\r\n>     return g, None\r\n> ```\r\n> \r\n> The first input of `bwd` comes from the second output of `fwd`, but here `fwd` is just returning a `None` as its second output.\r\n\r\nHi, Thank you for your reply. I have read your mentioned doc before, I mean I can not find information about how to combine the usage of `custom_vjp` and `io_callback`. The doc decribes that [participant1.experimental.io_callback()](https://participant1.readthedocs.io/en/latest/_autosummary/participant1.experimental.io_callback.html#participant1.experimental.io_callback): appropriate for impure functions: e.g. functions which read or write data to disk., but I cannot find some example."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-09-13T04:59:38Z",
+   "body": "> > and I found that only jvp example is provided in the doc\r\n> \r\n> Did you find [this tutorial](https://participant1.readthedocs.io/en/latest/notebooks/Custom_derivative_rules_for_Python_code.html)? There are several `custom_vjp` examples in there, like [this one on gradient clipping](https://participant1.readthedocs.io/en/latest/notebooks/Custom_derivative_rules_for_Python_code.html#gradient-clipping).\r\n> \r\n> ```python\r\n> def f(x):\r\n>     return x*2+1\r\n> \r\n> def fwd(x, cstep):\r\n>     y = f(x)\r\n>     io_callback(save2file, x, x, cstep)\r\n>     return y, None\r\n> ```\r\n> \r\n> `fwd` and `f` need to have the same argument signature, but here `fwd` takes an extra argument `cstep`.\r\n> \r\n> ```python\r\n> def bwd(res, g):\r\n>     x, cstep = res\r\n>     io_callback(loadfromfile, cstep)\r\n>     return g, None\r\n> ```\r\n> \r\n> The first input of `bwd` comes from the second output of `fwd`, but here `fwd` is just returning a `None` as its second output.\r\n\r\n\r\n\r\n> `io_callback` has no autodiff rule, and so any time you use it in autodiff, you need to wrap it in `custom_vjp` or `custom_jvp`. In your case, you used `io_callback` in the `fwd` and `bwd` rules, not in `f`, and so when the autodiff transformation hits it, it doesn't know what to do.\r\n> \r\n> If this is what you're hoping to do (use `io_callback` in the `fwd` and `bwd` rule of another function), then both the `fwd` function and `bwd` function would _also_ have to be wrapped in `custom_jvp` or `custom_vjp`, each with their own custom autodiff rules describing the gradient of the callback functions you're using.\r\n> \r\n> Does that make sense?\r\n\r\n\r\n\r\n> `io_callback` has no autodiff rule, and so any time you use it in autodiff, you need to wrap it in `custom_vjp` or `custom_jvp`. In your case, you used `io_callback` in the `fwd` and `bwd` rules, not in `f`, and so when the autodiff transformation hits it, it doesn't know what to do.\r\n> \r\n> If this is what you're hoping to do (use `io_callback` in the `fwd` and `bwd` rule of another function), then both the `fwd` function and `bwd` function would _also_ have to be wrapped in `custom_jvp` or `custom_vjp`, each with their own custom autodiff rules describing the gradient of the callback functions you're using.\r\n> \r\n> Does that make sense?\r\n\r\nThank you for you reply. According to your comments, I modified my codes, it still cannot write to disk as expected. The following is my new implementation, is there any misunderstading from my side?\r\n\r\n```\r\nimport participant1\r\nimport participant1.numpy as jnp\r\nfrom participant1 import lax\r\nfrom participant1.experimental import io_callback\r\nimport os\r\n\r\ndef f(x, cstep):\r\n    return x * 2 + 1\r\n\r\n# Save data to file\r\ndef save2file(data, cstep):\r\n    jnp.save(f'tmp/x{cstep}.npy', data)\r\n    return data\r\n\r\n# Load data from file\r\ndef loadfromfile(cstep):\r\n    return jnp.load(f'tmp/x{cstep}.npy')\r\n\r\n@participant1.custom_vjp\r\ndef fwd(x, cstep):\r\n    y = f(x)\r\n    # io_callback(save2file, x, x, cstep)\r\n    return y\r\n\r\ndef fwd_fwd(x, cstep):\r\n    y = f(x)\r\n    io_callback(save2file, x, x, cstep)\r\n    return y, (x, cstep)\r\n\r\ndef fwd_bwd(res, g):\r\n    x, cstep = res\r\n    # x_loaded = loadfromfile(cstep)\r\n    return (g * 2,), None\r\n\r\nfwd.defvjp(fwd_fwd, fwd_bwd)\r\n\r\n@participant1.custom_vjp\r\ndef bwd(res, g):\r\n    x, cstep = res\r\n    # x_loaded = loadfromfile(cstep)\r\n    return (g * 2,)\r\n\r\ndef bwd_fwd(res, g):\r\n    x, cstep = res\r\n    # x_loaded = loadfromfile(cstep)\r\n    return g, (x, cstep)\r\n\r\ndef bwd_bwd(res, g):\r\n    return None\r\n\r\nbwd.defvjp(bwd_fwd, bwd_bwd)\r\n\r\nf_vjp = participant1.custom_vjp(f)\r\nf_vjp.defvjp(fwd, bwd)\r\n\r\ndef step(x, cstep):\r\n    y = f_vjp(x, cstep)\r\n    return y, None\r\n\r\nx = jnp.array([1., 2.])\r\nnt = 5\r\n\r\ninitial_carry = x\r\ncsteps = jnp.arange(10)\r\nfinal_carry, _ = lax.scan(step, initial_carry, jnp.arange(nt))\r\n\r\ndef loss(x):\r\n    return jnp.sum(x)\r\n\r\n@participant1.jit\r\ndef cal_grad(x):\r\n    return participant1.value_and_grad(loss)(x)\r\n\r\nloss_value, grad = cal_grad(final_carry)\r\nprint(f\"Loss: {loss_value}, Gradient: {grad}\")\r\n\r\nassert os.path.exists('tmp/x0.npy')\r\n```"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-09-13T18:00:17Z",
+   "body": "Hi - I think I may have been unclear in my suggestion. The problem previsously was that you were calling `io_callback` in `fwd` and `bwd`, which do not have custom JVP/VJP rules, and so the autodiff machinery doesn't know how to trace through your callback.\r\n\r\nIn your update, you created custom autodiff rules for `fwd` and `bwd`, but now you are calling `io_callback` within `fwd_fwd`, which does not have a custom autodiff rule, and so the autodiff machinery still doesn't know how to trace through your callback.\r\n\r\nThis may be an [XY problem](https://en.wikipedia.org/wiki/XY_problem): perhaps we should step back, and you can describe what larger problem you're trying to solve here?\r\n\r\nAlso, since you mentioned docs: I should mention that although we don't have documentation of `io_callback` with `custom_jvp`, we do have an example in the case of `pure_callback`: https://participant1.readthedocs.io/en/latest/notebooks/external_callbacks.html#example-pure-callback-with-custom-jvp The `io_callback` conceptually will be more-or-less identical."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-09-13T22:48:03Z",
+   "body": "Hi, I misunstood your suggestions at that time. So I need to warp my callback functions with custom_vjp, i.e. both `save2file` and `loadfromfile` need their own fwd and bwd, right?\r\n\r\nActually, my functions `f` needs several inputs to calculate the final results `z=f(x,y,z)` iteratively, so I use a `lax.scan` here. Instead of return (x,y,z) in `fwd` at each step, I want to save (x,y,z) to disk in the foward pass to save GPU memory, then reload them from disk at every step and use `participant1.vjp` to calculate the `vjp_func` and gradients."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-09-13T22:52:57Z",
+   "body": "OOC, why are you saving the residuals to disk? What problem are you trying to solve? Maybe we can suggest something else?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-09-13T23:04:02Z",
+   "body": "I am working on full waveform inversion, an inverse problem based on wave equation. I need to perform a time step forward scheme for calculating the final results and compare it with the target. I don’t want to return the inputs of fwd for bwd, I want to save and reload them. I think it’s something like checkpoint, but with a save_to_disk version.\n\n---- Replied Message ----\n| From | Yash ***@***.***> |\n| Date | 09/14/2024 06:53 |\n| To | google/participant1 ***@***.***> |\n| Cc | Shaowen ***@***.***>,\nAuthor ***@***.***> |\n| Subject | Re: [google/participant1] io_callback does not work with custom_vjp (Issue #23614) |\n\nOOC, why are you saving the residuals to disk? What problem are you trying to solve? Maybe we can suggest something else?\n\n—\nReply to this email directly, view it on GitHub, or unsubscribe.\nYou are receiving this because you authored the thread.Message ID: ***@***.***>"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-09-13T23:12:07Z",
+   "body": "Maybe offloading it to host is what you want here and you can achieve that via different API instead of using io_callback which are more efficient.\r\n\r\nTake a look at this: https://github.com/google/participant1/blob/0daca4646428abbdb728c48f73429460c5456f87/tests/memories_test.py#L1447-L1488 to do this via `remat`.\r\n\r\nYou can also run manual `device_put` in your custom_vjp function on residuals to offload them to pinned_host memory space if you want and do the opposite on your `bwd` function to reload them."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-09-14T01:36:11Z",
+   "body": "Thank you, @participant3. Yes, transfer to host is another choice. Does the following codes make sense, how to know the device of a `DynamicJaxprTracer `?\r\n\r\n```\r\n\r\ndef f(x, y):\r\n    z = x**2 + y**2\r\n    return jnp.sum(z)\r\n\r\ndef fwd(x, y):\r\n    return f(x, y), (participant1.device_get(x), participant1.device_get(y))\r\n\r\ndef bwd(res, g):\r\n    _, vjp_fun = participant1.vjp(f, *res)\r\n    grads = vjp_fun(g)\r\n    return grads\r\n\r\nf_vjp = participant1.custom_vjp(f)\r\nf_vjp.defvjp(fwd, bwd)\r\n\r\nf_vjp = participant1.jit(f_vjp)\r\n\r\nx = jnp.array([1.,2.])\r\ny = jnp.array([2.,3.])\r\n\r\ndef loss1(x, y):\r\n    return (f_vjp(x, y)**2).sum()\r\ndef loss2(x, y):\r\n    return (f(x, y)**2).sum()\r\n\r\nprint('f=', f(x, y))\r\nprint('f_vjp=', f_vjp(x, y))\r\nprint(participant1.grad(loss1)(x, y))\r\nprint(participant1.grad(loss2)(x, y))\r\n```"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-09-14T01:46:46Z",
+   "body": "No, like this:\r\n\r\n```\r\ndef test_offload(self):\r\n    def f(x, y):\r\n      z = x**2 + y**2\r\n      return jnp.sum(z)\r\n\r\n    def fwd(x, y):\r\n      return f(x, y), participant1.device_put(\r\n          (x, y),\r\n          SingleDeviceSharding(participant1.devices()[0], memory_kind='pinned_host'))\r\n\r\n    def bwd(res, g):\r\n      reloaded_res = participant1.device_put(\r\n          res, SingleDeviceSharding(participant1.devices()[0], memory_kind='device'))\r\n      _, vjp_fun = participant1.vjp(f, *reloaded_res)\r\n      grads = vjp_fun(g)\r\n      return grads\r\n\r\n    f_vjp = participant1.custom_vjp(f)\r\n    f_vjp.defvjp(fwd, bwd)\r\n\r\n    f_vjp = participant1.jit(f_vjp)\r\n\r\n    x = jnp.array([1.,2.])\r\n    y = jnp.array([2.,3.])\r\n\r\n    def loss1(x, y):\r\n      return (f_vjp(x, y)**2).sum()\r\n    def loss2(x, y):\r\n      return (f(x, y)**2).sum()\r\n\r\n    print('f=', f(x, y))\r\n    print('f_vjp=', f_vjp(x, y))\r\n    print(participant1.grad(loss1)(x, y))\r\n    print(participant1.grad(loss2)(x, y))\r\n```\r\n\r\nthis is the output I got:\r\n\r\n```\r\nf= 18.0\r\nf_vjp= 18.0\r\n[ 72. 144.]\r\n[ 72. 144.]\r\n```\r\n\r\nNote that I ran this on TPU. Which hardware are you planning on run?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-09-14T02:00:59Z",
+   "body": "@participant3, I'm coding on a GPU. Really thank you, I have implement this in my original codes, it does works for reducing the memory with slowing down the efficiency (I have to do that due to the OOM problem). I'm still new to JAX and I will try to find some strategy more efficient that can solve my problem. "
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-09-14T02:11:12Z",
+   "body": "Yeah, this should work on a GPU too. The efficiency might be affected because you incur transfer costs. \r\n\r\nCan you tell me how much of a slowdown you see? If you have enough compute, we should be able to hide the transfers behind compute."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-09-14T02:18:40Z",
+   "body": "It's 3.7s/it v.s 0.7s/it on a RTX 3090, around 5x slower. I think it's acceptable for me, since without this the code can even not run.\n\n\nSincerely,\nShaowen\n---- Replied Message ----\n| From | Yash ***@***.***> |\n| Date | 9/14/2024 10:11 |\n| To | ***@***.***> |\n| Cc | Shaowen ***@***.***>,\n***@***.***> |\n| Subject | Re: [google/participant1] io_callback does not work with custom_vjp (Issue #23614) |\n\nYeah, this should work on a GPU too. The efficiency might be affected because you incur transfer costs.\n\nCan you tell me how much of a slowdown you see? If you have enough compute, we should be able to hide the transfers behind compute.\n\n—\nReply to this email directly, view it on GitHub, or unsubscribe.\nYou are receiving this because you authored the thread.Message ID: ***@***.***>"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-09-14T02:21:24Z",
+   "body": "cc @participant2 @participant3 can you improve the speed of transfers to pinned_host and back here? I wonder how fast this is on the latest GPUs."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-09-14T02:32:36Z",
+   "body": "I ran your test internally on H100 GPU\r\n\r\nbut got these timings:\r\n\r\n```\r\nf= 18.0\r\nf_vjp= 18.0\r\n[ 72. 144.]\r\n0.17064547538757324\r\n[ 72. 144.]\r\n0.17866754531860352\r\n```"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-09-14T02:35:00Z",
+   "body": "Oh sorry, I thought you mentioned my original codes, the values I provided before are based on my original implementation in inverse problem.\n\n\nSincerely,\nShaowen\n---- Replied Message ----\n| From | Yash ***@***.***> |\n| Date | 9/14/2024 10:33 |\n| To | ***@***.***> |\n| Cc | Shaowen ***@***.***>,\n***@***.***> |\n| Subject | Re: [google/participant1] io_callback does not work with custom_vjp (Issue #23614) |\n\nI ran your test internally on H100 GPU\n\nbut got these timings:\n\nf= 18.0\nf_vjp= 18.0\n[ 72. 144.]\n0.17064547538757324\n[ 72. 144.]\n0.17866754531860352\n\n\n—\nReply to this email directly, view it on GitHub, or unsubscribe.\nYou are receiving this because you authored the thread.Message ID: ***@***.***>"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-09-14T02:39:50Z",
+   "body": "> the values I provided before are based on my original implementation in inverse problem.\r\n\r\nYeah I got that. Can you try running the test here to see the timing difference? So we know if this is a GPU generation problem or not. In other words, if you run your original code on H100, what speed difference do you see?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-09-14T02:48:04Z",
+   "body": "For `participant1.grad(loss1)(x,y)`, it's `3.02 ms ± 7.83 μs per loop (mean ± std. dev. of 7 runs, 100 loops each)`,\r\nFor `participant1.grad(loss2)(x, y)`, it's `4.39 ms ± 34 μs per loop (mean ± std. dev. of 7 runs, 100 loops each)`."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-09-14T02:49:17Z",
+   "body": "@participant3, sorry, I donot have a H100, that's why I am doing so here."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-09-14T02:51:43Z",
+   "body": "Yeah, I was just wondering how the GPU generation affected the speed of transfers :)\r\n\r\nBut I am glad that your problem is resolved. Feel free to close this issue if so :)"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-09-14T02:53:59Z",
+   "body": "@participant3 Thank you very much. And thanks for everyone here."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-09-23T19:00:56Z",
+   "body": "Hi guys, @participant3 @reporter, sorry for tagging but the issue is already closed.\r\nI'm trying to achieve similar results and was wondering how to easily combine proposed solution with the scan. I have a transformer block and currently only saving residual stream between each transformer block by specifying remat_policy for transformer block and then scanning this block over inputs.\r\nInstead of saving residuals on GPU memory, I want to offload them to CPU. I was trying to replicate your results by implementing \"offload\" function but looks like it doesn't work for me:\r\n```\r\ndef offload(x):\r\n    return x\r\n\r\ndef offload_fwd(x):\r\n    return x, participant1.device_put(x, sharding.with_memory_kind(\"pinned_host\"))\r\n\r\ndef offload_bwd(res, g):\r\n    reloaded_res = participant1.device_put(res, sharding.with_memory_kind(\"device\"))\r\n    _, vjp_fun = participant1.vjp(offload, reloaded_res)\r\n    grads = vjp_fun(g)\r\n    return grads\r\n\r\nf_vjp = participant1.custom_vjp(offload)\r\nf_vjp.defvjp(offload_fwd, offload_bwd)\r\n\r\n\r\ndef transformer_block(x):\r\n    # transformer calculation: 1 attention + 1 MLP\r\n    # x - block's output\r\n    x = f_vjp(x)\r\n    return x\r\n\r\n# embeddings - inputs\r\nrematted_transformer_block = nn.remat(transformer_block, policy=participant1.checkpoint_policies.nothing_saveable())\r\nscanned_transformer_block = nn.scan(transformer_block)\r\n\r\noutputs = scanned_transformer_block(embeddings)\r\n```\r\n\r\nbut it doesn't seems to work - memory consumption hasn't changed, speed is the same, no D2H and H2D copies in trace.\r\nAm I doing something wrong?\r\n\r\n\r\n\r\n\r\n"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-09-23T19:05:05Z",
+   "body": "Just try using this? https://cs.opensource.google/participant1/participant1/+/main:tests/memories_test.py;l=1513?q=memories_test.py&ss=participant1%2Fjax\r\n\r\nA remat policy should be enough I think."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-09-23T20:39:19Z",
+   "body": "@participant3 \r\nYeah, remat policy was my first idea but for some reason it also doesn't work either, same results, no decrease in memory usage, nothing on traces.\r\nI've tried something like this:\r\n```\r\ndef transformer_block(x):\r\n    # transformer calculation: 1 attention + 1 MLP\r\n    # x - block's output\r\n    x = participant1.ad_checkpoint.checkpoint_name(x, \"embeddings\")\r\n    return x\r\n\r\nrematted_transformer_block = nn.remat(\r\n    transformer_block,\r\n    policy=participant1.checkpoint_policies.save_and_offload_only_these_names(\r\n        names_which_can_be_saved=[],\r\n        names_which_can_be_offloaded=[\"embeddings\"],\r\n        offload_src=\"device\",\r\n        offload_dst=\"pinned_host\",\r\n))\r\nscanned_transformer_block = nn.scan(transformer_block)\r\n# embeddings - inputs\r\noutputs = scanned_transformer_block(embeddings)\r\n\r\n```\r\n\r\nMy guess is that it doesn't work because this remat policy only affects single transformer block instead of entire scanned function.\r\nI've also tried this remat policy to entire 'scanned_transformer_block', but it just leads to x5-x10 memory consumption and just OOM so I was looking for alternative solutions to my problem."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-09-23T20:41:01Z",
+   "body": "You need to call `grad` for remat to activate. Can you try with that? Also there should be residuals generated that are you offloading which you can check by looking at the jaxpr."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-09-23T20:58:24Z",
+   "body": "Yeah, provided snippet lacks loss and grad but it is indeed called in my code. \r\nI'll try to implement small repro script from scratch tomorrow to see if I'm able to reproduce it without providing my entire codebase.\r\nThanks!"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-09-24T10:37:37Z",
+   "body": "@participant3 Hi, I've implemented and tested simple repro and got same results with participant1's remat and thought it would be better to open another issue\r\nhttps://github.com/participant1-ml/participant1/issues/23869"
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "participant1-ml/participant1",
+  "default_branch": "main",
+  "commit_sha": "634fbb5bec29d77207d9cb3a7dd23cffd7932521",
+  "as_of": "2024-09-13T02:16:30Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_participant1-ml_participant1_23614"
+}

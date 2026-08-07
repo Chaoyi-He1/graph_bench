@@ -1,0 +1,226 @@
+{
+ "repo": "jaegertracing/jaeger",
+ "number": 6283,
+ "url": "https://github.com/jaegertracing/jaeger/issues/6283",
+ "title": "Remove the need for external tools for managing Elasticsearch",
+ "state": "closed",
+ "labels": [
+  "help wanted",
+  "good first issue",
+  "area/storage",
+  "storage/elasticsearch",
+  "v2"
+ ],
+ "reporter": "reporter",
+ "created_at": "2024-12-01T00:22:22Z",
+ "closed_at": "2025-01-23T02:00:50Z",
+ "body": "PR #5797 is a good example of eliminating the need for schema initialization script for Cassandra by moving the logic directly into Jaeger binary.\n\nWe have three standalone tools for managing ES that we can also merge into Jaeger binary directly. All of them are already implemented in Go, so are fairly straightforward to embed in the Jaeger binary (fewer binary artifacts to release).\n\n* `cmd/es-index-cleaner/` is used as a cron job to delete old ES indices. The logic can instead be executed from the Jaeger binary on a timer.\n* `cmd/es-rollover/` - similar to cleaner but for rolling over indices.\n* `esmapping-generator/` - just prints the index mappings to stdout (probably for manual installation)\n\nNote: this issue is not about *removing* the existing binaries, which we still want to maintain until Jaeger v1 EOL in 2026. We just want to make them *not required* for operating Jaeger-v2.\n\n## Tasks\n\n* [ ] extends configuration for ES in Jaeger v2 to support additional parameters for the cleaner & rollover scripts, such as frequency of running, including `enabled` properties for each.\n* [ ] enable index cleaner capability in v2, update integration tests to use that\n* [ ] enable index rollover capability in v2, update integration tests to use that\n* [ ] add a sub-command `es-mappings` to jaeger v2 binary to print es mappings\n* [ ] update documentation accordingly to no longer reference the separate scripts",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2024-12-01T08:07:16Z",
+   "body": "I am working on it"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-12-01T15:16:59Z",
+   "body": "Hi @reporter , for `cmd/es-index-cleaner/`, we would only require the filters to be added in the config, rest other fields used for client creation would already be available to us.\nBelow config should suffice it I believe:\n```\ntype Cleaner struct {\n\t// Separator between date fragments.\n\tIndexDateSeparator string\n\t// Whether to filter archive indices.\n\tArchive bool\n\t// Whether to filter rollover indices.\n\tRollover bool\n\t// Indices created before this date will be deleted.\n\tDeleteBeforeThisDate time.Time\n}\n```\n\nDoes it sound good?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-12-01T17:32:16Z",
+   "body": "IndexDateSeparator - if the main storage doesn't need this argument, why does cleaner need it?\n\nArchive bool - archive storage is configured as separate storage in v2, so it can have its own cleaner if desired.\n\nRollover bool - not clear. What's the alternative?\n\nDeleteBeforeThisDate time.Time - doesn't make sense, cleaner is a permanent periodic job, not something that takes an absolute time. We already have max span age parameter iirc, is it not sufficient to drive the behavior of the cleaner?"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-12-02T17:48:36Z",
+   "body": "I mostly took out the filters used in the current implementation.\n\n> IndexDateSeparator - if the main storage doesn't need this argument, why does cleaner need it?\n\nYes, I don't think so we need it. There is `DateLayout` in index config, which we can probably use to find indices here.\n\n> Archive bool - archive storage is configured as separate storage in v2, so it can have its own cleaner if desired.\n\nMakes sense. Thanks\n\n> Rollover bool - not clear. What's the alternative?\n\nI was thinking maybe I can use the exact filter used for the rollover case, in the current implementation. But I probably have to read more about how this is being used here before commenting further. If you can provide me with some pointers, that would be really helpful? Thanks\n\n> DeleteBeforeThisDate time.Time - doesn't make sense, cleaner is a permanent periodic job, not something that takes an absolute time. We already have max span age parameter iirc, is it not sufficient to drive the behavior of the cleaner?\n\nWas mostly referring to the time calculated before which we should delete indices. This calculation should actually be done based on a `time.Duration` i.e., `spanMaxAge` you are referring to.\n\nAlso, looks like rohan has already started working on it."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-12-02T17:52:49Z",
+   "body": "Also, shouldn't this be added as an extension?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-12-03T00:40:04Z",
+   "body": "it could be an extension but I think it's very closely coupled with the storage implementation that it makes more sense for it to be just an option in the config"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-12-03T18:09:32Z",
+   "body": "> Rollover bool - not clear. What's the alternative?\n\nJust wanted to add this info. We won't need this config as well. Rollover indices can be treated as `index-per-day` pattern, where we just need to delete those based on the creationTime.\nIn conclusion, I believe maxAge should be more than enough for cleaning indices."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-12-18T17:13:59Z",
+   "body": "Hi @participant1 , let me know if you are working on it? I would like to take up merging `cmd/es-index-cleaner/`. Thanks"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-12-22T08:38:28Z",
+   "body": "> Hi [@participant1](https://github.com/participant1) , let me know if you are working on it? I would like to take up merging `cmd/es-index-cleaner/`. Thanks\n\nyeah go ahead please!"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-12-23T12:24:23Z",
+   "body": "Thanks, I will start working on it."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-12-23T14:22:22Z",
+   "body": "Hi @reporter , I see that for `cmd/es-index-cleaner`, the `IndicesClient` wraps a simple http client underneath instead of wrapping the es go client library. Do you know if there is any particular reason for it? If not, should we refactor it first to use the es go client library?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-12-23T20:52:18Z",
+   "body": "ideally all logic should go through regular clients"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-12-30T15:48:19Z",
+   "body": "@reporter I am little confused on the question, whether after this change, will we still be giving the cmds (For those who still want to keep these services in their control) or should we have to discard the cmd and move the code to pkg or a mixture of these two, keeping the cmd as it is but moving the code to a sharerd package for es and cmd? "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-12-30T16:06:39Z",
+   "body": "@participant3 they should become sub-commands of `jaeger` binary, i.e. added to this list:\n```\n$ go run ./cmd/jaeger help\n2024/12/30 11:06:11 application version: git-commit=, git-version=, build-date=\nJaeger backend v2\n\nUsage:\n  jaeger [flags]\n  jaeger [command]\n\nAvailable Commands:\n  completion  Generate the autocompletion script for the specified shell\n  components  Outputs available components in this collector distribution\n  docs        Generates documentation\n  help        Help about any command\n  validate    Validates the config without running the collector\n  version     Print the version.\n```"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-12-30T16:41:16Z",
+   "body": "@reporter Also is there any connection between `RolloverFrequency` and `es-rollover`?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-12-30T16:55:07Z",
+   "body": "@participant3 you have to check the code where/how it's used"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-01-02T08:09:00Z",
+   "body": "@reporter Es Index Rollover runs for a single server, but while integrating it with Jaeger Binary we can have multiple servers. So should we always rollover run for all servers or we have to ask from user for through config file, like in this way\n```\ntype Rollover struct {\n...\n// RunForAllServers enables rollover for all servers\nRunForAllServers bool\n// RunForServers enables rollover for the provided servers if RunForAllServers is false\nRunForServers []string\n}\n```"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-01-02T15:52:47Z",
+   "body": "@participant3 there are two ways\n  1. Can we make the operation idempotent or no-op if already done? If we can then it's safe to run from all servers. This would be the preferred way. For example, Cassandra schema initialization works this way.\n  2. If we must have a single server doing this, then we will have to use leader/follower election, for which we already have the code (it's only used with adaptive sampling, look for DistributedLock)."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-01-06T14:03:24Z",
+   "body": "> [@participant3](https://github.com/participant3) there are two ways\n> \n> 1. Can we make the operation idempotent or no-op if already done? If we can then it's safe to run from all servers. This would be the preferred way. For example, Cassandra schema initialization works this way.\n> 2. If we must have a single server doing this, then we will have to use leader/follower election, for which we already have the code (it's only used with adaptive sampling, look for DistributedLock).\n\n@reporter As far I have understood from the code and by using it, all the operations of es-rollover cmd seems to be idempotent. Still I want to clear some doubts:\n1. Are all operations of es-rollover (cmd) idempotent?\n2. If yes then can we run it for all servers asynchronously? Like in this way:\n```\nfor _, server := range configuration.Servers {\n       go startEsRollover(configuration, server, logger)\n}\n```\n3. The `init` operation should be run only once (after setting jaeger) or everytime before running rollover?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-01-06T15:42:06Z",
+   "body": "> 1. Are all operations of es-rollover (cmd) idempotent?\n\nthis is my question to you. Also the timing - if one instance initiates a rollover at :00min and then another at :05min, what's going to happen?\n\n> 2.\n\nWhy do you need to run goroutine per-server? There's only one cluster.\n\n> 3. init\n\nAs I understand init needs to execute only once, so you may need to add a check for it to verify if it's already been executed on a cluster. I would approach all of steps like that - check first, then run."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-01-06T20:30:07Z",
+   "body": "@reporter So as per my search:\n1. Init has already become idempotent by https://github.com/jaegertracing/jaeger/pull/1407. It can also be seen in go: https://github.com/jaegertracing/jaeger/blob/15a83a7fba718fd95f71f5800e5a75393b0fdff2/cmd/es-rollover/app/init/action.go#L87-L91 So we can call init everytime on calling rollover, init will always check and run (as said by your comment)\n2. Rollover: The operation in elastic search itself is idempotent that means _Rollover doesn't happen on already rolled over data_. So we can call rollover also everytime without taking care of idempotency. (This is also the reason no user using `es-rollover` faced the problem of idempotency as rollover has no affect on already rolled over data.\n3. Lookback: This only cleanes the data, so if it is already cleaned it will return without any error (logging that no index to that alias was present).\nThe doubt which I am having is that: The official es client takes an array of servers, so this official client takes care of multiple nodes of the same cluster but the client used in `es-rollover` is a http client not an es-client. And as per my knowledge (please correct if I am wrong) in a cluster of es, communicating with one node is sufficient to make the change in cluster. The official client is for load balancing or following the leader/follower or any other similar algorithm. So I think using a single server with leader/follower election would be a good choice here rather than using all servers or running for all servers synchronously can also be an option with an e2e test with a cluster of 3 nodes."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-01-06T20:58:20Z",
+   "body": "correct, a command can be sent to any node."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-01-10T15:02:42Z",
+   "body": "@reporter For the `esmapping-generator/`, we should create a new command in `cmd/internal/esmapping` and reuse the logic from `esmapping-generator/app` in this command. After that, add `internal/esmapping` to `all-in-one/main.go` and `jaeger/main.go` using the following syntax: `command.AddCommand(esmapping.Command())`. Is that right?🤔"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-01-10T16:08:58Z",
+   "body": "@participant5 yes. There was a PR #6327 for that, I just realized I never submitted my review for it."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-01-11T05:22:38Z",
+   "body": "@participant1 Are you still working on esmapping-generator？"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-01-11T05:24:11Z",
+   "body": "> [@participant1](https://github.com/participant1) Are you still working on esmapping-generator？\n\nYes I was waiting for the review. I will (re)start working from today only."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-01-14T10:58:34Z",
+   "body": "@reporter This is what I am thinking of options of `AutomatedRollover` (requires `UseILM` and `UseReadWriteAliases` to be true). \n```\ntype struct AutomatedRollover {\n\tEnabled bool\n\tPolicyName string // If user has created a policy and want to do rollover with that policy\n\tConditons []string // Conditions like max_age etc.\n\tSkipDependencies bool // Whether user want to apply rollover on dependencies index or not\n        DisableDeleteOperation bool // Whether user want to disable the delete oepration of automated rollover (by default it will be on)\n}\n```\nAnd this as the flow:\n\n![Image](https://github.com/user-attachments/assets/14e9251b-46c9-4f4f-b813-1dbfbe2b0f44)\n\nPlease review this, if it looks good, I would start working on it!"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-01-14T15:31:01Z",
+   "body": "@participant3 \n  * What is the official recommendation from ES when using ILM? Is the user expected to create read/write aliases, or is the policy doing that automatically?\n  * I would treat policy name not as a signal for create/not-create, but just a default that the user can override, and Jaeger always checks if the policy exists and creates if it does not. I am worried about auto-creating the policy overall in terms of how much customization is required for that process - is the list of conditions completely sufficient to represent the ILM policy?\n\nFor your struct\n  * I think `enabled` is unnecessary, we can treat the presence/absence of the config entry as the same bool.\n  * I don't like fields SkipDependencies and DisableDeleteOperation, are they necessary?"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-01-14T15:54:19Z",
+   "body": "> What is the official recommendation from ES when using ILM? Is the user expected to create read/write aliases, or is the policy doing that automatically?\n\nAs per my understanding it requires manually, please see this: https://<redacted-host>/guide/en/elasticsearch/reference/current/getting-started-index-lifecycle-management.html#ilm-gs-alias-apply-policy It requires `index.lifecycle.rollover_alias` in the template.\n\n> I would treat policy name not as a signal for create/not-create, but just a default that the user can override, and Jaeger always checks if the policy exists and creates if it does not. I am worried about auto-creating the policy overall in terms of how much customization is required for that process - is the list of conditions completely sufficient to represent the ILM policy?\n\nThis idea seems great! We are concerned for only `rollover` action of policy which requires only condition (even if you will see the rollover part of `e-rollover` it is only asking for conditions) so I think conditions would be enough for automated rollover. Please see this: https://<redacted-host>/guide/en/elasticsearch/reference/current/ilm-rollover.html#ilm-rollover-options\n\n>  I think enabled is unnecessary, we can treat the presence/absence of the config entry as the same bool.\n\nCould agree but have a question which is linked with the next point, if let's say `SkipDependencies` and `DisableDeleteOperation` are eliminated, what would then empty string array of `Conditions` would imply? I think in that case we have to keep this `Enabled` option.\n\n> I don't like fields SkipDependencies and DisableDeleteOperation, are they necessary?\n\nFor `SkipDependencies`, does that imply we should always rollover on dependency index?\n\nFor `DisableDeleteOperation`, delete is an action of ILM policy, which is similar to cleaning, should we always enable/disable it? Please see this for context of delete operation: https://<redacted-host>/guide/en/elasticsearch/reference/current/ilm-delete.html \n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-01-14T16:07:56Z",
+   "body": "> I think in that case we have to keep this Enabled option.\n\nYour config could look like:\n```yaml\n  backends:\n    my_es:\n      elasticsearch:\n        ...\n        index_maintenance:\n```\nI.e. even if this `index_maintenance` section is completely empty we can still tell that it exists or not. This is a common pattern in OTEL config, e.g. for enabling or not an HTTP endpoint.\n\nAnother high level question I have - do we even need to invest in custom ILM? Or should we be looking into data streams #4708, which may have different management process."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-01-14T16:15:19Z",
+   "body": "I studied about data streams also, official docs suggest using ILM over data streams for rollover. https://<redacted-host>/guide/en/elasticsearch/reference/current/data-streams.html#data-streams-rollover"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-01-14T16:32:12Z",
+   "body": "@reporter Then where should we head? ILM or data streams!"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-01-14T16:34:36Z",
+   "body": "> Then where should we head? ILM or data streams!\n\n@participant3 my preference is data streams, but like you said they are not mutually exclusive. "
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-01-14T16:39:25Z",
+   "body": "Ok, then let's try with data streams?"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-01-17T11:45:56Z",
+   "body": "@reporter I feel a need of a helping PR for this issue (can be a prerequisite) which will be refactoring of e2e tests of Index Rollover and Cleaner to make them reusable for v2 e2e tests just like storage integration tests. This will help the contributors to test the functionality e2e and for reviewers it will make the job little easy as it will reduce the PR size (You can see the PR #6500 becoming very big due to this refactoring). Should I raise a PR or should it be included with the functionality itself?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-01-18T00:51:34Z",
+   "body": "smaller PRs are always better."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-01-23T02:00:48Z",
+   "body": "Per discussions elsewhere, we decided to limit this to esmappings command only, and ignore rollover so that it can be deprecated altogether in the future, as we switch towards support for data streams and ILM."
+  },
+  {
+   "author": "tronboto",
+   "created_at": "2025-03-10T10:50:15Z",
+   "body": "> Per discussions elsewhere, we decided to limit this to esmappings command only, and ignore rollover so that it can be deprecated altogether in the future, as we switch towards support for data streams and ILM.\n\nJust a heads-up that Opensearch, which is now a [supported storage backend](https://<redacted-host>/docs/2.0/opensearch), has a slightly different implementation of [data streams](https://opensearch.org/docs/latest/im-plugin/data-streams/) and ILM, called [ISM](https://opensearch.org/docs/latest/im-plugin/ism/index/)."
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "jaegertracing/jaeger",
+  "default_branch": "main",
+  "commit_sha": "39e3bfbca18ccf1b1e3fe71becf9d8eb6304b78a",
+  "as_of": "2024-12-01T00:22:22Z",
+  "method": "github_commits_until"
+ },
+ "images": [
+  {
+   "where": "c26",
+   "source_url": "https://github.com/user-attachments/assets/14e9251b-46c9-4f4f-b813-1dbfbe2b0f44",
+   "file": "gh_jaegertracing_jaeger_6283_img0.png"
+  }
+ ],
+ "slug": "gh_jaegertracing_jaeger_6283"
+}

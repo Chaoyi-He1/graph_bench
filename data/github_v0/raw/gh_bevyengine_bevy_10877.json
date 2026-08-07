@@ -1,0 +1,142 @@
+{
+ "repo": "bevyengine/bevy",
+ "number": 10877,
+ "url": "https://github.com/bevyengine/bevy/issues/10877",
+ "title": "Events aren't being cleared properly",
+ "state": "closed",
+ "labels": [
+  "C-Bug",
+  "A-ECS"
+ ],
+ "reporter": "reporter",
+ "created_at": "2023-12-05T11:20:20Z",
+ "closed_at": "2024-05-13T18:50:14Z",
+ "body": "## Bevy version 0.12.1\r\n\r\nEvents are not silently dropped the turn after they're sent but instead accumulate in the EventReader's buffer.\r\n\r\n## What I did\r\n\r\nHere's an example:\r\n\r\n```\r\nuse std::cmp::Ordering;\r\n\r\nuse bevy::prelude::*;\r\n\r\n#[derive(Event)]\r\nstruct Ev;\r\n\r\nfn send(mut evw: EventWriter<Ev>) {\r\n    evw.send(Ev);\r\n}\r\n\r\nfn read(mut evr: EventReader<Ev>) {\r\n    println!(\"{}\", evr.iter().count());\r\n}\r\n\r\n// Generates a condition returning true on the nth frame\r\nfn nth_frame(n: u32) -> impl FnMut() -> bool + Clone {\r\n    let mut run = 1;\r\n    move || match run.cmp(&n) {\r\n        Ordering::Greater => false,\r\n        Ordering::Equal => {\r\n            run += 1;\r\n            true\r\n        }\r\n        Ordering::Less => {\r\n            run += 1;\r\n            false\r\n        }\r\n    }\r\n}\r\n\r\nfn main() {\r\n    App::new()\r\n        .add_event::<Ev>()\r\n        .add_plugins(DefaultPlugins)\r\n        .add_systems(Update, send)\r\n        .add_systems(Update, read.after(send).run_if(nth_frame(10)))\r\n        .run();\r\n}\r\n\r\n```\r\n\r\n## What went wrong\r\n\r\nUnder version 0.11.3, this prints 2 as expected but under 0.12.1 I'm getting 10.",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2023-12-05T11:57:38Z",
+   "body": "I think I've found this too and I was confused if I had misunderstood events or if it was a bug.\r\n\r\nFor me it was this:\r\n\r\n- Some system in frame `n` generates an event\r\n- A system that rarely runs because of run conditions still gets the event much later, in e.g. frame `n+100`\r\n\r\nSounds like this can be caused if events are buffered instead of cleared"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-12-05T13:37:49Z",
+   "body": "https://github.com/bevyengine/bevy/issues/10860\r\n\r\nSeems like a decent amount of people stumbled over it, maybe something needs to be done."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-12-05T18:14:29Z",
+   "body": "I agree something needs to be done, this is a tremendous footgun, and not just because the behavior changes. I know there was discussion about this being the \"right\" way to do this in the ecs dev channel somewhere, but at this point I think it's obvious that this isn't what users are expecting."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2023-12-05T21:47:57Z",
+   "body": "Agreed. Even experienced Bevy devs are struggling to use events correctly, so something must be done.\r\n\r\nIt is easier said than done, however.\r\n`EventReader`s keep track of which events they've read with a cursor stored in the system. We'll somehow need to update these cursors when the systems aren't even running or change how events are tracked entirely."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2023-12-06T09:56:00Z",
+   "body": "I wish this change in behavior was announced 😔\r\n\r\nNow, shall I adopt my code to the new behavior or wait for a final decision on this?"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2023-12-06T13:54:31Z",
+   "body": "The issue description is a little strange.\r\n> Under version 0.11.3, this prints `2` as expected\r\n\r\nWouldn't you expect it to be `1`? That is what gets printed with `nth_frame(1)` i.e reading events every frame.\r\n\r\nThe example given reads old events in both 0.11.3 and 0.12.1\r\nThe difference is that 0.12.1 can buffer events for more than 2 frames but with 0.11.3 you're still getting an outdated event from the previous frame.\r\n\r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-12-06T14:20:34Z",
+   "body": "According to the [doc](https://docs.rs/bevy/latest/bevy/ecs/event/struct.Events.html#details), this is the expected behavior.\r\n\r\nWhen an event is generated, some systems may already have run in the current frame. Thus, it's already too late for them to read that event this frame. That's why events persist until the end of the next frame. And this is why 2 is the expected behavior in the example.\r\n\r\n"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2023-12-06T14:24:59Z",
+   "body": "I see, it was more clearly documented than I thought. fair enough."
+  },
+  {
+   "author": "participant6",
+   "created_at": "2023-12-14T17:09:40Z",
+   "body": "This new behavior synergizes pretty poorly with `.run_if` :<nick>: \r\nWould it be possible to have a method on EventReader to read events' emission timestamp or frame-count? That way we would be able to easily filter out the older ones."
+  },
+  {
+   "author": "participant7",
+   "created_at": "2023-12-18T20:06:27Z",
+   "body": "Adding my 2 cents that a change like this should be documented, with suggested workarounds if it is intended to stay this way and not just a bug. I am surprised this isn't talked about more, since problems arise the moment any systems with run conditions read from the same events. "
+  },
+  {
+   "author": "participant8",
+   "created_at": "2024-01-10T17:50:58Z",
+   "body": "To add some context, the lifetime change was deliberate and was made in #10077. (In hindsight, it was a mistake to include it in the 0.12.1 release.) I just didn't see that the `EventReader` docs needed to be changed.\r\n\r\n> Would it be possible to have a method on `EventReader` to read events' emission timestamp or frame-count? That way we would be able to easily filter out the older ones.\r\n\r\nThis was pretty much the plan (see the future work section of #10077).\r\n\r\n**edit:** The specific idea is to control a \"visible event timestamp range\" globally for all event readers.\r\n\r\n- For systems running in `Main`, the range would be the virtual timespan of the previous frame.\r\n- For systems running in `FixedMain`, the range would be the virtual timespan of the previous tick.\r\n- `EventReader` could have a method to override this if users want a few to see different spans of the still-buffered events.\r\n\r\n---\r\n\r\nIf y'all want a \"quick and dirty\" workaround, `app.remove_resource::<EventUpdateSignal>()` (edit: _after_ plugins are added) will recover the `<=0.12.0` behavior."
+  },
+  {
+   "author": "participant9",
+   "created_at": "2024-01-19T16:05:09Z",
+   "body": "A small correction that the fix should be `app.world.remove_resource::<EventUpdateSignal>();`. Without this change I was experience a memory leak even after manually draining all the events I was using.\r\n\r\n---\r\n\r\nOn a personal note it's a bit disappointing #10077  was merged when it was known it would cause [infinite memory usage](https://github.com/bevyengine/bevy/pull/10077#issuecomment-1828152583) in some circumstances. The fact this change wasn't even in the patch notes or migration guide just hurt more.\r\n\r\nObviously bevy is still under heavy development so things are expected to break and it is only because it normally does such a good job at making updates feel safe that this issue stands out so much. In the future I hope we can be more careful with such big changes."
+  },
+  {
+   "author": "participant10",
+   "created_at": "2024-01-19T22:32:49Z",
+   "body": "I think I've ran into this problem, I have a system that zooms the camera in and out, reading mousewheel events. And I turn it off using run_if when the egui context is active so I don't zoom my main camera if I'm just scrolling an egui scroll area. As soon as egui lets go of my mouse and the system runs again, all the mousewheel events are there and my zoom level snaps to wheverever it would've been if I didn't disable the system "
+  },
+  {
+   "author": "participant11",
+   "created_at": "2024-01-24T16:39:41Z",
+   "body": "Just confirming my understanding here, sorry for the noise. People in this thread are saying that the default behavior of the Events no longer plays nice with `run_if` after the referenced PR merged.\r\n\r\nI want to confirm that, while true, the behavior of Events is now aligned with the behavior of change detection, right? If one prevents a system from running via `run_if`, and that system relies on `Added<_>` or `Changed<_>`, then that change detection is not cleared until the system has a chance to run again in the future. Additionally, when considering that `RemovedComponents<_>` relies on Events, not change detection, the line between the two concepts for the lifecycle of a mutated Component was already quite blurry.\r\n\r\nI'm not trying to be dismissive of the pain caused by this change. I agree things are in a tough spot. I just want to confirm that, from a different perspective, this change was good and brought aspects of Bevy more into alignment with itself. It would be unfortunate if we were to make adjustments to Events, without affecting change detection, that resulted in these behaviors diverging again in the future.\r\n\r\n "
+  },
+  {
+   "author": "participant9",
+   "created_at": "2024-01-24T17:19:00Z",
+   "body": "I believe you are almost correct. Consider this snippet:\r\n\r\n```rust\r\nfn pan_camera(\r\n    mut ev_motion: EventReader<MouseMotion>,\r\n    input_mouse: Res<Input<MouseButton>>,\r\n    query: Query<Entity, Changed<Something>>,\r\n) {\r\n...\r\n    if input_mouse.pressed(pan_button) {\r\n        for ev in ev_motion.read() {\r\n            pan += ev.delta;\r\n        }\r\n\r\n        for e in query.iter() {\r\n            // do something\r\n        }\r\n    }\r\n```\r\n\r\nIn the case where the mouse is pressed, the behaviour of the query and the event reader are now the same. All of the motion events since the last time the system ran are iterated through, just as all of the changed entities are.\r\n\r\nHowever in the case where the mouse is not pressed, the behaviour differs. For the query, it will be emptied automatically but for the event reader it won't. This means that you need to manually empty the event reader in every system, if you don't care about the events that call (by e.g. adding `else { ev_motion.clear();}`). If any of these are missed, you can get funky behaviour such as the panning based on all motion since the last mouse click and worse you can have unbounded memory and hit OOM.\r\n\r\n...at least, that is my understanding of the issue. I could be wrong w.r.t. the query as I don't used fixed updates but I believe that is how it works based on the docs and some testing."
+  },
+  {
+   "author": "participant11",
+   "created_at": "2024-01-24T17:33:53Z",
+   "body": "> I believe you are almost correct. Consider this snippet:\r\n> \r\n> ```rust\r\n> fn pan_camera(\r\n>     mut ev_motion: EventReader<MouseMotion>,\r\n>     input_mouse: Res<Input<MouseButton>>,\r\n>     query: Query<Entity, Changed<Something>>,\r\n> ) {\r\n> ...\r\n>     if input_mouse.pressed(pan_button) {\r\n>         for ev in ev_motion.read() {\r\n>             pan += ev.delta;\r\n>         }\r\n> \r\n>         for e in query.iter() {\r\n>             // do something\r\n>         }\r\n>     }\r\n> ```\r\n> \r\n> In the case where the mouse is pressed, the behaviour of the query and the event reader are now the same. All of the motion events since the last time the system ran are iterated through, just as all of the changed entities are.\r\n> \r\n> However in the case where the mouse is not pressed, the behaviour differs. For the query, it will be emptied automatically but for the event reader it won't. This means that you need to manually empty the event reader in every system, if you don't care about the events that call (by e.g. adding `else { ev_motion.clear();}`). If any of these are missed, you can get funky behaviour such as the panning based on all motion since the last mouse click and worse you can have unbounded memory and hit OOM.\r\n> \r\n> ...at least, that is my understanding of the issue. I could be wrong w.r.t. the query as I don't used fixed updates but I believe that is how it works based on the docs and some testing.\r\n\r\nGot it. Thanks for the clarification. I agree that additional condition of needing to read events, not simply run the system that declares it is interested in the events, is especially difficult to manage. That isn't something I'd encountered yet with my app, so is good to know."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-01-24T21:49:10Z",
+   "body": "@participant9 The scenario from your code snippet is different from having a `run_if` condition on the system.\r\n\r\nI've noticed that for queries with filter `Changed`, change detection happens whenever the system runs regardless of the query being iterated or not. However, change detection does not happen if the system does not run.\r\n\r\nThis means that if you replace the condition `if input_mouse.pressed(pan_button)` at the beginning of your code snippet by a `run_if` condition on the system, I believe you will observe the same behavior for both the query and the event reader. So I would say that @participant11 is correct that the behaviours of events and change detection are now more aligned.\r\n\r\nI don't know about `RemovedComponents` which I haven't used."
+  },
+  {
+   "author": "participant11",
+   "created_at": "2024-01-24T22:58:29Z",
+   "body": "@reporter Wait.. you're _the_ Wafo Tapa, aren't you?! I didn't expect to run into an ex-pro MTG player in a Bevy development thread. :) Big fan of you from back in the day. I've been playing for ~20 years, seen you around at a few GPs, and I was watching LSV cube on my lunch break when you chimed in here :)\r\n\r\n*Anyway*. Sorry for the off-topic comment. Just a bit shocked!\r\n\r\n\r\n\r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-01-25T08:03:22Z",
+   "body": "@participant11 The world is small after all :)"
+  },
+  {
+   "author": "participant9",
+   "created_at": "2024-01-25T11:20:07Z",
+   "body": "@reporter right, they are definitely _more_ aligned than previous. The example was just to show the remaining case where they aren't.\r\n\r\nIt seems if we clean the events at the end of a system call then they would be identical. And add a (configurable) max size to the event queue in case the system isn't called often to avoid unbounded memory."
+  },
+  {
+   "author": "participant12",
+   "created_at": "2024-01-30T21:14:31Z",
+   "body": "> If y'all want a \"quick and dirty\" workaround, `app.remove_resource::<EventUpdateSignal>()` (edit: _after_ plugins are added) will recover the `<=0.12.0` behavior.\r\n\r\nnotes for this fix:\r\n- as somebody else mentioned, it needs to be `app.world.remove_resource::<EventUpdateSignal>()`\r\n- you have to include `bevy_ecs` to your `Cargo.toml` to have access to the `bevy_ecs::event::EventUpdateSignal` struct\r\n\r\n"
+  },
+  {
+   "author": "participant13",
+   "created_at": "2024-02-29T22:37:36Z",
+   "body": "@participant8 is this particular bug fixed now? I know we're not at \"ideal final form\" yet, but I seem to remember the cache-clearing bug getting fixed in 0.13."
+  },
+  {
+   "author": "participant8",
+   "created_at": "2024-03-01T22:20:03Z",
+   "body": "> Is this particular bug fixed now? I know we're not at \"ideal final form\" yet, but I seem to remember the cache-clearing bug getting fixed in 0.13.\r\n\r\nI believe so. 0.12.1 had a bug where events weren't getting dropped at all, and that was fixed by #11528, which should be in 0.13. So events still live longer than they did in 0.12, but they shouldn't just accumulate forever.\r\n\r\n"
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "bevyengine/bevy",
+  "default_branch": "main",
+  "commit_sha": "166686e0f2cccda77eaad9bf1b12bcd66285e142",
+  "as_of": "2023-12-05T11:20:20Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_bevyengine_bevy_10877"
+}

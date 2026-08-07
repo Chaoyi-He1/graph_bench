@@ -1,0 +1,84 @@
+{
+ "repo": "typesense/typesense",
+ "number": 1797,
+ "url": "https://github.com/typesense/typesense/issues/1797",
+ "title": "field parameter 'store' behaviour?",
+ "state": "closed",
+ "labels": [],
+ "reporter": "reporter",
+ "created_at": "2024-06-23T16:19:54Z",
+ "closed_at": "2024-07-28T23:58:02Z",
+ "body": "## Description\r\n\r\nCould you please clarify the expected behaviour of the schema field 'store' parameter. What happens if using `'index': false, 'store': false`. Also what happens if using `'index': true, 'store': false` and then restarting typesense or rebooting the server. With the indexed fields gone, and no way to retrieve them from disk.\r\n\r\nAlso please check out following behaviour:\r\n\r\nCreate a collection with a schemafield that has `'index': false, 'store': false`. No error, not even when making it non-optional (the latter does error at indexing time when not supplying a value for that field).\r\n\r\nThe created schema returned (or retrieving the collection) does not show the 'store' parameter in the field, so there's no way of telling eg. if the parameter was overridden.\r\n\r\nCreate a collection with a field that has `'index': true, 'store': false` Index a document including a value for that field, and then get the document. The field/value isn't there, while it should be retrievable from the index.\r\n\r\n\r\n## Metadata\r\n\r\n**Typesense Version**:\r\n26.0\r\n\r\n**OS**:\r\nwindows 10, wsl  (Ubuntu 22.04.3 LTS)",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2024-06-26T13:37:01Z",
+   "body": "With `store: false` we remove the field present in the doc before persisting it on disk. This is primarily for things like image embedding, where you have to send the image data but don't really want to store it because you only send it so that the model can embed the data.\r\n\r\nWith `index: false` you are telling Typesense not to do any in-memory indexing of that field. This is the same as not having the field in the schema at all. The reason we support this is because for some nested fields you might want a parent configuration with `index: true` but want to exclude specific child fields with `index: false`. \r\n\r\n> The created schema returned (or retrieving the collection) does not show the 'store' parameter in the field, so there's no way of telling eg. if the parameter was overridden.\r\n\r\nThis is mostly an oversight, will fix. \r\n\r\nWith the above clarifications, can you please tell me if you find any other odd behavior with these flags?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-06-26T16:09:34Z",
+   "body": "Thanks for clearing that up. I suggest adding info re `store: false` usage for embedding to the collections fields parameters doc.\r\n\r\n> With the above clarifications, can you please tell me if you find any other odd behavior with these flags?\r\n\r\nYes, as stated my last paragraph a value sent to a field with `'index': true, 'store': false` should be returned with the doc, as it's indexed in memory. Or if that combination is problematic with persistance (ie after reboot/crash) maybe it should not be possible. EDIT: Or perhaps only possible for optional fields."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-06-28T03:09:26Z",
+   "body": "> Yes, as stated my last paragraph a value sent to a field with 'index': true, 'store': false should be returned with the doc, as it's indexed in memory. \r\n\r\nThis is not possible because the index is an inverted index of tokens => document IDs that contains those tokens. We cannot reconstruct the raw data from that index. The `store: false, index: true` combination only makes sense for \"derived fields\" where we want to populate a new field during indexing but throw away and not store the source of that field's data. This is often the case with embeddings of images or large documents because those large entities will anyway be present in an external data store that will populate the UI so they are needed to be kept in Typesense. In other cases, it does not currently make sense. "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-06-29T15:21:49Z",
+   "body": "In that case the combination `store: false, index: true` doesn't make sense to me at all, and shouldn't be allowed. Obviously TS would still be able to ingest the value sent for use in derived fields. How TS handles that is not a user concern imho."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-06-30T14:00:44Z",
+   "body": "There is a real use case for `store: false, index: true` in the case of image embedding that I described above."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-06-30T20:29:54Z",
+   "body": "Could you give me an example schema please? Or is there one in the docs? EDIT: looks like the image example in the API docs does this, with the index param for image field set by TS. But I mean an example with nested fields as you described above, and with a `store: false, index: true` somewhere in it."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-07-01T03:38:11Z",
+   "body": "In the following example, image will be sent in base64 encoded form but we won't actually store it. We will only use it for generating the embedding for the image.\r\n\r\n```\r\n{\r\n  \"name\": \"Images\",\r\n  \"fields\": [\r\n    {\r\n      \"name\": \"name\",\r\n      \"type\": \"string\"\r\n    },\r\n    {\r\n      \"name\": \"image\",\r\n      \"type\": \"image\",\r\n      \"store\": false\r\n    },\r\n    {\r\n      \"name\": \"embedding\",\r\n      \"type\": \"float[]\",\r\n      \"embed\": {\r\n        \"from\": [\r\n          \"image\"\r\n        ],\r\n        \"model_config\": {\r\n          \"model_name\": \"ts/clip-vit-b-p32\"\r\n        }\r\n      }\r\n    }\r\n  ]\r\n}\r\n```"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-07-01T03:39:38Z",
+   "body": "> But I mean an example with nested fields as you described above, and with a store: false, index: true somewhere in it.\r\n\r\nAFAIK there are no other cases for this parameter. Still given that atleast one use case exist, we can't treat it as an invalid combination."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-07-14T19:06:01Z",
+   "body": "I see the store parameter has been added to the collection schema response. but It seems to get added always. What I wanted is to see it returned when explicitly defined in the schema. It should probably also be returned when the embed parameter is defined."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-07-15T05:40:51Z",
+   "body": "We don't differentiate between default and user-defined parameters. At best, we can return it only if it's set to `false`,  which will be a non-default value. "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-07-17T23:15:33Z",
+   "body": "Ok, so I guess you have a set of default params for a field and then merge user-defined params.\r\n\r\nReturning `store` only when it's set to `false` may be a good idea... if nobody has any objections to it. Thanks!"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-07-28T23:58:02Z",
+   "body": "In retrospect, I can deal with the store parameter in my application.\r\n\r\nAlso, with the above example, I can set index: false and typesense seems to accept it, and index a base image without throwing an error, so I 'm ok with that for now."
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "typesense/typesense",
+  "default_branch": "v31",
+  "commit_sha": "423577c04acdd64d486d2dba66e7641ceeaf5543",
+  "as_of": "2024-06-23T16:19:54Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_typesense_typesense_1797"
+}

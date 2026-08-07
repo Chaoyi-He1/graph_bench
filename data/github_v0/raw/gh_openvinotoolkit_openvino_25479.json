@@ -1,0 +1,172 @@
+{
+ "repo": "openvinotoolkit/openvino",
+ "number": 25479,
+ "url": "https://github.com/openvinotoolkit/openvino/issues/25479",
+ "title": "How to run openvino on a single thread?",
+ "state": "closed",
+ "labels": [
+  "support_request",
+  "category: CPP API"
+ ],
+ "reporter": "reporter",
+ "created_at": "2024-07-10T07:00:00Z",
+ "closed_at": "2024-08-28T06:58:22Z",
+ "body": "I am using openvino to infer a model and I want to compile and infer a model on a single thread.\r\nBelow is the code.\r\n\r\n  ```\r\n // model compilation\r\n    ov::Core core;\r\n    std::shared_ptr<ov::Model> model;\r\n    ov::CompiledModel compiled_model;\r\n    model = core.read_model(file_path);\r\n    const ov::Layout tensor_layout{\"NHWC\"};\r\n    ov::preprocess::PrePostProcessor ppp(model);\r\n    ov::preprocess::InputInfo& input_info = ppp.input();\r\n    input_info.tensor().set_element_type(ov::element::f32).set_layout(tensor_layout);\r\n    input_info.model().set_layout(\"NCHW\");\r\n    ppp.output().tensor().set_element_type(ov::element::f32);\r\n    ppp.output().postprocess().convert_layout({0, 2, 1});\r\n    model = ppp.build();   \r\n    compiled_model = core.compile_model(model, device_name);// , tput);\r\n    \r\n   // model inference\r\n    cv::Mat resized_image = cv::imread(\"./test.jpg\");\r\n    ov::element::Type input_type = ov::element::f32;\r\n    ov::Shape input_shape = {1, 640, 640, 3};\r\n    ov::Tensor input_tensor = ov::Tensor(input_type, input_shape, resized_image.data);\r\n\r\n    ov::InferRequest infer_request = compiled_model.create_infer_request();\r\n    infer_request.set_input_tensor(input_tensor);\r\n    infer_request.infer();\r\n    ov::Tensor output_tensor = infer_request.get_output_tensor();\r\n\r\n   float *data = (float *)output_tensor.data();\r\n    cv::Mat outputMat(output_tensor.get_shape()[1], output_tensor.get_shape()[2], CV_32F, data);\r\n\r\n```\r\n",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2024-07-12T03:37:21Z",
+   "body": "`ov::inference_num_threads` limits the number of logical processors used for CPU inference.\r\n\r\n`compiled_model = core.compile_model(model, device_name, ov::inference_num_threads(1));`"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-07-18T05:42:03Z",
+   "body": "@participant1  I have tried above mentioned solution but it still takes multiple threads."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-07-18T15:11:23Z",
+   "body": "In that case, you have to build open source OpenVINO with -DTHREADING=SEQ to disable threading optimizations.\r\n\r\nRef: [17566](https://github.com/openvinotoolkit/openvino/issues/17566)"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-07-19T10:50:23Z",
+   "body": "@participant1  Let me try this then I will update."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-07-22T07:50:31Z",
+   "body": "> @participant1 I have tried above mentioned solution but it still takes multiple threads.\r\n\r\n@participant1 Could you please clarify how exactly you analyzed number of used threads? Usage of ov::inference_num_threads(1) is expected to be enough for single threaded inference. So I would really like to root-cause the issue.\r\ncc'ed @participant3 "
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-07-22T08:01:37Z",
+   "body": "@participant1 May I know which one is your expectation?\r\n\r\n1. Application only create one thread and run inference on this thread.\r\n2. Application created multiple threads and run inference on one thread."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-07-22T09:23:34Z",
+   "body": "@participant1  My use case is to only create one thread and run inference on this thread."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-07-22T14:13:50Z",
+   "body": "@reporter Since OpenVINO supports both synchronous inference and asynchronous inference, OpenVINO will create additional thread for asynchronous inference during compiling model even if `ov::inference_num_threads(1)`. Then if user use `infer_request.infer()` to trigger synchronous inference, inference will run on original thread.\r\n\r\nSo application creates two threads and only runs one. May I know if it is acceptable in your use case? \r\n\r\nIf yes, please try below steps:\r\n\r\n1. Build OpenVINO with `-DTHREADING=SEQ` \r\n2. Compile model with `ov::inference_num_threads(1)`\r\n3. Use `infer_request.infer()` to trigger synchronous inference"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-07-23T06:12:42Z",
+   "body": "@participant3  No, My application cannot use two threads. Thread should be main thread for the compilation of model and  for the inference as well. So only single thread for complete application is my use case."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-07-23T07:40:39Z",
+   "body": "@reporter Then this is new requirement for OpenVINO. OpenVINO need new property to indicate sync or async inference in the future during compilation. And use main thread to compile model for sync inference. \r\nWill create PR for this requirement. Thanks."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-07-29T06:03:21Z",
+   "body": "@participant3 Any update on this?"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-07-29T06:55:00Z",
+   "body": "@reporter This feature was planned and added into development pipeline. Will update when the feature is ready."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-08-06T04:01:53Z",
+   "body": "@reporter Could you try compiling model with `ov::num_streams(0)`?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-08-21T06:48:45Z",
+   "body": "@participant3 I have one more question. Does openvino support fork?"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-08-21T06:59:02Z",
+   "body": "> @participant3 I have one more question. Does openvino support fork?\r\n\r\nYes"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-08-21T10:21:17Z",
+   "body": "@participant3  Do I need to enable or setup anything at runtime for fork support?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-08-21T11:10:03Z",
+   "body": "@participant3 I am trying to load the networks in the parent process and inference calls are made in the forked child.\r\nThe Infer() call is hanging in the child process. The same call works fine when performed in the parent process."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-08-21T14:47:34Z",
+   "body": "@reporter I may have misunderstood the word \"fork\" in the question `Does openvino support fork?`\r\n\r\nIn your case, may I know if you compile model in child process?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-08-22T04:57:29Z",
+   "body": "@participant3 I am compiling model in parent process and then performing inference in multiple forked child process."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-08-22T08:10:01Z",
+   "body": "@participant3  Sorry for the initial update. My application is still using multiple threads even with ov::num_streams(0)"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-08-23T03:45:54Z",
+   "body": "@reporter I made a demo for testing fork and the result is ok. The code are as follows:\r\n\r\n       `ov::Core core;\r\n        std::shared_ptr<ov::Model> model = core.read_model(model_path);\r\n        FormatReader::ReaderPtr reader(image_path.c_str());\r\n        if (reader.get() == nullptr) {\r\n            throw std::logic_error(ss.str());\r\n        }\r\n        ov::element::Type input_type = ov::element::u8;\r\n        ov::Shape input_shape = {1, reader->height(), reader->width(), 3};\r\n        std::shared_ptr<unsigned char> input_data = reader->getData();\r\n        ov::Tensor input_tensor = ov::Tensor(input_type, input_shape, input_data.get());\r\n        const ov::Layout tensor_layout{\"NHWC\"};\r\n        ov::preprocess::PrePostProcessor ppp(model);\r\n        ppp.input().tensor().set_shape(input_shape).set_element_type(input_type).set_layout(tensor_layout);\r\n        ppp.input().preprocess().resize(ov::preprocess::ResizeAlgorithm::RESIZE_LINEAR);\r\n        ppp.input().model().set_layout(\"NCHW\");\r\n        ppp.output().tensor().set_element_type(ov::element::f32);\r\n        model = ppp.build();\r\n        ov::CompiledModel compiled_model = core.compile_model(model, device_name);\r\n\r\n        pid_t pid = fork();\r\n        if (pid >= 0) {\r\n            ov::InferRequest infer_request = compiled_model.create_infer_request();\r\n            infer_request.set_input_tensor(input_tensor);\r\n            infer_request.infer();\r\n            const ov::Tensor& output_tensor = infer_request.get_output_tensor();\r\n            if (pid == 0) {\r\n                exit(0);\r\n            }\r\n        } else {\r\n            std::cout << \"fork error\\n\";\r\n        }\r\n        if (pid > 0) {\r\n            int returnStatus;\r\n            waitpid(pid, &returnStatus, 0);\r\n            if (returnStatus == 0) {\r\n                std::cout << \"child process end\\n\";\r\n            }\r\n        }`"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-08-23T04:49:48Z",
+   "body": "@reporter May I know which OpenVINO version are you using? Could you try example with master branch or the latest release?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-08-23T05:33:35Z",
+   "body": "@participant3 OpenVINO version is  2023.3.0-13775-ceeafaf64f3-releases/2023/3. I will try with latest master branch and update you.\r\n@participant4 Above example is running on multiple threads and in my use case my application should use only single thread  and I am creating multiple fork process inside my application."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-08-23T06:29:08Z",
+   "body": "@participant3  I ran my application on latest OpenVINO version: **2024.3.0-16041-1e3b88e4e3f-releases/2024/3** and still application uses multiple thread."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-08-27T05:21:53Z",
+   "body": "> @participant3 I ran my application on latest OpenVINO version: **2024.3.0-16041-1e3b88e4e3f-releases/2024/3** and still application uses multiple thread.\r\n\r\n@reporter Please try  `ov::num_streams(0)` on master branch. The fix will be included in next release."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-08-28T06:58:19Z",
+   "body": "@participant3 I tried ov::num_streams(0) on master branch with OpenVINO version: 2024.4.0-16446-eb16f7fbd0d and my application started using single thread."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2025-07-22T01:25:51Z",
+   "body": "> [@reporter](https://github.com/reporter) Since OpenVINO supports both synchronous inference and asynchronous inference, OpenVINO will create additional thread for asynchronous inference during compiling model even if `ov::inference_num_threads(1)`. Then if user use `infer_request.infer()` to trigger synchronous inference, inference will run on original thread.\n> \n> So application creates two threads and only runs one. May I know if it is acceptable in your use case?\n> \n> If yes, please try below steps:\n> \n> 1. Build OpenVINO with `-DTHREADING=SEQ`\n> 2. Compile model with `ov::inference_num_threads(1)`\n> 3. Use `infer_request.infer()` to trigger synchronous inference\n\nAfter doing all above instructions, program still runs in multi thread, openvin version 2025,  build with -DTHREADING=SEQ option, \nhere is my init function:\n\ninitialize(const std::string& scrfd_model_path, \n                                const std::string& adaface_model_path,\n                                const std::string& device,\n                                int input_height, \n                                int input_width) {\n    try {\n        // Store parameters\n        device_ = device;\n        input_height_ = input_height;\n        input_width_ = input_width;\n        \n        // Force CPU to use single-threaded mode at core level\n        core_.set_property(ov::cache_dir(\"\"));\n        if (device == \"CPU\") {\n            try {\n                // Try to set global CPU properties to force single threading\n                core_.set_property(\"CPU\", ov::inference_num_threads(1));\n                core_.set_property(\"CPU\", ov::streams::num(1));\n            } catch (...) {\n                // If properties fail, continue with local config\n                std::cout << \"Warning: Could not set global CPU properties\" << std::endl;\n            }\n        }\n        \n        // Initialize SCRFD model\n        auto scrfd_model = core_.read_model(scrfd_model_path);\n        \n        // Set custom input shape for SCRFD\n        ov::PartialShape new_input_shape = {1, 3, input_height, input_width};\n        std::map<std::string, ov::PartialShape> port_to_shape;\n        port_to_shape[scrfd_model->input().get_any_name()] = new_input_shape;\n        scrfd_model->reshape(port_to_shape);\n        \n        // Get input/output info after reshape\n        auto input_port = scrfd_model->input();\n        input_shape_ = input_port.get_shape();\n        num_outputs_ = scrfd_model->outputs().size();\n        \n        // Compile SCRFD model with absolute zero child threads\n        ov::AnyMap scrfd_config;\n        scrfd_config[ov::inference_num_threads.name()] = 1;\n        scrfd_config[ov::streams::num.name()] = 1;\n        scrfd_config[ov::enable_profiling.name()] = false;\n        scrfd_config[ov::hint::performance_mode.name()] = ov::hint::PerformanceMode::LATENCY;\n        scrfd_config[ov::hint::execution_mode.name()] = ov::hint::ExecutionMode::ACCURACY;\n        \n        // Force single core usage - try CPU:0 explicitly\n        if (device == \"CPU\") {\n            try {\n                scrfd_model_ = core_.compile_model(scrfd_model, \"CPU:0\", scrfd_config);\n            } catch (...) {\n                scrfd_model_ = core_.compile_model(scrfd_model, device, scrfd_config);\n            }\n        } else {\n            scrfd_model_ = core_.compile_model(scrfd_model, device, scrfd_config);\n        }\n        scrfd_request_ = scrfd_model_.create_infer_request();\n        \n        // Initialize SCRFD context\n        initializeSCRFDContext();\n        \n        std::cout << \"SCRFD model loaded successfully!\" << std::endl;\n        std::cout << \"Input shape: [\" << input_shape_[0] << \", \" << input_shape_[1] \n                  << \", \" << input_shape_[2] << \", \" << input_shape_[3] << \"]\" << std::endl;\n        std::cout << \"Number of outputs: \" << num_outputs_ << std::endl;\n        \n        // Initialize AdaFace model with absolute zero child threads\n        auto adaface_model = core_.read_model(adaface_model_path);\n        ov::AnyMap adaface_config;\n        adaface_config[ov::inference_num_threads.name()] = 1;\n        adaface_config[ov::streams::num.name()] = 1;\n        adaface_config[ov::enable_profiling.name()] = false;\n        adaface_config[ov::hint::performance_mode.name()] = ov::hint::PerformanceMode::LATENCY;\n        adaface_config[ov::hint::execution_mode.name()] = ov::hint::ExecutionMode::ACCURACY;\n        \n        // Force single core usage - try CPU:0 explicitly\n        if (device == \"CPU\") {\n            try {\n                adaface_model_ = core_.compile_model(adaface_model, \"CPU:0\", adaface_config);\n            } catch (...) {\n                adaface_model_ = core_.compile_model(adaface_model, device, adaface_config);\n            }\n        } else {\n            adaface_model_ = core_.compile_model(adaface_model, device, adaface_config);\n        }\n        adaface_request_ = adaface_model_.create_infer_request();\n        \n        std::cout << \"AdaFace model loaded successfully!\" << std::endl;\n        std::cout << \"Device: \" << device << std::endl;\n        \n        initialized_ = true;\n        return true;\n    }\n    catch (const std::exception& e) {\n        std::cerr << \"Error initializing FaceRecognition: \" << e.what() << std::endl;\n        return false;\n    }\n}\n"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-07-22T02:47:06Z",
+   "body": "@participant5 Please try `ov::num_streams(0)`."
+  },
+  {
+   "author": "participant6",
+   "created_at": "2026-07-30T09:11:37Z",
+   "body": "Is custom building from source with -DTHREADING=SEQ still necessary for calling thread execution only? Any prebuilt binaries available for this? Could it be added to builds?"
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "openvinotoolkit/openvino",
+  "default_branch": "master",
+  "commit_sha": "02beda8f22713bdfa8a06a3439e85eba80cd8ace",
+  "as_of": "2024-07-10T07:00:00Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_openvinotoolkit_openvino_25479"
+}

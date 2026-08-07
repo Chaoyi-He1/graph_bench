@@ -1,0 +1,165 @@
+{
+ "repo": "zellij-org/zellij",
+ "number": 4065,
+ "url": "https://github.com/zellij-org/zellij/issues/4065",
+ "title": "v0.42 is changing pane arrangement strategies on mouse movement",
+ "state": "closed",
+ "labels": [],
+ "reporter": "reporter",
+ "created_at": "2025-03-17T14:17:14Z",
+ "closed_at": "2025-03-21T08:36:42Z",
+ "body": "## Issue description\n\nZellij v0.42.0 is changing arrangement strategies on mouse movement.\nI have a single line config, `pane_frames false`.\n\n## Minimal reproduction\n\nminimal setup to reproduce it: open a second pane and move the mouse over your terminal.\n\n## Other relevant information\n\nI don't know if it's relevant, but that's on Windows 11 WSL with Ubuntu using Microsoft Terminal.\n",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2025-03-17T14:29:38Z",
+   "body": "I experience the same issue using the same setup (Windows 11 WSL with Ubuntu using Microsoft Terminal.)"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-03-17T14:56:37Z",
+   "body": "Is this mitigated if you add `mouse_mode false` to the config and restart? (I unfortunately do not have access to a windows machine, and this doesn't seem to happen outside Windows Terminal, so might need help troubleshooting)"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-03-17T15:00:07Z",
+   "body": "> Is this mitigated if you add `mouse_mode false` to the config and restart? (I unfortunately do not have access to a windows machine, and this doesn't seem to happen outside Windows Terminal, so might need help troubleshooting)\n\nYes."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-03-17T15:05:29Z",
+   "body": "sidenote: Microsoft offers VM's for evaluation so you can legally use a windows VM for a time: https://developer.microsoft.com/en-us/windows/downloads/virtual-machines/"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-03-17T15:33:47Z",
+   "body": "Just wanted to report that I'm experiencing the same issue with the same setup. `mouse_mode false` is a decent workaround, but I miss the ability to select the active pane with a mouse click.\n\nhttps://github.com/user-attachments/assets/f70a19de-ac9c-477b-9517-edc87f0558bb"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-03-17T16:10:46Z",
+   "body": "Could someone experiencing this issue please post the results of:\n1. Start the same terminal you use to run Zellij but without running Zellij\n2. Inside the bash shell, run the following command `echo -e \"\\033[?1000h\\033[?1002h\\033[?1003h\\033[?1015h\\033[?1006h\"`\n3. Run `/usr/bin/cat` without any arguments, move the mouse a little bit around the screen then send the output here? (Might be hard to paste because it'll likely have unprintable characters, so let's start with a screenshot and I might ask to get the output as a file dump if things are unclear)\n\nThanks!"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-03-17T16:18:06Z",
+   "body": "https://github.com/user-attachments/assets/381a5323-1e1e-40b2-aae0-79642e185ba1"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-03-17T16:33:39Z",
+   "body": "another data point not provided: previous version didn't had this issue."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-03-17T16:39:56Z",
+   "body": "![Image](https://github.com/user-attachments/assets/68e3e532-4925-4e18-ac3c-b01d0e06b0f3)"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-03-17T16:41:16Z",
+   "body": "So, I'm not sure why exactly this happens but from a casual glance (and without having full access to the app) it seems like the windows terminal implementation of Mouse Any-Event tracking is slightly different than the ones I've encountered in other terminals (and in the xterm spec) when implementing this protocol. I didn't see anything in this dump that would cause the issue, but I'm assuming it's something in this neighborhood.\n\nI'm going to release a patch version in the next few days that will allow disabling just mouse motion detection in the config, which should mitigate this issue while still maintaining the bulk of mouse support."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-03-17T16:42:40Z",
+   "body": "Until then, just the tl;dr of this thread: to workaround this issue for now, you can add `mouse_mode false` to the config.\n\nI respectfully ask not to reply any more to this thread unless you have definitive new information not previously mentioned here, so that people looking for a quick workaround can find this message and don't need to scroll through everything. Thanks for understanding!"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-03-18T22:45:37Z",
+   "body": "After some investigation (and learning how to read Rust), I think I found the issue.\nLooking at the [relevant xterm documentation](https://invisible-island.net/xterm/ctlseqs/ctlseqs.html#h2-Mouse-Tracking) reveals that the structure of mouse reports is this:\n`CSI < B ; Px ; Py M` for button pressed\n`CSI < B ; Px ; Py m` for button released\n`Px` and `Py` are coordinates and `B` is button+modifiers\nTo make a long story short B=3 means no buttons and mouse movements add 32 to that, so for mouse movements with no button presses B=35.\n\nSome quick tests revealed Windows Terminal uses `CSI < 35 ; Px ; Py m` to report mouse moves with no buttons while WezTerm and xterm (and probably all the others) use `CSI < 35 ; Px ; Py M`.\n\nNow, from what I could understand, `termwiz` only handles the `M` case when B=35 (see [here](https://github.com/wezterm/wezterm/blob/7053748e4d899e7fc5e202d6f903b052fc78e759/termwiz/src/escape/csi.rs#L2222)).\n"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-03-19T07:03:35Z",
+   "body": "Hey @participant4 - great find! You were quicker than me as I'm in the process of remote debugging this with someone on a windows machine, thanks!\n\nHave you tested this though? Does it solve the issue? I also noticed the discrepancy, and so tried to emit the same sequences to STDIN and couldn't reproduce the issue. Making me think this might be a bit more involved - so I just want to make sure we're not chasing red herrings."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-03-19T07:11:48Z",
+   "body": "I haven't tested the fix, no. I do have the issue when using Windows Terminal. To test I'd have to figure out how to build zellij with my fixed termwiz code."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-03-19T07:19:46Z",
+   "body": "Might be a good idea to test, just to make sure we're indeed solving the same issue. I usually test such things by manually editing the cargo cache - otherwise you can clone the termwiz (wezterm) repo and point the cargo dependency at its path."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-03-19T07:52:29Z",
+   "body": "I just tested it with the fix I put in wezterm/wezterm#6810 and it solves the issue."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-03-19T08:21:26Z",
+   "body": "@participant4 - thanks for checking! I'm going to also confirm this with others experiencing this issue before I release the patch. Until then - can you check if mouse motions still work with this fix? For example, open the `about` plugin with `Ctrl o` + `a`, hover the mouse over the item list and see if its selection background changes."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-03-19T09:42:18Z",
+   "body": "It works :)\n\nhttps://github.com/user-attachments/assets/81e3b2bf-7434-4cc5-ba23-344a036839d1"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-03-19T13:00:51Z",
+   "body": "Alright, I just confirmed this fix on another windows machine with the help of one of the other maintainers. I'm going to wait and see whether this fix will be accepted by termwiz (understandable if not tbh, in my view this is a windows terminal issue), and if not I'll work around it on the Zellij side. Thanks for the excellent work @participant4 !"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-03-19T14:24:05Z",
+   "body": "Hey @participant4 - the fix was just published by Wezterm as ~~0.23.1~~ 0.23.2. Would you like to make a PR to Zellij upgrading it so you'll get credit for the fix?"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-03-19T17:02:25Z",
+   "body": "That's actually very nice of you, I didn't even think about it. Yes, I'll do that."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-03-19T18:20:55Z",
+   "body": "`termwiz` builds just fine but for some reason the `zellij` build complains...\n```\n💾 🏡/dev/wezterm/termwiz  HEAD (8b7ca45) +1 at 2025-03-19 20:19:14\n❯ git log -1\ncommit 8b7ca454b5e0a65b69b1b736db54eae3c195384b (HEAD, tag: termwiz-0.23.2, tag: termiz-0.23.2)\nAuthor: <redacted-name>\nDate:   Wed Mar 19 07:23:49 2025 -0700\n\n    termwiz: bump version\n\n💾 🏡/dev/wezterm/termwiz  HEAD (8b7ca45) +1 at 2025-03-19 20:19:15\n❯ cargo build\n    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.14s\n```\n```\n💾 🏡/dev/zellij  main +2 ?2 at 2025-03-19 20:16:25\n❯ cargo build -j1\n   Compiling termwiz v0.23.2\nerror: proc-macro derive panicked\n  --> /home/<user>/.cargo/registry/src/index.crates.io-6f17d22bba15001f/termwiz-0.23.2/src/tmux_cc/mod.rs:12:14\n   |\n12 |     #[derive(Parser)]\n   |              ^^^^^^\n   |\n   = help: message: grammar error\n\n             --> 24:1\n              |\n           24 | continue = { \"%continue \" ~ pane_id }␊\n              | ^------^\n              |\n              = continue is a rust keyword\n\nerror[E0432]: unresolved import `parser::Rule`\n --> /home/<user>/.cargo/registry/src/index.crates.io-6f17d22bba15001f/termwiz-0.23.2/src/tmux_cc/mod.rs:2:5\n  |\n2 | use parser::Rule;\n  |     ^^^^^^^^^^^^ no `Rule` in `tmux_cc::parser`\n  |\nhelp: consider importing this struct instead\n  |\n2 | use crate::hyperlink::Rule;\n  |     ~~~~~~~~~~~~~~~~~~~~~~\n\nerror[E0599]: no function or associated item named `parse` found for struct `TmuxParser` in the current scope\n   --> /home/<user>/.cargo/registry/src/index.crates.io-6f17d22bba15001f/termwiz-0.23.2/src/tmux_cc/mod.rs:219:41\n    |\n14  |     pub struct TmuxParser;\n    |     --------------------- function or associated item `parse` not found for this struct\n...\n219 |     let mut pairs = parser::TmuxParser::parse(Rule::line_entire, line)?;\n    |                                         ^^^^^ function or associated item not found in `TmuxParser`\n    |\n    = help: items from traits can only be used if the trait is implemented and in scope\n    = note: the following traits define an item `parse`, perhaps you need to implement one of them:\n            candidate #1: `nom::internal::Parser`\n            candidate #2: `nom::sequence::Tuple`\n            candidate #3: `pest::Parser`\n\nerror[E0599]: no function or associated item named `parse` found for struct `TmuxParser` in the current scope\n   --> /home/<user>/.cargo/registry/src/index.crates.io-6f17d22bba15001f/termwiz-0.23.2/src/tmux_cc/mod.rs:786:37\n    |\n14  |     pub struct TmuxParser;\n    |     --------------------- function or associated item `parse` not found for this struct\n...\n786 |     let pairs = parser::TmuxParser::parse(Rule::layout_window, layout)?;\n    |                                     ^^^^^ function or associated item not found in `TmuxParser`\n    |\n    = help: items from traits can only be used if the trait is implemented and in scope\n    = note: the following traits define an item `parse`, perhaps you need to implement one of them:\n            candidate #1: `nom::internal::Parser`\n            candidate #2: `nom::sequence::Tuple`\n            candidate #3: `pest::Parser`\n\nSome errors have detailed explanations: E0432, E0599.\nFor more information about an error, try `rustc --explain E0432`.\nerror: could not compile `termwiz` (lib) due to 4 previous errors\n```"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-03-19T19:17:19Z",
+   "body": "I'm not sure it will make a difference, but maybe try going through our build system with `cargo x build`. Otherwise I'll take a look tomorrow."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-03-20T14:53:18Z",
+   "body": "Hey @participant4 - the compilation errors have been fixed on the termwiz side and published as `0.22.3`. Would you like to make that PR now?"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-03-20T16:40:26Z",
+   "body": "I feel a bit weird about taking that credit now. If you'd like me to I will get to it in a couple of hours. :)"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-03-20T16:54:39Z",
+   "body": "> I feel a bit weird about taking that credit now. If you'd like me to I will get to it in a couple of hours. :)\n\nDon't sweat it, it's your find! Please issue the PR if you're up for it. I'll do a patch release tomorrow anyway."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-03-21T09:09:58Z",
+   "body": "Released in `0.42.1`."
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "zellij-org/zellij",
+  "default_branch": "main",
+  "commit_sha": "5d5f58465ab9d39dbf08208213951e9c691470d7",
+  "as_of": "2025-03-17T14:17:14Z",
+  "method": "github_commits_until"
+ },
+ "images": [
+  {
+   "where": "c8",
+   "source_url": "https://github.com/user-attachments/assets/68e3e532-4925-4e18-ac3c-b01d0e06b0f3",
+   "file": "gh_zellij-org_zellij_4065_img0.png"
+  }
+ ],
+ "slug": "gh_zellij-org_zellij_4065"
+}

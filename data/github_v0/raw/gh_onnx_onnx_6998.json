@@ -1,0 +1,162 @@
+{
+ "repo": "onnx/onnx",
+ "number": 6998,
+ "url": "https://github.com/onnx/onnx/issues/6998",
+ "title": "PyTorch ONNX exporter produces invalid Gemm node",
+ "state": "closed",
+ "labels": [
+  "topic: converters"
+ ],
+ "reporter": "reporter",
+ "created_at": "2025-05-24T23:28:35Z",
+ "closed_at": "2025-05-31T17:49:30Z",
+ "body": "Hello everyone,\n\nI am not familiar with onnx. I have exported a model from torch to onnx, the torch model works fine, but the when I try to do inference with the onnx file, I got the following error message.\n\n```\n[ShapeInferenceError] All inputs to Concat must have same rank. Input 1 has rank 0 != 1\n```\nHow could I solve this error?\n\nThank you so much\n",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2025-05-25T01:41:15Z",
+   "body": "This is saying the input is a scalar and should have been a vector instead. `Rank==len(shape of tensor)`. How did you export your model? Please test with `torch.onnx.export(..., dynamo=True, report=True)` using the latest torch-nightly. Attach the generated report if there is an error. Thanks!"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-05-25T04:48:34Z",
+   "body": "Hi,\n\nThank you so much for your help. Here is the report. Why does Onnx generate an Onnx file even though it says there's an error? \n\n[onnx_export_2025-05-25_04-44-35-030550_success.md](https://github.com/user-attachments/files/20429368/onnx_export_2025-05-25_04-44-35-030550_success.md)"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-05-25T05:24:27Z",
+   "body": "Can you set verify=True in the export call to verify the model, and share the report again? I don't seem to find issue with the generated model."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-05-25T05:48:20Z",
+   "body": "@participant1 sure.\n\nI got this error message.\n```\nApplied 434 of general pattern rewrite rules.\nCheck export onnx model done...\nTraceback (most recent call last):\n  File \"/home/<user>/rtgrouppose/export_onnx.py\", line 112, in <module>\n    main(args)\n  File \"/home/<user>/rtgrouppose/export_onnx.py\", line 98, in main\n    onnx_model_simplify, check = onnxsim.simplify(output_file, test_input_shapes=input_shapes)\n  File \"/home/<user>/.local/lib/python3.10/site-packages/onnxsim/onnx_simplifier.py\", line 199, in simplify\n    model_opt_bytes = C.simplify(\nRuntimeError: /project/third_party/onnx-optimizer/third_party/onnx/onnx/common/ir.h:274: find: Assertion `!required || it != values_.end()` failed: /project/third_party/onnx-optimizer/third_party/onnx/onnx/common/ir.h:278: find: required undefined attribute 'value'\n```\n\nHere is the report I got.\n\n[onnx_export_2025-05-25_05-42-45-931230_runtime.md](https://github.com/user-attachments/files/20429490/onnx_export_2025-05-25_05-42-45-931230_runtime.md)\n\nand this is the command I use.\n\n```python\ntorch.onnx.export(\n        model,\n        (data, size),\n        output_file,\n        input_names=['images', 'orig_target_sizes'],\n        output_names=['scores', 'label', 'keypoints'],\n        dynamic_axes=dynamic_axes,\n        opset_version=16,\n        verbose=False,\n        dynamo=True,\n        verify=True,\n        report=True,\n        do_constant_folding=True,\n    )\n\n    if args.check:\n        import onnx\n        onnx_model = onnx.load(output_file)\n        onnx.checker.check_model(onnx_model)\n        print('Check export onnx model done...')\n\n    if args.simplify:\n        import onnx\n        import onnxsim\n        dynamic = True\n        # input_shapes = {'images': [1, 3, 640, 640], 'orig_target_sizes': [1, 2]} if dynamic else None\n        input_shapes = {'images': data.shape, 'orig_target_sizes': size.shape} if dynamic else None\n        onnx_model_simplify, check = onnxsim.simplify(output_file, test_input_shapes=input_shapes)\n        onnx.save(onnx_model_simplify, output_file)\n        print(f'Simplify onnx model {check}...')\n```\n`args.simplify` and `args.check` are True"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-05-25T06:00:27Z",
+   "body": "Thanks. Will push a fix to onnxscript next week."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-05-25T06:01:43Z",
+   "body": "You can track with https://github.com/microsoft/onnxscript/issues/2339"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-05-25T06:09:57Z",
+   "body": "Thanks @participant1 \n\nCould you provide me with some information about the error? What exactly is going on? How did you find it?\n\nRight now, I am developing a transformer model for 2d pose estimation. I used [D-FINE](https://github.com/Peterande/D-FINE/tree/master) repo as a reference and I don't remember using 1d tensor at any moment. Here is my [repo](https://github.com/reporter/DETRPose/tree/main), it is still under development and I need to fix some files and add some references, but you could check my files and code and see that I do not use any 1d tensor\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-05-25T15:11:18Z",
+   "body": "The error is this: In `# File: /home/<user>/rtgrouppose/src/models/rtgrouppose_/fdr_transformer.py:139 in forward, code: x = F.linear(x, project.to(x.device)).reshape(-1, 4)`, you called `linear` on `x` and `project`. Since `project` has shape `[33]`, and ONNX requires both tensors to be 2d (https://onnx.ai/onnx/operators/onnx__Gemm.html#inputs), an error is raised.\n\nThe fix would be either:\n\n1. update your code in `fdr_transformer.py:139` to use matmul instead of linear.\n2. update your code in `fdr_transformer.py:139` to reshape the project tensor to 2d before calling linear\n3. ~update onnxscript aten_linear implementation to accept a 1d input.~ According to documentation weight is always 2d: https://<redacted-host>/docs/stable/generated/torch.nn.Linear.html, nevertheless https://github.com/microsoft/onnxscript/pull/2340\n\n## Here is how you can locate the error\n\n(1) See error message `onnxruntime.capi.onnxruntime_pybind11_state.Fail: [ONNXRuntimeError] : 1 : FAIL : Node (node_Gemm_3722) Op (Gemm) [ShapeInferenceError] Second input does not have rank 2`\n\n(2) In the report, locate `node_Gemm_3722` in the ONNX model.\n\n```\n    3721 |  # node_Cast_3721\n            %\"_to_copy_1\"<FLOAT,[33]> ⬅️ ::Cast(%\"cat_14\") {to=FLOAT}\n    3722 |  # node_Gemm_3722\n            %\"linear_32\"<FLOAT,[2040*s0]> ⬅️ ::Gemm(%\"softmax_4\", %\"_to_copy_1\") {beta=1.0, transB=True, alpha=1.0, transA=0}\n    3723 |  # node_Constant_3723\n            %\"val_2071\"<?,?> ⬅️ ::Constant() {value=Tensor<INT64,[2]>(array([-1,  4]), name=None)}\n```\n\n(3) Observe that the Gemm node's input 1 is `%\"_to_copy_1\"`, search that in the pytorch ExportedProgram above:\n\n```py\n             # File: /home/<user>/rtgrouppose/src/models/rtgrouppose_/fdr_transformer.py:139 in forward, code: x = F.linear(x, project.to(x.device)).reshape(-1, 4)\n            _to_copy_1: \"f32[33]\" = torch.ops.aten._to_copy.default(cat_14, dtype = torch.float32, layout = torch.strided, device = device(type='cpu'));  cat_14 = None\n            linear_32: \"f32[2040*s0]\" = torch.ops.aten.linear.default(softmax_4, _to_copy_1);  softmax_4 = None\n            view_378: \"f32[510*s0, 4]\" = torch.ops.aten.view.default(linear_32, [-1, 4]);  linear_32 = None\n```\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-05-26T03:49:49Z",
+   "body": "Hi @participant1 \n\nThanks for such a clear explanation. \nI followed your recommendation, and I fixed that error, but I got a new one. \n\nCould you help me again, please?\n\nThis is the new report  \n\n[onnx_export_2025-05-26_02-55-49-327066_runtime.md](https://github.com/user-attachments/files/20434614/onnx_export_2025-05-26_02-55-49-327066_runtime.md)\n\nThis is the error message.\n```\nonnxruntime.capi.onnxruntime_pybind11_state.InvalidGraph: [ONNXRuntimeError] : 10 : INVALID_GRAPH : This is an invalid model. Type Error: Type 'tensor(int64)' of input parameter (val_6553) of operator (Floor) in node (node_Floor_9392) is invalid.\n```\n\n```\n# node_Floor_9392\n            %\"floor_divide\"<INT64,[s0,60]> ⬅️ ::Floor(%\"val_6553\")\n```\nwhat does it mean?\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-05-26T05:08:08Z",
+   "body": "```\n    9391 |  # node_Div_9391\n            %\"val_6553\"<?,?> ⬅️ ::Div(%\"getitem_149\", %\"val_840\")\n    9392 |  # node_Floor_9392\n            %\"floor_divide\"<INT64,[s0,60]> ⬅️ ::Floor(%\"val_6553\")\n    9393 |  # node_Mod_9393\n            %\"label\"<INT64,[s0,60]> ⬅️ ::Mod(%\"getitem_149\", %\"val_840\") {fmod=0}\n```\n\nONNX doesn't define the floor operation on int64 inputs.  This op was generated from `floor_divide`:\n\n```\n             # File: <eval_with_key>.14:7 in forward, code: topk_1 = torch.ops.aten.topk.default(view_102, 60, 1);  view_102 = None\n            topk_1 = torch.ops.aten.topk.default(view_601, 60, 1);  view_601 = None\n            getitem_148: \"f32[s0, 60]\" = topk_1[0]\n            getitem_149: \"i64[s0, 60]\" = topk_1[1];  topk_1 = None\n            \n             # File: <eval_with_key>.14:10 in forward, code: floor_divide = torch.ops.aten.floor_divide.default(getitem_70, 2)\n            floor_divide: \"i64[s0, 60]\" = torch.ops.aten.floor_divide.default(getitem_149, 2)\n            \n             # File: <eval_with_key>.14:11 in forward, code: remainder = torch.ops.aten.remainder.Scalar(getitem_70, 2);  getitem_70 = None\n            remainder: \"i64[s0, 60]\" = torch.ops.aten.remainder.Scalar(getitem_149, 2);  getitem_149 = None\n            \n```\n\nIf you have access to this part of the source code, you can cast the second output of topk to float32 first. I will separately see how I can fix this bug. Thanks for helping improve the onnx exporter. (https://github.com/microsoft/onnxscript/pull/2343)"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-05-26T11:05:22Z",
+   "body": "Thank you @participant1 for all your help.\nWhere could I find this error?  The report doesn't provide any file or line this time hehe"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-05-26T15:09:34Z",
+   "body": "Can you share the onnx file? (no data needed) It should provide more information."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-05-26T15:15:28Z",
+   "body": "Sure, could you share your email? The onnx is over 100mb"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-05-26T15:30:46Z",
+   "body": "It shouldn't be this large 🤔 . Try\n\n```\nfrom onnxscript import ir\n\nmodel = ir.load(\"model.onnx\")\nir.save(model, \"model.onnx\", external_data=\"model.data\")\n```\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-05-26T15:58:59Z",
+   "body": "[rtgrouppose_hgnetv2_l_final.zip](https://github.com/user-attachments/files/20443721/rtgrouppose_hgnetv2_l_final.zip)\n\nHere it is. Thank you so much for your help"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-05-26T16:07:37Z",
+   "body": "Open the graph in netron, and find \"getitem_149\" (topk), you will find the class hierarchy (PostProcess) here on the right column:\n\n![Image](https://github.com/user-attachments/assets/ee4cd455-96e4-4ced-8d9a-1a1f7e06f966)\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-05-26T16:34:35Z",
+   "body": "Thank you so much for your help @participant1 \n\nI found where the error was in my code\n\nThis is the original code\n```python \n def forward(self, outputs, target_sizes):\n        num_select = self.num_select\n        out_logits, out_keypoints= outputs['pred_logits'], outputs['pred_keypoints']\n\n        prob = out_logits.sigmoid()\n        topk_values, topk_indexes = torch.topk(prob.view(out_logits.shape[0], -1), num_select, dim=1)\n        scores = topk_values\n\n        # keypoints\n        topk_keypoints = topk_indexes // out_logits.shape[2]\n        labels = topk_indexes % out_logits.shape[2]\n        keypoints = torch.gather(out_keypoints, 1, topk_keypoints.unsqueeze(-1).repeat(1, 1, self.num_body_points*2))\n        img_h, img_w = target_sizes.unbind(1)\n        keypoints = keypoints * torch.stack([img_w, img_h], dim=1).repeat(1, self.num_body_points)[:, None, :]\n\n        keypoints_res = keypoints.unflatten(-1, (-1, 2))\n        \n        if self.deploy_mode:\n            return scores, labels, keypoints\n```\n\nI did the following changes\n```\ndef mod(a, b):\n    out = a - a // b * b\n    return out\n\ndef forward(self, outputs, target_sizes):\n        logits, keypoints = outputs[\"pred_logits\"], outputs[\"pred_keypoints\"]\n        \n        scores = F.sigmoid(logits)\n        scores, index = torch.topk(scores.flatten(1), self.num_select, dim=-1)\n        labels = mod(index, 2) \n        index = index // 2 \n        keypoints = keypoints.gather(\n            dim=1, index=index.unsqueeze(-1).repeat(1, 1, self.num_body_points*2)\n        )\n\n        # keypoints\n        keypoints = keypoints * target_sizes.repeat(1, self.num_body_points)[:, None, :]\n\n        keypoints_res = keypoints.unflatten(-1, (-1, 2))\n        \n        if self.deploy_mode:\n            return scores, labels, keypoints\n```\n\nunfortunately, the same error happens :c"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-05-26T16:40:46Z",
+   "body": "Did you cast to float? Using % is fine. "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-05-26T17:20:54Z",
+   "body": "i tried\n```python\nkeypoints = keypoints.gather(\n            dim=1, index=index.float().unsqueeze(-1).repeat(1, 1, self.num_body_points*2)\n        )\n```\nand I got this error\n```\n    keypoints = keypoints.gather(\nRuntimeError: gather(): Expected dtype int64 for index\n```\n\nDue to this, I tried to change the torch.topk to\n```python\n        scores, index = torch.topk(scores.flatten(1), float(self.num_select), dim=-1)\n```\nI got the following error\n```\nTypeError: topk(): argument 'k' (position 2) must be int, not float\n```\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-05-26T17:42:31Z",
+   "body": "Instead, cast to float **after** topk and do the division. You can cast the results back after the division if needed"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-05-26T17:58:29Z",
+   "body": "Thank you so much for all your help\n\nI was able to export the model; however, now I have accuracy problems\n```\n✅ Obtain model graph with `torch.export.export(..., strict=False)`\n⚪ Obtain model graph with `torch.export.export(..., strict=True)`\n⚪ Obtain model graph with `torch.jit.trace`\n✅ Decompose operators for ONNX compatibility\n✅ Translate the graph into ONNX\n✅ Run `onnx.checker` on the ONNX model\n✅ Execute the model with ONNX Runtime\n❌ Validate model output accuracy\n```\n\nthis was my error message\n```\npython export_onnx.py --config_file configs/rtgrouppose/rtgrouppose_hgnetv2_l_final.py \nnot load model.state_dict, use default init state dict...\n/home/<user>/rtgrouppose/export_onnx.py:72: UserWarning: # 'dynamic_axes' is not recommended when dynamo=True, and may lead to 'torch._dynamo.exc.UserError: Constraints violated.' Supply the 'dynamic_shapes' argument instead if export is unsuccessful.\n  torch.onnx.export(\n/home/<user>/.local/lib/python3.10/site-packages/torch/export/_unlift.py:81: UserWarning: Attempted to insert a get_attr Node with no underlying reference in the owning GraphModule! Call GraphModule.add_submodule to add the necessary submodule, GraphModule.add_parameter to add the necessary Parameter, or nn.Module.register_buffer to add the necessary buffer\n  getattr_node = gm.graph.get_attr(lifted_node)\n/home/<user>/.local/lib/python3.10/site-packages/torch/fx/graph.py:1772: UserWarning: Node model_encoder_pos_embed2 target model.encoder.pos_embed2 pos_embed2 of model.encoder does not reference an nn.Module, nn.Parameter, or buffer, which is what 'get_attr' Nodes typically target\n  warnings.warn(\n/home/<user>/.local/lib/python3.10/site-packages/torch/fx/graph.py:1772: UserWarning: Node model_transformer_decoder_layers_0_cross_attn_lifted_tensor_0 target model.transformer.decoder.layers.0.cross_attn.lifted_tensor_0 lifted_tensor_0 of model.transformer.decoder.layers.0.cross_attn does not reference an nn.Module, nn.Parameter, or buffer, which is what 'get_attr' Nodes typically target\n  warnings.warn(\n/home/<user>/.local/lib/python3.10/site-packages/torch/fx/graph.py:1772: UserWarning: Node model_transformer_project target model.transformer.project project of model.transformer does not reference an nn.Module, nn.Parameter, or buffer, which is what 'get_attr' Nodes typically target\n  warnings.warn(\n/home/<user>/.local/lib/python3.10/site-packages/torch/fx/graph.py:1772: UserWarning: Node model_transformer_decoder_layers_1_cross_attn_lifted_tensor_1 target model.transformer.decoder.layers.1.cross_attn.lifted_tensor_1 lifted_tensor_1 of model.transformer.decoder.layers.1.cross_attn does not reference an nn.Module, nn.Parameter, or buffer, which is what 'get_attr' Nodes typically target\n  warnings.warn(\n/home/<user>/.local/lib/python3.10/site-packages/torch/fx/graph.py:1772: UserWarning: Node model_transformer_decoder_layers_2_cross_attn_lifted_tensor_2 target model.transformer.decoder.layers.2.cross_attn.lifted_tensor_2 lifted_tensor_2 of model.transformer.decoder.layers.2.cross_attn does not reference an nn.Module, nn.Parameter, or buffer, which is what 'get_attr' Nodes typically target\n  warnings.warn(\n/home/<user>/.local/lib/python3.10/site-packages/torch/fx/graph.py:1781: UserWarning: Additional 3 warnings suppressed about get_attr references\n  warnings.warn(\n/home/<user>/.local/lib/python3.10/site-packages/torch/export/_unlift.py:81: UserWarning: Attempted to insert a get_attr Node with no underlying reference in the owning GraphModule! Call GraphModule.add_submodule to add the necessary submodule, GraphModule.add_parameter to add the necessary Parameter, or nn.Module.register_buffer to add the necessary buffer\n  getattr_node = gm.graph.get_attr(lifted_node)\n/home/<user>/.local/lib/python3.10/site-packages/torch/fx/graph.py:1772: UserWarning: Node model_encoder_pos_embed2 target model.encoder.pos_embed2 pos_embed2 of model.encoder does not reference an nn.Module, nn.Parameter, or buffer, which is what 'get_attr' Nodes typically target\n  warnings.warn(\n/home/<user>/.local/lib/python3.10/site-packages/torch/fx/graph.py:1772: UserWarning: Node model_transformer_project target model.transformer.project project of model.transformer does not reference an nn.Module, nn.Parameter, or buffer, which is what 'get_attr' Nodes typically target\n  warnings.warn(\n/home/<user>/.local/lib/python3.10/site-packages/torch/fx/graph.py:1772: UserWarning: Node model_transformer_decoder_layers_0_cross_attn_lifted_tensor_0 target model.transformer.decoder.layers.0.cross_attn.lifted_tensor_0 lifted_tensor_0 of model.transformer.decoder.layers.0.cross_attn does not reference an nn.Module, nn.Parameter, or buffer, which is what 'get_attr' Nodes typically target\n  warnings.warn(\n/home/<user>/.local/lib/python3.10/site-packages/torch/fx/graph.py:1772: UserWarning: Node model_transformer_decoder_layers_1_cross_attn_lifted_tensor_1 target model.transformer.decoder.layers.1.cross_attn.lifted_tensor_1 lifted_tensor_1 of model.transformer.decoder.layers.1.cross_attn does not reference an nn.Module, nn.Parameter, or buffer, which is what 'get_attr' Nodes typically target\n  warnings.warn(\n/home/<user>/.local/lib/python3.10/site-packages/torch/fx/graph.py:1772: UserWarning: Node model_transformer_decoder_layers_2_cross_attn_lifted_tensor_2 target model.transformer.decoder.layers.2.cross_attn.lifted_tensor_2 lifted_tensor_2 of model.transformer.decoder.layers.2.cross_attn does not reference an nn.Module, nn.Parameter, or buffer, which is what 'get_attr' Nodes typically target\n  warnings.warn(\n/home/<user>/.local/lib/python3.10/site-packages/torch/fx/graph.py:1781: UserWarning: Additional 3 warnings suppressed about get_attr references\n  warnings.warn(\nW0526 17:55:15.360000 7568 torch/onnx/_internal/exporter/_core.py:1520] Output 'label' has a large absolute difference of 1.000000. \nW0526 17:55:15.361000 7568 torch/onnx/_internal/exporter/_core.py:1527] Output 'label' has a large relative difference of 10000000.000000. \nW0526 17:55:15.362000 7568 torch/onnx/_internal/exporter/_core.py:1520] Output 'keypoints' has a large absolute difference of 576.000000. \nW0526 17:55:15.362000 7568 torch/onnx/_internal/exporter/_core.py:1527] Output 'keypoints' has a large relative difference of 31.999992. \nConversion to opset < 18 is not supported.\nApplied 434 of general pattern rewrite rules.\nCheck export onnx model done...\nTraceback (most recent call last):\n  File \"/home/<user>/rtgrouppose/export_onnx.py\", line 113, in <module>\n    main(args)\n  File \"/home/<user>/rtgrouppose/export_onnx.py\", line 99, in main\n    onnx_model_simplify, check = onnxsim.simplify(output_file, test_input_shapes=input_shapes)\n  File \"/home/<user>/.local/lib/python3.10/site-packages/onnxsim/onnx_simplifier.py\", line 199, in simplify\n    model_opt_bytes = C.simplify(\nRuntimeError: /project/third_party/onnx-optimizer/third_party/onnx/onnx/common/ir.h:274: find: Assertion `!required || it != values_.end()` failed: /project/third_party/onnx-optimizer/third_party/onnx/onnx/common/ir.h:278: find: required undefined attribute 'value'\n```\n\nSomething I don't understand why did I got the last two messages if my I successfully exported to onnx"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-05-26T18:09:25Z",
+   "body": "You can evaluate your model qualitatively. ONNX simplifier doesn't work on your model and that is fine. You don't need to call onnx simplifier. Using torch-nightly, you can also use https://github.com/participant1/model-explorer-onnx#visualizing-pytorch-onnx-exporter-dynamotrue-accuracy-results to analyze where the discrepancy starts to happen. (use torch-nightly and the latest onnxscript)"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-05-26T18:23:05Z",
+   "body": "Thank you so much for your answer. And sorry for asking begginer question but I'm not familiar with onnx\n\nI just have a couple of extra questions.\n\nWhat are the advantages of using the arguments `dynamo`, `report`, and `verify` here\n```python\ntorch.onnx.export(\n        model,\n        (data, size),\n        output_file,\n        input_names=['images', 'orig_target_sizes'],\n        output_names=['scores', 'label', 'keypoints'],\n        dynamic_axes=dynamic_axes,\n        opset_version=16,\n        verbose=False,\n        dynamo=True,\n        verify=True,\n        report=True,\n        do_constant_folding=True,\n```\n\nI ran an experiment and used the [D-FINE](https://github.com/Peterande/D-FINE/tree/master) github for that. IN that github, the authors provide the code to export to onnx. When I do not use the `dynamo`, `report`, and `verify`, I successfully exported to onnx and the onnx file has a size of 96mb. But when I use `dynamo`, `report`, and `verify`, the exportation fails because of rank problems. I solved those problems based on that feedback you provide for my own project and I make it work, but the onnx file has a size of 4.8mb. \n\nWhy does the size of the onnx files change a lot? "
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-05-26T18:32:45Z",
+   "body": "You can read more about the api here https://<redacted-host>/docs/main/onnx_dynamo.html#api-reference. Set `external_data=False` to store data inside the onnx file (otherwise the weights are stored in a separate file), you should get a file with comparable size. `dynamo=True` is the recommended new path for exporting onnx models."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-05-26T19:14:46Z",
+   "body": "thank you so much for all your help. Can I keep this issue open for a couple of days in case I have another question?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-05-31T17:49:30Z",
+   "body": "Feel free to open new issues for further questions, thanks. Exporter related issues can be opened in the pytorch repository in the future. Spec related questions can be opened here."
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "onnx/onnx",
+  "default_branch": "main",
+  "commit_sha": "281f630bc84f4e0427019f877030364feb98d607",
+  "as_of": "2025-05-24T23:28:35Z",
+  "method": "github_commits_until"
+ },
+ "images": [
+  {
+   "where": "c15",
+   "source_url": "https://github.com/user-attachments/assets/ee4cd455-96e4-4ced-8d9a-1a1f7e06f966",
+   "file": "gh_onnx_onnx_6998_img0.png"
+  }
+ ],
+ "slug": "gh_onnx_onnx_6998"
+}

@@ -1,0 +1,214 @@
+{
+ "repo": "caddyserver/caddy",
+ "number": 5470,
+ "url": "https://github.com/caddyserver/caddy/issues/5470",
+ "title": "Doesn't seem possible to disable ALPN",
+ "state": "closed",
+ "labels": [],
+ "reporter": "reporter",
+ "created_at": "2023-03-29T22:02:04Z",
+ "closed_at": "2023-05-13T13:09:27Z",
+ "body": "Hello again. Caddy's ALPN configuration is a part of TLS connection policy. I would like to be able to turn it off, which is to say, pass an empty uh... this thing to golang stdlib:\r\n>\t// NextProtos is a list of supported application level protocols, in\r\n>\t// order of preference. If both peers support ALPN, the selected\r\n>\t// protocol will be one from this list, and the connection will fail\r\n>\t// if there is no mutually supported protocol. If NextProtos is empty\r\n>\t// or the peer doesn't support ALPN, the connection will succeed and\r\n>\t// ConnectionState.NegotiatedProtocol will be empty.\r\n>\tNextProtos [][string](https://<redacted-host>/builtin#string)\r\n\r\nUnfortunately, I don't seem to be able to do this, because of this line (58):\r\nhttps://github.com/caddyserver/caddy/blob/2b3046de36bad70bd7e48478c99a8a030fb35b98/modules/caddytls/connpolicy.go#L56-L59\r\n\r\nMaybe allow passing null explicitly as value for `\"alpn\":` json key?\r\n\r\nIn any case it doesn't say in the documentation that empty array means default values:\r\nhttps://caddyserver.com/docs/json/apps/http/servers/tls_connection_policies/alpn/",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2023-03-29T22:04:13Z",
+   "body": ":<nick>: Never had a request like this before. What's your use case? Eliminating ALPN breaks upgrades to the application layer."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-03-29T22:26:50Z",
+   "body": "Well, having ALPN breaks TLS if I don't know what is my next proto. My Caddy use case has little to do with HTTP and nothing to do with HTTP/2 or /3.\r\n\r\nEdit: it boils down to a universal TLS termination endpoint with automatic cert management."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-03-29T22:34:56Z",
+   "body": "I mean, I suppose we could change the condition to `== nil`, but before we do, I still want to be sure I understand the use case. How do you use a TLS connection without ALPN? Or if it's not used, why not just have it be ignored instead?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-03-29T22:37:49Z",
+   "body": "I don't understand the question. What do you mean \"how\"? I use a TLS connection without a care in the world what the next proto is."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-03-29T22:44:39Z",
+   "body": "I'm not really secretive about the work I do, I can explain in detail if you wish, but I tend to keep things small in issues, because the problems tend to be sidetracked miles away from the root cause. The root cause here in my opinion is that golang's TLS library allows to disable server-side ALPN, while Caddy doesn't support it. I don't ask to change any defaults, or any established behaviour, I want to specifically configure my Caddy in a way that stdlib allows, supports and doesn't frown upon, if I'm not mistaken."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-03-30T00:48:06Z",
+   "body": "> I use a TLS connection without a care in the world what the next proto is.\r\n\r\nI guess that's my question then: if you ignore ALPN, then why does it matter if it's set?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-03-30T11:57:28Z",
+   "body": "> I guess that's my question then: if you ignore ALPN, then why does it matter if it's set?\r\n\r\nMatt, the server needs a correct list of all possible values the client may send if ALPN is enabled, otherwise it won't accept the connection. As I don't know this list, I can't configure it in a meaningful way, I need to disable it in order to allow the client to connect, where am I wrong?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-03-31T19:07:24Z",
+   "body": "I still don't really understand your use case, but would you mind doing a favor and changing the `len()` logic to `== nil` to see if that does what you need?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-03-31T23:12:11Z",
+   "body": "I'll be happy to explain further. As I've said I use Caddy as a universal TLS termination endpoint with built-in certificate management. Suppose there's an existing client-server communication in use -- I don't know, Postgres replication. Both the client and the server know the next protocols they want (we assume ALPN is in use, otherwise the example doesn't work). Client lists its protocols, server checks if there's an intersection with its protocols. Crucially, if there isn't one, server closes the connection and doesn't allow the client in -- that's how ALPN works.\r\n\r\nNow I need to proxy this connection through Caddy. I can't realistically modify the client to require it to not send ALPN anymore. I can't realistically go through every such connection, list every protocol they use, and then maintain this list in the future, it's just too much of a hassle. Now we're at an impasse: the client sends ALPN list, but the server -- Caddy -- doesn't know what to do with it. Caddy will not accept the client's connection, unless the client happens to request http/1.1 and/or h2. As a side note, Caddy will accept h2 even if it can't serve it later in the handlers -- it manifests as an empty answer, and I believe you have had issues with this already.\r\n\r\nThere's a really simple test case: `$ openssl s_client -alpn something -connect ...`. Try to serve it without explicitly configuring `\"alpn\": [\"something\"]`.\r\n\r\nAs for testing new logic, I'm afraid it would be difficult for me. I'm not at all a golang developer. I was able to hack around, and even made my own plugin, but it took me several days to build Caddy with it. I can of course edit the file, but I don't know what to do with this edited file, and golang proficiency is not among my life goals. That said, I'll try to do it on Monday."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-04-01T02:37:47Z",
+   "body": "> As for testing new logic, I'm afraid it would be difficult for me. I'm not at all a golang developer. I was able to hack around, and even made my own plugin, but it took me several days to build Caddy with it. I can of course edit the file, but I don't know what to do with this edited file, and golang proficiency is not among my life goals. That said, I'll try to do it on Monday.\r\n\r\nThe simplest way is to use `xcaddy` to replace the main Caddy package itself with your local checked-out copy. See the README for examples https://github.com/caddyserver/xcaddy#custom-builds\r\n\r\n```\r\n$ xcaddy build \\\r\n    --with github.com/caddyserver/caddy/v2=../../my-caddy-fork\r\n    --with github.com/some-other/plugin\r\n```"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-04-01T03:52:08Z",
+   "body": "@reporter If I push a patch to a branch, would you be able to test a CI artifact to ensure it meets your needs?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-04-01T12:15:58Z",
+   "body": "Thanks, Francis, that gives me an idea indeed.\r\n\r\nMatt, I think I'll be able to test local modifications after all.\r\n\r\nBy the way, I have remembered one more quibble I had with hardcoded behaviour: Caddy stamps `Server: Caddy` header quite early in its handlers chain. Do you want me to open a separate issue for that?"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-04-01T13:07:56Z",
+   "body": "> By the way, I have remembered one more quibble I had with hardcoded behaviour: Caddy stamps `Server: Caddy` header quite early in its handlers chain. Do you want me to open a separate issue for that?\n\nThis is intended and not going to change. See other issues for discussion about it if you feel the need to dig into it."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-04-01T13:49:43Z",
+   "body": "It's a hard thing to search for. I was only able to find this one: #3455. As far as I understand the intention is to make Caddy more visible on the internet?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-04-01T15:08:27Z",
+   "body": "The header is useful for surveys and for tracing a response through proxies, for example. I've used it a number of times to ensure I'm hitting my Caddy instance on the way out. It's not a security or privacy risk. (Google it as to why)\r\n\r\nAnyway, @reporter could you please try the artifact being built at https://github.com/caddyserver/caddy/pull/5473 ?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-04-01T15:17:56Z",
+   "body": "> The header is useful for surveys and for tracing a response through proxies, for example.\r\n\r\nI totally agree, I just object to it being hardcoded when I would prefer my proxy to not modify the response in ways I didn't ask it to. I might add that this thing came up with Caddy being a forward proxy, rather than a reverse one, so the internet won't see this header either way.\r\n\r\n> It's not a security or privacy risk.\r\n\r\nNever claimed it is.\r\n\r\n> could you please try the artifact being built at #5473 ?\r\n\r\nWill do soon, thanks."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-04-01T15:30:40Z",
+   "body": "> I just object to it being hardcoded when I would prefer my proxy to not modify the response in ways I didn't ask it to. \r\n\r\nThe Server header is a \"good neighbor\" sort of thing, Internet etiquette you could say."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-04-01T15:43:08Z",
+   "body": "> The Server header is a \"good neighbor\" sort of thing, Internet etiquette you could say.\r\n\r\nEtiquette is optional, not mandatory though. Other popular proxies allow customisation, or don't stamp their signature at all.\r\n\r\nhttps://<redacted-host>/questions/124137/change-apache-httpd-server-http-header\r\nhttps://stackoverflow.com/questions/246227/how-do-you-change-the-server-header-returned-by-nginx\r\nAnd I think `haproxy` doesn't bother altogether, though I can't check at the moment."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-04-01T15:51:35Z",
+   "body": "@reporter I don't really know what the issue is, you can still remove the header if you don't want it. It's easy enough with one line of config.\r\n\r\nWith nginx you have to recompile it AFAIK.\n\n> Etiquette is optional, not mandatory\n\nAnd yet we choose to be good citizens by default 🤷‍♂️"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-04-01T19:02:12Z",
+   "body": "> you can still remove the header if you don't want it. It's easy enough with one line of config.\r\n\r\nAh, right, well the issue is I wasn't able to. The reverse_proxy handler can remove upstream's Server header, but it doesn't remove its own. I would like to leave upstream's header as is and remove Caddy's, and I have no idea how to do it.\r\n\r\n> With nginx you have to recompile it AFAIK.\r\n\r\nNo, you can do `proxy_pass_header Server`.\r\n\r\n> And yet we choose to be good citizens by default 🤷‍♂️\r\n\r\nAnd I have no problems with that."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-04-01T22:40:30Z",
+   "body": "> No, you can do proxy_pass_header Server.\r\n\r\nYou're talking about the proxied header value; I'm talking about the source of originally adding it in the first place. AFAIK you have to recompile NGINX to disable the automatic setting of the Server header.\r\n\r\nTo remove the Server header in Caddy, simply do:\r\n\r\n```\r\nheader -Server\r\n```\r\n\r\nDid the CI build work for you?\r\n\r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-04-02T00:45:41Z",
+   "body": "Right. I wasn't able to find where to download the CI build, so I went ahead and edited my local Caddy files. I've thrown in an extra line just to make sure the running code is indeed edited:\r\n\r\n```golang\r\n    // enable HTTP/2 by default\r\n//    if len(pol.ALPN) == 0 {\r\n    if pol.ALPN == nil {\r\n      fmt.Printf(\"Overriding nil ALPN list\")\r\n      pol.ALPN = append(pol.ALPN, defaultALPN...)\r\n    }\r\n```\r\n\r\nAnd it was indeed, as I was able to see this line in Caddy output. Unfortunately this does not achieve the desired effect of turning ALPN off, rather it made the ALPN list empty, while still requiring a match with the client (which is of course completely impossible now):\r\n\r\n```\r\n4731/57/90 69:36:49.696 ERROR   layer4  handling connection     {\"remote\": \"1.2.3.4:5\", \"error\": \"tls: client requested unsupported application protocols ([xxx])\"}\r\n4731/57/90 69:36:55.890 ERROR   layer4  handling connection     {\"remote\": \"1.2.3.4:6\", \"error\": \"tls: client requested unsupported application protocols ([h2])\"}\r\n4731/57/90 69:37:05.184 ERROR   layer4  handling connection     {\"remote\": \"1.2.3.4:7\", \"error\": \"tls: client requested unsupported application protocols ([http/1.1])\"}\r\n```\r\n\r\nI will try to dig around more, but my capability is a bit limited to do complex code research."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-04-02T01:20:27Z",
+   "body": "I was able to fix this with one more edit. The side effect I imagine would be Caddy unable to solve TLS-ALPN-01 challenges if the relevant route is explicitly configured with empty ALPN list.\r\n\r\n```\r\n- if !alpnFound {\r\n+ if !alpnFound && len(cfg.NextProtos) > 0 {\r\n```\r\n\r\nTo demonstrate that it's working, I have this in the relevant route:\r\n```json\r\n              \"handle\": [\r\n                { \"handler\": \"tls\",\r\n                  \"connection_policies\": [\r\n                    {\"alpn\": []}\r\n                  ]\r\n                },\r\n                { \"handler\": \"proxy\",\r\n                  \"upstreams\": [\r\n                    {\r\n                      \"dial\": [\"127.0.0.1:81\"]\r\n                    }\r\n                  ]\r\n                }\r\n              ]\r\n```\r\n\r\nAnd when I do `$ openssl s_client -alpn xxx -connect ...`, I get my connection. If I then remove `connection_policies` altogether, or do `{\"alpn\": null}`, I get errors again. I conclude that ALPN check is disabled iff I set ALPN to an empty array in the JSON config."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-04-02T01:37:18Z",
+   "body": "As for `Server` header, I sense some annoyance in your tone, and it isn't really a big deal, so I'm ready to drop the issue at any time, but you are incorrect. I can elaborate if you wish, but once again, it isn't that important."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-04-08T11:43:31Z",
+   "body": "> Did the CI build work for you?\r\n\r\nMatt, don't want to be booping you for no reason, but uh... any news here?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-04-08T17:00:39Z",
+   "body": "> but uh... any news here?\r\n\r\nI'm on spring break with my family until after the holiday, that's all the news I have at the moment. If there is a more interesting update from me I will post about it here, I promise."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-04-08T22:50:02Z",
+   "body": "Oh hey, enjoy your time of course, have a fantastic vacation. It just felt lonely here all of a sudden is all."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-05-11T20:24:57Z",
+   "body": "@reporter I just applied your patch to the PR; please try it out. (Edit: I quickly pushed a small follow-up commit that enhances the condition. My hope is to be able to add that TLS-ALPN-01 challenge ALPN value in every case, except when the user explicitly configures an empty list...)\r\n\r\n> The side effect I imagine would be Caddy unable to solve TLS-ALPN-01 challenges if the relevant route is explicitly configured with empty ALPN list.\r\n\r\nAre you OK with this side-effect? I imagine the HTTP server will never it hit it unless the user explicitly shoots themselves in the foot.\r\n\r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-05-12T00:33:13Z",
+   "body": "> @reporter I just applied your patch to the PR; please try it out.\r\n\r\nI've already tried this code, it works.\r\n\r\n> Are you OK with this side-effect? I imagine the HTTP server will never it hit it unless the user explicitly shoots themselves in the foot.\r\n\r\nI'm not entirely okay with this, but I'd rather have something mostly working than not working at all. I've been thinking about this in the mean time and I think I know how to make this all right, let me briefly explain.\r\n\r\nIf Caddy had an explicit ACME handler, I could then do a catch-all route matching by ALPN with a well-known value `acme-tls/1`, and consequently I wouldn't have to keep in mind that my actual SNI-matching routes have to deal with two completely separate use-cases, namely serving the challenge AND serving the traffic. Hope this makes sense.\r\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-05-13T04:56:22Z",
+   "body": "> If Caddy had an explicit ACME handler, I could then do a catch-all route matching by ALPN with a well-known value acme-tls/1,\r\n\r\nYou mean in the caddy-l4 app?\r\n\r\nThat _may be_ a possibility without too much trouble... I haven't thought it through though. Could open an issue on caddy-l4 for further discussion I suppose.\r\n\r\nIf we're satisfied with this, then I'm willing to try it for Caddy 2.7 beta 1 -- but am also prepared to backpedal this if it introduces problems."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-05-13T11:12:42Z",
+   "body": "> You mean in the caddy-l4 app?\r\n\r\nI suppose it doesn't make much sense in HTTP routes, yes. On the other hand, l4 imports much of its core functionality from Caddy proper, it isn't clear to me yet where this handler will make more sense to be honest.\r\n\r\n> That _may be_ a possibility without too much trouble... I haven't thought it through though. Could open an issue on caddy-l4 for further discussion I suppose.\r\n\r\nI may be able to try and come up with an independent solution, but I should refrain from making any promises.\r\n\r\n> If we're satisfied with this, then I'm willing to try it for Caddy 2.7 beta 1 -- but am also prepared to backpedal this if it introduces problems.\r\n\r\nWouldn't it be possible to autotest these conditions?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-05-13T12:37:20Z",
+   "body": "> Wouldn't it be possible to autotest these conditions?\r\n\r\nIf we can come up with every possible scenario, sure -- but even tests won't inform us as to production scenarios. If only we had telemetry..."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-05-13T12:50:45Z",
+   "body": "> If we can come up with every possible scenario, sure -- but even tests won't inform us as to production scenarios. If only we had telemetry...\r\n\r\nNothing beats proper beta testing of course, but many times kind of unit testing can catch many a pitfall. With ALPN there aren't that many things to test actually:\r\n1. you send a proto server accepts -> success\r\n2. you send a proto server doesn't accept -> fail\r\n3. ALPN is disabled -> success"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-05-13T13:08:39Z",
+   "body": "Sure, but I'm also referring to this behavior:\r\n\r\n> The side effect I imagine would be Caddy unable to solve TLS-ALPN-01 challenges if the relevant route is explicitly configured with empty ALPN list.\r\n\r\nso we can be sure where things do and don't work.\r\n\r\nIf you want to submit a PR with tests that'd be very welcomed."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-05-13T13:33:29Z",
+   "body": "> Sure, but I'm also referring to this behavior:\r\n> so we can be sure where things do and don't work.\r\n\r\nWhat helps is less automagic and more well-defined logic, but I can certainly see how having everything to \"just work\" can be very helpful to users.\r\n\r\n> If you want to submit a PR with tests that'd be very welcomed.\r\n\r\nI can't even test my own code, I'm pretty sure I will not be able to do this. I'm not a real developer."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-05-15T15:49:34Z",
+   "body": "Looking at the code, I'm not sure anymore any additional work is required. What should happen if I have this pseudoconf:\r\n\r\n```\r\nserver {\r\n  listen: \":443\"\r\n  routes: [\r\n    match alpn \"acme-tls/1\" {\r\n      nop\r\n    }\r\n    match sni \"example.com\" {\r\n      alpn []\r\n      reverse_proxy \"127.0.0.1:8080\"\r\n    }\r\n  ]\r\n}\r\n```\r\n\r\nI can't check at the moment, but my hunch is Caddy will do the right thing, that is:\r\n* if the request bears the correct nextproto, it will match the first route, be served the challenge response, and closed peacefully;\r\n* if the request has any other nextproto, or none at all, AND if it has \"example.com\" servername, it will match the second route and be proxied as intended;\r\n* otherwise, ( standard default behaviour, irrelevant for the purposes of this discussion )\r\n\r\nAm I wrong?\r\n\r\nPS. Checking myself before posting, I don't see a good way to match routes by SNI or ALPN \"natively\" (in the Caddy proper, it's possible in L4), but I suppose it can be done using `{http.request.tls.server_name}` and `{http.request.tls.proto}` placeholders perhaps?"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-05-15T16:00:55Z",
+   "body": "Connection policies can match by `sni` (and caddy-l4 adds an `alpn` matcher if you plug it in) but not during HTTP routes (because by that point the TLS handshake completed, and it's very very rarely needed, and nobody has requested it before). See https://caddyserver.com/docs/json/apps/http/servers/tls_connection_policies/match/\n\nBut yeah you could use an expression matcher to match a specific value from those placeholders if you do need it in routing."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-05-15T16:08:32Z",
+   "body": "> Connection policies can match by `sni`\r\n\r\nThis is a bit of a tangent we could go into, but I don't really think it will lead anywhere exciting."
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "caddyserver/caddy",
+  "default_branch": "master",
+  "commit_sha": "2b3046de36bad70bd7e48478c99a8a030fb35b98",
+  "as_of": "2023-03-29T22:02:04Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_caddyserver_caddy_5470"
+}

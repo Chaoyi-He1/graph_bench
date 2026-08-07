@@ -1,0 +1,126 @@
+{
+ "repo": "onnx/onnx",
+ "number": 5851,
+ "url": "https://github.com/onnx/onnx/issues/5851",
+ "title": "[Feature request] New encoding for TreeEnsemble* operators",
+ "state": "closed",
+ "labels": [
+  "topic: enhancement"
+ ],
+ "reporter": "reporter",
+ "created_at": "2024-01-10T17:12:32Z",
+ "closed_at": "2024-02-03T15:34:32Z",
+ "body": "### System information\r\n\r\nONNX 1.15\r\n\r\n### What is the problem that this feature solves?\r\n\r\nLimitations and inefficiencies in decision tree encoding. \r\n\r\nThe proposal would enable:\r\n1. encoding SET_MEMBERSHIP as an operator type\r\n2. reducing some redundancy in the specification of the operators\r\n3. add support for double precision output type.\r\n\r\n### Alternatives considered\r\n\r\n_No response_\r\n\r\n### Describe the feature\r\n\r\nCurrently, the [TreeEnsemble* operators](https://github.com/onnx/onnx/blob/main/docs/Operators-ml.md#aionnxmltreeensembleclassifier) do not have the ability to represent set membership as a concept directly.\r\n\r\nUpstream libraries such as LightGBM frequently produce set membership operators especially in the context of categorical variables. Currently, converter frameworks represent this by chaining equalities and connecting the true output edge to the same node (i.e. we don't have a tree any more). We should capture this explicitly in the standard rather than relying on runtimes and converter frameworks to have consensus outside the scope of the standard. One approach might be to add a `SET_MEMBERSHIP` node mode and encoding the possible members in a new attribute. \r\n\r\nSecondly, the encoding of the remaining features contains some redundancies and could do with redesign. \r\n- `node_hitrates` and `node_hitrates_as_tensor` can be dropped. They are not used in any converter frameworks or runtimes and the existing description is ambiguous in exactly how this influences performance which makes the attribute impossible to use in practice.\r\n- `nodes_missing_value_tracks_true` is redundant. You can arrange true/false branches accordingly (nan compares false for all `node_modes` except with 'BRANCH_NEQ' where it compares true). It ends up being in the hot path when making predictions in onnxruntime (see https://github.com/microsoft/onnxruntime/blob/cf78d01546ca059a2ab487e01626e38029a3e8fd/onnxruntime/core/providers/cpu/ml/tree_ensemble_common.h#L738-L761) unnecessarily, so removing this attribute could simplify inference code and improve performance.\r\n- If the former is not implemented, the number of `node_modes` options can be decreased to the minimal orthogonal set. 'BRANCH_LEQ', 'BRANCH_LT', 'BRANCH_EQ', and 'LEAF' are all that is necessary. This will make implementing the operator more efficient without losing any expressivity.\r\n\r\nFinally, the operators currently only support float output. This frequently leads to discrepancies with libraries like LightGBM and XGBoost that are unacceptable in many deployment contexts. It looks like adding double support was proposed in a 2023 roadmap meeting but never introduced: https://github.com/onnx/steering-committee/blob/main/roadmap/2023-docs/01-tree-ensembles.pdf. This would eliminate this discrepancy.\r\n\r\n### Will this influence the current api (Y/N)?\r\n\r\nYes, it would require a new ai.onnx.ml opset.\r\n\r\n### Feature Area\r\n\r\nOperator definitions.\r\n\r\n### Are you willing to contribute it (Y/N)\r\n\r\nYes\r\n\r\n### Notes\r\n\r\nI'm happy to contribute this and see it through but would like to gather any opinions first.",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2024-01-10T18:18:19Z",
+   "body": "Thanks for tackling this issue! Here are a few thoughts:\r\n\r\n- `nodes_missing_value_tracks_true`: I could imagine that there are some optimizations that benefit from this. For example, if a tree is exclusively using a single split type then that information is no longer needed in each node. This allows for smaller `Node` structures which may improve caching in a much more significant way than the additional cost of `nodes_missing_value_tracks_true`. Arguably, this would be a task for an optimizer step rather than the standard, though. \r\n- Hitrates: While difficult to use, I think there is merit in keeping them as an optional attribute for the future. I don't think there is any value in having them as a `tensor` though. I always understood the hitrate as \"higher is more likely\", but never bothered to look too deeply into them.\r\n- The `base_values`, `base_values_as_tensor`, `post_transform` are unnecessary. They can be expressed using subsequent standard operators.\r\n- Input types should match the split value types defined as a tensor in `nodes_values_as_tensor`\r\n- ProtoBuf has no compression. It is rather wasteful to store the split types as strings. Instead, we could just as well store them in a `u8` tensor. The \"nodes_<...>\" table contains entries for every leaf making it much larger than necessary. Instead of having a dedicated row for each `LEAF` we may consider adding two columns indicating if the child indices point to leaves or nodes. ~This would make the `nodes_treeids` attribute unnecessary.~ **Edit:** Appologies! I believe the `nodes_treeids` are redundant, but that does not follow from this argument.\r\n- I'm having some trouble understanding the \"A leaf may have multiple votes, where each vote is weighted by the associated target_weights index\" part in the specs. How can this feature be used in a way that requires those votes to be aggregated at runtime rather than build time? Depending on the answer, this attribute may be removed.\r\n- The `target_nodeids` appears to be redundant."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-01-10T18:56:12Z",
+   "body": "> I could imagine that there are some optimizations that benefit from this. For example, if a tree is exclusively using a single split type then that information is no longer needed in each node. This allows for smaller `Node` structures which may improve caching in a much more significant way than the additional cost of `nodes_missing_value_tracks_true`.\r\n\r\nDo you mean the node type by \"that information\"? While implementations may vary, it's worth pointing out that the missing value true and split type are packed into a single byte in ORT (see https://github.com/microsoft/onnxruntime/blob/main/onnxruntime/core/providers/cpu/ml/tree_ensemble_aggregator.h#L99-L103). I'm not sure I understand this point in light of this."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-01-11T17:41:45Z",
+   "body": "Instead of removing attribute `nodes_missing_value_tracks_true`, we could allow the fact it is missing and define its value in this case. The runtime implementation can make it disappear by changing the node ids. onnxruntime is already reordering the node so that the left node is the next id to be faster. So instead of changing the spec, we could write an onnx function optimize the tree to remove any unncessary attribute. We would still to update the specifications to support double input (maybe float 16 as well?), encode node_modes with integers, support a new mode \"value IN set of values\"."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-01-11T18:38:13Z",
+   "body": "> Do you mean the node type by \"that information\"? While implementations may vary, it's worth pointing out that the missing value true and split type are packed into a single byte in ORT (see https://github.com/microsoft/onnxruntime/blob/main/onnxruntime/core/providers/cpu/ml/tree_ensemble_aggregator.h#L99-L103). I'm not sure I understand this point in light of this.\r\n\r\nI see, thanks for pointing that out! The split function is then later inlined in a `switch` on that mode flag. I suppose there would not be a noticeable difference by only having a single split type in that case."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-01-11T18:43:35Z",
+   "body": "> We would still to update the specifications to support double input (maybe float 16 as well?)\r\n\r\nNote that double input is already supported today, but the output is always a 32-bit. I don't think there is much merit in offering float16 as input and split values. Upcasting the input to float32 is not free, but the outputs would remain unchanged. If a use-case for trees with 16-bit inputs arises it will be a simple thing to add it in a new forward-compatible way. "
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-01-15T11:31:31Z",
+   "body": "float16 as split values may be useful to reduce memory footprint but I agree, I did not see any feature request about that type."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-01-18T17:00:28Z",
+   "body": "> Instead of removing attribute `nodes_missing_value_tracks_true`, we could allow the fact it is missing and define its value in this case. The runtime implementation can make it disappear by changing the node ids. \r\n\r\nAt risk of coupling the operator definition with onnxruntime details again, I actually tried this out a while ago, however this reordering interferes with the fast path where all conditions are the same in a tree. I suppose we can leave the attribute in since it helps with clarity for converter library writers."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-01-19T11:40:54Z",
+   "body": "> > Instead of removing attribute `nodes_missing_value_tracks_true`, we could allow the fact it is missing and define its value in this case. The runtime implementation can make it disappear by changing the node ids.\r\n> \r\n> At risk of coupling the operator definition with onnxruntime details again, I actually tried this out a while ago, however this reordering interferes with the fast path where all conditions are the same in a tree. I suppose we can leave the attribute in since it helps with clarity for converter library writers.\r\n\r\nMaybe we are talking past each other and are both in favor of keeping `node_missing_value_tracks_true` as an (optional?) attribute?\r\n\r\nMy take is that `node_missing_value_tracks_true` has a pretty trivial default: If not defined every node will use \"missing tracks `false`\" because every comparison with `NaN` is always false. It seems rather trivial for runtimes to implement this, unless I'm missing something? "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-01-19T21:31:52Z",
+   "body": "Edited response:\r\n> * I'm having some trouble understanding the \"A leaf may have multiple votes, where each vote is weighted by the associated target_weights index\" part in the specs. How can this feature be used in a way that requires those votes to be aggregated at runtime rather than build time? Depending on the answer, this attribute may be removed.\r\n\r\nMy understanding (@participant2 please correct me if I'm wrong) is that a leaf can correspond to more than one target. You could share the prediction at a leaf across multiple targets. Since aggregation is done within the target and not within the leaf, you couldn't aggregate these targets at build time. That said, I don't know how/if this is even used in practice - if we denormalised this the representation of the tree could be much simpler (each leaf corresponds to one target that is `[0, n_targets)`)."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-01-22T12:32:43Z",
+   "body": "You are right. The format allows multiple target per node but the implementation does not support that and I never ad to change that assumption. scikit-learn, lightgbm or xgboost are the same. Classification or regression have usually one dimension (real regression or binary classification). Then the implementation is extended to support more dimensions or more classes by multiplying the trees and keeping one dimension for the target."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-01-22T13:09:38Z",
+   "body": "I think given we will be making many changes we should aim to be precise in what is supported (it also simplifies the encoding).\r\n\r\nIf we associate a leaf with a target we can continue to support the 1 to N relation between leaf node to target (a target may be composed from many leaves). Allowing many targets to be composed from one leaf complicates the encoding with no clear use case - if a user wants leaves to map to many targets in the same way this could be done with other standard operators as well (map each leaf to a different target and then take the row of leaf outputs and aggregate them as desired)."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-01-25T15:43:00Z",
+   "body": "@participant2, is there any need to retain and upgrade the TreeEnsembleClassifier? I believe all of the functionality is implementable directly through the TreeEnsembleRegressor (combined with other standard operators).\r\n\r\n- The TreeEnsembleClassifier returns the top class for each input batch and the score for each class. Clearly the top score can be determined directly by applying an argmax for each batch entry in the scores output.\r\n- Classification is not really distinct at prediction time. This is reflected in the fact that the scores for both the regressor and the classifier are computed using shared logic in both the reference implementation and onnxruntime.\r\n- `classlabels_strings` and `classlabels_int64s` define the possible ways to encode the output labels. Again, this can be determined using the top class index and then using a label encoder or gather/indexing to extract the requisite label.\r\n\r\nIs there something I'm missing here? If not, I think a reasonable argument could be made to write the classifier as a function op instead in this update with a view to deprecating the \"regressor\" and \"classifier\" long term and just having a `\"TreeEnsemble\"` operator."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-01-26T16:40:16Z",
+   "body": "If possible, I think it would be better to only have a single `TreeEnsemble` node. This would also give us the maximal freedom for how to deprecate `TreeEnsembleRegressor` and `TreeEnsembleClassifier`."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-01-27T10:35:13Z",
+   "body": "That makes sense. I would also remove the attribute classlabels_strings. It can be replaced by a LabelEncoder anyway and the model would be smaller anyway. Maybe then, we mark TreeEnsembleRegressor and TreeEnsembleClassifier as deprecated and introduce a new one TreeEnsemble. That would make it easier for converters as they could the existing code without no break change and have more time to switch to the next one. Once it is done, we could also do the same with LinearRegressor and LinearClassifier, SVM..."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-02-03T15:34:32Z",
+   "body": "Closed by https://github.com/onnx/onnx/pull/5874"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-04-03T11:03:36Z",
+   "body": "Wanted to chime in here more than 1 year later to say that 'vector leaf' type tree representations exist (https://xgboost.readthedocs.io/en/latest/tutorials/multioutput.html, https://<redacted-host>/abstract/document/8257910) and they have some pretty nice advantages (e.g. compactness) compared to 1 tree per target.\n\nThis can be implemented with the TreeEnsemble operator only by duplicating the entire tree for each class.\n\nIf making the TreeEnsemble operator too general hurts runtime performance, is there a case for defining multiple operators?"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-04-03T11:15:16Z",
+   "body": "In fact you don't really need to duplicate the trees, you can ask the tree to output a unique id then link this id to the target or the path."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-04-03T11:21:08Z",
+   "body": "@participant2 thanks, if I understand correctly I would add an onnx gather op after TreeEnsemble to fetch the multi-dimensional weights? For context I am implmenting this here: https://github.com/rapidsai/legate-boost/pull/227"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-04-03T11:24:24Z",
+   "body": "That should work and another Gather for the decision paths."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-04-04T00:05:45Z",
+   "body": "While that works (by giving each tree a unique target ID),  the performance may be considerably worse compared to an operator that natively supports tuple leaves."
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "onnx/onnx",
+  "default_branch": "main",
+  "commit_sha": "609282efe8d4871f620141223139bbb99bdbe9f6",
+  "as_of": "2024-01-10T17:12:32Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_onnx_onnx_5851"
+}

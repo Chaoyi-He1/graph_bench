@@ -9,31 +9,31 @@
 
 ```mermaid
 flowchart LR
-    N0["<b>N0 Android picker rejection reported</b><br/><small>info: 5</small>"]
-    N1_x["<b>N1_x whatwg-fetch downgrade aftermath</b><br/><small>info: 6</small>"]
-    N2["<b>N2 affected Android behavior established</b><br/><small>info: 7</small>"]
-    N3_x["<b>N3_x package-only upgrade aftermath</b><br/><small>info: 9</small>"]
-    N4["<b>N4 app-specific native dependency mismatch reproduced</b><br/><small>info: 12</small>"]
-    N5["<b>N5 clean native build verified</b><br/><small>info: 13</small>"]
-    N_terminal["<b>terminal resolved</b><br/><small>info: 15</small>"]
-    N0 ==>|"💥 blind: Treat the rejection as the fetch-related content URI problem and downgrade whatwg-fetch to 3.6.2."| N1_x
-    linkStyle 0 stroke:#ef4444,stroke-width:2px
-    N0 -.->|"❓ failures_mainly_android_12_and_13, picker_promise_enters_catch_after_selection"| N2
-    linkStyle 1 stroke:#3b82f6,stroke-width:2px
-    N2 -.->|"❓ image_picker_14_5_local_production_build_still_fails"| N3_x
+    N0["<b>N0 content URI rejection reported</b><br/><small>info: 5</small>"]
+    N1["<b>N1 affected versions and promise behavior established</b><br/><small>info: 8</small>"]
+    N2_x["<b>N2_x image-picker-only upgrade aftermath</b><br/><small>info: 9</small>"]
+    N2["<b>N2 app-specific emulator reproduction obtained</b><br/><small>info: 13</small>"]
+    N3["<b>N3 local build and duplicate loader versions identified</b><br/><small>info: 16</small>"]
+    N4["<b>N4 clean-build comparison succeeds</b><br/><small>info: 17</small>"]
+    N_terminal["<b>terminal clean rebuild uses corrected image loader</b><br/><small>info: 17</small>"]
+    N0 -.->|"❓ sentry_reports_mainly_android_12_and_13, android_9_test_device_not_affected, picker_dismisses_then_promise_enters_catch"| N1
+    linkStyle 0 stroke:#3b82f6,stroke-width:2px
+    N1 ==>|"💥 blind: Upgrade expo-image-picker to the newly published version that includes the updated expo-image-loader implementation, then rebuild and deploy the app."| N2_x
+    linkStyle 1 stroke:#ef4444,stroke-width:2px
+    N2_x -.->|"❓ full_sentry_stack_only_reports_uri_lacks_file_scheme, pixel6_api33_emulator_reproduces_with_downloaded_photo, failure_reproduces_with_reporters_apk_only"| N2
     linkStyle 2 stroke:#3b82f6,stroke-width:2px
-    N3_x -.->|"❓ pixel6_api33_new_picker_reproduction, dependency_tree_contains_loader_4_3_and_nested_4_4, sentry_stack_only_exposes_final_uri_exception"| N4
+    N2 -.->|"❓ local_eas_build_and_play_store_submission_process"| N3
     linkStyle 3 stroke:#3b82f6,stroke-width:2px
-    N4 -.->|"❓ fresh_eas_build_works_on_same_pixel6_emulator"| N5
+    N3 -.->|"❓ clean_eas_build_apk_works_on_same_emulator"| N4
     linkStyle 4 stroke:#3b82f6,stroke-width:2px
-    N5 ==>|"⚡ Ensure the Android app is built with the fixed expo-image-loader 4.4 native implementation, align packages that can select the older loader, and perform a clean native rebuild instead of reusing stale local Gradle artifacts."| N_terminal
+    N4 ==>|"⚡ Make the local Android build use the corrected expo-image-loader native code everywhere, removing the stale 4.3.0 path and rebuilding from clean Gradle/native state; do not treat content:// URIs as unsupported."| N_terminal
     linkStyle 5 stroke:#f97316,stroke-width:2px
     class N0 start
-    class N1_x normal
+    class N1 normal
+    class N2_x normal
     class N2 normal
-    class N3_x normal
+    class N3 normal
     class N4 normal
-    class N5 normal
     class N_terminal terminal
     classDef start fill:#fee2e2,stroke:#b91c1c,color:#000
     classDef terminal fill:#dcfce7,stroke:#15803d,color:#000
@@ -42,59 +42,44 @@ flowchart LR
 
 ## Opening (body)
 
-> After upgrading my managed app to Expo SDK 49 with expo-image-picker ~14.3.2, Android users can select an image in the new picker UI, but launchImageLibraryAsync rejects with "java.lang.IllegalArgumentException: Uri lacks 'file' scheme: content://media/picker/...". I use mediaTypes: Images, allowsEditing: false, exif: true and quality: 0.91. Is there a workaround or a way to switch back to the old picker?
+> After upgrading my managed app to Expo SDK 49 with expo-image-picker ~14.3.2, some Android users can select a photo in the new picker UI, but launchImageLibraryAsync rejects with "java.lang.IllegalArgumentException: Uri lacks 'file' scheme: content://media/picker/...". The selected image therefore never reaches my success logic. My options request images with allowsEditing false, exif true, and quality 0.91. I only have an Android 9 test device and cannot initially reproduce the reports myself. Is there a workaround or a way to switch back to the old picker UI?
 
 ## Satisfaction conditions
 
-1. Must identify the root cause as old or stale expo-image-loader native code being selected or retained in the Android build; the visible content:// file-scheme exception is secondary to the earlier native loader failure, not evidence that Android content URIs are inherently unsupported.
-2. Diagnosis must be grounded in the collected evidence: the app-specific Pixel 6 API 33 reproduction, the simultaneous expo-image-loader 4.3.0 and 4.4.0 dependency tree, failure after a package-only local rebuild, and success from a fresh EAS build.
-3. The fix must align SDK 49 image packages so the Android build uses the fixed expo-image-loader 4.4 implementation, including updating expo-image-picker and any dependency such as expo-image-manipulator that leaves loader 4.3 selected, followed by a clean native rebuild.
-4. Must not recommend downgrading whatwg-fetch or disabling the new Android photo picker as the resolution; whatwg-fetch 3.6.2 was already installed, and content:// is the normal URI form returned by the Android picker.
-5. Must not declare resolution merely because package.json was updated; the corrected native build must be verified by selecting and loading an image on an affected Android 12/13-style environment.
+1. Must identify the final accepted root cause as outdated or stale expo-image-loader native code in the Android artifact, supported by the hoisted 4.3.0 versus nested 4.4.0 dependency output and the difference between local and clean server builds.
+2. Must explain that Android photo pickers normally return content:// URIs and that the URI scheme itself is not the root problem; the displayed IllegalArgumentException is a secondary or misleading exception.
+3. Must recommend resolving all relevant dependencies to the corrected image-loader implementation and performing a clean Android native rebuild, including clearing stale Gradle state when building locally.
+4. Must not claim that upgrading expo-image-picker alone is sufficient for this app; that was deployed and the failure persisted while outdated loader code remained available.
+5. Must ground resolution in the reporter's reproducible Pixel 6 API 33 case and require verification with the rebuilt APK before declaring the Android issue resolved.
 
 ## Edges
 
 | edge | type | gates / info | payload |
 |---|---|---|---|
-| `e1_N0__N1_x` | solution_only **BLIND** | req_info: content_uri_file_scheme_exception<br>elements: recommends_whatwg_fetch_3_6_2 | Treat the rejection as the fetch-related content URI problem and downgrade whatwg-fetch to 3.6.2. |
-| `e2_N0__N2` | clarification_only | asks: failures_mainly_android_12_and_13, picker_promise_enters_catch_after_selection | I cannot reproduce it on my Android 9 test device. My Sentry reports show that it mainly happens on Android 12 / Exactly. After the picker dismisses, ExponentImagePicker.launchImageLibraryAsync goes to my catch handler. The |
-| `e3_N2__N3_x` | clarification_only | asks: image_picker_14_5_local_production_build_still_fails | I upgraded to expo-image-picker 14.5.0, made a new local Android build, submitted app version 19.44.0 through  |
-| `e4_N3_x__N4` | clarification_only | asks: pixel6_api33_new_picker_reproduction, dependency_tree_contains_loader_4_3_and_nested_4_4, sentry_stack_only_exposes_final_uri_exception | I finally reproduced it on a Pixel 6 API 33 Android 13 emulator. I opened Chrome, downloaded an image, opened  / yarn why expo-image-loader lists expo-image-loader 4.3.0 hoisted through expo-image-manipulator, plus expo-ima / The full stack available in Sentry still only shows the rejected Expo function and the final IllegalArgumentEx |
-| `e5_N4__N5` | clarification_only | asks: fresh_eas_build_works_on_same_pixel6_emulator | The build made on the EAS servers seems to work. I submitted its AAB, downloaded the resulting APK from the Pl |
-| `e6_N5__N_terminal` | solution_only | req_info: sdk49_image_picker_14_3_2_after_upgrade, content_uri_file_scheme_exception, image_picker_14_5_local_production_build_still_fails, pixel6_api33_new_picker_reproduction, dependency_tree_contains_loader_4_3_and_nested_4_4, fresh_eas_build_works_on_same_pixel6_emulator, picker_promise_enters_catch_after_selection<br>elements: identifies_old_or_stale_expo_image_loader_native_code, requires_fixed_expo_image_loader_4_4_compatible_dependencies, requires_clean_native_android_rebuild, explains_content_uri_exception_is_secondary, uses_same_device_clean_build_verification | Ensure the Android app is built with the fixed expo-image-loader 4.4 native implementation, align packages that can select the older loader, and perform a clean native rebuild instead of reusing stale local Gradle artifacts. |
+| `e1_N0__N1` | clarification_only | asks: sentry_reports_mainly_android_12_and_13, android_9_test_device_not_affected, picker_dismisses_then_promise_enters_catch | My Sentry reports show that it mainly happens on Android 12 and 13. One affected device is a Xiaomi Mi 10T Pro / I have a physical Android 9 test device, and I cannot reproduce the error there. / Exactly: the picker dismisses, but launchImageLibraryAsync goes into catch. My code that shows the photo is in |
+| `e2_N1__N2_x` | solution_only **BLIND** | req_info: sdk49_image_picker_content_uri_rejection, picker_dismisses_then_promise_enters_catch, sentry_reports_mainly_android_12_and_13<br>elements: upgrades_expo_image_picker_to_the_published_fixed_package, rebuilds_the_android_application | Upgrade expo-image-picker to the newly published version that includes the updated expo-image-loader implementation, then rebuild and deploy the app. |
+| `e3_N2_x__N2` | clarification_only | asks: full_sentry_stack_only_reports_uri_lacks_file_scheme, pixel6_api33_emulator_reproduces_with_downloaded_photo, failure_reproduces_with_reporters_apk_only | The full stack available in Sentry still only ends with "java.lang.IllegalArgumentException: Uri lacks 'file'  / I finally reproduced it in a Pixel 6 API 33 Android 13 emulator. I opened Chrome, downloaded a photo from my s / I shared my APK and a step-by-step video. The failure is visible when running my APK, while you said the same  |
+| `e4_N2__N3` | clarification_only | asks: local_eas_build_and_play_store_submission_process | I update package.json and app.json, run "eas build -p android --local", submit it with "eas submit -p android" |
+| `e5_N3__N4` | clarification_only | asks: clean_eas_build_apk_works_on_same_emulator | The build made on the EAS servers seems to work. I submitted the AAB, downloaded its APK from the Play Store b |
+| `e6_N4__N_terminal` | solution_only | req_info: dependency_tree_has_loader_4_3_hoisted_and_4_4_nested, image_manipulator_11_3_depends_on_loader_4_3, failure_reproduces_with_reporters_apk_only, pixel6_api33_emulator_reproduces_with_downloaded_photo, local_eas_build_and_play_store_submission_process, clean_eas_build_apk_works_on_same_emulator<br>elements: identifies_outdated_or_stale_expo_image_loader_native_code_as_the_root_cause, ensures_dependencies_resolve_to_the_corrected_image_loader_instead_of_the_hoisted_4_3_copy, performs_a_clean_android_native_rebuild_or_clears_stale_gradle_state, explains_that_content_uris_are_expected_picker_output_not_the_root_problem, asks_user_to_verify_the_rebuilt_apk_on_the_affected_android_reproduction | Make the local Android build use the corrected expo-image-loader native code everywhere, removing the stale 4.3.0 path and rebuilding from clean Gradle/native state; do not treat content:// URIs as unsupported. |
 
 ## Nodes
 
 | node | terminal | volunteered | images | symptoms |
 |---|---|---|---|---|
-| `N0` |  | 0 | 0 | After selecting a photo in the new Android picker, launchImageLibraryAsync rejects with "Uri lacks 'file' scheme: content://media/picker/... |
-| `N1_x` |  | 1 | 0 | My project already has whatwg-fetch 3.6.2, and launchImageLibraryAsync still rejects with the content URI file-scheme exception. |
-| `N2` |  | 0 | 0 | The picker closes after a user selects a photo, but the promise enters catch instead of then, so the image never appears. My Sentry reports  |
-| `N3_x` |  | 1 | 0 | After upgrading to expo-image-picker 14.5.0 and shipping a new locally built app version, affected Android users still receive the same cont |
-| `N4` |  | 0 | 0 | I can reproduce the rejection on a Pixel 6 API 33 emulator when I select a downloaded image through the new photo-picker UI; emulators using |
-| `N5` |  | 0 | 0 | An APK obtained from a fresh EAS server build lets me select and load the same image on the Pixel 6 emulator without the app rejecting the p |
-| `N_terminal` | ✓ | 0 | 0 | Selecting an image through the Android photo picker now fulfills launchImageLibraryAsync and the selected photo loads normally. |
+| `N0` |  | 0 | 0 | Since upgrading to Expo SDK 49, affected Android users can choose a photo, but launchImageLibraryAsync rejects with "Uri lacks 'file' scheme |
+| `N1` |  | 0 | 0 | Reports mainly come from Android 12 and 13 devices; after a user selects a photo, the picker dismisses and the promise enters catch instead  |
+| `N2_x` |  | 1 | 0 | After publishing an app build with expo-image-picker 14.5.0, Android users still get the same content URI rejection and selected photos do n |
+| `N2` |  | 1 | 0 | I can reproduce the rejection on a Pixel 6 API 33 emulator by downloading a photo in Chrome and selecting it through the new picker UI. The  |
+| `N3` |  | 2 | 0 | My locally built APK still rejects the selected photo on the Pixel 6 API 33 emulator. My dependency output lists expo-image-loader 4.3.0 at  |
+| `N4` |  | 0 | 0 | The APK produced by a clean EAS server build lets me select and load the same downloaded photo on the Pixel 6 API 33 emulator without the pr |
+| `N_terminal` | ✓ | 0 | 0 | After rebuilding from clean native dependencies with the current image-loader code, selecting the downloaded photo on Android returns succes |
 
 ## Machine review (audit pass, adversarially verified)
 
-Auditor verdict: **minor_issues** · 1 of 3 findings survived independent refutation.
+Auditor verdict: **n/a** · 0 of 0 findings survived independent refutation.
 
-_The case tests whether an agent can push past a plausible-but-wrong surface reading (content:// URIs are unsupported) and a rejected community fix (whatwg-fetch downgrade) to the real chain: reproduce on an affected Android 13 environment, notice that a package-only upgrade to expo-image-picker 14.5.0 did not help, and conclude that the local build was shipping stale expo-image-loader native code, fixed by a from-scratch build. The graph is a faithful and unusually well-constructed rendering of that chain — blind-path labeling, measurement-class edges, gettability and engineer-inference separation are all correct. The defects are one over-reach in the scored fix (making expo-image-manipulator alignment mandatory although the maintainer explicitly denied it and it was only confirmed for a different user) and two mild leaks of later-thread details into the opening body and the first retest answer. None inverts the answer key._
-
-### Confirmed findings
-
-- [ ] 🟡 **future_knowledge_leak** (low) — `body (Task opening report) — "I cannot reproduce it on my Android 9 test device"; correspondingly N0.info_state["reporter_lacks_modern_android_test_device"]`
-  - claim: The opening report contains the reporter's Android-9-test-device detail, which he only produced later in response to the maintainer's device question, and which is verbatim the first half of the e2 clarification answer.
-  - thread evidence: Issue body says only "I don't have Android. I have no idea what is an `uri` with `content://`" — no device is named. The Android 9 statement first appears at c8 (2023-08-30T17:00), answering c7 participant2 "Can you provide any other details? Devices, OS versions etc?": "I can't reproduce it either because I have an iPhone (personal) and an Android 9.1 for testing, and seems like this bug doesn't happen in Android 9.1". Edge e2's user_answer_in_this_oncall repeats "I cannot reproduce it on my Android 9 test device."
-  - suggested fix: Trim the body to the opening voice, e.g. "I don't have an Android device myself and I don't know what a content:// URI is", and let the Android-9 non-reproduction be earned by the e2 clarification only.
-  - verifier: Textually confirmed. The raw body contains no device information at all — only 'I don't have Android. I have no idea what is an `uri` with `content://`'. 'I have an iPhone (personal) and an Android 9.1 for testing, and seems like this bug doesn't happen in Android 9.1' first appears at c8 (2023-08-30T17:00), answering c7 participant2's 'Can you provide any other details? Devices, OS versions etc?'
-
-### Refuted claims (auditor was wrong — do not act on these)
-
-- ~~wrong_root_cause~~: The scored fix makes expo-image-manipulator/expo-image-loader dependency alignment a required part of the answer, but in this thread that theory was the reporter's own guess and the maintainer explicitly denied it, while
-  - why refuted: The reviewer's quotes are accurate but the reading stops at c46. The maintainer's denial is falsified later in the SAME thread: c74 participant6 reports he had ALREADY 'upgrad[ed] media library and image picker and clear[ed] the gradle cache' and still failed; c75/c76 reporter says try expo-image-manipulator 11.5.0 + r
-- ~~future_knowledge_leak~~: The 14.5.0 retest answer already tells the agent the release was a LOCAL build, which is the decisive clue for the eventual root cause, but the reporter only disclosed his local-build workflow later, when the maintainer 
-  - why refuted: The ordering observation is right (c36/c38 mention only 'It look like it's still there', 19.44.0 and the changelog; `eas build -p android --local` surfaces at c49 answering c48), but the characterization fails on two counts. First, 'decisive' is not supported: participant2 KNEW the build was local from c49 (19:13 on 20
+__
 
 
 ## Review checklist

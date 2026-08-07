@@ -1,0 +1,118 @@
+{
+ "repo": "dask/dask",
+ "number": 11735,
+ "url": "https://github.com/dask/dask/issues/11735",
+ "title": "Array indexing is 2-3x slower on 2024.12.0",
+ "state": "closed",
+ "labels": [
+  "needs attention",
+  "needs triage"
+ ],
+ "reporter": "reporter",
+ "created_at": "2025-02-07T17:45:43Z",
+ "closed_at": "2025-05-13T11:49:13Z",
+ "body": "<!-- Please include a self-contained copy-pastable example that generates the issue if possible.\n\nPlease be concise with code posted. See guidelines below on how to provide a good bug report:\n\n- Craft Minimal Bug Reports http://matthewrocklin.com/blog/work/2018/02/28/minimal-bug-reports\n- Minimal Complete Verifiable Examples https://stackoverflow.com/help/mcve\n\nBug reports that follow these guidelines are easier to diagnose, and so are often handled much more quickly.\n-->\n\n**Describe the issue**:\n\nArray indexing can be 2-3x slower on `2024.12.0`, at least in certain cases when dealing with many chunks. I've narrowed it down to #11548 as the source of the change.\n\n**Minimal Complete Verifiable Example**:\n\n```python\nimport dask.array as da\nimport numpy as np\n\nx = da.ones((1000000,), chunks=(1,))\n%timeit x[np.arange(x.size)]\n```\n\n```\nBefore #11548\n884 ms ± 29.5 ms per loop (mean ± std. dev. of 7 runs, 1 loop each)\n\nAfter\n2.14 s ± 15.5 ms per loop (mean ± std. dev. of 7 runs, 1 loop each)\n```",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2025-02-07T17:49:39Z",
+   "body": "Can you try this on the newest version? "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-02-07T17:57:13Z",
+   "body": "I get 1.91s, so there must have been some other marginal improvements but still a significant regression."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-02-07T20:11:04Z",
+   "body": "Profile indicates this is all time creating the `Task` class in `take`:\n\n![Image](https://github.com/user-attachments/assets/ac35d77b-0257-472c-ba85-ed0728fccec0)"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-02-10T12:36:09Z",
+   "body": "Yeah, this was an intentional change. I don't know if there is much that we can do about the overhead of the constructor "
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-02-10T14:01:59Z",
+   "body": "why does slicing an array require creating a large number of objects?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-02-10T14:20:12Z",
+   "body": "This isn't really slicing, it's a positional indexer which could be out of order with a different indexer per chunk"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-02-10T14:31:28Z",
+   "body": "Probably a more realistic example:\n```python\nx = da.ones((100, 100000, 100000), chunks=(-1, 100, 100))\n%timeit x[0, ...]\n```\n\n```\nbefore:\n1.78 s ± 123 ms per loop (mean ± std. dev. of 7 runs, 1 loop each)\nafter:\n5.15 s ± 121 ms per loop (mean ± std. dev. of 7 runs, 1 loop each)\n```"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-02-10T17:37:00Z",
+   "body": "Some more specific line profiling, [this one](https://github.com/dask/dask/blob/64bd3d0b66491e8e7258cb5e12d9687d2123488e/dask/_task_spec.py#L499) looks like the most impactful.\n\n```python\n%load_ext line_profiler\nimport dask.array as da\nfrom dask._task_spec import Task, Alias\n\nx = da.ones((2, 200000), chunks=(-1, 1))\n%lprun -f Alias.__init__ -f Task.__init__ x[0, ...]\n```\n\n```\nTotal time: 1.76168 s\nFile: .../dask/_task_spec.py\nFunction: __init__ at line 486\n\nLine #      Hits         Time  Per Hit   % Time  Line Contents\n==============================================================\n   486                                               def __init__(\n   487                                                   self, key: KeyType | TaskRef, target: Alias | TaskRef | KeyType | None = None\n   488                                               ):\n   489    200000   75218117.0    376.1      4.3          if isinstance(key, TaskRef):\n   490                                                       key = key.key\n   491    200000   51850561.0    259.3      2.9          self.key = key\n   492    200000   60414037.0    302.1      3.4          if target is None:\n   493    200000   52883747.0    264.4      3.0              target = key\n   494    200000   73968468.0    369.8      4.2          if isinstance(target, Alias):\n   495                                                       target = target.target\n   496    200000   73235935.0    366.2      4.2          if isinstance(target, TaskRef):\n   497                                                       target = target.key\n   498    200000   48922523.0    244.6      2.8          self.target = target\n   499    200000 1325184701.0   6625.9     75.2          self._dependencies = frozenset((self.target,))\n\nTotal time: 5.09506 s\nFile: .../dask/_task_spec.py\nFunction: __init__ at line 624\n\nLine #      Hits         Time  Per Hit   % Time  Line Contents\n==============================================================\n   624                                               def __init__(\n   625                                                   self,\n   626                                                   key: Any,\n   627                                                   func: Callable,\n   628                                                   /,\n   629                                                   *args: Any,\n   630                                                   _data_producer: bool = False,\n   631                                                   _dependencies: set | frozenset | None = None,\n   632                                                   **kwargs: Any,\n   633                                               ):\n   634    200000   58597750.0    293.0      1.2          self.key = key\n   635    200000   58386727.0    291.9      1.1          self.func = func\n   636    200000   80513288.0    402.6      1.6          if isinstance(func, Task):\n   637                                                       raise TypeError(\"Cannot nest tasks\")\n   638    400000 3148446347.0   7871.1     61.8          self.args = tuple(\n   639    200000   61337091.0    306.7      1.2              Alias(obj.key) if isinstance(obj, TaskRef) else obj for obj in args\n   640                                                   )\n   641    400000  124828160.0    312.1      2.4          self.kwargs = {\n   642    400000  167447056.0    418.6      3.3              k: Alias(v.key) if isinstance(v, TaskRef) else v for k, v in kwargs.items()\n   643                                                   }\n   644    200000   68213001.0    341.1      1.3          if _dependencies is None:\n   645    200000   75086057.0    375.4      1.5              _dependencies = set()\n   646    600000  334131775.0    556.9      6.6              for a in itertools.chain(self.args, self.kwargs.values()):\n   647    400000  171204366.0    428.0      3.4                  if isinstance(a, GraphNode):\n   648    200000  153047781.0    765.2      3.0                      _dependencies.update(a.dependencies)\n   649    200000   69658613.0    348.3      1.4          if _dependencies:\n   650    200000  170883756.0    854.4      3.4              self._dependencies = frozenset(_dependencies)\n   651                                                   else:\n   652                                                       self._dependencies = _no_deps\n   653    200000   55055678.0    275.3      1.1          self._is_coro = None\n   654    200000   51603356.0    258.0      1.0          self._token = None\n   655    200000   49681001.0    248.4      1.0          self._repr = None\n   656    200000  196935194.0    984.7      3.9          self._data_producer = _data_producer\n```"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-02-10T17:50:21Z",
+   "body": "Thanks for the profiling. This isn't super surprising unfortunately and we have to keep track of the dependencies somewhere. "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-02-10T18:09:18Z",
+   "body": "Yeah feel free to close if this is unavoidable. It's made basic subsetting of large zarr stores noticeably more sluggish so I wanted to at least document the issue."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-02-11T12:16:54Z",
+   "body": "Yeah , I fully agree that the UX is worse through this. \n\nWe are working on a more general solution that will defer the graph creation until you actually press compute, as a result your call above will be more or less instant. That *should* help with UX and just prolong the compute a little bit."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-02-11T12:19:21Z",
+   "body": "also, zarr itself should provide tools for subsetting zarr arrays, which would be nearly instant. I am extremely interested in adding this to zarr (but swamped with other stuff atm)"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-02-11T13:16:20Z",
+   "body": "The change we are working on would also give us the option of pushing these slices directly into zarr, so that would be very appreciated as a feature in zarr itself"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-05-13T11:51:49Z",
+   "body": "I just merged a PR that should help with performance a lot. \n\nThe performance is not back to where it was for all cases but for most and a lot of the \"worse performance\" should be amortized by better runtime down the line.\nIf you are still experiencing issues, please reopen and provide a reproducer. Getting the reproducer right is important since there are a couple of different edge cases to consider."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-05-13T14:15:53Z",
+   "body": "Thanks for the improvements!\n\nUnfortunately the case where I originally noticed this is the one that #11945 doesn't do much for, which is ND with slicing.\n\nReproducer is something like this:\n```python\nx = da.ones((3000, 35, 720, 1440, 31), chunks=(1, -1, 72, 72, -1))\n%timeit x[slice(None, -1), slice(None, 10)]\n```\n\n```\n2024.11.2 -> 0.58s\n2025.4.0 -> 1.75s\nmain -> 1.39s\n```"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-05-14T13:44:10Z",
+   "body": "I opened https://github.com/dask/dask/pull/11946 with another fix for this specific case. We're still not back to where we were but when looking at the end to end chain the performance either stays the same or improves.\n\nI realize that there is a UX component to this but with the current code this is about as much as I can squeeze out"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-05-14T15:11:44Z",
+   "body": "Unfortunately, I had to revert one edge case that I thought was a noop but turns out isn't in https://github.com/dask/dask/pull/11947\nHowever, as pointed out in https://github.com/dask/dask/pull/11946 the end-to-end runtime performance should generally be improved now even if the slicing itself is slower. Later stages during graph generation and scheduling are typically a bit faster now. "
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "dask/dask",
+  "default_branch": "main",
+  "commit_sha": "27e3f2c80ef1838706797eaf8d599ac70985b938",
+  "as_of": "2025-02-07T17:45:43Z",
+  "method": "github_commits_until"
+ },
+ "images": [
+  {
+   "where": "c2",
+   "source_url": "https://github.com/user-attachments/assets/ac35d77b-0257-472c-ba85-ed0728fccec0",
+   "file": "gh_dask_dask_11735_img0.png"
+  }
+ ],
+ "slug": "gh_dask_dask_11735"
+}

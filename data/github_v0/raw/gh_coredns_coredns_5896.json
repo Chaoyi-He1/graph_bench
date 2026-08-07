@@ -1,0 +1,116 @@
+{
+ "repo": "coredns/coredns",
+ "number": 5896,
+ "url": "https://github.com/coredns/coredns/issues/5896",
+ "title": "How can I read /etc/resolv.conf file?",
+ "state": "closed",
+ "labels": [
+  "question"
+ ],
+ "reporter": "reporter",
+ "created_at": "2023-02-04T13:21:33Z",
+ "closed_at": "2023-02-07T13:30:34Z",
+ "body": "CoreDNS do not have tools, so I can read file:\r\n- do not have shell (sh, bash, etc) (kubectl exec -it coredns.... -- /bin/sh)\r\n- do not have 'cat' or similar to view contents\r\n- do not have tools to copy files (e.g. kubectl cp ...)\r\n- do not have package manager (e.g. apt), so I can't install tools\r\n\r\nSo how I can view contents of the file inside CoreDNS container?\r\n",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2023-02-04T13:33:27Z",
+   "body": "Is using [ephemeral container](https://github.com/coredns/coredns/discussions/5264#discussioncomment-2364247)  an option? "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-02-04T14:01:30Z",
+   "body": "It is inside Azure AKS cluster. And if I try to use ephemeral container:\r\nerror: ephemeral containers are disabled for this cluster (error from server: \"the server could not find the requested resource\")."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-02-04T14:31:25Z",
+   "body": "Can you create a test pod with same [dnsPolicy/dnsConfig](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.19/#poddnsconfig-v1-core) as CoreDNS. Then checking resolv.conf in test pod should help? "
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-02-04T14:50:20Z",
+   "body": "Generally in Kubernetes the coredns Pod resolv.conf is the same as the one on the node the pod runs on.  That’s the default behavior of kubelet, but kubelet can optionally be configured to set up pods with same dnsPolicy as coredns with a different resolv.conf."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-02-04T16:31:03Z",
+   "body": "> Generally in Kubernetes the coredns Pod resolv.conf is the same as the one on the node the pod runs on. That’s the default behavior of kubelet, but kubelet can optionally be configured to set up pods with same dnsPolicy as coredns with a different resolv.conf.\r\n\r\nThat I would like to confirm, not just assume. I would like to see how and when resolv.conf is updated (for example when I change Vnet DNS list)"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-02-04T16:36:20Z",
+   "body": "> Can you create a test pod with same [dnsPolicy/dnsConfig](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.19/#poddnsconfig-v1-core) as CoreDNS. Then checking resolv.conf in test pod should help?\r\n\r\nInteresting idea, juts not sure if that will be the same result. I still would like to confirm, not assume, or do some mocking"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-02-04T16:38:39Z",
+   "body": "Build coredns in your own container that supports a shell. "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-02-04T19:09:04Z",
+   "body": "> Generally in Kubernetes the coredns Pod resolv.conf is the same as the one on the node the pod runs on. That’s the default behavior of kubelet, but kubelet can optionally be configured to set up pods with same dnsPolicy as coredns with a different resolv.conf.\r\n\r\nI created container with dnsPolicy: Default (the same like DnsCore container) - this kind of works, I see it get values from node I can confirm this (even it's not the same container).\r\n\r\nIs anyone knows how frequently it is sync with node? (if resolv.conf is changed on node, how long it will take to refresh in container, or this is only done on creation Container and later I need to rebuild container if I want to update?)"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-02-06T14:23:44Z",
+   "body": "> Is anyone knows how frequently it is sync with node? (if resolv.conf is changed on node, how long it will take to refresh in container, or this is only done on creation Container and later I need to rebuild container if I want to update?)\r\n\r\nThat is managed by kubelet, a Kubernetes component we don't maintain here.  I _suspect_ (though I do not know for sure) that kubelet just does this at container creation time. IMO, the resolv.conf file was designed to be somewhat static, not a dynamic configuration - changes in the upstream nameserver list are expected to be relatively uncommon.\r\n\r\nRegardless, CoreDNS's _forward_ plugin only reads the resolv.conf at start up, and _reload_ plugin does not monitor the file if it changes.\r\n\r\nSo, for multiple reasons, you'll need to restart the Pod when resolv.conf changes."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-02-06T15:04:04Z",
+   "body": "> That is managed by kubelet, a Kubernetes component we don't maintain here. I _suspect_ (though I do not know for sure) that kubelet just does this at container creation time. IMO, the resolv.conf file was designed to be somewhat static, not a dynamic configuration - changes in the upstream nameserver list are expected to be relatively uncommon.\r\n> \r\n> Regardless, CoreDNS's _forward_ plugin only reads the resolv.conf at start up, and _reload_ plugin does not monitor the file if it changes.\r\n> \r\n> So, for multiple reasons, you'll need to restart the Pod when resolv.conf changes.\r\n\r\nThanks for details. Yes, it's not very frequent DNS servers change, but when it happens we need to know what needs to be done so DNS will function as expected. So seems that after I change DNS list on Vnet, via DHCP it will propagate to VM (AKS cluster node), then I need to restart all CoreDNS pods - so it will get new copy of /etc/resolv.conf from node. And only then DNS queries (external) start working with new DNS list."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-02-06T15:57:04Z",
+   "body": "and actually this is one of the reasons why I need to read /etc/resolv.conf on CoreDns pod, not to do some mocking (create new Container with dnsPolicy: Default), because I can get different contents (in case DNS list was changed on Node, and CoreDNS pods was not restarted). So this would be required for troubleshooting also, because if DNS list would be changed on Node (VM) and CoreDNS pods is not restarted - I need a way to examine /etc/resolv.conf contents - so I can identify issue.\r\nMaybe it's possible to add to the CoreDNS image some small utility which can show contents of resolv.conf?"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-02-06T15:59:33Z",
+   "body": "> Maybe it's possible to add to the CoreDNS image some small utility which can show contents of resolv.conf?\r\n\r\nBuild coredns in your own container that supports a shell."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-02-06T16:01:09Z",
+   "body": "> > Maybe it's possible to add to the CoreDNS image some small utility which can show contents of resolv.conf?\r\n> \r\n> Build coredns in your own container that supports a shell.\r\n\r\nThis will create new container with updated new resolv.conf, it will not show me issue (I will not see old outdated resolv.conf)"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-02-06T16:05:16Z",
+   "body": "Also keep in mind that I'm using Managed K8s Cluster - Azure AKS. I change only ConfigMap if required here.\r\nBut for troubleshooting I need possibility to investigate such important part of DNS like resolv.conf"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-02-06T16:55:34Z",
+   "body": "> ... Azure AKS. I change only ConfigMap ...\r\n\r\nGiven the restrictions imposed by AKS, I don't see a solution. Even adding a sidecar to the Pod that monitors the file is not possible if you are not allowed to change the Deployment.\r\n\r\nI think the best you can do is infer the configured upstreams from the forward plugin's coredns_forward_requests_total metric (which holds a count of requests for each configured nameserver).\r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-02-07T11:44:17Z",
+   "body": "> I think the best you can do is infer the configured upstreams from the forward plugin's coredns_forward_requests_total metric (which holds a count of requests for each configured nameserver).\r\n\r\nI try to add this Prometheus metrics, but it seems I'm missing something, need to dig more how to collect this.\r\nBut, is it going to show me results per nameserver, or just total count?\r\n\r\nP.S> also Log Analytics is not free, so I will need to pay for ingestion volume :(\r\n\r\n"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-02-07T13:32:26Z",
+   "body": ">  is it going to show me results per nameserver\r\n\r\nper nameserver\r\n\r\n"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-02-07T13:34:16Z",
+   "body": "Closing, since there is no apparent acceptable solution to the problem.\r\n\r\nYou are welcome to make an enhancement request."
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "coredns/coredns",
+  "default_branch": "master",
+  "commit_sha": "b7279d1f668ad2fe401c254543f9dcbc878b0378",
+  "as_of": "2023-02-04T13:21:33Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_coredns_coredns_5896"
+}

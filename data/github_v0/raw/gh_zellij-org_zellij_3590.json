@@ -1,0 +1,99 @@
+{
+ "repo": "zellij-org/zellij",
+ "number": 3590,
+ "url": "https://github.com/zellij-org/zellij/issues/3590",
+ "title": "OSC 10 / OSC 11 queries report incorrect colors",
+ "state": "closed",
+ "labels": [],
+ "reporter": "reporter",
+ "created_at": "2024-09-04T13:16:11Z",
+ "closed_at": "2026-05-05T15:53:58Z",
+ "body": "## Issue description\r\nWhen querying for the foreground or background color using the corresponding OSC sequences, zellij always answers with black.\r\n\r\nFor instance, when I send `OSC 11 ; ? ST` (query background) I receive back `OSC 11 ; rgb:0000/0000/0000 ST` even though I'm in a light terminal. Similarly in a dark terminal `OSC 10 ; ? ST` (query foreground) is responded to with `OSC 10 ; rgb:0000/0000/0000 ST`.\r\n\r\nExample:\r\n```shell\r\n$ printf '\\e]11;?\\e\\\\' && cat -v\r\n^[]11;rgb:0000/0000/0000^[\\\r\n```\r\n\r\n## Collected information\r\n\r\n**Basic information**\r\n\r\n`zellij --version`: `zellij 0.40.1`\r\n\r\n`stty size`: `26 102`\r\n\r\n`uname -av` or `ver`(Windows): `Linux taus-fedora 6.8.1-300.fc40.x86_64 #1 SMP PREEMPT_DYNAMIC Wed Mar 20 04:39:30 UTC 2024 x86_64 GNU/Linux`\r\n\r\nTerminal: Alacritty and vte (Ptyxis) \r\n\r\n**Logs**\r\n[zellij-12.log](https://github.com/user-attachments/files/16870776/zellij-12.log)\r\n[zellij.log](https://github.com/user-attachments/files/16870777/zellij.log)\r\n\r\n## Further information\r\n\r\nI noticed that when I clean the cache directory (`~/.cache/zellij`) I get correct results for the first run of zellij.\r\n\r\nOriginally this issue was reported in delta (https://github.com/dandavison/delta/issues/1663). Reporting this here totally fell off my radar (sorry).\r\n",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2024-11-08T16:06:17Z",
+   "body": "Similar behaviour here. I'm using Omakub and when I've been switching themes, the NeoVim has had background=light set for some dark themes. I've checked the OSC11 response and it seems that it was wrong. After clearing the cache, all started working properly :)"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2026-01-04T06:01:15Z",
+   "body": "I did some digging on this and found the root cause.\n\n**TL;DR: Zellij caches the OSC 10/11 response and never invalidates it.**\n\nWhen Zellij starts, it queries the terminal for fg/bg colors and saves the response to `~/.cache/zellij/`. On subsequent sessions, it returns the cached values instead of asking the terminal again.\n\nThe problem is this cache persists even when:\n- You switch between dark/light themes\n- You open Zellij in a different terminal\n- The terminal's color scheme changes\n\nSo if Zellij cached colors from a dark theme session, then you switch to light mode, apps still get the old dark theme colors. Worse: if the initial query fails or times out, Zellij caches `rgb:0000/0000/0000` (black) for both fg AND bg.\n\nThis breaks any app that uses `termenv`/`lipgloss` to detect background color — which includes `glow`, `mods`, `gh`, `delta`, `neovim`, and pretty much all charmbracelet TUIs. They query OSC 11, get stale/wrong colors from Zellij's cache, \nand render text with wrong contrast.\n\n**Workaround:** `rm -rf ~/.cache/zellij/*` and restart Zellij. Works until the cache goes stale again.\nThis is especially painful if you switch between dark/light modes regularly."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2026-02-26T13:34:58Z",
+   "body": "for Mac, you'll need to remove this directory\n```\nrm -rf ~/Library/Caches/org.Zellij-Contributors.Zellij/*\n```"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2026-03-15T10:56:47Z",
+   "body": "hi there, any update on this fix?"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2026-03-15T11:10:05Z",
+   "body": "Have you tried pulling head and testing? I pushed a PR that adds full background color support, it should report the right values now."
+  },
+  {
+   "author": "participant6",
+   "created_at": "2026-03-19T09:55:13Z",
+   "body": "> Have you tried pulling head and testing? I pushed a PR that adds full background color support, it should report the right values now.\n\ni did pull the latest main (fc0599a7c8df93d13b6e50914bf6fc57002049b4) and build from source:\n\n`cargo xtask run`\n\nversion is:\n```\n❯ ./target/dev-opt/zellij --version\nzellij 0.44.0\n```\n\nI did delete the old cache (just in case):\n```\n rm -rf $HOME/Library/Caches/org.Zellij-Contributors.Zellij/\n```\n\nNow i query OSC11\n\n```\n❯ printf '\\e]11;?\\e\\\\' && cat -v\n^[]11;rgb:2d2d/2d2d/2d2d^[\\\n```\n\nThis matches my wezterm bg color:\n\n```yaml\n[colors]\nbackground = \"#2d2d2d\"\n# ... truncated\n````\n\nnext, i change my color scheme in wezterm\n\n```yaml\n[colors]\nbackground = \"#eaeef2\"\n# ... truncated\n```\n\nVisually, the terminal is now light instead of dark, however OSC11 still shows:\n\n```\n❯ printf '\\e]11;?\\e\\\\' && cat -v\n^[]11;rgb:2d2d/2d2d/2d2d^[\\\n```\n\n\nWhen i now delete the cache again, then it shows the correct value:\n\n```\n❯ printf '\\e]11;?\\e\\\\' && cat -v\n^[]11;rgb:eaea/eeee/f2f2^[\\\n```\n\n\nSo it seems like that your PR @participant5 does not fix this issue. Or am i doing something wrong?"
+  },
+  {
+   "author": "participant7",
+   "created_at": "2026-03-19T15:42:05Z",
+   "body": "Perhaps this could be documented better\r\n\r\nOn Thu, Mar 19, 2026, 5:55 AM participant6 ***@***.***> wrote:\r\n\r\n> *participant6* left a comment (zellij-org/zellij#3590)\r\n> <https://github.com/zellij-org/zellij/issues/3590#issuecomment-4088993270>\r\n>\r\n> Have you tried pulling head and testing? I pushed a PR that adds full\r\n> background color support, it should report the right values now.\r\n>\r\n> i did pull the latest main (fc0599a\r\n> <https://github.com/zellij-org/zellij/commit/fc0599a7c8df93d13b6e50914bf6fc57002049b4>)\r\n> and build from source:\r\n>\r\n> cargo xtask run\r\n>\r\n> version is:\r\n>\r\n> ❯ ./target/dev-opt/zellij --version\r\n> zellij 0.44.0\r\n>\r\n> I did delete the old cache (just in case):\r\n>\r\n>  rm -rf $HOME/Library/Caches/org.Zellij-Contributors.Zellij/\r\n>\r\n> Now i query OSC11\r\n>\r\n> ❯ printf '\\e]11;?\\e\\\\' && cat -v\r\n> ^[]11;rgb:2d2d/2d2d/2d2d^[\\\r\n>\r\n> This matches my wezterm bg color:\r\n>\r\n> [colors]background = \"#2d2d2d\"# ... truncated\r\n>\r\n> next, i change my color scheme in wezterm\r\n>\r\n> [colors]background = \"#eaeef2\"# ... truncated\r\n>\r\n> Visually, the terminal is now light instead of dark, however OSC11 still\r\n> shows:\r\n>\r\n> ❯ printf '\\e]11;?\\e\\\\' && cat -v\r\n> ^[]11;rgb:2d2d/2d2d/2d2d^[\\\r\n>\r\n> When i now delete the cache again, then it shows the correct value:\r\n>\r\n> ❯ printf '\\e]11;?\\e\\\\' && cat -v\r\n> ^[]11;rgb:eaea/eeee/f2f2^[\\\r\n>\r\n> So it seems like that your PR @participant5 <https://github.com/participant5>\r\n> does not fix this issue. Or am i doing something wrong?\r\n>\r\n> —\r\n> Reply to this email directly, view it on GitHub\r\n> <https://github.com/zellij-org/zellij/issues/3590#issuecomment-4088993270>,\r\n> or unsubscribe\r\n> <https://github.com/notifications/unsubscribe-auth/B74OBZTTQULLDXPDRZXNXFT4RO7ZTAVCNFSM6AAAAACQUCZ6GOVHI2DSMVQWIX3LMV43OSLTON2WKQ3PNVWWK3TUHM2DAOBYHE4TGMRXGA>\r\n> .\r\n> You are receiving this because you are subscribed to this thread.Message\r\n> ID: ***@***.***>\r\n>\r\n"
+  },
+  {
+   "author": "participant6",
+   "created_at": "2026-03-24T09:16:03Z",
+   "body": "@participant5 i downloaded the latest release 0.44 and i still have the same behavior: OSC11 queries are still reporting incorrect colors. Are you sure this exact scenario was fixed with your PR?"
+  },
+  {
+   "author": "participant8",
+   "created_at": "2026-04-04T16:53:58Z",
+   "body": "I am using broot, and it doesn’t report the correct colors. However, if I exit the zellij session, broot starts using the correct values.\n\n```\n❯ zellij --version\nzellij 0.44.0\n```"
+  },
+  {
+   "author": "participant9",
+   "created_at": "2026-04-21T10:03:34Z",
+   "body": "I am having a similar, annoying issue when using helix together with zellij. I think it is the same underlying logic. It came after https://github.com/helix-editor/helix/pull/15527 got merged in helix.\nIf I change the background of the terminal (alacritty in my case) while a zellij session is on, all the colors change as expected. However, if I start a helix instance and then exit it helix sets the background color to the old one. Even if I exit zellij, kill or delete all sessions the problem persists. The only workaround is to delete the ~/.cache/zellij/0.44.1/stdin_cache. \nI don't know what would be the correct logic in this case. I guess zellij keeps reporting the cached background color to helix for some reason, which is strange to me since existing and new sessions have the correct new background color. \nIs there a workaround to trigger re-caching of stdin_cache for a running zellij instance?\n"
+  },
+  {
+   "author": "participant6",
+   "created_at": "2026-04-21T21:45:20Z",
+   "body": "I must delete the cash every time I switch from a dark to a light theme. Very annoying. Would love to see a fix of this issue soon too"
+  },
+  {
+   "author": "participant10",
+   "created_at": "2026-04-29T18:23:16Z",
+   "body": "> for Mac, you'll need to remove this directory\n> \n> ```\n> rm -rf ~/Library/Caches/org.Zellij-Contributors.Zellij/*\n> ```\n\nThat worked for me, thank you @participant3 "
+  },
+  {
+   "author": "participant11",
+   "created_at": "2026-04-30T07:29:45Z",
+   "body": "I think this should be fixed with https://github.com/zellij-org/zellij/pull/5105. I haven't tried it out myself though."
+  },
+  {
+   "author": "participant12",
+   "created_at": "2026-05-05T15:38:29Z",
+   "body": "Yes i can confirm this is fixed in the new release. thanks!"
+  },
+  {
+   "author": "participant13",
+   "created_at": "2026-05-05T15:53:58Z",
+   "body": "Fixed in 0.44.2"
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "zellij-org/zellij",
+  "default_branch": "main",
+  "commit_sha": "489c4da5ffaf38526b76bad4ce09da63ae99331e",
+  "as_of": "2024-09-04T13:16:11Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_zellij-org_zellij_3590"
+}

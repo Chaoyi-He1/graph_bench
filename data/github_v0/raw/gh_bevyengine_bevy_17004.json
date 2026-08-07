@@ -1,0 +1,187 @@
+{
+ "repo": "bevyengine/bevy",
+ "number": 17004,
+ "url": "https://github.com/bevyengine/bevy/issues/17004",
+ "title": "rust-analyzer autocomplete is broken for some ECS types",
+ "state": "closed",
+ "labels": [
+  "C-Bug",
+  "A-ECS",
+  "P-High",
+  "S-Ready-For-Implementation",
+  "D-Straightforward",
+  "D-Macros"
+ ],
+ "reporter": "reporter",
+ "created_at": "2024-12-28T12:04:17Z",
+ "closed_at": "2025-02-09T20:05:29Z",
+ "body": "## Bevy version\n\ngit bisect lead to 760d0a31003c70ed6017b2a70059a76d9b268425\n\n\n- the Rust version you're using (you can get this by running `cargo --version`)\ncargo --version\ncargo 1.83.0 (5ffbef321 2024-10-29)\n\n## What went wrong\nAs you can see, I can't get game. complete its fields, while there are other options. \n![Image](https://github.com/user-attachments/assets/b905e959-cc4b-422a-bc59-4c1d0c30ebf1)\n\n",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2024-12-28T15:47:07Z",
+   "body": "![Image](https://github.com/user-attachments/assets/ca07ddb4-decf-43df-a94e-0b3ba7a20d92)\n\nI can reproduce this. It should show the `player` field. (there is no scroll here)"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-12-29T22:38:05Z",
+   "body": "That's a very odd place for the bisection to lead us 🤔 Are we sure this wasn't caused by a change in RA instead?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-12-30T05:36:16Z",
+   "body": "What is RA？\nIf you mean rust-analyzer, I have tried the version from Aug. to the least release, however, the issue remains."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-12-30T05:48:59Z",
+   "body": "Yeah, rust-analyzer. Hmm, that's very unusual. Can you double check the bisection? Maybe a PR just before or after is causing the problem. Or try reverting that commit."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-12-30T07:47:02Z",
+   "body": "I have already tried the commit just before, which works fine. I will check it again when I'm free"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-12-30T11:20:54Z",
+   "body": "I have tried\n1. 73a66d6bd8e3d21b928f2a31f1aff5c9fb95a564\n\n```\ngit check out 73a66d6bd8e3d21b928f2a31f1aff5c9fb95a564\n```\n\n2. 760d0a3\n```\ngit checkout main\ngit revert 760d0a3\n```\nboth works fine with\n```\nrust-analyzer --version\nrust-analyzer 1.83.0 (90b35a6 2024-11-26)\n```"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-12-30T14:45:00Z",
+   "body": "I tracked this down to `bevy_ecs_path`.\n\n```diff\n  pub(crate) fn bevy_ecs_path() -> syn::Path {\n-     BevyManifest::default().get_path(\"bevy_ecs\")\n+     BevyManifest::shared().get_path(\"bevy_ecs\")\n  }\n```\n\nThe difference seems to be that before 760d0a31003c70ed6017b2a70059a76d9b268425, this function returned `bevy_internal::ecs`, and now it returns `bevy_ecs`."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-12-30T15:24:28Z",
+   "body": "We need to make sure that this problem doesn't affect other crates as well."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-12-30T21:22:36Z",
+   "body": "maybe a bug in how rust-analyser share context between executions? `BevyManifest` is now behind a `LazyLock` which is not an issue in normal compilation, but it seems RA keeps it across crates"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2024-12-30T22:39:21Z",
+   "body": "> maybe a bug in how rust-analyser share context between executions? `BevyManifest` is now behind a `LazyLock` which is not an issue in normal compilation, but it seems RA keeps it across crates\n\nSeems like the most likely cause.\n\nFor now it may be best to just revert the commit.\n\nSorry for the breakage. 😅"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-12-31T00:17:12Z",
+   "body": "Based on the discussion in the linked issue, reverting the PR sounds like the best option. I'd like to ask though, would reverting the PR bring us back into a state of not relying on external state within the proc macro? If not, maybe more thought should go into a solution."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2024-12-31T00:33:49Z",
+   "body": "It would not. However there is a nightly feature for tracked path and tracked environment variables in nightly that should guarantee the external state dependence.\n\nI actually went ahead and iterated upon BevyManifest for my own monorepo project.\n\nhttps://github.com/ink-feather-org/cargo-manifest-proc-macros-rs\n\nI will make my bevy fork depend on it and see if that solves the RA and external state issues."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2024-12-31T00:35:53Z",
+   "body": "See relevant sections here:\n\n* https://github.com/ink-feather-org/cargo-manifest-proc-macros-rs/blob/6d3e79a46067d331b27ea4a5c9f7dcb24e07340a/src/cargo_manifest.rs#L396\n\n* https://github.com/ink-feather-org/cargo-manifest-proc-macros-rs/blob/6d3e79a46067d331b27ea4a5c9f7dcb24e07340a/src/cargo_manifest.rs#L272"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2024-12-31T00:39:38Z",
+   "body": "I have thought about it quite a bit by now. RA seems to keep the proc macros server running and only alters the environment variables. This I did not account for. It should be possible to do a workaround in stable rust by using a HashMap of LazyLocked BevyManifests to look up which crate RA invoked the proc macros for. But to justify this added complexity build performance should be benchmarked."
+  },
+  {
+   "author": "participant6",
+   "created_at": "2024-12-31T09:15:47Z",
+   "body": "> maybe a bug in how rust-analyser share context between executions? `BevyManifest` is now behind a `LazyLock` which is not an issue in normal compilation, but it seems RA keeps it across crates\n\nI wouldn't call it a bug. rust-analyzer caches proc-macro expansions keyed by their invocation inputs, unlike rustc (which is currently experimenting with caching derives fwiw). proc-macros generally shouldn't rely on global state like this as even rustc doesn't make a guarantee about the order or frequency of proc-macro invocations.\n\n> However there is a nightly feature for tracked path and tracked environment variables in nightly that should guarantee the external state dependence.\n\nThose are not implemented in rust-analyzer yet.\n\n> I have thought about it quite a bit by now. RA seems to keep the proc macros server running and only alters the environment variables. \n\nYes, we keep the proc-macro library loaded (so `static`s do not get reset), we do spawn a new thread per expansion though (so thread locals do get reset). So an easy fix here would be to use a thread local instead of a `static`, though the better fix really would be to not cache anything inside globals in the first place."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-01-11T15:35:20Z",
+   "body": "> It should be possible to do a workaround in stable rust by using a HashMap of LazyLocked BevyManifests to look up which crate RA invoked the proc macros for. But to justify this added complexity build performance should be benchmarked.\n\nI implemented such a solution in #17310, but I don't know what a good way to benchmark the build performance is. Any advice?"
+  },
+  {
+   "author": "participant7",
+   "created_at": "2025-01-12T01:12:07Z",
+   "body": "> benchmark the build performance\n\nMaybe you could make a small crate that depends on `bevy_ecs` and has a ton of component declarations (or other macro invocations), then run `hyperfine \"touch src/main.rs; cargo check\"`.\n\nI don't think you'll see much of a regression though."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-01-12T10:55:07Z",
+   "body": "Thanks, I'll try that."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-01-12T11:56:35Z",
+   "body": "I used this source code with 10.000 components for the benchmark:\n\n```rust\nuse bevy_ecs::component::Component;\n\n#[derive(Component)]\nstruct C0000;\n\n#[derive(Component)]\nstruct C0001;\n\n// ...\n\n#[derive(Component)]\nstruct C9998;\n\n#[derive(Component)]\nstruct C9999;\n\nfn main() {}\n```\n\nRunning `hyperfine --warmup 10 --prepare 'touch src/main.rs' 'cargo check'` yielded the following results:\n\n**My bug fix (#17310)**\n\n```text\nBenchmark 1: cargo check\n  Time (mean ± σ):      3.922 s ±  0.034 s    [User: 3.551 s, System: 0.366 s]\n  Range (min … max):    3.865 s …  3.966 s    10 runs\n```\n\n**760d0a31003c70ed6017b2a70059a76d9b268425 reverted**\n\n```text\nBenchmark 1: cargo check\n  Time (mean ± σ):      4.788 s ±  0.041 s    [User: 4.341 s, System: 0.442 s]\n  Range (min … max):    4.734 s …  4.854 s    10 runs\n```\n\n**Current (incorrect) implementation** for reference\n\n```text\nBenchmark 1: cargo check\n  Time (mean ± σ):      3.878 s ±  0.032 s    [User: 3.516 s, System: 0.356 s]\n  Range (min … max):    3.851 s …  3.936 s    10 runs\n```\n\nMy conclusion is that my fix does provide a performance benefit over reverting 760d0a31003c70ed6017b2a70059a76d9b268425, and is in fact close in performance to the current incorrect implementation."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2025-01-12T18:13:24Z",
+   "body": "I think I might have an even better solution. That removes all of the noisy `self as bevy_gizmos` occurrences.\n\nThis time I will do some integration tests first though."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-01-17T10:33:49Z",
+   "body": "Unfortunately, #17330 does not fix this issue for me."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2025-01-18T11:18:46Z",
+   "body": "> Unfortunately, [#17330](https://github.com/bevyengine/bevy/pull/17330) does not fix this issue for me.\n\nCan you try again?\n\nPlease try the following:\n1. Write a minimal program that RA completions work in with an older bevy version. Please specify the bevy version (and rust version) that worked.\n2. Share the line where the RA completions worked before but don't work with my PR anymore.\n3. Please share the recursive expansion of the derive. In vscode this can be done with `CTRL+SHIFT+P` expand macro at cursor.\n\nYou may adapt the following program to cover your use case if you want:\n```rust\n#![allow(dead_code)]\nuse bevy::prelude::*;\n\n#[derive(Component)]\nstruct MyComponent {\n    value: f32,\n}\n\n//#[derive(Resource)]\nstruct MyResource {\n    value: f32,\n}\nimpl :<nick>::ecs::system::Resource for MyResource where Self: Send + Sync + 'static {}\n\nfn hello_world(query: Query<&MyComponent>, resource: Res<MyResource>) {\n    let component = query.iter().next().unwrap();\n    let comp_value = component.value;\n    let res_value_deref = resource.value;\n    let res_value_direct = resource.into_inner().value;\n    println!(\n        \"hello world! Value: {} {} {}\",\n        comp_value, res_value_deref, res_value_direct\n    );\n}\n\nfn spawn_component(mut commands: Commands) {\n    commands.spawn(MyComponent { value: 10.0 });\n}\n\n#[test]\nfn simple_ecs_test() {\n    App::new()\n        .insert_resource(MyResource { value: 5.0 })\n        .add_systems(Startup, spawn_component)\n        .add_systems(Update, hello_world)\n        .run();\n}\n\n```"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2025-01-18T13:34:01Z",
+   "body": "The autocomplete in the bevy `alien_cake_addict` is working correctly for me with my pr."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-01-18T13:41:47Z",
+   "body": "With your latest changes (participant5/bevy-rs@96fbf0e5f0a0e5f2f078acd266455b6763c19e83) both RA and `cargo check` work for me as well."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2025-01-18T13:47:19Z",
+   "body": "Awesome!\n\nDo you mind testing my example program from the commit and checking if the autocompletions for Resource ever worked in older bevy versions? I am not sure if this is a regression and if it is, I don't know if bevy or RA are the cause."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-01-18T16:02:32Z",
+   "body": "I tested if RA autocompletes `value` in the lines\n\n```rust\nlet comp_value = component.value;\n```\n\nand\n\n```rust\nlet res_value_deref = resource.value;\n```\n\nFor the latter, I tested both `#[derive(Resource)]` and manual `Resource` implementation.\n\n| Version | `MyComponent` | `MyResource` with `derive` | `MyResource` with manual implementation |\n|--|--|--|--|\n| v0.15.0 | :<nick>: | :x: | :x: |\n| v0.15.1 | :<nick>: | :x: | :x: |\n| 760d0a31003c70ed6017b2a70059a76d9b268425^ | :<nick>: | :x: | :x: |\n| 760d0a31003c70ed6017b2a70059a76d9b268425 | :x: | :x: | :x: |\n| main (b66c3ceb0ee39374ff1759ffb1b5bee2e4b93e99) | :x: | :x: | :x: |\n| participant5/bevy-rs@96fbf0e5f0a0e5f2f078acd266455b6763c19e83 | :<nick>: | :x: | :x: |\n\nStrange, it seems that `Resource` autocompletion does not work with any version (of those I tested) with this example.\n\n(Note that all my previous tests were done with the `alien_cake_addict` example, as described in the original issue report.)"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2025-01-18T17:12:53Z",
+   "body": "Thank you for the test matrix.\nThat confirms my observations.\n\nIt seems the `Res<_>` deref autocomplete is a separate issue that has existed even before https://github.com/bevyengine/bevy/commit/760d0a31003c70ed6017b2a70059a76d9b268425."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2025-01-19T21:27:22Z",
+   "body": "> I used this source code with 10.000 components for the benchmark:\n> \n> use bevy_ecs::component::Component;\n> \n> #[derive(Component)]\n> struct C0000;\n> \n> #[derive(Component)]\n> struct C0001;\n> \n> // ...\n> \n> #[derive(Component)]\n> struct C9998;\n> \n> #[derive(Component)]\n> struct C9999;\n> \n> fn main() {}\n> \n> Running `hyperfine --warmup 10 --prepare 'touch src/main.rs' 'cargo check'` yielded the following results:\n> \n> **My bug fix ([#17310](https://github.com/bevyengine/bevy/pull/17310))**\n> \n> ```\n> Benchmark 1: cargo check\n>   Time (mean ± σ):      3.922 s ±  0.034 s    [User: 3.551 s, System: 0.366 s]\n>   Range (min … max):    3.865 s …  3.966 s    10 runs\n> ```\n> \n> **[760d0a3](https://github.com/bevyengine/bevy/commit/760d0a31003c70ed6017b2a70059a76d9b268425) reverted**\n> \n> ```\n> Benchmark 1: cargo check\n>   Time (mean ± σ):      4.788 s ±  0.041 s    [User: 4.341 s, System: 0.442 s]\n>   Range (min … max):    4.734 s …  4.854 s    10 runs\n> ```\n> \n> **Current (incorrect) implementation** for reference\n> \n> ```\n> Benchmark 1: cargo check\n>   Time (mean ± σ):      3.878 s ±  0.032 s    [User: 3.516 s, System: 0.356 s]\n>   Range (min … max):    3.851 s …  3.936 s    10 runs\n> ```\n> \n> My conclusion is that my fix does provide a performance benefit over reverting [760d0a3](https://github.com/bevyengine/bevy/commit/760d0a31003c70ed6017b2a70059a76d9b268425), and is in fact close in performance to the current incorrect implementation.\n\nJust for curiosity, if you still have the test setup for this would you mind running it again with #17330 and sharing a gist for the component spam file. 😄 "
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-01-20T19:20:34Z",
+   "body": "Sure. Tested with participant5/bevy-rs@0ed2ea816ace024815a01f4f1cefa2e1c97e1f84:\n\n```text\nBenchmark 1: cargo check\n  Time (mean ± σ):      4.130 s ±  0.040 s    [User: 3.745 s, System: 0.371 s]\n  Range (min … max):    4.075 s …  4.195 s    10 runs\n```\n\n`main.rs` used for the test: https://gist.github.com/participant3/76ad9381551cdd632cb925128de21084"
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "bevyengine/bevy",
+  "default_branch": "main",
+  "commit_sha": "64efd08e13c55598587f3071070f750f8945e28e",
+  "as_of": "2024-12-28T12:04:17Z",
+  "method": "github_commits_until"
+ },
+ "images": [
+  {
+   "where": "opening",
+   "source_url": "https://github.com/user-attachments/assets/b905e959-cc4b-422a-bc59-4c1d0c30ebf1",
+   "file": "gh_bevyengine_bevy_17004_img0.png"
+  },
+  {
+   "where": "c0",
+   "source_url": "https://github.com/user-attachments/assets/ca07ddb4-decf-43df-a94e-0b3ba7a20d92",
+   "file": "gh_bevyengine_bevy_17004_img1.png"
+  }
+ ],
+ "slug": "gh_bevyengine_bevy_17004"
+}

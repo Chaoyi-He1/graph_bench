@@ -1,0 +1,172 @@
+{
+ "repo": "openzfs/zfs",
+ "number": 15351,
+ "url": "https://github.com/openzfs/zfs/issues/15351",
+ "title": "ZVOL data corruption with zvol_use_blk_mq=1",
+ "state": "closed",
+ "labels": [
+  "Component: ZVOL",
+  "Type: Defect"
+ ],
+ "reporter": "reporter",
+ "created_at": "2023-10-04T17:27:19Z",
+ "closed_at": "2023-10-24T21:44:58Z",
+ "body": "<!-- Please fill out the following template, which will help other contributors address your issue. -->\r\n\r\n<!--\r\nThank you for reporting an issue.\r\n\r\n*IMPORTANT* - Please check our issue tracker before opening a new issue.\r\nAdditional valuable information can be found in the OpenZFS documentation\r\nand mailing list archives.\r\n\r\nPlease fill in as much of the template as possible.\r\n-->\r\n\r\n### System information\r\n<!--  add version after \"|\" character -->\r\nType | Version/Name\r\n --- | ---\r\nDistribution Name\t| Arch Linux\r\nDistribution Version\t|\r\nKernel Version\t| 6.6.0-rc4\r\nArchitecture\t| amd64\r\nOpenZFS Version\t| git branch zfs-2.2-release (229ca7d738ccbf4c55076977467ee93e20b6f01b) + 6.6 compatibility patches\r\n<!--\r\nCommand to find OpenZFS version:\r\nzfs version\r\n\r\nCommands to find kernel version:\r\nuname -r\t\t# Linux\r\nfreebsd-version -r\t# FreeBSD\r\n-->\r\n\r\n### Describe the problem you're observing\r\n\r\nInstalling a distro in virt-manager leads to an unbootable virtual machine if the storage is backed by ZVOLs.\r\nI'm using `zvol_use_blk_mq=1` ~but I'm not sure if this is the culprit because I didn't try disabling it yet.~\r\n_I've just tried with zvol_use_blk_mq=0 and it works flawlessly so the culprit is definitely zvol_use_blk_mq=1_\r\n\r\nThis is the libvirt disk:\r\n\r\n```\r\n<disk type=\"block\" device=\"disk\">\r\n  <driver name=\"qemu\" type=\"raw\" cache=\"none\" error_policy=\"stop\" discard=\"unmap\" io=\"native\"/>\r\n  <source dev=\"/dev/zvol/rpool/zvols/ubuntu-23.10\"/>\r\n  <blockio physical_block_size='16384'/>\r\n  <target dev=\"vda\" bus=\"virtio\"/>\r\n  <boot order=\"2\"/>\r\n</disk>\r\n```\r\n\r\n### Describe how to reproduce the problem\r\n\r\nDownload latest snapshot of ubuntu 23.10.\r\nCreate a vol:\r\n```\r\nzfs create -s -V 100G -o compression=lz4 rpool/zvols/ubuntu-23.10\r\n```\r\nInstall ubuntu in the zvol using virt-manager.\r\nReboot the vm and watch it failing to boot:\r\n\r\n![image](https://github.com/openzfs/zfs/assets/1047358/6045d19b-b80a-4d2d-9310-f8740402c6b7)\r\n\r\nUsing raw images instead leads to a perfectly bootable system.\r\n\r\n### Include any warning/errors/backtraces from the system logs\r\n<!--\r\n*IMPORTANT* - Please mark logs and text output from terminal commands\r\nor else Github will not display them correctly.\r\nAn example is provided below.\r\n\r\nExample:\r\n```\r\nthis is an example how log text should be marked (wrap it with ```)\r\n```\r\n-->\r\n\r\n",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2023-10-05T18:29:52Z",
+   "body": "The qemu config includes a specific blocksize:\r\n```\r\n  <blockio physical_block_size='16384'/>\r\n```\r\n\r\nwhile the `zfs create` command doesn't specify blocksize (lacks `-b`, I'm not sure what the default is, might also be inherited).\r\nMaybe this is a case of mismatch between qemus opinion vs zfs blocksize? Please check actual zvol blocksize by cmd: \r\n```\r\nzfs get volblocksize rpool/zvols/ubuntu-23.10\r\n```"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-10-05T18:38:00Z",
+   "body": "AFAIK `<blockio physical_block_size='16384'/>` lets the guest know that writes are best with 16k, but it still can write in 512 byte sectors. E.g. ext4 with block size 4k is mounted with stripe=4.\r\n\r\n> while the zfs create command doesn't specify blocksize (lacks -b, I'm not sure what the default is, might also be inherited)\r\n\r\nzvols don't inherit the blocksize and they default to 16K, so it matches."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-10-05T18:47:55Z",
+   "body": ">AFAIK <blockio physical_block_size='16384'/> lets the guest know that writes are best with 16k, but it still can write in 512 byte sectors. E.g. ext4 with block size 4k is mounted with stripe=4.\r\n\r\nI admit I'm not very familiar with qemu/kvm way of doing things, but in case of xen and linux guest `volblocksize` gets translated into physical sector size on the guest VM side.\r\n\r\n> zvols don't inherit the blocksize and they default to 16K, so it matches.\r\n\r\nyes, they do, I use it on a \"swap\" dataset under which all the swaps reside and they do inherit `volblocksize`\r\n\r\nAdditionally, UEFI might have a problem with sector sizes different than usual 512 or 4096.\r\n\r\nThe way to test it, excluding ZFS, would be to create an image file and set it up via `losetup -b 16384`\r\n\r\nPS. I'm not ZFS developer/contributor, just someone with experience with ZFS zvols + xen vms."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-10-05T19:05:19Z",
+   "body": "> yes, they do, I use it on a \"swap\" dataset under which all the swaps reside and they do inherit volblocksize\r\n\r\nI don't know how this is possible because datasets don't have any `volblocksize` property, they have `recordsize` from which zvols don't inherit:\r\n```\r\n[root@participant1 ~]# zfs get all rpool/zvols | grep size\r\nrpool/zvols  recordsize                 128K                       default\r\nrpool/zvols  dnodesize                  auto                       inherited from rpool\r\n[root@participant1 ~]# zfs create -s -V 100G -o compression=lz4 rpool/zvols/ubuntu-23.10\r\n[root@participant1 ~]# zfs get all rpool/zvols/ubuntu-23.10 | grep size\r\nrpool/zvols/ubuntu-23.10  volsize                    100G                       local\r\nrpool/zvols/ubuntu-23.10  volblocksize               16K                        default\r\n```\r\n\r\n> Additionally, UEFI might have a problem with sector sizes different than usual 512 or 4096.\r\n\r\nI've already tried with CSM (BIOS) and it doesn't work either. Also 16K is the default `volblocksize` so it is supposed to work (and works if 16K is the recordsize of the dataset containing a raw image).\r\nEven removing `<blockio physical_block_size='16384'/>` leads to the same unbootable system.\r\n\r\nNext time I reboot I will try with the (default) `zvol_use_blk_mq=0`."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-10-05T19:15:42Z",
+   "body": "Sorry, you're right about inheriting `volblocksize`, I thought it uses `recordsize`, but apparenty it doesn't. Once again - my apologies for the mistake\r\n```\r\nNAME                             PROPERTY      VALUE     SOURCE\r\nbelt/swaps                       recordsize    16K       local\r\nbelt/swaps                       volblocksize  -         -\r\nbelt/swaps/vmtemplates/debian11  recordsize    -         -\r\nbelt/swaps/vmtemplates/debian11  volblocksize  8K        default\r\n```\r\nHowever, it seems that 8K is the default for zvols - at least on 2.1.X"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-10-05T19:24:34Z",
+   "body": "> However, it seems that 8K is the default for zvols - at least on 2.1.X\r\n\r\nIt changed in 2.2."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-10-05T19:41:51Z",
+   "body": "I've just tried with `zvol_use_blk_mq=0` and it works flawlessly so the issue is definitely with `zvol_use_blk_mq=1`."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-10-05T20:50:57Z",
+   "body": "Thanks for opening this issue - I just self-assigned to take a look into this.  The `<blockio physical_block_size='16384'>` is interesting, as I was only able to test on 4k drives when I was writing the blk-mq code."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-10-05T21:30:05Z",
+   "body": "I might wildly speculate that this and #14533 are the same bug, since it seems like they're related to having mismatched sector sizes triggering an edge case.\r\n\r\nzvol defaults changed between 2.1 and the yet-unreleased 2.2 (in 72f0521aba) because the tradeoff for raidz/draid/compression improvements was viewed as worth it over the larger size, I think. (I don't believe even 2.1.13 has that backported?)"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-10-06T07:37:52Z",
+   "body": "> The <blockio physical_block_size='16384'> is interesting, as I was only able to test on 4k drives when I was writing the blk-mq code.\r\n\r\nSo you only tested it with `volblocksize=4K`? Because `<blockio physical_block_size='16384'>` is not the issue here, it doesn't work either if I omit it.\r\n\r\nP.S. My NVMe block size is 4K as well, I decided to stick to the default `volblocksize=16K` because it's a good compromise between performance/compression/etc.\r\n\r\n> I might wildly speculate that this and https://github.com/openzfs/zfs/issues/14533 are the same bug, since it seems like they're related to having mismatched sector sizes triggering an edge case.\r\n\r\nUhm, I'm not sure:\r\n\r\n- Sector size is not really mismatched because the guest mounts with `stripe=4`.\r\n- If the guest writes in 512/1K/2K/4K/8K blocks it still ends up being aligned.\r\n- Raw images with `recordsize=16K` work flawlessly.\r\n- Zvol with `recordsize=16K` works flawlessly either if I omit the `zvol_use_blk_mq=1` zfs module parameter.\r\n\r\nIt must be something specific to the multi queue code."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-10-06T07:39:09Z",
+   "body": "By the way here is some more context:\r\n```\r\n[niko@participant1 ~]$ zpool get all rpool\r\nNAME   PROPERTY                       VALUE                          SOURCE\r\nrpool  size                           3.62T                          -\r\nrpool  capacity                       6%                             -\r\nrpool  altroot                        -                              default\r\nrpool  health                         ONLINE                         -\r\nrpool  guid                           5183011630881450907            -\r\nrpool  version                        -                              default\r\nrpool  bootfs                         rpool/ROOT/archlinux           local\r\nrpool  delegation                     on                             default\r\nrpool  autoreplace                    off                            default\r\nrpool  cachefile                      -                              default\r\nrpool  failmode                       wait                           default\r\nrpool  listsnapshots                  off                            default\r\nrpool  autoexpand                     off                            default\r\nrpool  dedupratio                     1.00x                          -\r\nrpool  free                           3.40T                          -\r\nrpool  allocated                      228G                           -\r\nrpool  readonly                       off                            -\r\nrpool  ashift                         12                             local\r\nrpool  comment                        -                              default\r\nrpool  expandsize                     -                              -\r\nrpool  freeing                        0                              -\r\nrpool  fragmentation                  0%                             -\r\nrpool  leaked                         0                              -\r\nrpool  multihost                      off                            default\r\nrpool  checkpoint                     -                              -\r\nrpool  load_guid                      806659593871550708             -\r\nrpool  autotrim                       on                             local\r\nrpool  compatibility                  openzfs-2.2-linux              local\r\nrpool  bcloneused                     206M                           -\r\nrpool  bclonesaved                    227M                           -\r\nrpool  bcloneratio                    2.10x                          -\r\nrpool  feature@async_destroy          enabled                        local\r\nrpool  feature@empty_bpobj            active                         local\r\nrpool  feature@lz4_compress           active                         local\r\nrpool  feature@multi_vdev_crash_dump  enabled                        local\r\nrpool  feature@spacemap_histogram     active                         local\r\nrpool  feature@enabled_txg            active                         local\r\nrpool  feature@hole_birth             active                         local\r\nrpool  feature@extensible_dataset     active                         local\r\nrpool  feature@embedded_data          active                         local\r\nrpool  feature@participant2              enabled                        local\r\nrpool  feature@filesystem_limits      enabled                        local\r\nrpool  feature@large_blocks           enabled                        local\r\nrpool  feature@large_dnode            active                         local\r\nrpool  feature@participant7                 enabled                        local\r\nrpool  feature@participant3                  enabled                        local\r\nrpool  feature@participant4                  enabled                        local\r\nrpool  feature@userobj_accounting     active                         local\r\nrpool  feature@participant5             active                         local\r\nrpool  feature@project_quota          active                         local\r\nrpool  feature@device_removal         enabled                        local\r\nrpool  feature@obsolete_counts        enabled                        local\r\nrpool  feature@zpool_checkpoint       enabled                        local\r\nrpool  feature@spacemap_v2            active                         local\r\nrpool  feature@allocation_classes     enabled                        local\r\nrpool  feature@resilver_defer         enabled                        local\r\nrpool  feature@bookmark_v2            enabled                        local\r\nrpool  feature@redaction_bookmarks    enabled                        local\r\nrpool  feature@redacted_datasets      enabled                        local\r\nrpool  feature@bookmark_written       enabled                        local\r\nrpool  feature@log_spacemap           active                         local\r\nrpool  feature@participant6               active                         local\r\nrpool  feature@device_rebuild         enabled                        local\r\nrpool  feature@zstd_compress          active                         local\r\nrpool  feature@participant7                  enabled                        local\r\nrpool  feature@participant8             active                         local\r\nrpool  feature@head_errlog            active                         local\r\nrpool  feature@participant8                 enabled                        local\r\nrpool  feature@block_cloning          active                         local\r\nrpool  feature@vdev_zaps_v2           active                         local\r\n```\r\n\r\n```\r\n[niko@participant1 ~]$ zfs get all rpool/zvols\r\nNAME         PROPERTY                   VALUE                      SOURCE\r\nrpool/zvols  type                       filesystem                 -\r\nrpool/zvols  creation                   Wed Oct  4 16:21 2023      -\r\nrpool/zvols  used                       192K                       -\r\nrpool/zvols  available                  3.29T                      -\r\nrpool/zvols  referenced                 192K                       -\r\nrpool/zvols  compressratio              1.00x                      -\r\nrpool/zvols  mounted                    no                         -\r\nrpool/zvols  quota                      none                       default\r\nrpool/zvols  reservation                none                       default\r\nrpool/zvols  recordsize                 128K                       default\r\nrpool/zvols  mountpoint                 none                       inherited from rpool\r\nrpool/zvols  sharenfs                   off                        default\r\nrpool/zvols  checksum                   on                         default\r\nrpool/zvols  compression                zstd                       inherited from rpool\r\nrpool/zvols  atime                      on                         default\r\nrpool/zvols  devices                    off                        inherited from rpool\r\nrpool/zvols  exec                       on                         default\r\nrpool/zvols  setuid                     on                         default\r\nrpool/zvols  readonly                   off                        default\r\nrpool/zvols  zoned                      off                        default\r\nrpool/zvols  snapdir                    hidden                     default\r\nrpool/zvols  aclmode                    discard                    default\r\nrpool/zvols  aclinherit                 restricted                 default\r\nrpool/zvols  createtxg                  45982                      -\r\nrpool/zvols  canmount                   off                        local\r\nrpool/zvols  xattr                      sa                         inherited from rpool\r\nrpool/zvols  copies                     1                          default\r\nrpool/zvols  version                    5                          -\r\nrpool/zvols  utf8only                   on                         -\r\nrpool/zvols  normalization              formD                      -\r\nrpool/zvols  casesensitivity            sensitive                  -\r\nrpool/zvols  vscan                      off                        default\r\nrpool/zvols  nbmand                     off                        default\r\nrpool/zvols  sharesmb                   off                        default\r\nrpool/zvols  refquota                   none                       default\r\nrpool/zvols  refreservation             none                       default\r\nrpool/zvols  guid                       8359952347687084503        -\r\nrpool/zvols  primarycache               all                        default\r\nrpool/zvols  secondarycache             all                        default\r\nrpool/zvols  usedbysnapshots            0B                         -\r\nrpool/zvols  usedbydataset              192K                       -\r\nrpool/zvols  usedbychildren             0B                         -\r\nrpool/zvols  usedbyrefreservation       0B                         -\r\nrpool/zvols  logbias                    latency                    default\r\nrpool/zvols  objsetid                   184                        -\r\nrpool/zvols  dedup                      off                        default\r\nrpool/zvols  mlslabel                   none                       default\r\nrpool/zvols  sync                       standard                   default\r\nrpool/zvols  dnodesize                  auto                       inherited from rpool\r\nrpool/zvols  refcompressratio           1.00x                      -\r\nrpool/zvols  written                    192K                       -\r\nrpool/zvols  logicalused                69K                        -\r\nrpool/zvols  logicalreferenced          69K                        -\r\nrpool/zvols  volmode                    default                    default\r\nrpool/zvols  filesystem_limit           none                       default\r\nrpool/zvols  snapshot_limit             none                       default\r\nrpool/zvols  filesystem_count           none                       default\r\nrpool/zvols  snapshot_count             none                       default\r\nrpool/zvols  snapdev                    hidden                     default\r\nrpool/zvols  acltype                    posix                      inherited from rpool\r\nrpool/zvols  context                    none                       default\r\nrpool/zvols  fscontext                  none                       default\r\nrpool/zvols  defcontext                 none                       default\r\nrpool/zvols  rootcontext                none                       default\r\nrpool/zvols  relatime                   on                         inherited from rpool\r\nrpool/zvols  redundant_metadata         all                        default\r\nrpool/zvols  overlay                    on                         default\r\nrpool/zvols  encryption                 aes-256-gcm                -\r\nrpool/zvols  keylocation                none                       default\r\nrpool/zvols  keyformat                  passphrase                 -\r\nrpool/zvols  pbkdf2iters                350000                     -\r\nrpool/zvols  encryptionroot             rpool                      -\r\nrpool/zvols  keystatus                  available                  -\r\nrpool/zvols  special_small_blocks       0                          default\r\nrpool/zvols  org.zfsbootmenu:keysource  roool/ROOT/archlinux       inherited from rpool\r\n```"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-10-06T07:40:54Z",
+   "body": "It might be worth exploring if this has something to do with either:\r\n\r\n- zvol being sparse\r\n- host having `autotrim=on` and guest having `discard=\"unmap\"`"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-10-06T20:12:34Z",
+   "body": "@reporter \r\n> So you only tested it with volblocksize=4K\r\n\r\nBy 4k drives I mean I only tested on drives with a 4k physical sector size.  I did test with lots of different volblocksize values.\r\n\r\n> Because blockio physical_block_size='16384' is not the issue here, it doesn't work either if I omit it.\r\n\r\nIf you omit it, does the VM default the virtual block device to having 4k physical sectors then?  Or more specifically, what does the VM report as the physical sector size it sees for it's underlying block device? (which under the covers is the zvol).  For example, on my VM for /dev/vda:\r\n```\r\n$ cat /sys/class/block/vda/queue/{hw_sector_size,physical_block_size}\r\n512\r\n512\r\n```\r\n\r\nI'm also confused about something - you listed the properties for `rpool/zvols`, which from the name sounds like a zvol, but it's being reported as a filesystem:\r\n```\r\n[niko@participant1 ~]$ zfs get all rpool/zvols\r\nNAME         PROPERTY                   VALUE                      SOURCE\r\nrpool/zvols  type                       filesystem                 -\r\n...\r\n```\r\nAre you expecting `rpool/zvols` to be a volume?\r\n "
+  },
+  {
+   "author": "participant4",
+   "created_at": "2023-10-07T05:59:20Z",
+   "body": "> Are you expecting `rpool/zvols` to be a volume?\r\n\r\nAs of https://github.com/openzfs/zfs/issues/15351#issuecomment-1749486202 I would say that he didn't, the output for rpool/zvols likely is to show non-default properties on the parent datasets that'll be inherited into the zvol one.\r\n\r\n@reporter: maybe you could try to determine the on-disk differences between fresh installs with both settings of `zvol_use_blk_mq`? Something like diffs between the filesystems in the VM images, to detect broken files... which could provide some clues to what is going wrong..."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-10-07T07:21:33Z",
+   "body": "> As of #15351 (comment) I would say that he didn't, the output for rpool/zvols likely is to show non-default properties on the parent datasets that'll be inherited into the zvol one.\r\n\r\nExactly.\r\n\r\n> If you omit it, does the VM default the virtual block device to having 4k physical sectors then? Or more specifically, what does the VM report as the physical sector size it sees for it's underlying block device?\r\n\r\nThis is the output with `<blockio physical_block_size='16384'/>`:\r\n```\r\nniko@participant9:~$ cat /sys/class/block/vda/queue/{hw_sector_size,physical_block_size}\r\n512\r\n16384\r\n```\r\n\r\nThis is the output without it:\r\n\r\n```\r\nubuntu@participant9:~$ cat /sys/class/block/vda/queue/{hw_sector_size,physical_block_size}\r\n512\r\n512\r\n```\r\n\r\n> maybe you could try to determine the on-disk differences between fresh installs with both settings of zvol_use_blk_mq? Something like diffs between the filesystems in the VM images, to detect broken files... which could provide some clues to what is going wrong...\r\n\r\nI will give it a try. If I can't find any pattern I will upload the first GB of both images and you can have a look too."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-10-09T20:18:32Z",
+   "body": "@reporter out of an abundance of caution, I put out a PR (#15378) to not allow the user to enable blk-mq until we can nail down this issue.  I'm going to try to reproduce it with a brd ramdisk today. \r\n\r\nAlso - what did you use for your pool configuration?  Is the pool for your zvol backed by disks or file-based vdevs?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-10-09T20:23:42Z",
+   "body": "> Also - what did you use for your pool configuration? Is the pool for your zvol backed by disks or file-based vdevs?\r\n\r\nIt's backed by a single NVMe drive: a 4 TB WD Black SN850X formatted with a 4K logical block address size instead of the default 512 bytes."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-10-10T17:56:30Z",
+   "body": "@reporter I was able to reproduce the failure using a pool consisting of a 16GB brd (ramdisk) block device.  I exported a zvol from the pool and ran my tests:\r\n\r\nnon-blk-mq 16k physical block\r\n- Installed and booted Fedora 38\r\n- Installed and booted Ubuntu 23.10\r\n\r\nblk-mq 16k physical block\r\n- Installed but could not boot Ubuntu 23.10\r\n\r\nblk-mq 4k physical block\r\n- Installed but could not boot Ubuntu 23.10\r\n\r\nI'm now going to check the MBR on the working vs non-working installs."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-10-10T23:54:24Z",
+   "body": "The MBRs are the byte-for-byte the same.  Partitioning looks the same:\r\n```\r\nDevice     Start      End  Sectors Size Type\r\n/dev/zd0p1  2048     4095     2048   1M BIOS boot\r\n/dev/zd0p2  4096 23066623 23062528  11G Linux filesystem\r\n```\r\nPartition 1 is byte-for-byte the same.  Partition 2 differs.\r\n\r\nJust speculating - maybe there's some problem with our blk-mq code related to partitioning?  I'll keep looking."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-10-11T07:37:51Z",
+   "body": "@participant2 sorry for the cross posting (I'll delete the message afterwards) but I would like to avoid opening another bug report if it's some kind of hardware fault. I have another server (Debian 12 + zfs 2.1) where one of its VMs exhibited the following behavior twice in the past month:\r\n\r\n```\r\nOct 11 03:04:26 kernel: blk_update_request: I/O error, dev vda, sector 51670824 op 0x1:(WRITE) flags 0x800 phys_seg 2 prio class 0\r\nOct 11 03:04:26 kernel: Aborting journal on device vda2-8.\r\nOct 11 03:04:26 kernel: blk_update_request: I/O error, dev vda, sector 1050624 op 0x1:(WRITE) flags 0x800 phys_seg 1 prio class 0\r\nOct 11 03:04:26 kernel: blk_update_request: I/O error, dev vda, sector 51644416 op 0x1:(WRITE) flags 0x800 phys_seg 1 prio class 0\r\nOct 11 03:04:26 kernel: blk_update_request: I/O error, dev vda, sector 1050624 op 0x1:(WRITE) flags 0x800 phys_seg 1 prio class 0\r\nOct 11 03:04:26 kernel: blk_update_request: I/O error, dev vda, sector 51644416 op 0x1:(WRITE) flags 0x800 phys_seg 1 prio class 0\r\nOct 11 03:04:26 kernel: Buffer I/O error on dev vda2, logical block 0, lost sync page write\r\nOct 11 03:04:26 kernel: Buffer I/O error on dev vda2, logical block 6324224, lost sync page write\r\nOct 11 03:04:26 kernel: EXT4-fs (vda2): previous I/O error to superblock detected\r\nOct 11 03:04:26 kernel: JBD2: Error -5 detected when updating journal superblock for vda2-8.\r\nOct 11 03:04:26 kernel: blk_update_request: I/O error, dev vda, sector 1050624 op 0x1:(WRITE) flags 0x800 phys_seg 1 prio class 0\r\nOct 11 03:04:26 kernel: blk_update_request: I/O error, dev vda, sector 1050624 op 0x1:(WRITE) flags 0x800 phys_seg 1 prio class 0\r\nOct 11 03:04:26 kernel: Buffer I/O error on dev vda2, logical block 0, lost sync page write\r\nOct 11 03:04:26 kernel: EXT4-fs (vda2): I/O error while writing superblock\r\nOct 11 03:04:26 kernel: EXT4-fs error (device vda2): ext4_journal_check_start:83: Detected aborted journal\r\nOct 11 03:04:26 kernel: EXT4-fs (vda2): Remounting filesystem read-only\r\nOct 11 03:04:26 kernel: EXT4-fs error (device vda2): ext4_journal_check_start:83: Detected aborted journal\r\n```\r\n\r\nThe vm is backed by raw files stored in a dataset. The zfs pool is on a single Optane drive which has quite some write endurance so it should hardly fail. The vm uses `<blockio physical_block_size=\"4096\"/>`, the pool has ashift 9 and the dataset recordsize 4K, participant5 and lz4 compression.\r\nScrubbing doesn't find any error. Maybe the memory? But shouldn't it corrupt the filesystem and result in scrub errors?\r\nI didn't have any problem before upgrading the host operating system (and thus the zfs version) a few months ago, but I've also upgraded the BIOS through several major revisions which might have changed the memory timings/speeds or anything else.\r\n\r\nEDIT: it's a bug but in qemu https://gitlab.com/qemu-project/qemu/-/issues/1404"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-10-23T20:48:09Z",
+   "body": "Some interesting results today - I installed Ubuntu on a blk-mq-enabled zvol and tried to boot it.  It failed as expected.  I then exported the pool, enabled blk-mq, re-imported the pool, and was able to boot Ubunutu from the previously-installed-to zvol.  So it appears the writes to the zvol are correct under blk-mq, it's just the reads back that are the issue.  I'm still digging."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-10-23T23:05:19Z",
+   "body": "@reporter this fix works for me: https://github.com/openzfs/zfs/pull/15439  Can you please give it a try on your system?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-10-24T08:40:21Z",
+   "body": "@participant2 I confirm it works, thanks!"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2024-01-17T01:40:53Z",
+   "body": "Is there a way to set `zvol_use_blk_mq=0` on an existing zvol? This bug [effects TrueNAS 23.10.1](https://<redacted-host>/browse/NAS-125816), and so far, it looks like my options are:\r\n\r\n- Stay on an outdated version of TrueNAS (13.10.0.0.1) until a version of TrueNAS is released with a newer version of ZFS\r\n- [Modify the GRUB installation on my VMs](https://<redacted-host>/community/threads/truenas-scale-23-10-1-has-been-released.115023/#post-797217) (not appealing)\r\n\r\nIt would be ideal to set `zvol_use_blk_mq=0`  now and then flip `zvol_use_blk_mq` back to `1` once a version of TrueNAS with a fixed version of ZFS is released. "
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-01-17T01:56:41Z",
+   "body": "@participant5 `zvol_use_blk_mq` is read at import time, so you can export your pool, write `zvol_use_blk_mq=0` and then re-import it, and it will use the old BIO codepath."
+  },
+  {
+   "author": "participant6",
+   "created_at": "2024-01-17T02:25:02Z",
+   "body": "@participant5 As I see, the patch for this issue was merged into ZFS 2.2.1. Current versions of TrueNAS should already include 2.2.2+.  But I wonder if corruption could happen earlier and just be noticed during upgrade?"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2024-01-17T02:31:11Z",
+   "body": "@participant6 The corruption seems on read, not write, because I can switch boot environments to downgrade TrueNAS and the VMs will boot again."
+  },
+  {
+   "author": "participant6",
+   "created_at": "2024-01-17T03:08:54Z",
+   "body": "@participant5 Could you run `zfs -V` to be sure what ZFS version we are talking about?\r\n\r\nBTW, there is TrueNAS 23.10.1.1 hot-fix release now."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2024-01-17T14:58:00Z",
+   "body": "@participant6  TrueNAS SCALE 23.10.1.1 `sudo zfs -V ` output:\r\n\r\n```\r\nzfs-2.2.2-1\r\nzfs-kmod-2.2.2-1\r\n```\r\n\r\nIt has the same issue with Debian or Ubuntu VMs not booting starting in TrueNAS SCALE 23.10.1, which had the same ZFS version.\r\n\r\nThe last version that boots the VMs properly is TrueNAS SCALE 23.10.0.1.\r\n\r\n```\r\nzfs-2.2.0-rc4\r\nzfs-kmod-2.2.0-rc4\r\n```\r\n\r\nEach of my VM Zvols are stored in an unencrypted Zpool of mirrored data SSDs with ZSTD-5 compression. Each Zvol was created using the Add Zvol wizard in the dataset view, with passphrase participant5 configured. The VMs are created using the Create Virtual Machine web UI. The boot method is set at the default (UEFI). Once Debain is installed using the standard Debain install process, the VMs can reboot successfully until the host system us upgraded beyond TrueNAS SCALE 23.10.0.1. this bug reported in the TrueNAS JIRA has been introduced sometime between zfs-2.2.0-rc4 and zfs-2.2.2-1. I don;t think it is related to this bug, so I'll keep the discussion about that going in JIRA."
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "openzfs/zfs",
+  "default_branch": "master",
+  "commit_sha": "f795e90a11c683d64bacc260fb7feab705b220b1",
+  "as_of": "2023-10-04T17:27:19Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_openzfs_zfs_15351"
+}

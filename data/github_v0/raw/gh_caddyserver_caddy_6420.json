@@ -1,0 +1,161 @@
+{
+ "repo": "caddyserver/caddy",
+ "number": 6420,
+ "url": "https://github.com/caddyserver/caddy/issues/6420",
+ "title": "Active websocket connections are still closed on config reload",
+ "state": "closed",
+ "labels": [
+  "question :<nick>:"
+ ],
+ "reporter": "reporter",
+ "created_at": "2024-06-24T12:06:18Z",
+ "closed_at": "2024-06-24T16:34:50Z",
+ "body": "## 1. Environment\r\n\r\n### 1a. Operating system and version\r\n`Docker version 20.10.21, build baeda1f`\r\n```\r\n# Dockerfile\r\nFROM caddy:2.6.2\r\nRUN apk add curl\r\nHEALTHCHECK --interval=10s --timeout=3s CMD curl --fail http://127.0.0.1:2016/config/ || exit 1\r\n```\r\n\r\n\r\n### 1b. Caddy version (run `caddy version` or paste commit SHA)\r\n\r\n```\r\nv2.8.4 h1:q3pe0wpBj1OcHFZ3n/1nl4V4bxBrYoSoab7rL9BMYNk=\r\n```\r\n\r\n\r\n## 2. Description\r\n\r\n### 2a. What happens (briefly explain what is wrong)\r\nWebsocket connections are still closed on config reload despite #5471. We added the `stream_close_delay` flag in our config. But once we add a new handle using the API, we notice that all of websocket clients get disconnected for a short time. This is systematic : we made a script that triggers the API call and we clearly notice the systematic disconnect on all websocket client's logs.\r\n\r\n### 2d. Workaround(s)\r\nNone\r\n\r\n\r\n\r\n### 2e. Relevant links\r\n#5471 \r\n\r\n\r\n\r\n## 3. Tutorial (minimal steps to reproduce the bug)\r\n1. Connect a client to the caddy web server using websocket\r\n2. Update the caddy config using the API\r\n3. The client is disconnected from websocket\r\n\r\nExample of configuration : \r\n```json\r\n{\r\n  \"srv0\": {\r\n    \"automatic_https\": {\r\n      \"disable\": true\r\n    },\r\n    \"errors\": {\r\n      \"@id\": \"srv0-error\",\r\n      \"routes\": [\r\n        {\r\n          \"handle\": [\r\n            {\r\n              \"handler\": \"rewrite\",\r\n              \"uri\": \"{http.matchers.file.relative}\"\r\n            },\r\n            {\r\n              \"handler\": \"file_server\",\r\n              \"root\": \"/var/www/html\"\r\n            }\r\n          ],\r\n          \"match\": [\r\n            {\r\n              \"file\": {\r\n                \"root\": \"/var/www/html\",\r\n                \"try_files\": [\r\n                  \"{http.request.uri.path}\",\r\n                  \"index.html\",\r\n                  \"=404\"\r\n                ]\r\n              }\r\n            }\r\n          ]\r\n        }\r\n      ]\r\n    },\r\n    \"listen\": [\r\n      \":443\"\r\n    ],\r\n    \"routes\": [\r\n      {\r\n        \"handle\": [\r\n          {\r\n            \"handler\": \"subroute\",\r\n            \"routes\": [\r\n              {\r\n                \"handle\": [\r\n                  {\r\n                    \"body\": \"port 443\",\r\n                    \"handler\": \"static_response\"\r\n                  }\r\n                ]\r\n              }\r\n            ]\r\n          }\r\n        ],\r\n        \"match\": [\r\n          {\r\n            \"host\": [\r\n              \"our-domain.com\"\r\n            ]\r\n          }\r\n        ],\r\n        \"terminal\": true\r\n      },\r\n      {\r\n        \"@id\": \"srv0-u982998-p443\",\r\n        \"handle\": [\r\n          {\r\n            \"handler\": \"reverse_proxy\",\r\n            \"stream_close_delay\": \"60s\",\r\n            \"transport\": {\r\n              \"protocol\": \"http\",\r\n              \"tls\": {\r\n                \"server_name\": \"<redacted-host>\"\r\n              }\r\n            },\r\n            \"upstreams\": [\r\n              {\r\n                \"dial\": \"our-dial.com:30190\"\r\n              }\r\n            ]\r\n          },\r\n          {\r\n            \"handler\": \"reverse_proxy\",\r\n            \"stream_close_delay\": \"60s\",\r\n            \"transport\": {\r\n              \"protocol\": \"http\",\r\n              \"tls\": {\r\n                \"server_name\": \"*.<redacted-host>\"\r\n              }\r\n            },\r\n            \"upstreams\": [\r\n              {\r\n                \"dial\": \"our-dial.com:30190\"\r\n              }\r\n            ]\r\n          }\r\n        ],\r\n# etc ...\r\n```\r\n\r\n",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2024-06-24T13:44:37Z",
+   "body": "Thanks for the issue. Do you have a minimal reproducer though? Because the web socket delay timeout works for me..."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-06-24T13:59:00Z",
+   "body": "Thanks for your quick response. \r\nThe issue we encouter are the websockets being closed on configuration reload but by reading again #5471, I may didn't understood the purpose of the `stream_close_delay` option. \r\n\r\nDoes this option ensure that websockets are not closed at all on config reload (which is what I'm looking for) or that they are always closed but after a given delay timeout ?"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-06-24T14:29:10Z",
+   "body": "`stream_close_delay` defers the closing of websockets until the end of the delay, starting from the config reload. The point is to allow connections to \"die off\" naturally but still set a limit for how long they'll stick around.\r\n\r\nThis is important because otherwise, a connection that stays open forever will cause a reference to the old config to stay in memory and never get cleaned up until all the connections are closed.\r\n\r\nSetting it is basically saying \"yes I understand memory usage may increase because old configs will stick around and not get garbage collected until the delay is over\". Just set it to something long enough that your connections can reasonably die off naturally, but not so long that memory usage from config reloads becomes a concern.\r\n\r\nBut either way, your apps should be set up such that a disconnect will trigger a reconnect attempt. Not having client-side reconnections is a bug."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-06-24T15:59:29Z",
+   "body": "Our websocket clients have already a reconnection mechanism implemented. The problem is the reconnection is happening too frequently.\r\n\r\nIn our case, we use a caddy server as a central point to access several unrelated between each other web servers. We have ~100 servers which trigger the registration of a new reverse proxy rule using the caddy admin API. \r\nThis means that every reverse proxy rule serves/act as a gateway to a completely independent web server which is used by some websockets clients that only communicates with their related web server.\r\n\r\nSome of the ~100 servers have an unreliable network, which causes the config to changes frequently, i.e. each time a machine disconnects, we update the caddy config to remove the reverse proxy rule related to the machine that disconnected. Vice versa, when a machine connects to the network, we update the caddy config to add the reverse proxy rule related to that machine. We are required to remove the reverse proxy rule when a server disconnects because it allows us to show a custom error page to inform the related users that their server is offline (that's the purpose of the `\"@id\": \"srv0-error\"` rule given in the config above).\r\n\r\nEach configuration change in caddy leads to a websockets closing. So in our case, the servers with unreliable network connections impact directly the other, independent, web servers and their web clients that are using websockets because each time a server disconnects, it triggers a caddy config reload and this leads to a websocket connection cut for every other users that have a stable network.\r\n\r\nI think that caddy should only free the resources (including websockets) that are affected by changes made in the configuration. It's normal to close/clean sockets that are no longer part of the config, but it's seems less relevant to close sockets or any other ressource that remain unchanged in the new configuration during a reload (as opposed to a restart for which this behavior would be justified)"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-06-24T16:34:30Z",
+   "body": "Then what you should do is avoid reloading the config so often. You can implement a dynamic upstreams module, which would let you change the list of upstreams without changing the config.\r\n\r\n> I think that caddy should only free the resources (including websockets) that are affected by changes made in the configuration.\r\n\r\nWay easier said than done. We can't do that. We don't diff configs, the next config has no clue what was in the previous config.\r\n\r\n> It's normal to close/clean sockets that are no longer part of the config, but it's seems less relevant to close sockets or any other ressource that remain unchanged in the new configuration during a reload (as opposed to a restart for which this behavior would be justified)\r\n\r\nThe connection is still active, and therefore is still literally inside a code path that has a reference to the config. It doesn't \"return\" from that scope until the connection is closed, so the reference stays, and therefore garbage collection can't happen."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-06-24T16:34:50Z",
+   "body": "Anyway I don't see a bug here, just sounds like a misunderstanding of the feature."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-06-24T16:40:48Z",
+   "body": "I'm also willing to work on a more proper websocket solution, but it might not be simple. We'd just need a sponsorship to do it. @reporter Is this something your company would be willing to sponsor?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-06-25T11:51:50Z",
+   "body": "> Way easier said than done. We can't do that. We don't diff configs, the next config has no clue what was in the previous config.\r\n\r\nI'm aware that open source projects like caddy have limited resources and there is a lot of other work you have to focus on. \r\nI just wanted to share an issue we've encountered in our entreprise grade application, where this kind of \"detail\" is a reason for us to switch to another software solution. I think it's always good for open source projects to be challenged with advanced use cases like the one we have since it may help the project to evolve, especially when this kind of topology with a lot of nodes having unreliable network is very popular and has a lot of application nowadays (load balancers, fail-overs, etc).\r\n\r\n> Anyway I don't see a bug here, just sounds like a misunderstanding of the feature.\r\n\r\nIt's not a bug, it's a missing feature (: \r\nAnyway thanks for your help !\r\n\r\n@participant1 \r\nTanks for your proposition. TBH it depends on the cost naturally. If it exceeds the cost we may support to switch to e.g. the paid version of nginx which already has this feature, it will be more difficult for us to choose to sponsor that development."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-06-25T15:07:20Z",
+   "body": "> It's not a bug, it's a missing feature (:\n\nI disagree, the feature is there. Just use a longer delay than 60 seconds.\n\nOr like I said, use [dynamic upstreams](https://caddyserver.com/docs/caddyfile/directives/reverse_proxy#dynamic-upstreams) (use one of the existing modules or write your own) which would let you avoid config reloads most of the time, probably."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-06-25T15:30:33Z",
+   "body": "> > It's not a bug, it's a missing feature (:\r\n> \r\n> I disagree, the feature is there. Just use a longer delay than 60 seconds.\r\n\r\nWe can't put something like 1 day/week or more without risking to create a memory leak and run out of CPU/RAM ressources. \r\n\r\nAs you said: you don't do diff between configs change and that's I was pointing as a missing feature. This is a design choice you made, which is indeed easier to implement (as it's an hard reset). But going to the \"diff approach\" and cleaning only the resources that are no longer needed is objectively a better software design in terms of performance and moreover that's the way other well-known reverse proxies work. Thanks for your help and wish you a nice day "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-06-25T15:38:27Z",
+   "body": "> > It's not a bug, it's a missing feature (:\r\n> \r\n> I disagree, the feature is there. Just use a longer delay than 60 seconds.\r\n> \r\n> Or like I said, use [dynamic upstreams](https://caddyserver.com/docs/caddyfile/directives/reverse_proxy#dynamic-upstreams) (use one of the existing modules or write your own) which would let you avoid config reloads most of the time, probably.\r\n\r\nWe'll check the dynamic upstreams, thanks"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-06-26T19:43:15Z",
+   "body": "@reporter Can you post a sample config for nginx that does what you need?\n\nHow many nginx instances do/would you be running?\n\nThe cost mainly depends on the implementation. I'll try to figure out an approach and generate an estimate for you."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-07-05T18:20:50Z",
+   "body": "@reporter Just a gentle ping in case this was missed ^ -- if I can see a sample nginx config of what you're trying to accomplish I can get an estimate together for you."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-07-08T13:44:56Z",
+   "body": "> @reporter Just a gentle ping in case this was missed ^ -- if I can see a sample nginx config of what you're trying to accomplish I can get an estimate together for you.\r\n\r\n@participant1 Sorry, thanks for the reminder. We don't have a fully working nginx setup yet, we are working on a POC. For now, we are still using our caddy setup in production. I gave a sample config in the beginning of this issue (see `Example of configuration`). This caddy setup meets all of our needs, excluding the websockets connection that is being reset every time we do a caddy config reload (that was the initial purpose of this issue). Could we get an estimate for fixing the closing of \"still needed\" websocket connections on config reload ? The idea is to keep the connections that was not removed in the new config, and of course clean the ones that were removed."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-07-08T13:46:44Z",
+   "body": "I forgot to mention that the parameter `stream_close_delay` has no sense in my `Example of configuration` and should be ignored."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-07-08T22:14:32Z",
+   "body": "@reporter Thanks for the reply; although, I am not seeing in your example config above where you are preserving websocket connections. I'm asking what the config might look like because it's not clear to me, from my end, what kind of config will work for you as the user.\r\n\r\nThe big question/problem is how to properly identify connections that should be preserved through config changes. i.e. how do we know what the connection from a certain reverse proxy handler config in the first configuration maps to in the new config?\r\n\r\nAlso, many users rely on config changes to clean up connections and keep the connections to their backends current/up-to-date, or to sever connections when they plan to bring a server down soon. There will need to be a way, in the config, to specify when/which connections should be severed or preserved. Leaving resources open is a bit tricky like this."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-07-09T14:26:55Z",
+   "body": "> @reporter Thanks for the reply; although, I am not seeing in your example config above where you are preserving websocket connections. I'm asking what the config might look like because it's not clear to me, from my end, what kind of config will work for you as the user.\r\n\r\n@participant1 Sorry maybe my explanation was not clear. Please find below a (simplified) version of our controller which interact with the caddy admin.\r\n\r\n### (Simplified) version of our controller which interact with the caddy admin\r\n\r\n```python\r\nasync def upsert_route(\r\n    server_id: str,\r\n    route_id: str,\r\n    match_hosts: List[str],\r\n    handle_upstreams: List[str],\r\n    handler: str = \"reverse_proxy\",\r\n    tls=False,\r\n):\r\n    # (...)\r\n    requests.post(\r\n        f\"{CADDY_BASE_URL}/config/apps/http/servers/{server_id}/routes\",\r\n        json={\r\n            \"@id\": get_id(server_id, route_id),\r\n            \"match\": [{\"host\": match_hosts}],\r\n            \"handle\": list(\r\n                map(\r\n                    lambda match_host: {\r\n                        \"handler\": handler,\r\n                        \"upstreams\": list(\r\n                            map(lambda upstream: {\"dial\": upstream}, handle_upstreams)\r\n                        ),\r\n                        **get_transport_config(match_host),\r\n                    },\r\n                    match_hosts,\r\n                )\r\n            ),\r\n        },\r\n    )\r\n\r\nasync def delete_route(server_id: str, route_id: str):\r\n    response = requests.delete(f\"{CADDY_BASE_URL}/id/{get_id(server_id, route_id)}\")\r\n    response.raise_for_status()\r\n    return response\r\n```\r\n\r\nAs you can see, we have two functions : \r\n- `upsert_route` is intended to add a reverse_proxy handler to caddy (with a specific ID)\r\n-  and the second `delete_route` to remove a handler (referenced by its ID) from caddy\r\n\r\n### Example of execution\r\nAs explained earlier, we have about ~100 http servers (nodes) with unreliable networks and a master server (which hosts the caddy server).\r\n\r\n1. When a node (e.g. ID `982998`) connects to the network, we call `upsert_route()` to update our caddy master server so it serves a reverse_proxy to the node (under specific subdomain: `*.<redacted-host>`). Our caddy config gets added the following:\r\n\r\n```json\r\n[\r\n# a lot of other handles (two per nodes) ...,\r\n{\r\n  \"@id\": \"srv0-u982998-p443\",\r\n  \"handle\": [\r\n    {\r\n      \"handler\": \"reverse_proxy\",\r\n      \"transport\": {\r\n        \"protocol\": \"http\",\r\n        \"tls\": {\r\n          \"server_name\": \"<redacted-host>\"\r\n        }\r\n      },\r\n      \"upstreams\": [\r\n        {\r\n          \"dial\": \"our-dial.com:30190\"\r\n        }\r\n      ]\r\n    },\r\n    {\r\n      \"handler\": \"reverse_proxy\",\r\n      \"transport\": {\r\n        \"protocol\": \"http\",\r\n        \"tls\": {\r\n          \"server_name\": \"*.<redacted-host>\"\r\n        }\r\n      },\r\n      \"upstreams\": [\r\n        {\r\n          \"dial\": \"our-dial.com:30190\"\r\n        }\r\n      ]\r\n    }\r\n  ]\r\n}\r\n]\r\n```\r\n\r\n2. When a second node connects to the network (e.g. ID `123456`), we automatically call `upsert_route()` again to update our caddy master server so it serves a reverse_proxy to the node through the subdomain  `*.<redacted-host>`. Then, if we `GET` the handlers using the caddy admin API, we'll get something like this (handlers for nodes `982998` and `123456`) :\r\n\r\n```json\r\n[\r\n# a lot of other handles (two per nodes) ...,\r\n{\r\n  \"@id\": \"srv0-u982998-p443\",\r\n  \"handle\": [\r\n    {\r\n      \"handler\": \"reverse_proxy\",\r\n      \"transport\": {\r\n        \"protocol\": \"http\",\r\n        \"tls\": {\r\n          \"server_name\": \"<redacted-host>\"\r\n        }\r\n      },\r\n      \"upstreams\": [\r\n        {\r\n          \"dial\": \"our-dial.com:30190\"\r\n        }\r\n      ]\r\n    },\r\n    {\r\n      \"handler\": \"reverse_proxy\",\r\n      \"transport\": {\r\n        \"protocol\": \"http\",\r\n        \"tls\": {\r\n          \"server_name\": \"*.<redacted-host>\"\r\n        }\r\n      },\r\n      \"upstreams\": [\r\n        {\r\n          \"dial\": \"our-dial.com:30190\"\r\n        }\r\n      ]\r\n    }\r\n  ]\r\n},\r\n{\r\n  \"@id\": \"srv0-u123456-p443\",\r\n  \"handle\": [\r\n    {\r\n      \"handler\": \"reverse_proxy\",\r\n      \"transport\": {\r\n        \"protocol\": \"http\",\r\n        \"tls\": {\r\n          \"server_name\": \"<redacted-host>\"\r\n        }\r\n      },\r\n      \"upstreams\": [\r\n        {\r\n          \"dial\": \"our-dial.com:123456\"\r\n        }\r\n      ]\r\n    },\r\n    {\r\n      \"handler\": \"reverse_proxy\",\r\n      \"transport\": {\r\n        \"protocol\": \"http\",\r\n        \"tls\": {\r\n          \"server_name\": \"*.<redacted-host>\"\r\n        }\r\n      },\r\n      \"upstreams\": [\r\n        {\r\n          \"dial\": \"our-dial.com:123456\"\r\n        }\r\n      ]\r\n    }\r\n  ]\r\n}\r\n]\r\n```\r\n\r\n3. Then, if the node `123456` disconnects, we automatically call `delete_route()` so the reverse_proxy handler proxying to the node `123456` is removed, and we ends up with the config we had initally (with the reverse_proxy handler for node `982998` still being here) : \r\n\r\n```json\r\n[\r\n# a lot of other handles (two per nodes) ...,\r\n{\r\n  \"@id\": \"srv0-u982998-p443\",\r\n  \"handle\": [\r\n    {\r\n      \"handler\": \"reverse_proxy\",\r\n      \"transport\": {\r\n        \"protocol\": \"http\",\r\n        \"tls\": {\r\n          \"server_name\": \"<redacted-host>\"\r\n        }\r\n      },\r\n      \"upstreams\": [\r\n        {\r\n          \"dial\": \"our-dial.com:30190\"\r\n        }\r\n      ]\r\n    },\r\n    {\r\n      \"handler\": \"reverse_proxy\",\r\n      \"transport\": {\r\n        \"protocol\": \"http\",\r\n        \"tls\": {\r\n          \"server_name\": \"*.<redacted-host>\"\r\n        }\r\n      },\r\n      \"upstreams\": [\r\n        {\r\n          \"dial\": \"our-dial.com:30190\"\r\n        }\r\n      ]\r\n    }\r\n  ]\r\n}\r\n]\r\n```\r\n\r\n### Preserving websocket connections\r\nIn our example of execution, the reverse_proxy handler configuration for node `982998` **never changed**. \r\n\r\nIn fact, we added a new handler (for the `123456` connection node) and removed the same handler when the `123456` node disconnected. \r\n\r\nIn this case, we should have kept the websockets connections that were active to the reverse_proxy serving node `982998`. But the websocket clients connected to `wss://<redacted-host>` were disconnected for a short time because when a caddy configuration changes, caddy restarts all its handlers. \r\n\r\nOur web clients (connected to their respective nodes through caddy's reverse_proxy) are disconnected every time a node (that does not concerns them) is connected or disconnected. As we have a lot of nodes (~100) having unreliable network, the reload happens (very) often and our web clients lose websocket connections several times a minute. \r\n\r\n> The big question/problem is how to properly identify connections that should be preserved through config changes. i.e. how do we know what the connection from a certain reverse proxy handler config in the first configuration maps to in the new config?\r\n\r\nAa naive way I see here is to hash the JSON related to `handler` and compare the digest between config changes, if it's the same, we should keep the ressources (active connections : http, websocket, ...) for that handler.\r\n\r\n> Also, many users rely on config changes to clean up connections and keep the connections to their backends current/up-to-date, or to sever connections when they plan to bring a server down soon. There will need to be a way, in the config, to specify when/which connections should be severed or preserved. Leaving resources open is a bit tricky like this.\r\n\r\nIn that case, shouldn't we have different behaviors like `restart` and `reload` ?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-07-10T19:02:49Z",
+   "body": "Thanks for the details. That's helpful. I want to dive in here and get really specific:\r\n\r\n> In our example of execution, the reverse_proxy handler configuration for node 982998 **never changed**.\r\n\r\nSo, the desired behavior would be that if any part of your reverse proxy handler configuration changes, to go ahead and disconnect the websocket connections? And only preserve them if there is no change to the handler?\r\n\r\nWhat if you change something about the handler like, health checks, load balancing, HTTP keepalives, etc etc? Under what specific conditions should the connections be preserved?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-07-15T13:06:57Z",
+   "body": "Sorry for the delay.\r\n\r\n> So, the desired behavior would be that if any part of your reverse proxy handler configuration changes, to go ahead and disconnect the websocket connections? And only preserve them if there is no change to the handler?\r\n\r\nYes, this is exactly what we need in our use case.\r\n\r\n> What if you change something about the handler like, health checks, load balancing, HTTP keepalives, etc etc? Under what specific conditions should the connections be preserved?\r\n\r\nWe don't need that kind of \"granularity\" in our use case. Our case is quite simple, we want to preserve the connection only if a reverse_proxy handler was not removed in a configuration change. But if you want to anticipate the development of this feature for a general purpose, it may be interesting to think about killing the connections only if a changed parameter of the handler requires a restart (but it might cause too much work and this is not needed, at least in our scope).\r\n\r\nThanks"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-07-15T16:24:13Z",
+   "body": "Ok. That's great to know. Just one thing I want to clarify / make sure I understand yet: the reason `stream_close_delay` does not satisfy your needs is because it will always leave websocket connections open, even if you're trying to close them? in other words, you want to disconnect clients where the instance of the `reverse_proxy` handler they are connected to changes or disappears, so `stream_close_delay` would keep them open too long, is that right? (If so, why wouldn't the backend going down simply disconnect them anyway?)"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-11-10T22:07:06Z",
+   "body": "> I'm also willing to work on a more proper websocket solution, but it might not be simple. We'd just need a sponsorship to do it. [@reporter](https://github.com/reporter) Is this something your company would be willing to sponsor?\n\n@participant1 we'd be happy to sponsor developing this solution, assuming it's within our needs financially. If you're still open to this, what's the best way to contact you to set it up?"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-11-10T23:11:53Z",
+   "body": "@participant3 https://caddyserver.com/sponsor"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-11-10T23:17:53Z",
+   "body": "@participant3 Send an email to matt at dyanim dot com -- or book a time at https://matt.chat.\n\nAt this point I'm more busy, but we can work something out."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2026-03-04T19:10:15Z",
+   "body": "Why would a reload interrupt anything at all when the outgoing connection or service is not actually affected by the new config? it should have smart reload. Is this something that is still on the board? I will rewrite it all and make a PR myself. This is a problem for me as the system I use depends on caddy heavily and is going to be the backbone of a distributed system."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2026-03-04T19:25:40Z",
+   "body": "@participant4 Have you read the entire discussion? It was explained in detail above."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2026-03-04T19:30:00Z",
+   "body": "I see the following https://github.com/caddyserver/caddy/issues/7222\nBut this was closed as Not planned, I had read this before but it didn't seem there was a solution when i read it about 4 months ago. I will just follow 7222 then instead since thats the issue i'm directly talking about."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2026-04-17T07:02:23Z",
+   "body": "I took a shot at trying to improve the situation with https://github.com/caddyserver/caddy/pull/7649, would be great if anyone interested could take it for a spin to confirm whether it helps."
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "caddyserver/caddy",
+  "default_branch": "master",
+  "commit_sha": "c2ccf8690f315aa0ebab930c3aadcc6cd11fc9e9",
+  "as_of": "2024-06-24T12:06:18Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_caddyserver_caddy_6420"
+}

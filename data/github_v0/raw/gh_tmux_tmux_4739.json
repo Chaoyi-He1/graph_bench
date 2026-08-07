@@ -1,0 +1,290 @@
+{
+ "repo": "tmux/tmux",
+ "number": 4739,
+ "url": "https://github.com/tmux/tmux/issues/4739",
+ "title": "Sixel draws fails on certain height/width ratio",
+ "state": "closed",
+ "labels": [],
+ "reporter": "reporter",
+ "created_at": "2025-12-04T14:45:37Z",
+ "closed_at": "2025-12-18T13:44:53Z",
+ "body": "### Issue description\n\nWhen I try to use [chafa](https://github.com/hpjansson/chafa), sometimes the drawing fails (o it's cleaned too early) and I noticed that's correlated to the panel dimension\n\ncat.jpg dimension: 1920x1080\nfailed panel dimension: 215x36\n\n### Required information\n\n* tmux version (`tmux -V`).\n**tmux 3.6**\n* Platform (`uname -sp`).\n**Arch Linux 6.17.9-arch1-1**\n* Terminal in use (xterm, rxvt, etc).\n**foot**\n* $TERM *inside* tmux (`echo $TERM`).\n**screen-256color**\n* $TERM *outside* tmux (`echo $TERM`).\n**foot**\n* Logs from tmux (`tmux kill-server; tmux -vv new`).\n**ND**",
+ "comments": [
+  {
+   "author": "reporter",
+   "created_at": "2025-12-05T11:11:45Z",
+   "body": "@participant1 I was able to reproduce this on the [default](https://github.com/tmux/tmux/blob/master/example_tmux.conf) configuration too and logged the session up after chafa command execution fails\n[tmux-client.log](https://0x0.st/KtGL.txt)\n[tmux-out.log](https://0x0.st/KtGV.txt)\n[tmux-server.log](https://0x0.st/KtGW.txt)"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-12-08T08:50:33Z",
+   "body": "Your image is too big for the  default buffer size of 1048576. Try increasing the `input-buffer-size` option."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-12-08T10:12:52Z",
+   "body": "thank you for the suggestion but I already had it at 10485760, changing to 104857600 didn't solve this\nedit: I recall that the first months of 2025 this same setup was working on master git of that time"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-12-08T10:15:37Z",
+   "body": "The `input-buffer-size` is not changed in your log."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-12-08T10:44:02Z",
+   "body": "I increased the `input-buffer-size` in the default configuration too, [here](https://0x0.st/Kw3C.txt)'s the logs until after the chafa command"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-12-08T11:25:35Z",
+   "body": "OK, I see this - you have this image [in.sixel.txt](https://github.com/user-attachments/files/24030985/in.sixel.txt) and when the pane is too small for it, it doesn't draw.\n\ntmux is sending an image but the image is invalid in some way, so clearly there is a problem with cropping.\n\nWhen the pane is only a little bit too small, I get part of the image, but looks like it is cropped incorrectly (at the bottom rather than the top)."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-12-08T11:37:38Z",
+   "body": "I thought it could have been something like the encoding of the specific image but it happened with every image file I tried too (at that window/panel dimension)"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-12-08T11:39:11Z",
+   "body": "This fixes it for me:\n~~~~\ndiff --git a/image-sixel.c b/image-sixel.c\nindex 1c93d7a7..6d18a978 100644\n--- a/image-sixel.c\n+++ b/image-sixel.c\n@@ -595,7 +595,7 @@ sixel_print(struct sixel_image *si, struct sixel_image *map, size_t *size)\n        tmplen = xsnprintf(tmp, sizeof tmp, \"\\033P0;%uq\", si->p2);\n        sixel_print_add(&buf, &len, &used, tmp, tmplen);\n\n-       if (si->set_ra) {\n+       if (0 && si->set_ra) {\n                tmplen = xsnprintf(tmp, sizeof tmp, \"\\\"1;1;%u;%u\", si->ra_x,\n                    si->ra_y);\n                sixel_print_add(&buf, &len, &used, tmp, tmplen);\n~~~~\nThe original image has 1;1;1184;0 as the RA and it is the same in the cropped image, but that seems wrong, the new image should be smaller...\n\nThis was added in 7a78cdf78c00370d4ff1eb2c7cb5678412de9002... @participant2 do you know what the problem is here?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-12-08T11:45:59Z",
+   "body": "Even with this commented out there is still something funny, because the first time I cat the image it appears then is immediately cleared, but the second time it works. I think this is a separate issue, maybe something to do with redraw or scrolling...\n\nI have a 158x42 terminal and I split it once so the top pane is 158x11. These are the images with and without the change above:  [bad2.sixel.txt](https://github.com/user-attachments/files/24031338/bad2.sixel.txt) [good2.sixel.txt](https://github.com/user-attachments/files/24031336/good2.sixel.txt)\n\n"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-12-08T14:23:36Z",
+   "body": "> The original image has 1;1;1184;0 as the RA and it is the same in the cropped image, but that seems wrong, the new image should be smaller...\n\nIn Kw3C.txt/in.sixel.txt I see `1;1;1184;665`.  If it turns into `1;1;1184;0` as in bad2.sixel.txt, then somehow the height is disappearing - that's certainly a bug, but I cannot reproduce it.  What cell size does this happen with? (`printf '\\033[16t';read`)\n\n(The other issue might be related to overprinting.  With 10x20 cells on a 191x34 pane:\n\n```\n#!/bin/sh\ncat in.sixel.txt\nsleep 1\nprintf a\nsleep 1\n```\n\nThe cursor lands on the last line of the cat (as opposed to the next line).  `printf a` then erases the poor thing from existence (same thing happens with shell prompt).\nOn other pane heights, I get a cursor on the next line.  But I'm not sure if this is the right behavior, because xterm outside tmux always puts the cursor on the last line.)\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-12-08T14:27:58Z",
+   "body": "Here is my log from `cat ~/in.sixel.txt` with two panes, the upper one too small vertically for the image: [tmux-server-2659093.log](https://github.com/user-attachments/files/24033939/tmux-server-2659093.log)\n\nOutside tmux:\n~~~~\n$ printf '\\033[16t';read\n^[[6;27;12t\n~~~~\nAnd inside:\n~~~~\n$ printf '\\033[16t';read\n^[[6;27;12t\n$ tmux display -a|grep cell\nclient_cell_height=27\nclient_cell_width=12\nwindow_cell_height=27\nwindow_cell_width=12"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-12-08T14:30:08Z",
+   "body": "In the RA in the output images, the height is zero, which I guess is the issue (sorry I misread it before and thought it was unchanged)."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-12-08T16:22:16Z",
+   "body": "It seems I misunderstood the coordinate system.  Currently we do:\n\nra_y = max(min(ra_y, psy) - poy, 0)\n\nwhich would have been fine if psy and poy were actually a slice as per my comment, but they aren't, poy is an offset into the image and psy is the desired size.  Swapping the operations should fix the 0-height bug:\n\n```diff\ndiff --git a/image-sixel.c b/image-sixel.c\nindex 1c93d7a7..5c800461 100644\n--- a/image-sixel.c\n+++ b/image-sixel.c\n@@ -455,12 +455,12 @@ sixel_scale(struct sixel_image *si, u_int xpixel, u_int ypixel, u_int ox,\n \tnew->p2 = si->p2;\n \n \tnew->set_ra = si->set_ra;\n-\t/* clamp to slice end */\n-\tnew->ra_x = si->ra_x < psx ? si->ra_x : psx;\n-\tnew->ra_y = si->ra_y < psy ? si->ra_y : psy;\n-\t/* subtract slice origin */\n+\t/* subtract offset */\n \tnew->ra_x = new->ra_x > pox ? new->ra_x - pox : 0;\n \tnew->ra_y = new->ra_y > poy ? new->ra_y - poy : 0;\n+\t/* clamp to size */\n+\tnew->ra_x = si->ra_x < psx ? si->ra_x : psx;\n+\tnew->ra_y = si->ra_y < psy ? si->ra_y : psy;\n \t/* resize */\n \tnew->ra_x = new->ra_x * xpixel / si->xpixel;\n \tnew->ra_y = new->ra_y * ypixel / si->ypixel;\n```"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-12-08T21:37:01Z",
+   "body": "OK with this the image is valid, and if I `cat in.sixel.txt` it works, but it does not display the first time for some reason, weirdly..."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-12-08T21:43:18Z",
+   "body": "I've applied this fix now, since it seems to be right, thanks! I don't know if there is another problem or if it is my terminal...\n\n@reporter do you still see the problem if you build from `master`?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-12-08T22:59:59Z",
+   "body": "I tried to compile the master branch with [this PKGBUILD](https://0x0.st/Kwkt.txt) and install it but it I still get the same behaviour, I'm doing something wrong?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-12-08T23:08:03Z",
+   "body": "What does `tmux -V` show?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-12-08T23:08:32Z",
+   "body": "That file says 3.6a not master?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-12-09T07:54:39Z",
+   "body": "> What does `tmux -V` show?\n\ntmux next-3.7\n\n> That file says 3.6a not master?\n\nthat's because I just edited the `source` and `sha256sums`, for testing purpose"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-12-09T07:59:51Z",
+   "body": "OK can you show me the server log of the problem from using `master` (you may be hitting a different issue)?\n\nMake sure you have `master` with `2e5e9c02982776a35a0378206966991e5dd4c723` (check `git log`)."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-12-09T08:08:05Z",
+   "body": "`git log`\n\n<img width=\"746\" height=\"128\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/c013d200-24bd-4623-8deb-ad2bc50b8fca\" />\n\nand [here](https://0x0.st/KkIu.txt)'s the logs"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-12-09T08:17:22Z",
+   "body": "I don't see the image being sent at all in this log?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-12-09T08:23:24Z",
+   "body": "sorry I messed up the log collection, [here](https://0x0.st/KdBt.txt) is the one with the image"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-12-09T08:28:35Z",
+   "body": "OK so the original bug looks fixed, your log has the right size in the output image:\n~~~~\n\\033P0;1q\"1;1;1184;665\n~~~~\nAnd if I take the image out and print it, it works. Let me see if I can see what is going on..."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-12-09T08:40:47Z",
+   "body": "maybe this visual behaviour can help you pinpoint the problematic part of code, the other panel seems to redraw incorrectly the split panel line after each execution\n\nhttps://github.com/user-attachments/assets/0d490d7f-28f0-4351-8397-3b8e7baeb5ec\n\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-12-09T08:42:39Z",
+   "body": "OK I think this is the same thing I am seeing, which is not really a bug - when the image is drawn and this causes the pane to scroll, the cursor is left on the last line of the image which causes the shell to immediately write over it with the prompt. tmux does not support writing text over images, so the image is removed.\n\nIf you add `; cat` or `; read` to the end of your command, does it fix the problem?\n\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-12-09T08:45:40Z",
+   "body": "executing `chafa ./cat.jpg; read` waits for input like this\n\n<img width=\"1303\" height=\"895\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/c70b0c09-71b2-4e17-87ce-f8e9fee12465\" />"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-12-09T08:48:53Z",
+   "body": "OK, so it seems like it is working as expected now. Adding `; echo` instead of `; read` would work because it would scroll again and put the prompt after the image.\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-12-09T08:52:50Z",
+   "body": "yes, I confirm you that also with `; echo` the image is displayed correctly (altough the split line scroll behaviour remains)"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-12-09T08:56:12Z",
+   "body": "I don't see the extra line, do you see it if you `cat` the image file https://github.com/user-attachments/files/24030985/in.sixel.txt as well or only if you run chafa?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-12-09T09:07:10Z",
+   "body": "I'm seeing this behaviours (both tested on a fresh terminal session)\n\nwith `cat in.sixel.txt`\n- the first execution do not keep the drawn image and print the extra line\n- from second execution and on it correctly keeps the drawn image and do not add more extra line (but the double line from first execution remains)\n\n<img width=\"1216\" height=\"805\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/32f3f6a4-45e6-4460-a844-e289e527eb0c\" />\n\nwith `chafa` it keeps [this](https://github.com/tmux/tmux/issues/4739#issuecomment-3631035286) behaviour"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-12-09T09:19:22Z",
+   "body": "I see the way the image displays on the second attempt without `echo`, and it works if the terminal is not split, so clearly we are doing something inconsistent..."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-12-09T09:25:38Z",
+   "body": "on a `215x72` no split pane I confirm that the first execution is effective, but if I reduce the terminal emulator window so that the pane is `215x36` (like if it was splitted), `cat in.sixel.txt` seems to converge to the same `chafa` behaviour"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-12-09T09:34:03Z",
+   "body": "Yes, for me, if you are on the second line it is wrong, but on the first or third line it is OK:\n~~~~\nclear;echo;cat ~/in.sixel.txt # wrong\nclear;cat ~/in.sixel.txt # OK\nclear;echo;echo;cat ~/in.sixel.txt # OK\n~~~~\nBut the funny thing is, the \"wrong\" behaviour is really sort of the *right* behaviour, because if you try the same outside tmux, you will see the prompt is left on the last line of the image, and overwrites it.\n\nRemoving the image straight away is not ideal, so it would really be better if we always just added an extra line..."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-12-09T10:06:46Z",
+   "body": "This fixes it for me - we were only scrolling up if the image was greater than the screen size, not if it was exactly the same:\n~~~~\n--- a/screen-write.c\n+++ b/screen-write.c\n@@ -2339,7 +2339,7 @@ screen_write_sixelimage(struct screen_write_ctx *ctx, struct sixel_image *si,\n        }\n\n        sy = screen_size_y(s) - cy;\n-       if (sy < y) {\n+       if (sy <= y) {\n                lines = y - sy + 1;\n                if (image_scroll_up(s, lines) && ctx->wp != NULL)\n                        ctx->wp->flags |= PANE_REDRAW;\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-12-09T10:53:16Z",
+   "body": "for me that diff makes `cat in.sixel.txt` works on first execution on a splitted `215x35` pane, but if I resize the terminal emulator window, and get the a single pane of `215x36`, both `cat in.sixel.txt` and `chafa` fails"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-12-09T19:47:32Z",
+   "body": "It works for me with any size of window, can you show the log of the failure?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-12-09T21:35:48Z",
+   "body": "probably I messed up somewhere during the compilation, [here](https://0x0.st/KF0t.txt)'s the log"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-12-11T21:46:36Z",
+   "body": "Are you sure you have build from master with this change? Can you show me a video of what is happening now?\n\nI can't see anything obvious in the log and I can't make it behave incorrectly..."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-12-12T08:45:01Z",
+   "body": "I cloned the master git locally, edited `screen-write.c` as suggested and built from that; can you push that change to the repo so we can exclude problem with my manual edit? sorry for my annoying skill\nps: the behaviour is the same of the previous videos (flash image and double lines)"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-12-17T19:20:38Z",
+   "body": "I've made some progress in pinpointing the problem. Seems to be related to certain combination of terminal emulator font dimension/line height and tmux panel size . here some test with different font dimension at a fixed tmux panel height\n\n`font=monospace:size=8` # foot default\n`font=monospace:size=8.5`\n`font=monospace:size=9`\n`font=monospace:size=10`\n`font=monospace:size=11`\n`font=monospace:size=11.5`\n`font=monospace:size=12`\n`font=monospace:size=12.5`\n`font=monospace:size=13`\n`font=monospace:size=14.5`\n\n**image is not printed and tmux window has bottom padding**\n<img width=\"192\" height=\"69\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/d4415f1a-6a3d-4ffe-af52-43a3684c10fc\" />\n\n\n`font=monospace:size=9.5`\n`font=monospace:size=13.5`\n`font=monospace:size=14`\n\n**image is printed and tmux window has bottom padding**\n<img width=\"124\" height=\"68\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/096094e7-f237-4537-94bb-bc6c9ef117c6\" />\n\n`font=monospace:size=10.5`\n\n**image is printed and tmux window does not have bottom padding**\n<img width=\"186\" height=\"93\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/96fd8c28-e2ce-49dd-8695-2c6a8a446e77\" />\n\nthis considering the default horizontal split dimension, because if I move the split line up or down, the results starts to differ and mix. Is this what the `screen-write.c` fix is about? or is not related?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-12-18T09:10:09Z",
+   "body": "OK, I have applied this change since it fixes it for me, and I have also added some extra logging to image output.\n\nCould you please rebuild tmux from latest master and then show the bug by doing the same thing with a working and a nonworking font size and send me the two server logs?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-12-18T11:34:18Z",
+   "body": "built from master and tested with standard horizontal pane split, where image is correctly rendered with a `10.5` font size, and with a resized (increased by one step) horizontal pane split with the same `10.5` font size\n\n[working size logs](https://0x0.st/Prhj.txt)\n[bugged size logs](https://0x0.st/Prhe.txt)"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-12-18T12:29:03Z",
+   "body": "Thanks, I think I have reproduced it, the size of the image is now one line too big when it fills the pane. Try this please: \n\n[sixel.diff.txt](https://github.com/user-attachments/files/24235373/sixel.diff.txt)"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-12-18T13:26:41Z",
+   "body": "that seems to fix it definitely, cannot thank you enough for your time ♥️"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-12-18T13:44:53Z",
+   "body": "Great, I have applied this now, let me know if you see any other problems. Thanks!"
+  },
+  {
+   "author": "github-actions[bot]",
+   "created_at": "2026-01-18T00:30:38Z",
+   "body": "This issue has been automatically locked since there has not been any recent activity after it was closed."
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "tmux/tmux",
+  "default_branch": "master",
+  "commit_sha": "9d6c69ebdef6521d830b6911e25b9d969efa9559",
+  "as_of": "2025-12-04T14:45:37Z",
+  "method": "github_commits_until"
+ },
+ "images": [
+  {
+   "where": "c20",
+   "source_url": "https://github.com/user-attachments/assets/c013d200-24bd-4623-8deb-ad2bc50b8fca",
+   "file": "gh_tmux_tmux_4739_img0.png"
+  },
+  {
+   "where": "c26",
+   "source_url": "https://github.com/user-attachments/assets/c70b0c09-71b2-4e17-87ce-f8e9fee12465",
+   "file": "gh_tmux_tmux_4739_img1.png"
+  },
+  {
+   "where": "c30",
+   "source_url": "https://github.com/user-attachments/assets/32f3f6a4-45e6-4460-a844-e289e527eb0c",
+   "file": "gh_tmux_tmux_4739_img2.png"
+  },
+  {
+   "where": "c40",
+   "source_url": "https://github.com/user-attachments/assets/d4415f1a-6a3d-4ffe-af52-43a3684c10fc",
+   "file": "gh_tmux_tmux_4739_img3.png"
+  },
+  {
+   "where": "c40",
+   "source_url": "https://github.com/user-attachments/assets/096094e7-f237-4537-94bb-bc6c9ef117c6",
+   "file": "gh_tmux_tmux_4739_img4.png"
+  },
+  {
+   "where": "c40",
+   "source_url": "https://github.com/user-attachments/assets/96fd8c28-e2ce-49dd-8695-2c6a8a446e77",
+   "file": "gh_tmux_tmux_4739_img5.png"
+  }
+ ],
+ "slug": "gh_tmux_tmux_4739"
+}

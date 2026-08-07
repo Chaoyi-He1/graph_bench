@@ -9,21 +9,21 @@
 
 ```mermaid
 flowchart LR
-    N0["<b>N0 multi-byte hardware SPI reads reported</b><br/><small>info: 7</small>"]
-    N1["<b>N1 regression range and reproduction limits established</b><br/><small>info: 11</small>"]
-    N2["<b>N2 in-place transfer condition isolated</b><br/><small>info: 14</small>"]
-    N3["<b>N3 optimization-sensitive DMA behavior confirmed</b><br/><small>info: 17</small>"]
-    N4["<b>N4 root-cause patch verified</b><br/><small>info: 18</small>"]
-    N_terminal["<b>terminal resolved</b><br/><small>info: 20</small>"]
-    N0 -.->|"❓ v118_passes_v1191_and_later_fail, spi2_pin_configuration_same_between_firmwares, simple_tied_level_loopback_and_toggle_probes_not_consistently_reproduce"| N1
+    N0["<b>N0 hard-SPI multi-byte read regression reported</b><br/><small>info: 6</small>"]
+    N1["<b>N1 regression range and hardware configuration collected</b><br/><small>info: 10</small>"]
+    N2["<b>N2 same-buffer dependency isolated</b><br/><small>info: 12</small>"]
+    N3["<b>N3 optimisation-sensitive DMA behaviour measured</b><br/><small>info: 15</small>"]
+    N4["<b>N4 final fix verified on test branch</b><br/><small>info: 16</small>"]
+    N_terminal["<b>terminal resolved</b><br/><small>info: 16</small>"]
+    N0 -.->|"❓ regression_between_v118_and_v1191, failure_is_on_spi2, loopback_tied_level_and_toggling_tests_not_reliable_reproducers, spi2_pin_modes_unchanged_between_working_and_failing_firmware"| N1
     linkStyle 0 stroke:#3b82f6,stroke-width:2px
-    N1 -.->|"❓ write_readinto_with_distinct_buffers_works, same_buffer_read_can_return_transmit_fill_bytes"| N2
+    N1 -.->|"❓ spi_read_uses_one_buffer_for_transmit_and_receive, write_readinto_with_separate_buffers_works"| N2
     linkStyle 1 stroke:#3b82f6,stroke-width:2px
-    N2 -.->|"❓ failure_depends_on_compiler_optimization_and_dma_hal_code, delays_change_behavior_inconsistently, o2_dma_hal_workaround_build_passes_full_eeprom_test"| N3
+    N2 -.->|"❓ dma_hal_optimization_change_makes_tests_pass, optimization_workaround_build_passes_full_eeprom_test, failure_varies_with_read_length_and_timing"| N3
     linkStyle 2 stroke:#3b82f6,stroke-width:2px
-    N3 -.->|"❓ root_cause_patch_branch_verified_by_two_affected_users"| N4
+    N3 -.->|"❓ final_root_cause_branch_works_on_affected_boards"| N4
     linkStyle 3 stroke:#3b82f6,stroke-width:2px
-    N4 ==>|"⚡ Fix STM32F7 DMA cache coherency for the in-place full-duplex transfer used by spi.read(), so speculative Cortex-M7 cache activity cannot substitute stale transmit/fill data for bytes received by DMA."| N_terminal
+    N4 ==>|"⚡ Apply the final STM32F7 DMA/cache-coherency fix that prevents Cortex-M7 speculative cache accesses from leaving a shared SPI receive buffer with stale transmit data; retain separate buffers or compiler-optimisation changes only as temporary workarounds."| N_terminal
     linkStyle 4 stroke:#f97316,stroke-width:2px
     class N0 start
     class N1 normal
@@ -38,36 +38,36 @@ flowchart LR
 
 ## Opening (body)
 
-> I am driving an EEPROM over hardware SPI on a Pyboard D SF6W using SPI(2) at 5 MHz. The same board and EEPROM setup worked in the past, and it still works on a Pyboard D SF2W running MicroPython v1.18-355-g9ab66b50c-dirty. On the SF6W with MicroPython v1.22.1, a one-byte read returns the correct value, but a multi-byte read returns a bytes object of the correct length containing zeros. SoftSPI works with reads of any length. A logic-analyzer trace shows the EEPROM transmitting the correct bytes and otherwise identical CS, clock, and data signals for single- and multi-byte reads. Looking at the STM32 SPI code, multi-byte transfers appear to use DMA while single-byte transfers do not.
+> I am driving two EEPROM chips over hard SPI at 5 MHz on a Pyboard D SF6W fitted to a DIP28 adaptor. A single-byte read returns the correct value, but a multi-byte read returns a bytes object of the correct length filled with zeros. SoftSPI works, and the same hardware and driver worked with MicroPython v1.18 on a Pyboard D SF2W. A logic-analyser trace shows the EEPROM transmitting the correct MISO data during the failed read, with the clock and chip-select signals looking correct. The traces are very short. Looking at the STM32 SPI code, it appears that multi-byte transfers use DMA while single-byte transfers do not.
 
 ## Satisfaction conditions
 
-1. Must identify the root cause as a Cortex-M7/STM32F7 DMA cache-coherency problem affecting the in-place transmit/receive buffer used by spi.read(), with speculative cache activity explaining the optimization- and timing-sensitive behavior.
-2. The diagnosis must be grounded in the collected evidence: single-byte non-DMA reads work, the logic analyzer shows correct MISO data, separate write/read buffers work, same-buffer reads can return transmitted fill bytes, and changing optimization around the DMA HAL changes the result.
-3. Must not treat wiring, SPI pin configuration, baud rate, or the successful loopback/tied-level probes as disproving the firmware bug; the EEPROM and flash-device traces show correct external bus data.
-4. Must not present separate buffers, DEBUG builds, added delays, or compiling the DMA HAL with -O2 as the permanent root fix; these are diagnostic workarounds that alter whether the cache-sensitive failure appears.
-5. Must have the affected user verify a build containing the root-cause fix on the reproducing hardware before treating the issue as resolved.
+1. Must identify the final accepted root cause as an STM32F7 DMA/cache-coherency problem involving Cortex-M7 speculative cache accesses, not an EEPROM, PCB, pin-mux, chip-select, or signal-integrity fault.
+2. Must ground the diagnosis in the collected evidence: the EEPROM transmits correct MISO data, spi.read uses one buffer for transmit and receive, separate write/read buffers work, and compiler optimisation changes alter the failure.
+3. Must not present separate write_readinto buffers or compiling the DMA HAL with different optimisation as the permanent fix; they are demonstrated workarounds that helped isolate the cache-sensitive DMA problem.
+4. Must not reject the firmware diagnosis merely because tied-level, loopback, or externally toggled MISO tests sometimes pass; those simplified tests were shown not to reproduce the EEPROM behaviour reliably.
+5. Must ask the affected user to verify a build containing the final DMA/cache fix and treat the issue as resolved only after the original EEPROM test passes.
 
 ## Edges
 
 | edge | type | gates / info | payload |
 |---|---|---|---|
-| `e1_N0__N1` | clarification_only | asks: v118_passes_v1191_and_later_fail, spi2_pin_configuration_same_between_firmwares, simple_tied_level_loopback_and_toggle_probes_not_consistently_reproduce | I tested the pre-built firmware from the website. v1.18 is the most recent version that passes; v1.19.1 and la / I am using SPI(2). On both v1.18 and v1.22.1, Y6 is B13 AF5_SPI2, Y7 is C2 AF5_SPI2, and Y8 is C3 AF5_SPI2. Th / Tying MISO to a level does not demonstrate the EEPROM failure here. Linking MOSI and MISO also passes, and a J |
-| `e2_N1__N2` | clarification_only | asks: write_readinto_with_distinct_buffers_works, same_buffer_read_can_return_transmit_fill_bytes | I replaced the multi-byte reads with spi.write_readinto() using different buffers, and the driver now works wi / With an inverter between MOSI and MISO, spi.read(5, 0x55) returned b'UUUUU' instead of the inverted b'\xaa\xaa |
-| `e3_N2__N3` | clarification_only | asks: failure_depends_on_compiler_optimization_and_dma_hal_code, delays_change_behavior_inconsistently, o2_dma_hal_workaround_build_passes_full_eeprom_test | A DEBUG build works. Builds using -O1 or -O2 work here, while the normal -Os build fails. Recompiling stm32f7x / Adding delays before and after both DMA-start calls initially did not help. On a later test, a short delay bef / I built #13549, and the EEPROM board now passes the full test, which is quite rigorous. |
-| `e4_N3__N4` | clarification_only | asks: root_cause_patch_branch_verified_by_two_affected_users | Done. The fix works in the standalone test, and it works for me on the EEPROM setup too. |
-| `e5_N4__N_terminal` | solution_only | req_info: multibyte_spi_read_returns_zero_bytes, single_byte_read_returns_correct_data, softspi_reads_work, logic_analyzer_shows_correct_eeprom_miso_data, multibyte_path_uses_dma, spi_read_uses_same_buffer_for_transmit_and_receive, v118_passes_v1191_and_later_fail, write_readinto_with_distinct_buffers_works, same_buffer_read_can_return_transmit_fill_bytes, failure_depends_on_compiler_optimization_and_dma_hal_code, o2_dma_hal_workaround_build_passes_full_eeprom_test, root_cause_patch_branch_verified_by_two_affected_users<br>elements: identifies_cortex_m7_dma_cache_coherency_as_root_cause, connects_failure_to_spi_read_using_the_same_transmit_and_receive_buffer, mentions_speculative_cache_activity_or_equivalent_cache_maintenance_race, fixes_dma_cache_handling_instead_of_requiring_separate_buffers, asks_user_to_verify_on_a_build_containing_the_fix | Fix STM32F7 DMA cache coherency for the in-place full-duplex transfer used by spi.read(), so speculative Cortex-M7 cache activity cannot substitute stale transmit/fill data for bytes received by DMA. |
+| `e1_N0__N1` | clarification_only | asks: regression_between_v118_and_v1191, failure_is_on_spi2, loopback_tied_level_and_toggling_tests_not_reliable_reproducers, spi2_pin_modes_unchanged_between_working_and_failing_firmware | I tested the pre-built firmware from the website. v1.18 is the most recent version that passes; v1.19.1 and la / I am using SPI(2), which is the only hardware SPI port available on my DIP28 adaptor and the one used by my PC / Tying MISO to a level did not demonstrate the EEPROM failure. Linking MOSI and MISO also passed, and a JK flip / Yes. On both v1.18 and v1.22.1, Y6, Y7, and Y8 report the expected SPI2 alternate functions. The logic-analyse |
+| `e2_N1__N2` | clarification_only | asks: spi_read_uses_one_buffer_for_transmit_and_receive, write_readinto_with_separate_buffers_works | The machine SPI implementation fills one buffer and passes that same buffer as both the transmit and receive a / I replaced the multi-byte reads with spi.write_readinto using different buffers, and the EEPROM driver now wor |
+| `e3_N2__N3` | clarification_only | asks: dma_hal_optimization_change_makes_tests_pass, optimization_workaround_build_passes_full_eeprom_test, failure_varies_with_read_length_and_timing | Recompiling the STM32F7 DMA driver with -O2 makes the SPI test work. A DEBUG build and builds using -O1 or -O2 / I built the candidate branch and the EEPROM board passed the full test, which is quite rigorous. / It can occur on repeated calls and at all tested lengths. With longer reads, the affected number of bytes vari |
+| `e4_N3__N4` | clarification_only | asks: final_root_cause_branch_works_on_affected_boards | The branch works for me: the original EEPROM test now passes. It also works in the other affected board's test |
+| `e5_N4__N_terminal` | solution_only | req_info: single_byte_read_correct_multibyte_read_returns_zeros, softspi_and_old_v118_firmware_work, logic_analyser_shows_correct_eeprom_miso_data, multibyte_path_appears_to_use_dma, regression_between_v118_and_v1191, spi_read_uses_one_buffer_for_transmit_and_receive, write_readinto_with_separate_buffers_works, dma_hal_optimization_change_makes_tests_pass, optimization_workaround_build_passes_full_eeprom_test, failure_varies_with_read_length_and_timing, final_root_cause_branch_works_on_affected_boards<br>elements: identifies_dma_cache_coherency_with_speculative_cortex_m7_access_as_root_cause, connects_failure_to_spi_read_using_the_same_buffer_for_transmit_and_receive, treats_separate_buffers_and_changed_optimisation_as_workarounds_not_the_permanent_fix, asks_user_to_verify_on_a_build_containing_the_fix | Apply the final STM32F7 DMA/cache-coherency fix that prevents Cortex-M7 speculative cache accesses from leaving a shared SPI receive buffer with stale transmit data; retain separate buffers or compiler-optimisation changes only as temporary workarounds. |
 
 ## Nodes
 
 | node | terminal | volunteered | images | symptoms |
 |---|---|---|---|---|
-| `N0` |  | 1 | 0 | On my Pyboard D SF6W with MicroPython v1.22.1, SPI(2).read(n) returns zero bytes when n is greater than one, although a one-byte read is cor |
-| `N1` |  | 1 | 0 | The EEPROM still returns zeros for multi-byte hardware-SPI reads on firmware from v1.19.1 onward, while v1.18 passes. The SPI pin configurat |
-| `N2` |  | 1 | 0 | My EEPROM driver works with hardware SPI when I replace its multi-byte spi.read() calls with write_readinto() calls that use different write |
-| `N3` |  | 0 | 0 | The normal optimized build still gives incorrect multi-byte hardware-SPI reads. A build that compiles the STM32F7 DMA HAL code with -O2 pass |
-| `N4` |  | 0 | 0 | The EEPROM multi-byte reads work correctly for me on the branch containing the root-cause patch. A second affected setup also reads correctl |
-| `N_terminal` | ✓ | 0 | 0 | Multi-byte spi.read() calls now return the bytes present on MISO, and the EEPROM passes its full test using hardware SPI. |
+| `N0` |  | 1 | 0 | On the Pyboard D SF6W, spi.read(1) returns the EEPROM byte correctly, but spi.read(n) for n greater than one returns the requested number of |
+| `N1` |  | 0 | 0 | The EEPROM still returns zeros for multi-byte hard-SPI reads on current firmware, even though the same test passes on v1.18. Simple loopback |
+| `N2` |  | 0 | 0 | The EEPROM driver passes with hard SPI when each multi-byte read is replaced by write_readinto using separate write and read buffers. The re |
+| `N3` |  | 0 | 0 | The normal release build can return transmitted fill bytes or zeros instead of all the incoming bytes, with the affected prefix varying betw |
+| `N4` |  | 0 | 0 | The branch provided for the final fix reads the EEPROM correctly on my affected Pyboard D, and another affected board also passes its SPI te |
+| `N_terminal` | ✓ | 0 | 0 | On a build containing the final fix, multi-byte hard-SPI reads return the EEPROM data correctly and the full EEPROM test passes. |
 
 ## Machine review (audit pass, adversarially verified)
 

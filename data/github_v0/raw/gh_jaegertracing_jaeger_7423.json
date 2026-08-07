@@ -1,0 +1,181 @@
+{
+ "repo": "jaegertracing/jaeger",
+ "number": 7423,
+ "url": "https://github.com/jaegertracing/jaeger/issues/7423",
+ "title": "[Bug]: Infinite Loading and TypeError in Jaeger UI with No Traces",
+ "state": "closed",
+ "labels": [
+  "bug",
+  "help wanted",
+  "ui",
+  "good first issue",
+  "storage/elasticsearch"
+ ],
+ "reporter": "reporter",
+ "created_at": "2025-08-08T00:11:45Z",
+ "closed_at": "2026-02-03T06:14:24Z",
+ "body": "### What happened?\n\nIssue Brief: Infinite Loading and TypeError in Jaeger UI with No Traces\nDescription\nWhen querying the Jaeger UI with a time range containing no trace data (e.g., for service service-1), the UI enters an infinite loading state and throws a TypeError: Cannot read properties of undefined (reading 'forEach') in the console. This issue appears to be related to the handling of operations metrics (e.g., service_latencies) when no traces are available, potentially due to NaN values or undefined responses from the metrics backend.\n\nActual Behavior\n\n- The UI enters an infinite loading state, failing to respond.\n- \n- The browser console logs the following error:\n\n```\nindex-KA9E3UZq.js:123 Uncaught (in promise) TypeError: Cannot read properties of undefined (reading 'forEach')\n    at index-KA9E3UZq.js:123:170602\n    at Array.forEach (<anonymous>)\n    at fetchOpsMetricsDone (index-KA9E3UZq.js:123:170533)\n    at index-KA9E3UZq.js:98:1725309\n    at index-KA9E3UZq.js:98:1725820\n    at Array.reduce (<anonymous>)\n    at index-KA9E3UZq.js:98:1725790\n    at index-KA9E3UZq.js:98:1726443\n    at index-KA9E3UZq.js:98:205551\n    at F (index-KA9E3UZq.js:98:204406)\n```\n\n\n\n\n### Steps to reproduce\n\n1. Deploy Jaeger using the image jaegertracing/jaeger:latest with an OpenTelemetry Collector forwarding traces to <redacted-host>:4317.\n2. Ensure no trace data is generated for a specific service (e.g., mx-instant-api-catalog-alt) during a given time range (e.g., 02:30 AM to 02:40 AM EEST, August 08, 2025).\n3. Access the Jaeger UI \n4. Select the service service-1 and set the time range to a period with no traces.\n5. Observe the UI behavior and check the browser console for errors.\n\n### Expected behavior\n\n- The Jaeger UI should load within a reasonable timeout (e.g., 10-15 seconds) and display a message such as \"No trace results. Try another query.\" without throwing JavaScript errors.\n- Operations metrics (e.g., service_latencies) should either be omitted or handled gracefully when no trace data is available.\n\n### Relevant log output\n\n```shell\nActual Behavior\n\n- The UI enters an infinite loading state, failing to respond.\n- \n- The browser console logs the following error:\n\n\nindex-KA9E3UZq.js:123 Uncaught (in promise) TypeError: Cannot read properties of undefined (reading 'forEach')\n    at index-KA9E3UZq.js:123:170602\n    at Array.forEach (<anonymous>)\n    at fetchOpsMetricsDone (index-KA9E3UZq.js:123:170533)\n    at index-KA9E3UZq.js:98:1725309\n    at index-KA9E3UZq.js:98:1725820\n    at Array.reduce (<anonymous>)\n    at index-KA9E3UZq.js:98:1725790\n    at index-KA9E3UZq.js:98:1726443\n    at index-KA9E3UZq.js:98:205551\n    at F (index-KA9E3UZq.js:98:204406)\n```\n\n### Screenshot\n\n_No response_\n\n### Additional context\n\nPossible Solutions:\n\n- Add a check in the Jaeger UI (fetchOpsMetricsDone) to handle undefined data before forEach (e.g., if (data && Array.isArray(data)) data.forEach(...)).\n\n- Modify Jaeger’s metric aggregation to return a default value (e.g., 0) or null when no traces are available.\n\n- Update the OpenTelemetry Collector to filter out spans contributing to NaN metrics (e.g., via filterprocessor on error attributes).\n\n### Jaeger backend version\n\nv2.9.0 (latest(\n\n### SDK\n\notel/opentelemetry-collector-contrib:latest\n\n### Pipeline\n\n_No response_\n\n### Stogage backend\n\nElasticsearch\n\n### Operating system\n\nlinux\n\n### Deployment model\n\nk8s deployment\n\n### Deployment configs\n\n```shell\n---\n# ConfigMap for Jaeger SPM configuration\napiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: jaeger-spm-config\n  labels:\n    app: jaeger\n    repo: tracing\ndata:\n  config-spm-elasticsearch.yaml: |\n    service:\n      extensions: [jaeger_storage, jaeger_query]\n      pipelines:\n        traces:\n          receivers: [otlp]\n          processors: [batch]\n          exporters: [jaeger_storage_exporter]\n        metrics:\n          receivers: [otlp]\n          processors: [batch]\n          exporters: [jaeger_storage_exporter]\n      telemetry:\n        logs:\n          level: debug\n    extensions:\n      jaeger_query:\n        storage:\n          traces: elasticsearch_trace_storage\n          metrics: elasticsearch_trace_storage\n      jaeger_storage:\n        backends:\n          elasticsearch_trace_storage: &elasticsearch_config\n            elasticsearch:\n              server_urls:\n                - http://es-telemetry:9200\n        metric_backends:\n          elasticsearch_trace_storage: *elasticsearch_config\n    receivers:\n      otlp:\n        protocols:\n          grpc:\n            endpoint: \"0.0.0.0:4317\"\n          http:\n            endpoint: \"0.0.0.0:4318\"\n    processors:\n      batch: {}\n    exporters:\n      jaeger_storage_exporter:\n        trace_storage: elasticsearch_trace_storage\n        metric_storage: elasticsearch_trace_storage\napiVersion: v1\nkind: ConfigMap\nmetadata:\n  annotations:\n    noon/deploy-groups: all\n    pulumi.com/patchForce: 'true'\n    pulumi.com/skipAwait: 'true'\n  labels:\n    name: opentelemetry-collector-conf\n    repo: tracing\n  name: opentelemetry-collector-conf\ndata:\n  opentelemetry-collector-config: |\n    exporters:\n      debug:\n        sampling_initial: 5\n        sampling_thereafter: 200\n        verbosity: detailed\n      otlp/jaeger:\n        endpoint: <redacted-host>:4317\n        tls:\n          insecure: true\n    extensions:\n      health_check:\n        endpoint: ${env:MY_POD_IP}:13133\n    processors:\n      batch:\n        send_batch_max_size: 200\n        send_batch_size: 200\n        timeout: 5s\n      groupbytrace:\n        num_traces: 1000000\n        wait_duration: 30s\n      tail_sampling:\n        decision_wait: 30s\n        num_traces: 1000000\n        policies:\n        - name: keep_all_spans\n          type: always_sample\n    receivers:\n      otlp:\n        protocols:\n          grpc:\n            endpoint: ${env:MY_POD_IP}:4317\n          http:\n            cors:\n              allowed_origins:\n              - http://*\n              - https://*\n            endpoint: ${env:MY_POD_IP}:4318\n    service:\n      extensions:\n      - health_check\n      pipelines:\n        traces:\n          exporters:\n          - otlp/jaeger\n          processors:\n          - groupbytrace\n          - tail_sampling\n          - batch\n          receivers:\n          - otlp\n      telemetry:\n        logs:\n          level: debug\n---\n# OpenTelemetry Collector Deployment\napiVersion: apps/v1\nkind: Deployment\nmetadata:\n  labels:\n    app: opentelemetry-collector\n  name: opentelemetry-collector\nspec:\n  minReadySeconds: 30\n  revisionHistoryLimit: 10\n  selector:\n    matchLabels:\n      app: opentelemetry-collector\n      repo: opentelemetry-collector\n  strategy:\n    rollingUpdate:\n      maxSurge: 25%\n      maxUnavailable: 25%\n    type: RollingUpdate\n  template:\n    metadata:\n      labels:\n        app: opentelemetry-collector\n        repo: opentelemetry-collector\n    spec:\n      affinity: null\n      containers:\n      - command:\n        - /otelcol-contrib\n        - --config=/conf/opentelemetry-collector-config.yaml\n        env:\n        - name: POD_NAME\n          valueFrom:\n            fieldRef:\n              apiVersion: v1\n              fieldPath: metadata.name\n        - name: POD_NAMESPACE\n          valueFrom:\n            fieldRef:\n              apiVersion: v1\n              fieldPath: metadata.namespace\n        - name: MY_POD_IP\n          valueFrom:\n            fieldRef:\n              apiVersion: v1\n              fieldPath: status.podIP\n        - name: K8S_SA_NAME\n          valueFrom:\n            fieldRef:\n              apiVersion: v1\n              fieldPath: spec.serviceAccountName\n        envFrom: []\n        image: otel/opentelemetry-collector-contrib:latest\n        imagePullPolicy: Always\n        name: opentelemetry-collector\n        ports:\n        - containerPort: 4317\n          protocol: TCP\n        - containerPort: 4318\n          protocol: TCP\n        - containerPort: 55678\n          name: grpc-opencensus\n          protocol: TCP\n        resources:\n          requests:\n            cpu: 1\n            memory: 2Gi\n        volumeMounts:\n        - mountPath: /conf\n          name: opentelemetry-collector-config-vol\n      nodeSelector:\n        pool: default\n      serviceAccountName: tracing\n      terminationGracePeriodSeconds: 30\n      volumes:\n      - configMap:\n          items:\n          - key: opentelemetry-collector-config\n            path: opentelemetry-collector-config.yaml\n          name: opentelemetry-collector-conf\n        name: opentelemetry-collector-config-vol\n---\n# OpenTelemetry Collector Service\napiVersion: v1\nkind: Service\nmetadata:\n  labels:\n    name: opentelemetry-collector\n    repo: tracing\n  name: opentelemetry-collector\nspec:\n  ports:\n  - name: otlp-grpc\n    port: 4317\n    protocol: TCP\n    targetPort: 4317\n  - name: otlp-http\n    port: 4318\n    protocol: TCP\n    targetPort: 4318\n  selector:\n    app: opentelemetry-collector\n  type: ClusterIP\n---\n# Jaeger Deployment\napiVersion: apps/v1\nkind: Deployment\nmetadata:\n  labels:\n    app: jaeger\n  name: jaeger\nspec:\n  minReadySeconds: 30\n  revisionHistoryLimit: 10\n  selector:\n    matchLabels:\n      app: jaeger\n  strategy:\n    rollingUpdate:\n      maxSurge: 25%\n      maxUnavailable: 25%\n    type: RollingUpdate\n  template:\n    metadata:\n      annotations:\n        <redacted-host>/safe-to-evict: 'true'\n      labels:\n        app: jaeger\n    spec:\n      affinity:\n        podAntiAffinity:\n          preferredDuringSchedulingIgnoredDuringExecution:\n          - podAffinityTerm:\n              labelSelector:\n                matchExpressions:\n                - key: name\n                  operator: In\n                  values:\n                  - jaeger\n              topologyKey: <redacted-host>/zone\n            weight: 1\n          - podAffinityTerm:\n              labelSelector:\n                matchExpressions:\n                - key: name\n                  operator: In\n                  values:\n                  - jaeger\n              topologyKey: kubernetes.io/hostname\n            weight: 100\n      containers:\n      - env:\n        - name: INFRA_APP_REPO\n          value: tracing\n        - name: K8S_SA_NAME\n          valueFrom:\n            fieldRef:\n              apiVersion: v1\n              fieldPath: spec.serviceAccountName\n        - name: BACKEND\n          value: http://127.0.0.1:16686\n        - name: RATELIMIT_ENABLED\n          value: '0'\n        envFrom:\n        - configMapRef:\n            name: team-config-authproxy\n        imagePullPolicy: Always\n        name: authproxy-team\n        ports:\n        - containerPort: 8082\n          name: http\n          protocol: TCP\n        resources:\n          requests:\n            cpu: 100m\n            memory: 50Mi\n        startupProbe:\n          failureThreshold: 3\n          httpGet:\n            path: /auth/hc\n            port: 8082\n            scheme: HTTP\n          initialDelaySeconds: 5\n          periodSeconds: 10\n          successThreshold: 1\n          timeoutSeconds: 3\n        volumeMounts:\n        - mountPath: /credentials\n          name: team-authproxy-credentials\n      - env:\n        - name: SPAN_STORAGE_TYPE\n          value: elasticsearch\n        - name: ES_SERVER_URLS\n          value: http://es-telemetry:9200\n        - name: METRICS_STORAGE_TYPE\n          value: elasticsearch\n        - name: ES_TAGS_AS_FIELDS_ALL\n          value: 'true'\n        - name: ES_INDEX_PREFIX\n          value: jaeger\n        - name: ES_NUM_SHARDS\n          value: '5'\n        - name: ES_NUM_REPLICAS\n          value: '1'\n        - name: ES_TIMEOUT\n          value: 10s  # Elasticsearch query timeout\n        - name: QUERY_MAX_DURATION\n          value: 10s  # Query service timeout\n        - name: JAEGER_QUERY_LOG_LEVEL\n          value: debug  # Enable detailed logging\n        - name: ES_MAX_RETRIES\n          value: \"1\"\n        - name: DEPENDENCIES_ENABLED\n          value: 'true'\n        - name: DEPENDENCIES_CRON_SCHEDULE\n          value: 0 */1 * * *\n        - name: INFRA_APP_REPO\n          value: tracing\n        - name: K8S_SA_NAME\n          valueFrom:\n            fieldRef:\n              apiVersion: v1\n              fieldPath: spec.serviceAccountName\n        args:\n          - \"--config=/conf/config-spm-elasticsearch.yaml\"\n        envFrom: []\n        image: jaegertracing/jaeger:2.2.0\n        imagePullPolicy: Always\n        name: jaeger\n        ports:\n        - containerPort: 16686\n          protocol: TCP\n        - containerPort: 14268\n          protocol: TCP\n        - containerPort: 14250\n          protocol: TCP\n        - containerPort: 9411\n          protocol: TCP\n        - containerPort: 4317\n          protocol: TCP\n        - containerPort: 4318\n          protocol: TCP\n        resources:\n          limits:\n            cpu: 5\n            memory: 12Gi\n          requests:\n            cpu: 1\n            memory: 2Gi\n        volumeMounts:\n          - mountPath: /conf\n            name: jaeger-config-vol\n      nodeSelector:\n        pool: default\n      serviceAccountName: tracing\n      terminationGracePeriodSeconds: 30\n      volumes:\n      - name: jaeger-config-vol\n        configMap:\n          name: jaeger-spm-config\n          items:\n            - key: config-spm-elasticsearch.yaml\n              path: config-spm-elasticsearch.yaml\n      - name: team-authproxy-credentials\n        secret:\n          defaultMode: 420\n          secretName: team-authproxy-credentials\n---\n# Jaeger Service\napiVersion: v1\nkind: Service\nmetadata:\n  labels:\n    name: jaeger\n    repo: tracing\n  name: jaeger\nspec:\n  ports:\n  - name: http\n    port: 80\n    protocol: TCP\n    targetPort: 8082\n  - name: collector-grpc\n    port: 14250\n    protocol: TCP\n    targetPort: 14250\n  - name: collector-http\n    port: 14268\n    protocol: TCP\n    targetPort: 14268\n  - name: otlp-grpc\n    port: 4317\n    protocol: TCP\n    targetPort: 4317\n  - name: otlp-http\n    port: 4318\n    protocol: TCP\n    targetPort: 4318\n  selector:\n    app: jaeger\n  type: ClusterIP\n```",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2025-08-08T13:10:52Z",
+   "body": "Hi @reporter, could you please provide some screenshots on which page it is reloading ?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-08-09T13:15:12Z",
+   "body": "> Hi [@reporter](https://github.com/reporter), could you please provide some screenshots on which page it is reloading ?\n\nMonitor tab , here is the screenshot of a service that has no metrics\n\n<img width=\"1628\" height=\"979\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/628d7687-7863-4df4-9dc6-02da545e041e\" />"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-08-09T13:17:30Z",
+   "body": "and the error in console\n\n<img width=\"1630\" height=\"393\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/7ad72f46-6f43-4728-9e0d-df3f59ca7bdb\" />"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-08-09T15:41:19Z",
+   "body": "I think the problem is that the spans doesn't have the operation tag. And the current UI (which is kinda bad) only showing working page when the data get from API has the metrics array for example:\n\n`{\n    \"name\": \"service_latencies\",\n    \"type\": \"GAUGE\",\n    \"help\": \"0.75th quantile latency, grouped by service\",\n    \"metrics\": [\n        {\n            \"labels\": [\n                {\n                    \"name\": \"service_name\",\n                    \"value\": \"frontend\"\n                }\n            ],\n            \"metricPoints\": [\n                {\n                    \"gaugeValue\": {\n                        \"doubleValue\": \"NaN\"\n                    },\n                    \"timestamp\": \"2025-08-07T15:08:00Z\"\n                },`\n\nsince the data from groupByOperation api (which operates on specific operation of that service (e.g frontend)) doesn't have this metrics array:\n`{\n    \"name\": \"service_operation_latencies\",\n    \"type\": \"GAUGE\",\n    \"help\": \"0.95th quantile latency, grouped by service \\u0026 operation\"\n}`\n\nWhich cause the UI to work like this, (the error can not call for each on labels array (sub element of metrics array)) I think we can forward this problem to UI repository"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-08-09T15:43:47Z",
+   "body": "For now you can work around this problem by setting the metrics_backend config to null or prometheus"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-08-09T16:14:44Z",
+   "body": "@participant1 do you know how to fix it in the UI?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-08-09T16:38:53Z",
+   "body": "Hi @participant2, I think the issue is in the part where the labels array inside metrics array is processed. If there’s no data, we should simply return “no data.” Currently, the UI assumes that the labels array inside metrics array always contains data, which causes the problem. We can fix this by adding a condition check."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-08-11T11:23:40Z",
+   "body": "> Hi [@participant2](https://github.com/participant2), I think the issue is in the part where the labels array inside metrics array is processed. If there’s no data, we should simply return “no data.” Currently, the UI assumes that the labels array inside metrics array always contains data, which causes the problem. We can fix this by adding a condition check.\n\ncan this be done soon ?\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-08-11T11:31:09Z",
+   "body": "Sure, I can check for it (or some others if they like)"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-08-12T08:29:10Z",
+   "body": "I think i solve this problem and made some changes, can you guide me how can i check issue is solved or not @reporter "
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-08-12T11:56:49Z",
+   "body": "> I think i solve this problem and made some changes, can you guide me how can i check issue is solved or not @reporter \n\nHi @participant3, I develop this feature so if you encounter something that doesn't make sense just ping me :)"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-08-20T18:34:16Z",
+   "body": "Hi @participant2, I have implement the fix inside ui but doesn't know how to test if it actually works (with jaeger). Do you have any ideas ?"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-08-20T19:00:37Z",
+   "body": "the OP lists the steps to reproduce, did you try?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-08-20T19:02:38Z",
+   "body": "Thanks for noticing me"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-12-15T14:17:59Z",
+   "body": "I also encountered the same error."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2026-01-21T20:38:39Z",
+   "body": "I am encountering this issue now also.  I see there were MRs that arenow closed?\n\nWe are using elasticsearch also.  It works fine when clicking other kinds, but freezes when selecting producer.  This is an issue we can't ignore because reloading the page causes it to just stay at producer and freeze again.  We need to clear cache to get out of this trap.\n\n<img width=\"1664\" height=\"1095\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/a2f8b9f2-d425-4a4f-a6b0-b6c0b5cd8570\" />\n\n@participant1 @participant2 \n\nthe current way out is to clear the local storage or remove the key\n\n<img width=\"1713\" height=\"287\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/094eb168-4c2e-41a9-9081-c751f5761501\" />"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2026-01-21T22:50:15Z",
+   "body": "I think https://github.com/jaegertracing/jaeger-ui/pull/3460 will fix the error but I am not able to reproduce it to see the error in the first place. "
+  },
+  {
+   "author": "participant5",
+   "created_at": "2026-01-21T22:58:12Z",
+   "body": "We are using Quarkus 3 and JS auto instrumentation with elastic backend in 8+ ( in this case ) on Jaeger 2.14 with latest helm chart\n\nI wonder if it happens on an empty storage? I assume the Jaeger self traces don't have producer?\n\nI can try to reproduce later with empty storage."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2026-01-21T23:01:17Z",
+   "body": "Looking at the error it appears a ?. Check with the for each would be enough or try catch. Some protection would prevent it. I can try to dig in the code to later."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2026-01-22T14:42:11Z",
+   "body": "I did not dig in or try to reproduce yet, but... I did just get it to fail on Span Kind \"Server\" .  We have hundreds of services and any that  are missing a specific kind, when you select that it breaks as described above."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2026-01-22T15:02:11Z",
+   "body": "copilot is getting impressive... though the exact same changes are here https://github.com/jaegertracing/jaeger-ui/pull/3130/files as https://github.com/jaegertracing/jaeger-ui/pull/3460/files#diff-ed3e4b7bfe59b72309db60858b6c992dc9b4c67cd969777d21526c25d7dbdfb9R161 and now I wonder if AI wrote both or if it lifted the first PR code?  I assume it wrote both... just wondering out loud."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2026-01-22T15:10:27Z",
+   "body": "> I think [jaegertracing/jaeger-ui#3460](https://github.com/jaegertracing/jaeger-ui/pull/3460) will fix the error but I am not able to reproduce it to see the error in the first place.\n\nI think you would have to manually insert a trace with a single span of any type.  Then if that type is 'client' then all other types should cause this issue.  We have for example a service that only creates client and consumer spans.  So selecting producer, server, or internal causes the fail when selecting that particular service."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2026-01-22T15:12:01Z",
+   "body": "since it's merged I will be able to test soon and let you know 😉 "
+  },
+  {
+   "author": "participant5",
+   "created_at": "2026-01-22T15:29:00Z",
+   "body": "dupe https://github.com/jaegertracing/jaeger-ui/issues/3159"
+  },
+  {
+   "author": "participant6",
+   "created_at": "2026-01-28T07:00:14Z",
+   "body": "Hi maintainers \n\nI’m interested in working on this issue.\nI have Jaeger UI running locally and will try to reproduce the problem and propose a fix with tests.  \n\nPlease let me know if anyone is already working on it or if there are any suggestions.  "
+  },
+  {
+   "author": "participant5",
+   "created_at": "2026-01-28T12:49:26Z",
+   "body": "https://github.com/jaegertracing/jaeger-ui/pull/3460 had been merged as a fix, but has not been released yet."
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "jaegertracing/jaeger",
+  "default_branch": "main",
+  "commit_sha": "57f65148781af756f323ec27d8d080b20ff0bde1",
+  "as_of": "2025-08-08T00:11:45Z",
+  "method": "github_commits_until"
+ },
+ "images": [
+  {
+   "where": "c1",
+   "source_url": "https://github.com/user-attachments/assets/628d7687-7863-4df4-9dc6-02da545e041e",
+   "file": "gh_jaegertracing_jaeger_7423_img0.png"
+  },
+  {
+   "where": "c2",
+   "source_url": "https://github.com/user-attachments/assets/7ad72f46-6f43-4728-9e0d-df3f59ca7bdb",
+   "file": "gh_jaegertracing_jaeger_7423_img1.png"
+  },
+  {
+   "where": "c15",
+   "source_url": "https://github.com/user-attachments/assets/a2f8b9f2-d425-4a4f-a6b0-b6c0b5cd8570",
+   "file": "gh_jaegertracing_jaeger_7423_img2.png"
+  },
+  {
+   "where": "c15",
+   "source_url": "https://github.com/user-attachments/assets/094eb168-4c2e-41a9-9081-c751f5761501",
+   "file": "gh_jaegertracing_jaeger_7423_img3.png"
+  }
+ ],
+ "slug": "gh_jaegertracing_jaeger_7423"
+}

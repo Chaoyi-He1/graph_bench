@@ -1,0 +1,89 @@
+{
+ "repo": "restic/restic",
+ "number": 5372,
+ "url": "https://github.com/restic/restic/issues/5372",
+ "title": "Feature request: Obtain the list of blocks in a snapshot",
+ "state": "closed",
+ "labels": [],
+ "reporter": "reporter",
+ "created_at": "2025-04-26T14:27:40Z",
+ "closed_at": "2025-05-26T13:50:26Z",
+ "body": "<!--\n\nWelcome! - We kindly ask that you:\n\n  1. Fill out the issue template below - not doing so needs a good reason.\n  2. Use the forum if you have a question rather than a bug or feature request.\n\nThe forum is at: https://<redacted-host>\n\nThe forum is a better place for questions about restic or general suggestions\nand topics, e.g. usage or documentation questions! This issue tracker is mainly\nfor tracking bugs and feature requests directly relating to the development of\nthe software itself, rather than the project.\n\nThanks for understanding, and for contributing to the project!\n\n-->\n\n\nOutput of `restic version`\n--------------------------\nrestic 0.18.0 compiled with go1.24.1 on darwin/amd64\n<!--\nPlease add the version of restic you're currently using here, this helps us\nlater to see what has changed in restic when we revisit this issue after some\ntime.\n-->\n\nWhat should restic do differently? Which functionality do you think we should add?\n----------------------------------------------------------------------------------\nHave a way to list the blocks present in a snapshot; even better, the blocks in a snapshot in a file path\n\nAn alternative would be a way to try to read fist few bytes in a block and report a list of failures (which would save a lot of time as well).\n\n<!--\nPlease describe the feature you'd like us to add here.\n-->\n\n\nWhat are you trying to do? What problem would this solve?\n---------------------------------------------------------\nWe keep all backups in AWS S3. We have a lifecycle policy to transition to IA after 90 days and to DEEP_ARCHIVE after 390 days.\n\nThe deduplication feature is awesome, but it is really annoying when trying to provide developers with a 3 weeks old backup and you notice 2, 3 maybe 9 blocks in that backup are in DEEP_ARCHIVE.\n\nThe only way to do it is to attempt a restore, capture all those \n\n```\nLoad(<data/7f7096ecc6>, 1362710, 3273655) returned error, retrying after 1m3.303469605s: The operation is not valid for the object's storage class\n```\n\nthen make a unique list of failed block ids and feed the list into a glacier restore script.\n\n\n\n<!--\nThis section should contain a brief description what you're trying to do, which\nwould be possible after implementing the new feature.\n-->\n\nDid restic help you today? Did it make you happy in any way?\n------------------------------------------------------------\nYes, restic is awesome!\n\n<!--\nAnswering this question is not required, but if you have anything positive to share, please do so here!\nSometimes we get tired of reading bug reports all day and a little positive end note does wonders.\nIdea by Joey Hess, https://joeyh.name/blog/entry/two_holiday_stories/\n-->\n",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2025-04-26T17:51:58Z",
+   "body": "Hey @reporter, \nPlease check if the changes made in [feat(backends/s3): add warmup support before repacks and restores](https://github.com/restic/restic/pull/5173) is helpful for your use case?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-04-28T06:56:38Z",
+   "body": "@participant1, thank you for the link. This sounds interesting. I am testing it now (which might take quite a bit).\nIn the mean time I do have some questions.\n\nHow does restic manages a restore operation where there are like 10 data blocks in Glacier and the rest in Standard storage class?  Will it find out about the blocks in Glacier and issue a restoration request? Or the restoration request for the second data block would only be issued after the first one is being successfully restored? \n\nSounds dumb, but I do want to make sure I don't wait for <glacier blocks count> x <average glacier restore time ~ 12h> for the restore to complete.\n\nI think the most sensible way would be to try to do a normal restore until we hit a data block stored in glacier; a glacier restore request should be issued but then I think restic should go through the rest of the data blocks as fast as possible, sending glacier restore requests where required and exit early, stating that for X blocks (maybe the list attached) a glacier request has been sent and that we should run it again after X hours (say 12 hours).\n\nI think that would be preferable than keeping `restic restore` running for some unspecified amount of time. \n\nIt might be that I didn't understood the process very well though.\n\nTagging @participant2 who would be probably the most capable to explain the behaviour.\n\nThank you for your work!\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-04-29T09:12:12Z",
+   "body": "Hm, did I miss something? It doesn't seem to make any difference... I tried initially with `s3.enable-restore=1` but also tried with `s3.enable-restore=true`...\n\n```\n[root@participant4 tools-restic]# restic version\nrestic 0.18.0 compiled with go1.24.1 on linux/amd64\n[root@participant4 tools-restic]# env | grep RESTIC\nRESTIC_PASSWORD=xxxx\nRESTIC_REPOSITORY=s3:https://s3.us-east-1.amazonaws.com/backup-restic-xxx\nRESTIC_FEATURES=s3-restore\n[root@participant4 tools-restic]# restic restore \\\n    -o s3.enable-restore=true \\\n    -o s3.restore-days=7 \\\n    -o s3.restore-timeout=24h \\\n    --no-lock --cache-dir ./cache --target . -i '*'  0c9062f1:/srv/backup/postgres/xxx/current\n```\n\n```\n...\nLoad(<data/a5be9052fd>, 1335325, 16134368) returned error, retrying after 42.361741171s: The operation is not valid for the object's storage class\nLoad(<data/c0679f4816>, 849584, 3622485) returned error, retrying after 45.540154864s: The operation is not valid for the object's storage class\nLoad(<data/a5be9052fd>, 1335325, 16134368) returned error, retrying after 1m5.715599152s: The operation is not valid for the object's storage class\nLoad(<data/8e273ca1ee>, 861193, 4020106) returned error, retrying after 50.333124063s: The operation is not valid for the object's storage class\nLoad(<data/c0679f4816>, 849584, 3622485) failed: The operation is not valid for the object's storage class\n...\n```\n\nThe objects are still in Glacier, no restore request has been made for those."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-05-07T07:48:38Z",
+   "body": "I would be really grateful if somebody is able to point out what I missed. I am willing to help out improve the docs around this.\nThank you!\n\ncc @participant2 @participant1 "
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-05-07T08:22:51Z",
+   "body": "Can't tell for sure from your logs, but I assume it tries to read from tree blobs that should be hot but are actually not (probably because of your transition policy). See https://github.com/restic/restic/issues/3202#issuecomment-2848803839 to restore them first. `restic restore` may work after that.\n\n> We have a lifecycle policy to transition to IA after 90 days and to DEEP_ARCHIVE after 390 days.\n\nThis is not supported. You must remove the lifecycle policy and restore all tree blobs first. `s3.enable-restore` will only work well when using `-o s3.storage-class=GLACIER` or `-o s3.storage-class=DEEP_ARCHIVE` during backups and nothing else. FAQ should maybe be clearer about that."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-05-25T06:42:18Z",
+   "body": "Since I down know how AWS S3 works, I have to rely on @reporter to tell me if this works for you. I hope that all tree blobs reside in an AWS storage type which is quickly accessible. This command relies on the being able to read all tree blobs."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-05-26T09:15:50Z",
+   "body": "Thank you @participant3, I will test as soon as possible and provide feedback."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-05-26T13:50:26Z",
+   "body": "@participant3, thank you for your work! 🎉 \nIt looks like it is working just fine, with both long and short IDs.\nThe automatic lifecycle we have in AWS S3 only affects the files stored in the `/data` directory for the restic repository, while the other things (like `/index`) will stay in the standard storage.\nBeing able to use your new command enabled me to save a lot of time, since I don't need to actually try a restore that will most likely fail just to obtain the short IDs for the data that is not in the standard storage anymore. With you commanf, I am able to get the complete list of the data IDs used in the snapshot and feed the list through a script that will check which is not in the standard storage and initiate the procedure to bring it back to standard storage for 7 days.\nLooking forward to see your work merged in the main restic! 🚀 \n\nWill close this, hoping the changes will make it to new release."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-05-26T14:44:12Z",
+   "body": "Make sure that the metadata, which also live in the /data subdirectory will be kept in standard storage. When using the `packfilelist command` with option `--detail=1`, you will see the metadata packfiles marked as \"tree\". The `packfilelist` command reads these metadata packfiles and builds the set `usedBlobs`, which is the set of all blobs (\"data\" and \"tree\") used in this snapshot."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-05-26T20:52:10Z",
+   "body": "I think the metadata is stored within the `keys` and `config` directories, no?"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-05-26T22:11:06Z",
+   "body": ">\n> No, I am sorry to say that you are wrong.\n>\n\nHere is what I want to show you: backup something very small,\njust a few kilobytes or perhaps 0.5 megabytes of data to a local restic repository.\nIf possible, start off with an empty repository.\n\nThe rest of this walkthrough is in the attachment.\n\nDo a backup.\nMy repository only contains one snapshot `(a9d1fc3a=a9d1fc3a42c1faf80abd8525e77d1ad7eba2ba178b561f59ad8789cb31617514)`.\n\nOnce you have done a backup, get rid of all empty subdirectories in the repository,\nin Linux I do this with the command:\n\n\n`cd <to your local test restic repository>\nfind -type d -empty -delete\n\nList all the files in your test directory:\nfind -type f -ls\n\nI my case it looks as follows: \n  4064258     80 -r--------   1 participant3 participant3    81873 May 24 12:41 ./data/ff/ffa277d79b625dbb46259de12f9d113d7b9c50f4ec6c0ec14dbd80184280d828\n  4065096      8 -r--------   1 participant3 participant3     5204 May 24 12:37 ./data/bd/bd598df58fca4f984f38fca718d61761d6ee8232dd4d4bcf347a81b333bc7244\n  4064358      4 -r--------   1 participant3 participant3     3309 May 24 12:41 ./index/8adf0eb09e0ffd8091f003afb411d09d71b2b5e2e2201d6daa990bc0ae13f149\n  4063496      4 -r--------   1 participant3 participant3      155 Jul 28  2024 ./config\n  4063495      4 -r--------   1 participant3 participant3      457 Jul 28  2024 ./keys/040b092502a484cfdfe302fe2fd6636be2f63a98c45a574dc5d5bb651d05ca75\n  4065099      4 -r--------   1 participant3 participant3      414 May 24 12:37 ./snapshots/a9d1fc3a42c1faf80abd8525e77d1ad7eba2ba178b561f59ad8789cb31617514\n\nNow I run \"restic -r ... packfilelist latest -d\"\n\nrepository ec50fbf6 opened (version 2, compression level auto)\n[0:00] 100.00%  1 / 1 index files loaded\nbd598df58fca4f984f38fca718d61761d6ee8232dd4d4bcf347a81b333bc7244 tree       5204\nffa277d79b625dbb46259de12f9d113d7b9c50f4ec6c0ec14dbd80184280d828 data      81873\n\nLook at the file sizes of bd598df58f... and ffa277d79b...\nidentical to the file sizes listed by the \"packfilelist\" command. This is your proof.\nYou can also look at the file sizes of 'config' and 'keys', there is just not enough\nspace anywhere.\n\nIf you want to look inside a tree file, use first\nrestic -r ... list blobs | grep tree\n\nThis gives you all tree blobs in the whole repository\n\nThen use the command\nrestic -r ... cat blob <the full 64 bytes> to get to a tree element\n\nIn my case:\nrestic -r ... cat blob e2327b57979f4f126d142e8d94d1cc650ae021cb87879860d5daa33b318da10b | jq\n\n{\n  \"nodes\": [\n    {\n      \"name\": \"cmd\",\n      \"type\": \"dir\",\n      \"mode\": 2147484157,\n      \"mtime\": \"2024-12-16T13:14:34.103077263Z\",\n      \"atime\": \"2024-12-16T13:14:34.103077263Z\",\n      \"ctime\": \"2024-12-16T13:14:34.103077263Z\",\n      \"uid\": 1000,\n      \"gid\": 1000,\n      \"user\": \"participant3\",\n      \"group\": \"participant3\",\n      \"inode\": 1726590,\n      \"device_id\": 66307,\n      \"content\": null,\n      \"subtree\": \"b59d422f02cc5e5874892a9dab321173e5090e4f459bdec57c398f84ec190c46\"\n    }\n  ]\n}\n\nThis by the way is the root element for this backup.\n\nThe next elelemt in the tree is b59d422f02cc5e5874892a9dab321173e5090e4f459bdec57c398f84ec190c46\n\nrestic -r /media/participant3/internal-fast/repo_test/ cat blob b59d422f02cc5e5874892a9dab321173e5090e4f459bdec57c398f84ec190c46 | jq\n{\n  \"nodes\": [\n    {\n      \"name\": \"restic\",\n      \"type\": \"dir\",\n      \"mode\": 2147484157,\n      \"mtime\": \"2025-05-24T07:37:02.765686948+01:00\",\n      \"atime\": \"2025-05-24T07:37:02.765686948+01:00\",\n      \"ctime\": \"2025-05-24T07:37:02.765686948+01:00\",\n      \"uid\": 1000,\n      \"gid\": 1000,\n      \"user\": \"participant3\",\n      \"group\": \"participant3\",\n      \"inode\": 1726591,\n      \"device_id\": 66307,\n      \"content\": null,\n      \"subtree\": \"552f43d65baf70bfef47dcce8774e07ec818f2263f60874c724d2e792d0aefe6\"\n    }\n  ]\n}\n`"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-05-27T06:58:26Z",
+   "body": "You are correct. I was able to replicate your example. Thank you for that.\n\nSo in my case, having the `/data` directory partially into Glacier, but having `/index`, `/config`, `/keys`, `/snapshots` in normal storage, would put me in a position to not be able to list all the blocks used by a snapshot?\n\nMy simpleton understanding would be that I could get from index what I need to get lower and lower to the actual data blocks (metadata, tree, etc).\n\n"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-05-27T09:56:39Z",
+   "body": "> So in my case, having the /data directory partially into Glacier, but having /index, /config, /keys, /snapshots in normal storage, would put me in a position to not be able to list all the blocks used by a snapshot?\n\nYes you need all of /index, /config, /keys, /snapshots in normal storage. In addition, all the metadata packfiles, which you can get from \n``restic packfilelist --all --detail| grep tree`` have also to be in normal storage to guarantee that the ``packfilelist`` command can run without getting stuck in Glacier.\n\nSee also https://restic.readthedocs.io/en/stable/100_references.html#trees-and-data. There it is explained how a tree actually looks like."
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "restic/restic",
+  "default_branch": "master",
+  "commit_sha": "287b601f01513d8287453b2838ea3eae19ffe0b6",
+  "as_of": "2025-04-26T14:27:40Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_restic_restic_5372"
+}

@@ -1,0 +1,259 @@
+{
+ "repo": "jellyfin/jellyfin",
+ "number": 10468,
+ "url": "https://github.com/jellyfin/jellyfin/issues/10468",
+ "title": "Support Dolby Vision (Profile 8) media having HDR10/HLG fallback (on webOS)",
+ "state": "closed",
+ "labels": [],
+ "reporter": "reporter",
+ "created_at": "2023-10-24T22:43:14Z",
+ "closed_at": "2024-03-24T18:52:53Z",
+ "body": "Currently, in [MediaBrowser.Model/Entities/MediaStream.cs](https://github.com/jellyfin/jellyfin/blob/master/MediaBrowser.Model/Entities/MediaStream.cs#L688C1-L699C1), the GetVideoColorRange function exits as soon as it finds the media file to have HDR10 or HLG data.\r\nThis return happens too soon, not accounting for Dolby Vision Profile 8 media that have [both DOVI and HDR10/HLG](https://en.wikipedia.org/wiki/Dolby_Vision#Profiles) data - leading to only HDR10 level playback for DOVI media on my TV with DOVI support.\r\n\r\nMy approach included adding two new possible enumerations to `VideoRangeType` - `DOVI_with_HDR10_Fallback` and `DOVI_with_HLG_Fallback`, and adding these in wherever i found `VideoRangeType.HDR10 / HLG` or `VideoRangeType.DOVI` in the code. \r\n\r\n--\r\nIt seems redundant to have the client send in that they support both `HDR10` and `DOVI_with_HDR10_Fallback`, so I'm open to suggestions on how to better implement this - please do point me towards the files that would need changing as well!\r\nI think the best way would be to add support for multiple VideoRangeTypes, but I'm not sure how/how much would have to change for that.\r\n\r\nAnother open question is how should the IsHwTonemapAvailable functions in [MediaBrowser.Controller/MediaEncoding/EncodingHelper.cs](https://github.com/jellyfin/jellyfin/blob/208b585a3f7d9764c023024b2a14e619464bdc04/MediaBrowser.Controller/MediaEncoding/EncodingHelper.cs#L253C1-L256C76) handle these new video range types? It makes sense to me that if these dovi+hdr files were being processed as just hdr until now and worked fine, we should be able to add them along with the hdr10/hlg support assertion no problem.\r\n\r\n\r\nI look forward to knowing your thoughts on this. I'll open a PR with the mentioned approach now.\r\n",
+ "comments": [
+  {
+   "author": "reporter",
+   "created_at": "2023-10-24T23:07:07Z",
+   "body": "Actually, the current behavior should be like \"report HDR10/HLG, but play content as DoVi on supported devices anyway\", right?\r\nIf that's the case, this change isn't really required and I'll just have something to change on jellyfin-web to get my webOS setup working.\r\n\r\nedit: no, we can't get around getting Dovi profile 8 media working on webOS without changes to server/ffprobe - please see \"A separate issue remains\" from two comments down."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-10-25T05:20:23Z",
+   "body": "In fact, reporting this DOVI flag here means that the client MUST support ALL common DOVI Profiles, including but not limited to Profile 5 as well as 7 and 8. An example is mainstream Apple devices, which are Dolby Vision certified.\r\n\r\nOtherwise it is enough to report HDR10 and HLG for DOVI content with fallback layer so that Jellyfin does not force transcode them and let the client handle them."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-10-25T20:46:47Z",
+   "body": "I should clarify why I thought this change was necessary - I'll express my experience upto this point.\r\n\r\nOn webOS, DoVi will not playback if container is not mp4. So, I added code in jellyfin-web to cause a remux (to fMP4-HLS) if the video range type is DOVI and container is not mp4. That takes care of profile 5 playback there.\r\n\r\nHowever, for profile 8 media, MediaStream.cs will report those files to be HDR10 or HLG instead of DOVI. That means to apply the same fix in jellyfin-web, I'd have to block HDR10/HLG for non-mp4 as well.\r\n\r\nIf I go ahead and do that, a separate issue remains - [These lines](https://github.com/jellyfin/jellyfin/blob/42a7e4cf1a09404eae3f588ba5c6312633bfb2da/Jellyfin.Api/Controllers/DynamicHlsController.cs#L1849-L1852) in DynamicHlsController.cs do not sufficiently detect media that are DoVi Profile 8 - ffprobe will not return the CodecTag data for mkv containers that this block of logic relies on. This leads to the remux (to fMP4-HLS) without the DoVi data being copied.\r\n\r\nSo to resolve this, we could either go with the approach I imagined here or perhaps find another way to reliably detect DoVi content on any container and use that logic in DynamicHlsController.cs.\r\n(or we could say this is an issue with ffprobe not returning codectag for mkv, and look for fixes there instead)"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-10-26T10:10:58Z",
+   "body": "> If I go ahead and do that, a separate issue remains - [These lines](https://github.com/jellyfin/jellyfin/blob/42a7e4cf1a09404eae3f588ba5c6312633bfb2da/Jellyfin.Api/Controllers/DynamicHlsController.cs#L1849-L1852) in DynamicHlsController.cs do not sufficiently detect media that are DoVi Profile 8 - ffprobe will not return the CodecTag data for mkv containers that this block of logic relies on.\r\n\r\n\r\nThe `dvh1` codec tag is specifically for Profile 5 content, while Profile 7 and 8 content are generally tagged as `hvc1`.\r\n\r\n`dvh1` is far less compatible than `hvc1` and will easily fail on players that don't support DOVI. So for P7/8, use `hvc1` and pass the DOVI metadata via fMP4 and let the client handle it on its own.\r\n\r\n> This leads to the remux (to fMP4-HLS) without the DoVi data being copied.\r\n\r\nWe have patch to enable this in our FFmpeg.\r\n\r\nhttps://github.com/jellyfin/jellyfin-ffmpeg/blob/8a12a4cf5c3ae2c0fa4650b5abc99d32252006e6/debian/patches/0033-add-hevc-dovi-sidedata-to-hlsenc.patch#L18"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-10-26T12:22:04Z",
+   "body": "No no, I mean that ffprobe, which jellyfin uses to populate the `state.VideoStream.CodecTag` field, does not pick up anything when it looks for that info in DoVi media inside mkv containers.\r\n\r\nHere I have an mp4 file that has DoVi content\r\n`v@v:~/Media/Movies$ /lib/jellyfin-ffmpeg/ffprobe \"Mystery Box Dolby Vision Profile 5.mp4\"`\r\n![image](https://github.com/jellyfin/jellyfin/assets/12881174/3d58d560-2db3-4c20-94a9-80d40a959a68)\r\n\r\nI'll remux it to mkv using jellyfin-ffmpeg 6. \r\n`v@v:~/Media/Movies$ /lib/jellyfin-ffmpeg/ffmpeg -i \"Mystery Box Dolby Vision Profile 5.mp4\" -c copy testmkv2.mkv`\r\n`v@v:~/Media/Movies$ /lib/jellyfin-ffmpeg/ffprobe testmkv2.mkv`\r\n![image](https://github.com/jellyfin/jellyfin/assets/12881174/0d13185d-ce4c-4320-8c21-f222357e0159)\r\n\r\nIf I convert that mkv back to mp4, (need to do `-strict unofficial` here else I don't get dovi playback)\r\n`/lib/jellyfin-ffmpeg/ffmpeg -i testmkv2.mkv -c copy -strict unofficial propermp4.mp4`\r\n![image](https://github.com/jellyfin/jellyfin/assets/12881174/2bd1553e-0a2a-4a11-840f-658fad108fa1)\r\n\r\nHuh, it gives back hev1. I guess it didn't bother me because I'll be direct playing mp4s, so I don't touch the described issue in DynamicHlsController.cs.\r\n\r\n--\r\n\r\nThe issue is that when an mkv file containing DOVI is sent for remuxing (to fMP4-HLS) and the code flow arrives at DynamicHlsController.cs, all the checks to determine if the file is DOVI fail (`VideoRangeType.DOVI` does not happen for DOVI+HDR10 media, and `state.VideoStream.CodecTag` will always be null when working with mkv media because ffprobe does not pick up this field for mkv.). This leads to the file being incorrectly processed as non-DOVI, leading to remux (to fMP4-HLS) without the DoVi data being copied.\r\n\r\n\r\n\r\ntl;dr: \r\nWe have two issues in jellyfin that prevent Dolby Vision playback on webOS (LG TVs) (uses jellyfin-web as client).\r\n1. webOS requires a remux of other containers to mp4 in order to play DOVI content. Without a specific VideoRangeType to uniquely identify HDR10+DOVI, there is no way to instruct the server to not direct play these specific files. Currently these files are recognized simply as HDR10/HLG.\r\n2. As a test, we could disallow all non mp4 containers from direct playing HDR10/HLG on webOS, on the off-chance they actually contain DOVI content (needing a remux). Still, we end up without DOVI as the DynamicHlsController.cs fails to recognize those files as DOVI.\r\n\r\nMy PR solves both these issues by introducing a new VideoRangeType for this type of media."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-10-28T12:57:41Z",
+   "body": "If you need to move the [DOVI block](https://github.com/jellyfin/jellyfin/blob/e8a82d29148b6b50669ece5f8fd5d2512bc44f55/MediaBrowser.Model/Entities/MediaStream.cs#L700-L716) before HDR10 and HLG, go ahead.\r\n\r\nAm I right, webOS can't play any DoVi (even with backwards compatibility) in non-MP4 at all?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-10-28T13:19:05Z",
+   "body": "I think that might mess with browsers that can do upto HDR10/HLG direct play -- if my browser can playback HDR10, but jellyfin recognizes the fallback-able media as DOVI now and my codecprofile says I can't do DOVI, it would cause a remux for those clients who were enjoying direct play before.\r\n\r\n\r\nYup. Right now without any changes on webOS, when a non-mp4 DOVI with fallback appears, it's direct played as fallback (it direct plays as HDR instead of DOVI). When a non-mp4 without fallback appears, it is direct played with green-purple tone. "
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-10-28T14:21:51Z",
+   "body": "> Right now without any changes on webOS, when a non-mp4 DOVI with fallback appears, it's direct played as fallback (it direct plays as HDR instead of DOVI).\r\n\r\nSo it can play the fallback data.\r\n\r\n> I think that might mess with browsers that can do upto HDR10/HLG direct play -- if my browser can playback HDR10, but jellyfin recognizes the fallback-able media as DOVI now and my codecprofile says I can't do DOVI, it would cause a remux for those clients who were enjoying direct play before.\r\n\r\nYeah, that could be a problem.\r\nIf we add a check for DV profile (has a fallback), we fix non-DOVI clients. But server tries to use direct play whenever possible, and we want it to remux to get full DoVi (literally the opposite).\r\n\r\nSo the problem is, how to say the server that we prefer to preserve the video range (accept remuxing)?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-10-29T05:08:21Z",
+   "body": "I'm not sure - do you have any suggestions?\r\n\r\nI also request feedback on this PR in the jellyfin server https://github.com/jellyfin/jellyfin/pull/10469/ with my approach to include new VideoRangeTypes for fallback-able media. \r\n\r\nBy adding new VideoRangeTypes, webOS can send a codec profile to disallow direct playing of those specific types - leading to remux for webOS and no impact for all other browsers (except one - all users will see this media as \"DOVI_with_HDR10_Fallback\" in playback info screen instead of \"HDR10\" currently)\r\n\r\nPlease let me know if it's a viable solution for the project. "
+  },
+  {
+   "author": "jellyfin-bot",
+   "created_at": "2024-02-28T01:47:27Z",
+   "body": "This issue has gone 120 days without an update and will be closed within 21 days if there is no new activity. To prevent this issue from being closed, please confirm the issue has not already been fixed by providing updated examples or logs.\n\nIf you have any questions you can use one of several ways to [contact us](https://jellyfin.org/contact)."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-03-09T18:55:02Z",
+   "body": "This issue is important to me and should not get automatically closed. I have lots of problems with DV on webOS and it playing back with wrong colors and no way to fix it... I can supply any diagnostic data you might need, but I unfortunately don't know anything about webOS nor ffprobe internals, so I can't help with fixing it."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-03-25T06:58:07Z",
+   "body": "Want to say thanks to everyone for showing that you cared, and especially to @participant5 for seeing this through. You're a gem\r\nCan't wait to use this in 10.9 😊😊"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-05-12T19:45:14Z",
+   "body": "Is there any setting that needs to be enabled for this to work?\r\nI've installed 10.9. and have LG CX.\r\n\r\nProfile 8 MKV still plays as HDR (doesn't trigger DoVi). I have this in remux log:\r\n`[hls @ 0x56125ea72900] Opening '/config/data/transcodes/355d1d31bf3f30f2fb34deb6975def82-1.mp4' for writing\r\n[mp4 @ 0x56125ea6c280] track 1: codec frame size is not set\r\nOutput #0, hls, to '/config/data/transcodes/355d1d31bf3f30f2fb34deb6975def82.m3u8':\r\n  Metadata:\r\n    encoder         : Lavf60.3.100\r\n  Stream #0:0: Video: hevc (Main 10) (hvc1 / 0x31637668), yuv420p10le(tv, bt2020nc/bt2020/smpte2084), 3840x1920 [SAR 1:1 DAR 2:1], q=2-31, 23.98 fps, 23.98 tbr, 16k tbn (default) (original)\r\n    Side data:\r\n      DOVI configuration record: version: 1.0, profile: 8, level: 6, rpu flag: 1, el flag: 0, bl flag: 1, compatibility id: 1\r\n  Stream #0:1: Audio: eac3, 48000 Hz, 5.1(side), fltp, 768 kb/s (default) (original)\r\nStream mapping:\r\n  Stream #0:0 -> #0:0 (copy)\r\n  Stream #0:1 -> #0:1 (copy)`"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2024-05-12T19:54:44Z",
+   "body": "@participant4 Just \"Prefer f-mp4 container...\" in playback settings, which as of 10.9 should be the default anyway. The remuxing is expected, as LG TVs seem to only support dolby vision in an mp4 container. So assuming the file is an mkv, it seems reasonable. Doesn't a \"Dolby Vision\" toast pop-up when you try to playback the file?"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-05-12T20:34:17Z",
+   "body": "@participant5  I was going through playback transcoding settings, but I didn't find that flag.\r\nIt's on address: web/#/dashboard/playback/transcoding\r\n\r\nIs there more playback settings somewhere?\r\n\r\nNo, HDR is triggered, I was converting files to MP4 before to trigger DoVi, but it's too much hassle :)"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2024-05-12T20:36:56Z",
+   "body": "@participant4 Based on your log I have a suspicion about the cause. Would it be possible for you to attach the \"media info\" page of jellyfin and ,if possible, a media info ( the app ) output of the file?"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-05-12T20:57:49Z",
+   "body": "@participant5 here is media info, I've cut the media info about 15 srt files.\r\nBelow is remux log from jellyfin.\r\n```\r\nDark Matter (2024) - S01E01 - Are You Happy in Your Life WEBDL-2160p\r\nContainer: mkv\r\nPath: /data/media/tv/Dark Matter (2024)/Season 1/Dark Matter (2024) - S01E01 - Are You Happy in Your Life WEBDL-2160p.mkv\r\nSize: 8310 MB\r\n\r\nVideo\r\nTitle: 4K HEVC HDR\r\nCodec: HEVC\r\nProfile: Main 10\r\nLevel: 150\r\nResolution: 3840x1920\r\nAspect ratio: 2:1\r\nInterlaced: No\r\nFramerate: 23.976025\r\nBitrate: 25115 kbps\r\nBit depth: 10 bit\r\nVideo range: HDR\r\nVideo range type: DOVIWithHDR10\r\nDV title: DV Profile 8.1 (HDR10)\r\nDV version major: 1\r\nDV version minor: 0\r\nDV profile: 8\r\nDV level: 6\r\nDV rpu preset flag: 1\r\nDV el preset flag: 0\r\nDV bl preset flag: 1\r\nDV bl signal compatibility id: 1\r\nColour space: bt2020nc\r\nColour transfer: smpte2084\r\nColour primaries: bt2020\r\nPixel format: yuv420p10le\r\nRef frames: 1\r\n\r\nAudio\r\nTitle: English - Dolby Digital+ - 5.1 - Default\r\nLanguage: eng\r\nCodec: EAC3\r\nLayout: 5.1\r\nChannels: 6 ch\r\nBitrate: 768 kbps\r\nSample rate: 48000 Hz\r\nDefault: Yes\r\nForced: No\r\nExternal: No\r\n\r\nSubtitle\r\nTitle: English - SUBRIP\r\nLanguage: eng\r\nCodec: SUBRIP\r\nDefault: No\r\nForced: No\r\nExternal: No\r\n\r\nSubtitle\r\nTitle: SDH - English - SUBRIP\r\nLanguage: eng\r\nCodec: SUBRIP\r\nDefault: No\r\nForced: No\r\nExternal: No\r\n\r\n\r\n```\r\n[remux-log.txt](https://github.com/jellyfin/jellyfin/files/15287646/remux-log.txt)\r\n"
+  },
+  {
+   "author": "participant6",
+   "created_at": "2024-05-12T21:11:36Z",
+   "body": "hi,\r\n\r\ndid you check the option on your tv, in jellyfin, user, playback:\r\nprefer fmp4/HLS\r\n\r\nI had the same issue, and I checked the option from my phone, but apparently, I had to do it per device (from the TV too).\r\n\r\nI have Dolby Vision now with version 10.9.0 :)\r\n\r\nIs there any chance this could have worked in 10.8.11 ? (this is the last working version that supports HW transcoding with Synology NAS :( ) or is there any way to make the 10.9.0 support HW transcoding with Synology ?\r\n\r\nthanks"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2024-05-12T21:15:27Z",
+   "body": "@participant4 The option described by @participant6 is what I meant, sorry for not being clear and following with a suspicion, which seems wrong. I didn't give it much thought because for webos 20 I believe it should be there by default, and by the logs attached, I believe it is.\r\n\r\n@participant6 I do not believe this would have worked in any version prior to 10.9 for any file, except for Dolby Vision Profile 5 content that is already in an mp4 container. The correct handling for profile 8 was added in 10.9."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2024-05-12T21:36:11Z",
+   "body": "@participant4 Do you have a different file to test with? Something Profile 5 perhaps? With a brief look at the code, I can't think of a bug in Dolby Vision capability detection right now. I can't test on my C3 until tomorrow."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-05-12T22:18:07Z",
+   "body": "> participant6\r\n\r\nTnx for the suggestion. I've checked the setting, it was already enabled.\r\n\r\n@participant5 I've managed to find Profile 5 file, it triggers DoVi correctly (and picture is correct, so I know it's working).\r\nI've tried a few more profile 8 files, and on all HDR is triggered, so there might be some issue.\r\n\r\nIf it matters, I'm .NET (and Angular) dev, so I can contribute if help is needed :)"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2024-05-12T22:29:21Z",
+   "body": "@participant4 I have something for you to try if you have the time. If you clone the jellyfin-web repo, I would very much appreciate the contents of the array at:\r\nhttps://github.com/jellyfin/jellyfin-web/blob/00fa379c5dada022662e34aafa675db4f2ceaf71/src/scripts/browserDeviceProfile.js#L242\r\n\r\ntaken with a breakpoint most probably. I would like to make sure that the capabilities are reported back to the server correctly before we go scavenging there."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2024-05-12T22:29:45Z",
+   "body": "I know I am asking for a bit much, but I do not have a CX at hand to test this myself."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-05-12T23:16:38Z",
+   "body": "@participant5 it's not a problem, but I'm quite busy till Thursday. \r\nI'll might have a question or two in running Jellyfin for debug (need to read docs first).\r\n\r\nShall we take this communication to the email? \r\nI don't know what's the policy here, I'm fine with continuing conversation here if it's not regarded as spam :)"
+  },
+  {
+   "author": "participant7",
+   "created_at": "2024-05-13T14:29:07Z",
+   "body": "I can confirm on 10.9.0, playing mp4 file with DOVIwithHDR10 range type and 'Prefer fMP4-HLS' enabled is getting played back as HDR and not as DOVI on LG OLED browser app"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2024-05-13T14:48:24Z",
+   "body": "I will try in a bit, if I repdorduce it I will try to look into it."
+  },
+  {
+   "author": "participant6",
+   "created_at": "2024-05-13T15:11:33Z",
+   "body": "> I can confirm on 10.9.0, playing mp4 file with DOVIwithHDR10 range type and 'Prefer fMP4-HLS' enabled is getting played back as HDR and not as DOVI on LG OLED browser app\r\n\r\ndid you try with the app also ? I haven't tried the browser, but I tried the app and it worked."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2024-05-13T15:20:31Z",
+   "body": "@participant4 Can't reproduce on my C3. Dolby Vision Profile 8 and 5 playback ok. I assume you are using the app and not the browser correct? If you are, the line above seems like a reasonable place to start."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2024-05-13T15:26:53Z",
+   "body": "> I can confirm on 10.9.0, playing mp4 file with DOVIwithHDR10 range type and 'Prefer fMP4-HLS' enabled is getting played back as HDR and not as DOVI on LG OLED browser app\r\n\r\nThe app is needed as it probably handles playback differently from the tv side (exposes more capabilities), and I know for a fact that it also sets some options to declare Dolby Vision support explicitly."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-05-13T15:37:12Z",
+   "body": "> @participant4 Can't reproduce on my C3. Dolby Vision Profile 8 and 5 playback ok. I assume you are using the app and not the browser correct? If you are, the line above seems like a reasonable place to start.\r\n\r\nYes, I'm using the app for LG. Jellyfin server is docker on QNAP (Intel processor) with QSV hardware acceleration enabled, if that means something."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2024-05-13T15:46:56Z",
+   "body": "> > @participant4 Can't reproduce on my C3. Dolby Vision Profile 8 and 5 playback ok. I assume you are using the app and not the browser correct? If you are, the line above seems like a reasonable place to start.\r\n> \r\n> Yes, I'm using the app for LG. Jellyfin server is docker on QNAP (Intel processor) with QSV hardware acceleration enabled, if that means something.\r\n\r\nIt should only be remuxing, not transcoding the video stream for it to work properly, so that shouldn't matter."
+  },
+  {
+   "author": "participant7",
+   "created_at": "2024-05-13T17:38:43Z",
+   "body": "> > I can confirm on 10.9.0, playing mp4 file with DOVIwithHDR10 range type and 'Prefer fMP4-HLS' enabled is getting played back as HDR and not as DOVI on LG OLED browser app\n> \n> \n> \n> did you try with the app also ? I haven't tried the browser, but I tried the app and it worked.\n\nCan't use the app as tv is not 'connected' to the internet but only has VLAN access. \n\nI thought the app was only a wrapper for the web client anyhow, but it does something LG specific as well? \n\nCouldn't that specific-ness just be integrated in the webclient js?"
+  },
+  {
+   "author": "participant8",
+   "created_at": "2024-05-13T17:50:36Z",
+   "body": "> > > I can confirm on 10.9.0, playing mp4 file with DOVIwithHDR10 range type and 'Prefer fMP4-HLS' enabled is getting played back as HDR and not as DOVI on LG OLED browser app\r\n> > \r\n> > \r\n> > did you try with the app also ? I haven't tried the browser, but I tried the app and it worked.\r\n> \r\n> Can't use the app as tv is not 'connected' to the internet but only has VLAN access.\r\n> \r\n> I thought the app was only a wrapper for the web client anyhow, but it does something LG specific as well?\r\n> \r\n> Couldn't that specific-ness just be integrated in the webclient js?\r\n\r\nI don't think so. It depends on the LG provided JS lib to build the device profile."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2024-05-13T20:28:05Z",
+   "body": "> > > I can confirm on 10.9.0, playing mp4 file with DOVIwithHDR10 range type and 'Prefer fMP4-HLS' enabled is getting played back as HDR and not as DOVI on LG OLED browser app\r\n> > \r\n> > \r\n> > did you try with the app also ? I haven't tried the browser, but I tried the app and it worked.\r\n> \r\n> Can't use the app as tv is not 'connected' to the internet but only has VLAN access.\r\n> \r\n> I thought the app was only a wrapper for the web client anyhow, but it does something LG specific as well?\r\n> \r\n> Couldn't that specific-ness just be integrated in the webclient js?\r\n\r\nAlso, the native runtime is different than the one used for the browser as far as I can tell. So different capabilities available. The best way seems to be to provide internet access for a bit, download the app and take it offline again. Sideloading is possible but it requires a developer account and constant renewal. If you are fine with that there are prebuilt binaries on the relevant repository."
+  },
+  {
+   "author": "participant7",
+   "created_at": "2024-05-14T12:59:41Z",
+   "body": "> > > > I can confirm on 10.9.0, playing mp4 file with DOVIwithHDR10 range type and 'Prefer fMP4-HLS' enabled is getting played back as HDR and not as DOVI on LG OLED browser app\n> \n> > > \n> \n> > > \n> \n> > > did you try with the app also ? I haven't tried the browser, but I tried the app and it worked.\n> \n> > \n> \n> > Can't use the app as tv is not 'connected' to the internet but only has VLAN access.\n> \n> > \n> \n> > I thought the app was only a wrapper for the web client anyhow, but it does something LG specific as well?\n> \n> > \n> \n> > Couldn't that specific-ness just be integrated in the webclient js?\n> \n> \n> \n> Also, the native runtime is different than the one used for the browser as far as I can tell. So different capabilities available. The best way seems to be to provide internet access for a bit, download the app and take it offline again. Sideloading is possible but it requires a developer account and constant renewal. If you are fine with that there are prebuilt binaries on the relevant repository.\n\nOk thanks, the point is you have to agree to terms when using the app store, which I won't do (too intrusive). \nUsing a dev account is also very cumbersome indeed. \nThere is also a homebrew option which is not ideal as the person(s) behind this is/are somewhat sketchy and needs a rooted device, with all security implications. \n\nSo I'll just stick to the browser features for now and move away from LG for my next TV. \n\nI do hope jellyfin will remain usable (and tested) that way (albeit with less features, I accept that)"
+  },
+  {
+   "author": "participant9",
+   "created_at": "2024-05-15T14:03:26Z",
+   "body": "> @participant4 I have something for you to try if you have the time. If you clone the jellyfin-web repo, I would very much appreciate the contents of the array at: https://github.com/jellyfin/jellyfin-web/blob/00fa379c5dada022662e34aafa675db4f2ceaf71/src/scripts/browserDeviceProfile.js#L242\r\n> \r\n> taken with a breakpoint most probably. I would like to make sure that the capabilities are reported back to the server correctly before we go scavenging there.\r\n\r\nI have a CX so I tested it. Content for both type (dovi 5 an 8) of file for array supportedProfiles is [5]. I added a `supportedProfiles.push(8);` to check if it would work and it did. Now profile 8 also gets remuxed and triggers Dolby Vision on the tv but the color is still messed up (pinkish hue on the one I tested) compared to remuxing it beforehand with ffmpeg."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2024-05-15T18:47:22Z",
+   "body": "@participant9 Seems like the CX isn't reporting support then for hls streaming, which seems weird since the media player can handle it as you say. I don't believe we are doing something weird with the stream but I don't have the time to look into it. Seems more to me like a WebOS bug, but I could be mistaken."
+  },
+  {
+   "author": "participant10",
+   "created_at": "2024-05-15T20:36:09Z",
+   "body": "Hi, just tested 10.9.1 on my LG CX (via Jellyfin app). Generally, and that applies also to Jellyfin 10.8.x, I used to convert my files to TS (or MP4 as fallback) to trigger Dolby Vision metadata, because MKV was a no-go (HDR fallback).\r\n\r\nDoing so, both DV5 and DV8 metadata triggers correctly in Jellyfin (DV7 doesn't work in any case).\r\n\r\nAfter installing 10.9.1, this is the behaviour using the webOS app:\r\n\r\nMKV DV5: triggers Dolby Vision **(progression)**\r\nTS DV5: triggers Dolby Vision (same as 10.8)\r\nMP4 DV5: triggers Dolby Vision (same as 10.8)\r\n\r\nMKV DV8: triggers HDR (same as 10.8)\r\nTS DV8: triggers HDR **(regression)**\r\nMP4 DV8: triggers HDR **(regression)**\r\n\r\nSo, something's definitely going on with DV8 files. Loading files in general seems also a tad slower.\r\n\r\n_Note: this is my first ever comment on github...so I hope this was helpful!_"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2024-05-15T22:27:05Z",
+   "body": "@participant10 It is! What I have gathered so far is that the TV reports that it isn't compatible with profile 8 files when queried about it. It doesn't seem like a jellyfin bug because when testing on a C3 works fine ( at least for me ) so seems like a bug or a genuine lack of support ( doubt it ) on that specific WebOS version. I believe it would be trivial to force it to try and play that back anyway but as @participant9 commented, the TV doesn't behave correctly when we try to do that. So I am hesitant to take it upon myself to determine the best course of action, especially when I don't have the hardware to play around with this further."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-05-16T21:13:55Z",
+   "body": "> @participant10 It is! What I have gathered so far is that the TV reports that it isn't compatible with profile 8 files when queried about it. It doesn't seem like a jellyfin bug because when testing on a C3 works fine ( at least for me ) so seems like a bug or a genuine lack of support ( doubt it ) on that specific WebOS version. I believe it would be trivial to force it to try and play that back anyway but as @participant9 commented, the TV doesn't behave correctly when we try to do that. So I am hesitant to take it upon myself to determine the best course of action, especially when I don't have the hardware to play around with this further.\r\n\r\nOn my LG CX I played a lot of profile 8 mp4 (converted from mkv) and they all played fine.\r\nUnfortunately my NAS disk died and I'm waiting for replacement (and reconfiguring). If I can query TV capabilities from my computer, I'm open to do it, but I won't have any media to test TV playback."
+  },
+  {
+   "author": "participant6",
+   "created_at": "2024-05-21T15:44:21Z",
+   "body": "I'm happy to enjoy DV content from Jellyfin (10.9.2) on my LG, however I have noticed an issue and I wonder if it is related to this thread or if I should open a new issue.\r\n\r\nSome DV contents play fine only when I play them from the beginning or if I do a small seek (a few seconds/minutes ahead). If I try to jump to the middle of the movie or if I resume a movie I already started to watch, it doesn't work as expected.\r\nFor instance, if I try to resume playing a file, it does the following:\r\nDolby Vision logo appears on the TV, then instead of playing the movie it remains on a black screen for several seconds (30s maybe), then after a while it starts over and switch to transcoding instead of remux claiming the video is out of range O_o.\r\n\r\nIf I disable prefer fmp4/HLS option, then it works fine, I can seek or resume as I wish (it then plays in HDR, not in DV of course)."
+  },
+  {
+   "author": "participant11",
+   "created_at": "2024-07-04T14:23:47Z",
+   "body": "> MP4 DV8: triggers HDR **(regression)**\r\n\r\nCan confirm tried few files with below details - LG C9; **mp4** container, profile 8, jellyfin webos app - disabled all transcoding options - only direct play. It says the player is incompatible with the source. \r\n\r\nSame files work over the native LG photos/videos app (DLNA server) and with Jellyfin 10.8.13 [both of them also show Dolby Vision banner at the top when started]\r\n\r\n\r\nDolby Vision, Version 1.0, dvhe.08.06, BL+RPU, HDR10 compatible / SMPTE ST 2094"
+  },
+  {
+   "author": "participant11",
+   "created_at": "2024-07-04T14:51:47Z",
+   "body": "> I'm happy to enjoy DV content from Jellyfin (10.9.2) on my LG, however I have noticed an issue and I wonder if it is related to this thread or if I should open a new issue.\r\n> \r\n> Some DV contents play fine only when I play them from the beginning or if I do a small seek (a few seconds/minutes ahead). If I try to jump to the middle of the movie or if I resume a movie I already started to watch, it doesn't work as expected. For instance, if I try to resume playing a file, it does the following: Dolby Vision logo appears on the TV, then instead of playing the movie it remains on a black screen for several seconds (30s maybe), then after a while it starts over and switch to transcoding instead of remux claiming the video is out of range O_o.\r\n> \r\n> If I disable prefer fmp4/HLS option, then it works fine, I can seek or resume as I wish (it then plays in HDR, not in DV of course).\r\n\r\nIssues with seeking usually mean issue with the codec id - best to check and narrow down in mediainfo which ones work, which don't. The 4 main example codecs are dvh1, hvc1, dvhe, hev1"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2024-07-04T14:53:17Z",
+   "body": "> > I'm happy to enjoy DV content from Jellyfin (10.9.2) on my LG, however I have noticed an issue and I wonder if it is related to this thread or if I should open a new issue.\r\n> > Some DV contents play fine only when I play them from the beginning or if I do a small seek (a few seconds/minutes ahead). If I try to jump to the middle of the movie or if I resume a movie I already started to watch, it doesn't work as expected. For instance, if I try to resume playing a file, it does the following: Dolby Vision logo appears on the TV, then instead of playing the movie it remains on a black screen for several seconds (30s maybe), then after a while it starts over and switch to transcoding instead of remux claiming the video is out of range O_o.\r\n> > If I disable prefer fmp4/HLS option, then it works fine, I can seek or resume as I wish (it then plays in HDR, not in DV of course).\r\n> \r\n> Issues with seeking usually mean issue with the codec id - best to check and narrow down in mediainfo which ones work, which don't. The 4 main example codecs are dvh1, hvc1, dvhe, hev1\r\n\r\nI had tried both dvh1 and dvhe and they behaved exactly the same. I will try again tonight or tomorrow to be sure."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-09-08T20:11:04Z",
+   "body": "Does Dolby Vision works properly now on LG OLED's?\r\nI have a CX and sometimes this year (I think it was version 10.9) profile 5 was triggering Dolby Vision and profile 8 was triggering HDR (fallback stream).\r\n\r\nNow I updated to 10.9.10 and profile 8 still triggers HDR, profile 5 is a black screen.\r\nI disabled prefer fMP4 per instructions in this thread.\r\nI have an LG CX.\r\n\r\nNot to sure what to look for in logs or what setting to double check.\r\nThis is what it says in logs:\r\n```\r\n  Stream #0:0: Video: hevc (Main 10), yuv420p10le(pc), 3840x2160 [SAR 1:1 DAR 16:9], q=2-31, 24 fps, 24 tbr, 1k tbn (default)\r\n    Side data:\r\n      DOVI configuration record: version: 1.0, profile: 5, level: 6, rpu flag: 1, el flag: 0, bl flag: 1, compatibility id: 0\r\n``` "
+  },
+  {
+   "author": "participant6",
+   "created_at": "2024-09-08T20:22:39Z",
+   "body": "I don't think it works properly, I have open an issue but I got 0 answer so far:\r\nhttps://github.com/jellyfin/jellyfin-webos/issues/248"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-09-08T20:28:48Z",
+   "body": "> I don't think it does work properly, I have open an issue but I got 0 answer so far: [jellyfin/jellyfin-webos#248](https://github.com/jellyfin/jellyfin-webos/issues/248)\r\n\r\nOK, my fault. It seems that flag \"Allow video playback that requires conversion without re-encoding\" was unchecked. I'm sure i checked it directly on TV, but either it didn't get saved or I messed up.\r\nNow both profile 5 and profile 8 trigger correctly.\r\n\r\nIt needs to say that it's outputting .ts in logs, because LG OLED's don't support mkv playback with DV, but do support mp4 and TS.\r\n```\r\nOpening '/config/data/transcodes/8c2009f4bc2c294a3369581e98f8b21049.ts' for writing\r\n``` \r\n\r\n\r\n"
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "jellyfin/jellyfin",
+  "default_branch": "master",
+  "commit_sha": "ca40fd1386275b746248283c765fd5b581f66b1f",
+  "as_of": "2023-10-24T22:43:14Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_jellyfin_jellyfin_10468"
+}

@@ -1,0 +1,135 @@
+{
+ "repo": "bevyengine/bevy",
+ "number": 18778,
+ "url": "https://github.com/bevyengine/bevy/issues/18778",
+ "title": "Observers, systems and commands that use closures and panic require explicit return type after Rust 2024 edition",
+ "state": "closed",
+ "labels": [
+  "C-Bug",
+  "A-ECS",
+  "D-Complex",
+  "S-Ready-For-Implementation",
+  "P-Compile-Failure"
+ ],
+ "reporter": "reporter",
+ "created_at": "2025-04-09T18:17:14Z",
+ "closed_at": "2025-04-14T20:39:28Z",
+ "body": "## Bevy version\n\n[v0.16.0-rc.3](https://github.com/bevyengine/bevy/releases/tag/v0.16.0-rc.3)\n\n## \\[Optional\\] Relevant system information\n\nRust 1.86.0, 2024 edition.\n\n## What you did\n\n```rust\n\nfn test() {\n    let mut app = App::new();\n    app.add_observer(|_: Trigger<TestEvent>| {\n        panic!();\n    });\n}\n\n#[derive(Event)]\nstruct TestEvent;\n```\n\n## What went wrong\n\nThe code no longer compiles, though it worked in Bevy 0.15.0 (which used the 2021 edition).\n\nIt also compiles when I explicitly specify the return type `()`:\n\n```rust\n\nfn test() {\n    let mut app = App::new();\n    app.add_observer(|_: Trigger<TestEvent>| -> () {\n        panic!();\n    });\n}\n\n#[derive(Event)]\nstruct TestEvent;\n```",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2025-04-09T18:21:20Z",
+   "body": "As discussed [on Discord](https://discord.com/channels/691052431525675048/1354184220263841812/1359585787846328441) with @participant7, this is due to Rust 2024, and is not our bug. It's arguably not a bug at all!\n\nSee https://doc.rust-lang.org/edition-guide/rust-2024/never-type-fallback.html for the context on this change, which recommends the same workaround of explicitly specifying the return type. The same code will compile just fine as functions rather than closures, because the return type of functions is never inferred (even if it's defaulted to ())."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-04-09T18:25:36Z",
+   "body": "Actually, reopening this to track the fix in the same issue: we should be able to just implement these traits for functions which return the `!` (never) type."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-04-09T18:29:31Z",
+   "body": "I think closure observers that panic are super rare.\nI just use it in one test 🙂"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-04-09T18:44:30Z",
+   "body": "I literally just hit this in an observer test as well. It was a bit annoying because the observer worked fine with `assert!(false)` (to check that it wasn't called) but clippy wanted that changed to `panic!` which then didn't work without specifying the return type. It also means it doesn't work with `todo!()`."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-04-09T18:48:01Z",
+   "body": "Ok, after adding it clippy is complaining about \"unneeded unit return type\", that's extra annoying but kinda funny"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-04-09T20:39:33Z",
+   "body": "> Ok, after adding it clippy is complaining about \"unneeded unit return type\", that's extra annoying but kinda funny\n\n@participant2 can you please open a bug in clippy for this and link back to this issue?"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-04-09T22:14:43Z",
+   "body": "This also applies to `app.add_systems`. I consider this a pretty nasty papercut that deserves fixing (or yelling about if we can't fix it).\n\n> Actually, reopening this to track the fix in the same issue: we should be able to just implement these traits for functions which return the ! (never) type.\n\n`!` is still experimental, meaning we can't write these impls."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-04-09T22:36:08Z",
+   "body": "https://play.rust-lang.org/?version=stable&mode=debug&edition=2024&gist=e9074614255ca38bdd74874ba7f47acf We can't fix it yet on stable 🙃 Definitely a \"complain upstream\" problem.\n\n> This also applies to app.add_systems. I consider this a pretty nasty papercut that deserves fixing (or yelling about if we can't fix it).\n\nNote that this regression is only for closures, so I would consider this a moderate-severity UX problem. I almost never write closures for systems / observers. It's more common for commands though."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-04-10T01:37:35Z",
+   "body": "> Note that this regression is only for closures, so I would consider this a moderate-severity UX problem. I almost never write closures for systems / observers. It's more common for commands though.\n\nI expect the inline Observer closure use case to go up considerably when next generation Bevy UI takes off. Imo solving this is a \"big deal\"."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-04-10T01:37:59Z",
+   "body": "Ditto for system-driven reactivity"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-04-10T01:56:13Z",
+   "body": "From `Gl` [on Discord](https://discord.com/channels/691052431525675048/691052431974465548/1359680140975542313).\n\n>If we _desperately_ need this, there's actually a way to get never-types to work in stable Rust, using associated types \n\n```rs\ntype Never = <u8 as TryFrom<u8>>::Error;\n```\n> this leverages the fact that there's a blanket impl for `TryFrom<T>` for `T` where Error is defined as `!`\n\nAnd, that does indeed work: https://play.rust-lang.org/?version=stable&mode=debug&edition=2024&gist=77fbd787405712a153404ca23d5d0263\n\nThere may need to be a bit of shenanigans to avoid conflicting impls, but we should be able to get that working here. I'm going to check upstream to see if they're okay with us abusing this hole."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-04-10T02:04:57Z",
+   "body": "I put together some minimal representative examples. Might be worth sharing with the rust folks:\n\n1. Repro on stable: https://play.rust-lang.org/?version=stable&mode=debug&edition=2024&gist=3ff04667f8785e03a0862e96cc0eddd1\n2. Example of it working on stable if we remove the `Thing` impl: https://play.rust-lang.org/?version=stable&mode=debug&edition=2024&gist=3ff04667f8785e03a0862e96cc0eddd1\n3. Fix with never type on nightly: https://play.rust-lang.org/?version=nightly&mode=debug&edition=2024&gist=6644085e4b282f7741785625594155b7\n4. A failing attempt to use the workaround shared above that doesn't work due to conflicting impls: https://play.rust-lang.org/?version=stable&mode=debug&edition=2024&gist=294557d9efe40b42542b4fa3a39aa07a\n5. A failing attempt to resolve the issue in (4) by adding a marker (which is what bevy actually already has): https://play.rust-lang.org/?version=stable&mode=debug&edition=2024&gist=1d6eb511cd28329e13849221ba62b0ea"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-04-10T02:09:23Z",
+   "body": "A potential fix on stable rust by `@participant8`: https://play.rust-lang.org/?version=stable&mode=debug&edition=2024&gist=9c3edefec1febe36c0f5273079a176c0"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-04-10T02:16:11Z",
+   "body": "I don't think the workaround is viable in the system case. () and the never hack conflict by default, and Markers to disambiguate prevent type resolution."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-04-10T02:16:13Z",
+   "body": "> A potential fix on stable rust by `@participant8`: https://play.rust-lang.org/?version=stable&mode=debug&edition=2024&gist=9c3edefec1febe36c0f5273079a176c0\n\nI think this is a red herring? It seems to compiles with `Fn() -> A` for any type `A`, presumably because the closure with implicit return type can infer that the return type is `A` because the function diverges."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2025-04-10T02:22:31Z",
+   "body": "~~The `Infallible` type has special properties. Probably wasn't the best example I could provide. Replace `panic!()` with `loop {}` and [it should still work](https://play.rust-lang.org/?version=stable&mode=debug&edition=2024&gist=f8795f95511de1c637f88646e0203f5d).~~\n\n\nedit: I got it twisted"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-04-10T02:24:20Z",
+   "body": "That also still compiles if you replace `Infallible` with `String` :)"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-04-10T02:38:57Z",
+   "body": "If we're able to reframe our impls to share a single generic T, it will compile:\n\nhttps://play.rust-lang.org/?version=stable&mode=debug&edition=2024&gist=922fa8c98bb3023b248870c6a786eb52\n\nIirc we rely on being able to have different impls for different return types, so I'm not sure this is viable for us."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-04-10T03:20:38Z",
+   "body": "I _was_ able to reframe Observers to share the same `T` output impl by framing our error handler logic as:\n\n```rust\nIntoObserverSystem<E: 'static, B: Bundle, M, Out: HandleSystemOut>:\n```\n\nThis unfortunately is just as shell game, as this observer results in a return type of `!`:\n\n```rust\napp.add_observer(|_: Trigger<Thing>| {\n    panic!(\"oh no!\");\n})\n```\n\nAnd we can't implement `HandleSystemOut` for `!` because `!` is experimental. Worth escalating to the Rust team as this feels intractable."
+  },
+  {
+   "author": "participant6",
+   "created_at": "2025-04-10T04:24:11Z",
+   "body": "(Cross-posting from https://github.com/rust-lang/rust/issues/139610#issuecomment-2791500044)\n\nThe way to name the *real* never type on stable Rust is:\n\n```rust\nmod fn_ret {\n    pub trait FnRet {\n        type Output;\n    }\n\n    impl<R> FnRet for fn() -> R {\n        type Output = R;\n    }\n}\n\npub type Never = <fn() -> ! as fn_ret::FnRet>::Output;\n```\n\n(The [`never-say-never` crate](https://crates.io/crates/never-say-never), with nearly 1.5 million downloads, uses this trick.)"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-04-10T04:29:24Z",
+   "body": "This works (slotting it in to impl (4))! Thank you!"
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "bevyengine/bevy",
+  "default_branch": "main",
+  "commit_sha": "bc259fad04374721dd300d57e1fca06aa18c518a",
+  "as_of": "2025-04-09T18:17:14Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_bevyengine_bevy_18778"
+}

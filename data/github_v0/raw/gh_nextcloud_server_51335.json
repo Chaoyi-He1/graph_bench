@@ -1,0 +1,346 @@
+{
+ "repo": "nextcloud/server",
+ "number": 51335,
+ "url": "https://github.com/nextcloud/server/issues/51335",
+ "title": "[Bug]: Federated CloudID leaking on public lookup-server callback",
+ "state": "closed",
+ "labels": [
+  "bug",
+  "4. to release",
+  "high",
+  "feature: federation",
+  "31-feedback"
+ ],
+ "reporter": "reporter",
+ "created_at": "2025-03-07T22:36:32Z",
+ "closed_at": "2025-03-18T16:41:56Z",
+ "body": "# Summary\n\n*added by @participant2 18th March*\n\nFor the final state, closing-statement, please see https://github.com/nextcloud/server/issues/51335#issuecomment-2733919135 at the bottom of this issue.\n\nAs a summary 7th March 11:36PM CET this issue here has been raised having spotted outside calls by the lookup-server (https://github.com/nextcloud/lookup-server/ centrally run by Nextcloud GmbH) showing federated cloudIDs on the URLs of the inbound http (not https) call after updating the server to the latest maintenance release (February 2025 releases for 29, 30 and 31). \n\nThe root cause analysis showed that \n*  **Triggering point:** A business logic error introduced by the maintenance releases of February 2025 led to calls to the lookup-server for any user created before Feb 2021 or users created afterwards that at any point in time in the past had a profile field actively set to \"published\" (which means publish to public address-book)\n* **Actual issue this ticket is about:** A business logic error on the lookup-server led to first doing a identity proof call (see first paragraph of this issue) via http instead of first checking if there has been any record in the database also not doing this via https instead\n\nThis matter has been resolved (again, see https://github.com/nextcloud/server/issues/51335#issuecomment-2733919135 for details) by taking down the lookup-server endpoint to not accept or expose data, ensure the maintenance releases for March were released soon after the root cause got identified blocking the calls to the lookup-server and due to the identification of a deletion-error (not deleting the cloudID) also deleting all data the business logic error failed to delete (empty records just having a cloudID but no other fields fileld)\n\n---\n\n### ⚠️ This issue respects the following points: ⚠️\n\n- [x] This is a **bug**, not a question or a configuration/webserver/proxy issue.\n- [x] This issue is **not** already reported on [Github](https://github.com/nextcloud/server/issues?q=is%3Aopen+is%3Aissue+label%3Abug) OR [Nextcloud Community Forum](https://<redacted-host>/) _(I've searched it)_.\n- [x] Nextcloud Server **is** up to date. See [Maintenance and Release Schedule](https://github.com/nextcloud/server/wiki/Maintenance-and-Release-Schedule) for supported versions.\n- [x] I agree to follow Nextcloud's [Code of Conduct](https://nextcloud.com/contribute/code-of-conduct/).\n\n### Bug description\n\nAfter the release of Nextcloud 31.0.0, a user reported suspicious activity on their Nextcloud instance after installing the update: https://bsd.network/@niels/114106538216130985\n\nThese request contain the usernames of the instance's users and target:\n```\n65.21.231.50 - - [07/Mar/2025:20:20:00 +0000] \"GET /ocs/v2.php/identityproof/key/<USERID> HTTP/1.1\" 301 169 \"-\" \"GuzzleHttp/7\"\n```\n\nAll requests originate from 65.21.231.50. This indicates that PII was transmitted to a third party--in this case Nextcloud--without sufficient user consent. Depending on the selected userId, this data included full names and email addresses.\n\nBeing pointed to the issue, I was able to identify jobs named `OCA\\LookupServerConnector\\BackgroundJobs\\RetryJob` as the root cause of these requests.\n\nOn all affected nextcloud instances I operate this behavior started exactly after the upgrade to 31.0.0. From the codebase it remains unclear what triggered the behavior. However, several functions around lookupServerUpload handling were refactored or altered in the meantime.\n\nAuditing the configuration did not clarify which user settings may relate to exposure, as affected accounts also included dedicated accounts for, e.g., presentation machines at a conference not used by humans.\n\nBy instrumenting related source files, it was established that the configuration setting `'files_sharing', 'lookupServerUploadEnabled'` ultimately enabling the datasharing triggering external requests is found under the Path:\n\n```\nAdmin Settings -> Sharing -> Federated Cloud Sharing -> Allow people to publish their data to a global and public address book\n```\n\nGiven that the implication of this setting is that the data of several users who had certainly not given explicit consent to the data transfer was shared with a third party (Nextcloud), the labeling of this configuration setting is, at best, dangerously misleading and at worst hiding its actual implications.\n\n### Steps to reproduce\n\n1. Upgrade from Nextcloud v30.0.6 to v31.0.0\n2. Wait for the regular cronjob to run\n3. Within seconds of the first `OCA\\LookupServerConnector\\BackgroundJobs\\RetryJob` job for a user, a request from `65.21.231.50` will be made to `/ocs/v2.php/identityproof/key/<USERID>`, demonstrating that data was shared with a third party.\n\n\n### Expected behavior\n\n- The global `\"lookupServerUploadEnabled\"` setting should remain `NO` after an upgrade, and **NO** user data should be shared with third parties without users' or operators' consent.\n- The setting for `\"lookupServerUploadEnabled\"` should be descriptively labeled, require confirmation, and make the implications of being enabled clear\n\n### Nextcloud Server version\n\n31\n\n### Operating system\n\nDebian/Ubuntu\n\n### PHP engine version\n\nNone\n\n### Web server\n\nNone\n\n### Database engine version\n\nNone\n\n### Is this bug present after an update or on a fresh install?\n\nNone\n\n### Are you using the Nextcloud Server Encryption module?\n\nNone\n\n### What user-backends are you using?\n\n- [x] Default user-backend _(database)_\n- [x] LDAP/ Active Directory\n- [ ] SSO - SAML\n- [ ] Other\n\n### Configuration report\n\n```json\n\n```\n\n### List of activated Apps\n\n```shell\n\n```\n\n### Nextcloud Signing status\n\n```shell\n\n```\n\n### Nextcloud Logs\n\n```json\n\n```\n\n### Additional info\n\nPlease understand that the turn of events is extremely unfortunate. I will have to evaluate over the next 72h whether this event falls under Art. 33 III DSGVO.\n\nI expect Nextcloud GmbH to perform due diligence in this matter as well. This includes:\n\n- Ensuring that all potentially unintentionally leaked data is deleted\n- Ensuring that this data is not re-shared to third parties or made publicly available\n- Sharing documentation on the above two steps and a post-mortem with the Nextcloud community and the responsible DPA\n\n**Note on HackerOne Submission:** On Mattermost and in Nextcloud's security reporting information on GitHub, a submission of security sensitive events is requested via HackerOne.  I decided to not follow this recommendation for the following reasons:\n- I do not consent to the terms and conditions of HackerOne, but believe that this issue is critically important for the community\n- The leak/\"vulnerability\" (or rather: 'unintentional feature') can be mitigated by operators, if they set the aforementioned config setting to off; Delaying publication would, hence, expose users further.\n- Technically, in this case, the not necessarily authorized collector of data is Nextcloud GmbH",
+ "comments": [
+  {
+   "author": "reporter",
+   "created_at": "2025-03-07T23:51:39Z",
+   "body": "I just realized that the data shared with the lookup server expands far beyond he userId. It may include: name, email, address, website, twitter, phone, twitter_signature, website_signature, twitter_verification_status, and website_verification status.\n\nThis is **severe**:\n\nhttps://github.com/nextcloud/server/blob/06119eda7a05f2b2861737532b84cef93af53f21/apps/lookup_server_connector/lib/BackgroundJobs/RetryJob.php#L172"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-03-08T01:18:16Z",
+   "body": "this may also be problematic where European data privacy law applies, and open the recipient of this data to legal action\n\nhttps://europa.eu/youreurope/citizens/consumers/internet-telecoms/data-protection-online-privacy/index_en.htm"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-03-08T07:21:16Z",
+   "body": "The more I look at this, it indeed seems to be related to a rather old PR (4-years-ish) only merged recently:\n\nhttps://github.com/nextcloud/server/issues/25290\n\n- The default settings were probably in place without causing the observed behavior for a long time\n- The patch being merged led to user data actually being publicly exchanged\n\nThis means that older versions of Nextcloud will also show this behavior as soon as the backport is in a minor release.\n\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-03-08T08:06:13Z",
+   "body": "Ok, it seems to not be https://github.com/nextcloud/server/issues/25290 ; If at all, that PR not having been merged might have prevented some of the worst. Digging a bit deeper, it seems like the data array is full of empty values, at least in the version in v31.0.0 ; This is what https://github.com/nextcloud/server/issues/25290 fixes; So, in that regard, bullet dodged, I say.\n\nThe impact of this would have been _significantly_ worse if that had already been merged."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-03-08T08:08:30Z",
+   "body": "@reporter thanks for all the digging and the detailed findings. With these changes I can say it has currently been shipped with RC1 of 30 and 31, so I can help with reverting this change next week with the help of a developer.\n\nThe search endpoint has been deactivated for the lookup server. Before that and also in the past data is only accessible via the lookup endpoint with a direct hit, meaning you would need to know the exact email address in order to get a record as a result, else no / empty search result.\n\nFurther changes in the software I will also discuss with devs next week and the DPO h management.\n\nAndy Scherzinger\nDirector Engineering Nextcloud "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-03-08T08:15:25Z",
+   "body": "Thank you for the quick follow up. See also my last comment; It might be that we really got lucky there.\n\nWhat remains to be figured out is why the overall calling of the lookupServer suddenly sprung into action, even if it 'just' leaked userId without #25290 being merged."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-03-08T08:20:46Z",
+   "body": "Yes, seen your reference and yes, needs to be clarified why this sprung into action and the change will need to get reverted and lead to an RC2 release and to be checked if we need to postpone the final release date to give enough time for testing the new pre-release. "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-03-08T08:25:11Z",
+   "body": "Final release date? I mean, this is already out (the `userId` only leak) with v31.0.0, which--as far as I can see--is already released: https://github.com/nextcloud/server/releases/tag/v31.0.0\n\nIf the enabling of the feature is properly consent based, there is no issue with #25290 ; It is the 'unexpected participation' in the feature that came up with the already released v31.0.0 that is the issue. #25290 not being in v31.0.0 might have been the saving grace there."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-03-08T08:54:21Z",
+   "body": "I need to talk to a dev for a release date which I can't on the weekend. Implementing proper consent will be a bit of work the quick solution will be to change it to off-by-default "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-03-08T09:04:59Z",
+   "body": "Off by default is always a good idea for anything that sends user data anywhere."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-03-08T09:58:34Z",
+   "body": "I just pulled backups from Feb 28 for an affected instance and could confirm that this was an implicit default value change. Neither does the SQL dump from Mar 7 (after the upgrade and before event detection, i.e., while data was transmitted).\n\nThe DB dump from Feb 28 does not contain configuration keys for `files_sharing->lookupServerUploadEnabled` and `files_sharing->lookupServerEnabled`."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-03-08T11:40:35Z",
+   "body": "Thanks for digging deeper @reporter\n\nIf the default is the cause, I would still call that an hypothesis (until we know for sure since this is still an assumption based on the symptoms seen). Another hypothesis would be that the background job never executed 'successfully' (meaning sending the data) and that this is what has been 'fixed' with the release which would mean the default didn't change but the background job has been broken.\n\nI any way I will have developers dig into the root cause analysis and ship a fix. It might be a quick fix blocking the logic preventing the behavior and a more holistic fix afterwards, as you said, no issue if consent is implemented correctly.\n\nFor the moment you should be able to hit the kill switch on the behavior via the settings UI \n\n![Image](https://github.com/user-attachments/assets/fab76e88-e64b-49d7-8b1e-c3259743ede8)\n\nBasically disable the above settings (I am on the phone, so I only have a screenshot with the settings on active)\n\nEdit: Just an info regarding distribution rate, 31.0.0 is currently set at 30%, so only 30% of servers on 30-latest get the 31-update offered plus anybody with a fresh install or manual update would be able to be on 31. As I said, only an info regarding distribution, not a statement regarding instances already on v31. "
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-03-08T13:56:10Z",
+   "body": "You can define sane defaults for related config values before upgrading with:\n```\nphp occ config:app:set --value no files_sharing lookupServerUploadEnabled\nphp occ config:app:set --value no files_sharing lookupServerEnabled\n```\n\nThese will not be overridden by the upgrade.\n\nIf you have upgraded already, you can use these commands instead of clicking your way through the UI."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-03-08T15:22:46Z",
+   "body": "The lookup server running on <redacted-host> uses HTTP, not HTTPS, to submit its API requests. This means that login names travel unencrypted over the wire. This seems to be hardcoded behaviour.\n\n\"Allow[ing] people to publish their data to a global and public address book\" is not what happened here. The way that is phrased means that the admin allows users to choose to publish data, but data was published for a local user that hadn't logged in directly for several months and thus couldn't possibly have consented to any data sharing. Should that option have read \"Forcibly upload users' data to a global and public address book\"?"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-03-08T17:34:28Z",
+   "body": "@participant4 to come up with a clear description for the toggle might be a bit of a challenge and can surely be improved. Beware that the fields in the user's profile have a visibility setting each. So users can infact decide on each individually what to publish."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-03-08T17:35:59Z",
+   "body": "@participant2 I just checked on my Nextcloud instance and couldn't even find the setting"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-03-08T17:51:56Z",
+   "body": "@participant4 which one?\n\nusers' settings is in personal settings under `/settings/user`, see screenshot for example:\n![Image](https://github.com/user-attachments/assets/04aa8a6f-7c19-40fb-a233-05ac4eb84491)\n\nadmin setting referenced above is under `settings/admin/sharing` scrolling down to \"Federated Cloud Sharing\"\n![Image](https://github.com/user-attachments/assets/91e5b88f-c695-4bf7-9b61-b935d3fce039)"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-03-08T17:56:47Z",
+   "body": "@participant2 Thanks; Indeed it is more of a hypothesis iff a non-existent key overwrites the default-to-empty string in PHP, i.e., triggers an error. However, in a quick test it does not:\n```\n<?php\n        $a = array();\n        print($a['c']['k'] ?? \"foo\");\n?>\n```\nStill, I am not a programmer/dev, so i might err there.\n\nAlso, from a user perspective, it does not really matter if \"the default changed\" or \"the default did not change, but the behavior changed\". Anyway, guess it is best to wait for the devs assessment there.\n\nAlso thanks for pointing out the point about the global address books. This was luckily already set to off, as I tend to be rather conscious about these things. Please note, though, that if similar behavior exists there, this may be an even more significant PII leak than the user database, as it will include information on non-local people and their connections to local users.\n\nSimilarly, if the statement on using HTTP is true, this is another severe issue, as it means that the system was not sufficiently suited to handle PII (even iff users' explicit consent was in play).\n\nAlso, taking a look at the identityproof mechanic might be a good idea, in case this also allows user enumeration.\n\n@participant4 you might have to scroll down in the settings page. It is not exactly clear; Even I was duped a few minutes ago despite actually knowing where it is while checking up on the outbound lookup-setting.\n"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-03-08T18:00:17Z",
+   "body": "That pawprint icon is clickable!!\n\nI suppose 'trusted' is as defined by Nextcloud GmbH, not by users or admins.\n\nIt definitely was HTTP, not HTTPS."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-03-08T18:02:43Z",
+   "body": "> I suppose 'trusted' is as defined by Nextcloud GmbH, not by users or admins.\n\n@participant4 by admins, see original screenshot it is the section right below federated sharing -> \"Trusted servers\" (empty if not explicitly added by server admins)"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-03-08T18:07:28Z",
+   "body": "@reporter true on the behavior argument of course. HTTP/HTTPS I would also need to check back with developers, currently need to rely on @participant4's assessement.\n\n> Also, taking a look at the identityproof mechanic might be a good idea, in case this also allows user enumeration.\n\nI'll add that to the list to check with the devs cause I lack the knowledge to dig into it myself. So I am with you on this:\n\n> Anyway, guess it is best to wait for the devs assessment there."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2025-03-08T19:00:13Z",
+   "body": "But the enumeration of users, and publication of user handles was enabled by default for a few years now, no? Only the possibility of additionally leaking further contact info was added recently?\n\nBecause I set `lookupServerUploadEnabled` to `no` several years ago, as I found it quite dubious 😒 "
+  },
+  {
+   "author": "participant6",
+   "created_at": "2025-03-08T19:51:46Z",
+   "body": "> Also, taking a look at the identityproof mechanic might be a good idea, in case this also allows user enumeration.\n\nAccording to the thread model user enumeration by UID is not included: https://nextcloud.com/security/threat-model/#user-enumeration"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-03-08T21:46:18Z",
+   "body": "That is an interesting choice of threat model for a self hosted application specifically highlighting its privacy benefits."
+  },
+  {
+   "author": "participant7",
+   "created_at": "2025-03-08T22:33:00Z",
+   "body": "> That is an interesting choice of threat model for a self hosted application specifically highlighting its privacy benefits.\n\nespecially i wouldn't count \"we uploaded a lot of your user data to our servers\" as user enumeration."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2025-03-08T23:03:44Z",
+   "body": "> That is an interesting choice of threat model for a self hosted application specifically highlighting its privacy benefits.\n\nI think the motivation came from the wish to enable a more frictionless use of Nextcloud's federation features. That most organisations use share-links to collaborate with people outside their organisation, and that leaking-by-default goes against consent culture was probably raised during internal discussions, but then dismissed by the people who see growth and competitiveness as more important strategic goals :-/"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-03-09T07:30:44Z",
+   "body": "Ok, i have good and bad news.\n\n- *good:* It seems indeed like it is **not** a change in default behavior.\n- *bad:* It seems like NC30.0.6 is also doing the outbound requests; I guess the main difference is that NC30.0.6 seems to not trigger the callbacks to `/ocs/v2.php/identityproof/key/<USERID>`; I am not sure why, yet.\n\nWill look into this a bit more later. For now, pcap'ed requests from a 30.0.6 and a 31.0.0; I am also not yet sure why my two attempts result in a 'bad request'. Will check that later.\n\nHowever, it seems like the feature was not overly broken (in the sense of trying to actually share the data).\n\n### NC30.0.6\n```\nPOST /users HTTP/1.1\nHost: <redacted-host>\nUser-Agent: Nextcloud Server Crawler\nAccept-Encoding: gzip\nContent-Length: 677\n\n{\"message\":{\"data\":{\"federationId\":\"admin@<redacted-host>\",\"name\":\"\",\"email\":\"\",\"address\":\"\",\"website\":\"\",\"twitter\":\"\",\"phone\":\"\",\"twitter_signature\":\"\",\"website_signature\":\"\",\"verificationStatus\":{\"website\":\"\",\"twitter\":\"\"}},\"type\":\"lookupserver\",\"signer\":\"admin@<redacted-host>\",\"timestamp\":1741504289},\"signature\":\"Gj4TJ4YLtABiR3uF4l6ZEP+14kzQaqpGPj5nRU7e8XMPxC60jDc6XcAXXc2O5A++U8QK4vjMKPjHz3WSxzWb9OQiaAqfWudgkyZS0Atf\\/jTS\\/9rTD6z0RRIM1c5iK6Wo84AmV3aQQ3Qp4EfgcHztAdIvrwR13vH\\/\\/wgSq1dhVn\\/3jGdpG3BC07iEH2+p2Kc+XVOjnnlZ7OcSvAL1O4m9hfa4TNyExhACZMFPcZ5BozqiY9SyQ\\/TkoUIxRrpuSYrHHRt5zF+nwmi\\/xYrH4TgZLrjIN7M7sBk1fZLU8nsjDZbQ17ht+QDACLxJ20wBs3z6urei+AHI4ioyzfBxtzlGjA==\"}\n```\n\n### NC31.0.0\n```\nPOST /users HTTP/1.1\nHost: <redacted-host>\nUser-Agent: Nextcloud Server Crawler\nAccept-Encoding: gzip\nContent-Length: 677\n\n{\"message\":{\"data\":{\"federationId\":\"admin@<redacted-host>\",\"name\":\"\",\"email\":\"\",\"address\":\"\",\"website\":\"\",\"twitter\":\"\",\"phone\":\"\",\"twitter_signature\":\"\",\"website_signature\":\"\",\"verificationStatus\":{\"website\":\"\",\"twitter\":\"\"}},\"type\":\"lookupserver\",\"signer\":\"admin@<redacted-host>\",\"timestamp\":1741504755},\"signature\":\"iN9w5PEBSj2YRnb7DiUU6zi39dI6zZTETVFNhqJsQGjphHdFoA1JzXKS5+YR\\/6X6xzs2+sHvyimE\\/CICtN7\\/4m6tsJQhek4SVcpG5qzRXha3kWAttZoWSI+6Z5UdANnvHsAT06ERqOunGX4Yx5JYlmdGp19DEGCA9RPMeef1\\/4YSpRIGoSJuxr40r58KRLSKRYF1X3\\/sDj+7yYXnFUkXq2zN2ZL86QM\\/T\\/qTX+PiKf6TEuC+lrUyK4wrpaduNdsuObdTUb3C8Kbx43Nh2T8DulrSpWWDtFnarpwNwd9UPQLqwSph+CNH8j8ceESC+blAMTd5+5FqzVVk7JaIVOGRqA==\"}\n```"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-03-09T09:54:42Z",
+   "body": "> I am also not yet sure why my two attempts result in a 'bad request'. Will check that later.\n\n@reporter because when you reported this issue here on GH I asked a colleague who was reachable in the morning on Saturday and willing to spend some time on the weekend to block the endpoints for collection and search - so the lookup server does not expose any data and also doesn't accept any data since yesterday morning at all. What still works is the deletion endpoint."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-03-09T10:51:21Z",
+   "body": "Thanks! Setup a local instance for now for further testing.\n\nBtw, the HTTP requests @participant4 mentioned are confirmed as well: https://github.com/nextcloud/lookup-server/blob/d1188f73ab46eb37646d3435c36e0df3c0525775/server/lib/SignatureHandler.php#L37"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-03-09T13:36:42Z",
+   "body": "Ok, I still have no idea, though, why this only started to show up now (and I am _pretty_ sure that that setting was disabled before); Also, with a clean test-instance on 30.0.6 against my own lookup server, calback requests show up;\n\nIn any case: DELETE does not delete. Will file additional tickets against lookup-server for that.\n"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-03-09T13:40:26Z",
+   "body": "> In any case: DELETE does not delete. Will file additional tickets against lookup-server for that.\n\nThanks, highly appreciated! 👍 "
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-03-09T13:48:31Z",
+   "body": "## Also as a general info \n\nin particular for @reporter since you raised the issue, I was able to get a hold of our CEO to align on the exact next step and I will talk to the developers on Monday (tomorrow) to: **implement a general stop sign for all the above mentioned issues to make it into the next release** which is currently being build, hence RC2 for v30 and v31. This means Nextcloud server won't send any of the above mentioned data to the lookup-server anymore, neither the details user data nor the ID.\n\nCurrently no data is stored or exposed as mentioned in a comment above since the lookup-server got patches to not accept or expose data on its API endpoint any longer.\n\nSo this comes with the upside that while I can't tell you a release date yet (need to talk to developers during the work week first) we will ship a release very soon having this behavior removed effectively. The downside (I am aware this depends on peoples point of view) is that you will need to know a federated cloud ID so the price tag to pay is bad UX for federated sharing. So we will be working on coming up and implementing a good solution for enabling users again to search for federated cloud IDs and yes, you already mentioned it @reporter there is no issue if the solution works consent-based and of course the deletion of the data needs to work reliable as well."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-03-09T14:57:44Z",
+   "body": "Thanks for the update, just saw this now. At the moment, for the public sharing (global) knowing the exact federated cloud ID is already a requirement as the `lookup_server` forces exact matches anyway.\n\nFor federation, the systems have to be paired anyway, and seem to be establishing a shared secret (...)\n\nMaybe it is better to move this discussion to https://github.com/nextcloud/lookup-server/issues/158 , though.\n"
+  },
+  {
+   "author": "participant8",
+   "created_at": "2025-03-09T17:39:45Z",
+   "body": "> [@participant4](https://github.com/participant4) to come up with a clear description for the toggle might be a bit of a challenge and can surely be improved. Beware that the fields in the user's profile have a visibility setting each. So users can infact decide on each individually what to publish.\n\nFirst of all, not cool, guys, not cool! And don't get me wrong. I'm not against the federation feature, and if a central discovery/directory/lookup server makes it easier to use, then I'm all for providing such a service.\n\nBUT!!! There should be a main toggle above all these federation-related toggles that allows users to turn on/off *all* of these features at once. And that toggle should be off by default on a fresh install.\n\nAnd if an admin enables this toggle, the toggles below it that rely on the lookup server should either stay off by default, or a popup should explicitly ask admins whether or not they want to use the features that rely on the lookup server, explaining that certain parts of their users' profiles will be shared with this server, and how their users can control which parts are shared.\n\nI, at least, was always under the impression that these federation settings would only matter if I explicitly used federation, i.e. if I actively trusted other servers. So even if users had certain things set to federated in their profiles (which, btw, shouldn't be set that way as a default either), it never occurred to me that any data would be sent to a third party server. I even had the federation app disabled on one server and I still saw the requests from <redacted-host> in the Apache log.\n\nSo again, please disable all federation features by default, and clearly inform admins when they enable certain federation features that data will be sent to your servers.\n\nAnd please do not assume that as developers, especially of self-hosted software, you are automatically part of your users' circle of trust and can therefore decide for them what they should consider secure or private. If we didn't want to make those decisions for ourselves, we wouldn't host our own servers.\n\nThanks! 😊"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-03-09T18:24:01Z",
+   "body": "Hi @participant8,\n\nthanks for your opinion, I understand the frustration and please be assured that this is being taken care of. I can't tell if you had the time and took it to read through all the comments. So let me repeat in short, most aspects are addressed in https://github.com/nextcloud/server/issues/51335#issuecomment-2708865827 - so all aspects of this will be turned off and I will discuss getting this implemented first thing on Monday (when developers are back at work) and get this released. The general feature toggle is there and that is should be off by default has also been stated what is lacking is the general toggle for users while for the specific fields beyond the federation ID still is as shown in https://github.com/nextcloud/server/issues/51335#issuecomment-2708416793 - so as a user you would have had to explicitly set the fields to *Public* in order to have it send to the lookup server at s16. But better safe than sorry also this mechanism will get reviewed to ensure if works as it has been designed.\n\n> I even had the federation app disabled on one server and I still saw the requests from <redacted-host> in the Apache log.\n\nWould you share these requests (in an anonymized form of course) you see in your apache logs? It might not be needed but anything you can provide is for sure helpful and helps speed things up. Again only if you can and are willing to, no expectations on my end."
+  },
+  {
+   "author": "participant8",
+   "created_at": "2025-03-09T20:05:13Z",
+   "body": "It may have sounded a bit more frustrated than I really am. I'm still a fan of Nextloud and that's also why I decided to post my opinion. I also want to thank you for your engagement on this issue, even on a Sunday. 👍\n\n> so as a user you would have had to explicitly set the fields to _Public_ in order to have it send to the lookup server at s16\n\nOk, In my case, some of the fields were indeed set to 'federated', but as far as I remember none were set to 'published'. So, it seems that at least the usernames were sent in any case, otherwise how would the GET requests below posible to happen. Also the Federation app was disabled on that instance, but the toggles you mentioned [here](https://github.com/nextcloud/server/issues/51335#issuecomment-2708225719) were on, because as I said, I didn't pay any attention to these settings as it didn't come to my mind that anything would be published to a central server.\n\n> Would you share these requests (in an anonymized form of course) you see in your apache logs? It might not be needed but anything you can provide is for sure helpful and helps speed things up\n\nSure, here you go...\n\n```\n65.21.231.50 - - [27/Feb/2025:14:50:12 +0100] \"GET /ocs/v2.php/identityproof/key/admin HTTP/1.1\" 301 495 \"-\" \"GuzzleHttp/7\"                                                                                                                                                               │\n65.21.231.50 - - [27/Feb/2025:14:50:13 +0100] \"GET /ocs/v2.php/identityproof/key/admin HTTP/1.1\" 200 4658 \"-\" \"GuzzleHttp/7\"                                                                                                                                                              │\n65.21.231.50 - - [27/Feb/2025:14:50:13 +0100] \"GET /ocs/v2.php/identityproof/key/user1 HTTP/1.1\" 301 495 \"-\" \"GuzzleHttp/7\"                                                                                                                                                               ┤\n65.21.231.50 - - [27/Feb/2025:14:50:13 +0100] \"GET /ocs/v2.php/identityproof/key/user1 HTTP/1.1\" 200 4661 \"-\" \"GuzzleHttp/7\"                                                                                                                                                              │\n65.21.231.50 - - [27/Feb/2025:14:50:14 +0100] \"GET /ocs/v2.php/identityproof/key/user2 HTTP/1.1\" 301 497 \"-\" \"GuzzleHttp/7\"                                                                                                                                                              │\n65.21.231.50 - - [27/Feb/2025:14:50:14 +0100] \"GET /ocs/v2.php/identityproof/key/user2 HTTP/1.1\" 200 4656 \"-\" \"GuzzleHttp/7\"                                                                                                                                                             │\n65.21.231.50 - - [27/Feb/2025:14:50:14 +0100] \"GET /ocs/v2.php/identityproof/key/user3 HTTP/1.1\" 301 499 \"-\" \"GuzzleHttp/7\"                                                                                                                                                             │\n65.21.231.50 - - [27/Feb/2025:14:50:15 +0100] \"GET /ocs/v2.php/identityproof/key/user3 HTTP/1.1\" 200 4659 \"-\" \"GuzzleHttp/7\"\n```"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-03-09T20:38:34Z",
+   "body": "It kind of makes sense that the requests still happen even though the federation app has been deactivated/uninstalled; The background-job comes out of its own app (` lookup_server_connector: 1.18.0`), and the integration/settings are also in another app (`files_sharing: 1.22.0`).\n"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-03-09T21:03:29Z",
+   "body": "Thanks a lot for the the details @participant8 I also didn't want to come over as harsh in any way. Sorry if my wording  has been harsh, wasn't by intention. I am very thankful for any details and insights that help resolving the matter and improving Nextcloud.\n\nAs stated by @reporter this is a bit of a combination of apps and background jobs yet clearly shows that this shows room for improvement as well since it is unclear for administrative staff configuring and running the server and needs all the details known by the admin that he mentioned which is not good and needs clarification / documentation / a smarter way (not a fan of the word smart).\n\nIt would be interesting to know if items set to federated would have been send because it should be published ones only. There is one exception as mentioned by you and that is the user ID that you one doest have a visibility attribute (a thing to be addressed as mentioned earlier) "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-03-09T22:00:15Z",
+   "body": "Just gave this a shot as I have a 30.0.6 with https://github.com/nextcloud/server/issues/25290 applied and a local writable lookup server.\n\n- Attributes set to 'federation' are not sent to the lookup server\n- If I remove the 'federation' app, attributes to public are still shared (and the lookups made, etc.); Also, the option to set an item to 'federated' is disabled, even though existing attributes remain in that state.\n- The behavior does not change (i.e., requests are made and public items shared) if the files_sharing app is disabled as well."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-03-10T17:52:10Z",
+   "body": "For everyone in general and @reporter in particular as the reporter\n\n# Current state of the investigation and release timeline for server\n\nThe Lookup server does not and never did store any data of users unless they had opted-in in their personal settings by setting some (at least one) or all of their data to 'published' and only that data together with the usedID would than be stored.\n\nDue to a logic issue in the February 2025 releases of the Nextcloud server, the server sent unnecessary requests to the Lookup server.\n\nTo add a bit more detail: We suspect that this flood of requests was caused by a change that was designed to clean up user data. It would trigger a \"data has changed\", resulting in the Nextcloud server to contact the Lookup server. It would send a request for all users who had any of their data ever set to 'published'. Moreover, it would also send a `DELETE` request for the data of all users with untouched account details since February 2021.\n\nFor each user, the Lookup server then follows up with a `http` request to verify the authenticity of the request. The request leaks the Federated Cloud ID of the user and should use `https` when available. This follow-up is also not needed when users have no data on the Lookup server, and we will change this logic.\n\nAt least until these two issues are fixed we will keep the lookup server disabled.\n\nWe will also investigate the report that the deletion on the lookup server does not work.\n\n---\n\nNevertheless to still for the moment ensure no outbound calls to the lookup server happen to store data this logic will generally be deactivated in-code for the upcoming \n\n* *maintenance release scheduled for 13th March* with\n* *release candidates scheduled for 11th March*."
+  },
+  {
+   "author": "participant9",
+   "created_at": "2025-03-10T18:06:40Z",
+   "body": "> For everyone in general and [@reporter](https://github.com/reporter) in particular as the reporter\n> \n> # Current state of the investigation and release timeline for server\n> The Lookup server does not and never did store any data of users unless they had opted-in in their personal settings by setting some (at least one) or all of their data to 'published' and only that data together with the usedID would than be stored.\n> \n> Due to a logic issue in the February 2025 releases of the Nextcloud server, the server sent unnecessary requests to the Lookup server.\n> \n> To add a bit more detail: We suspect that this flood of requests was caused by a change that was designed to clean up user data. It would trigger a \"data has changed\", resulting in the Nextcloud server to contact the Lookup server. It would send a request for all users who had any of their data ever set to 'published'. Moreover, it would also send a `DELETE` request for the data of all users with untouched account details since February 2021.\n> \n> For each user, the Lookup server then follows up with a `http` request to verify the authenticity of the request. The request leaks the Federated Cloud ID of the user and should use `https` when available. This follow-up is also not needed when users have no data on the Lookup server, and we will change this logic.\n> \n> At least until these two issues are fixed we will keep the lookup server disabled.\n> \n> We will also investigate the report that the deletion on the lookup server does not work.\n> \n> Nevertheless to still for the moment ensure no outbound calls to the lookup server happen to store data this logic will generally be deactivated in-code for the upcoming\n> \n> * _maintenance release scheduled for 13th March_ with\n> * _release candidates scheduled for 11th March_.\n\nAnd, that is how to successfully do public relations.\n\nMozilla should take note."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-03-10T19:06:27Z",
+   "body": "@participant2 any plans to move this to off-by-default? ;-)"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-03-10T19:15:05Z",
+   "body": "@reporter yes, that is already being worked on, see https://github.com/nextcloud/server/pull/51352 but I prioritized a quick release with a hard-coded turned-off over this one, so this would than ship in a later release, best case with the April maintenance release. I didn't want to delay the current release and its hard-coded quick fix for the sake of a proper solution for the price of a longer wait for people for a release.\n\nSo it is band-aid fix turning it off in-code for march and shipping an off by default afterwards while I still need folks to look into the deletion issue you reported because I don't need to bring back the feature even with off-by-default if we have a bug in the deletion logic.\nSo this needs to be clarified before the whole construct with the lookup server would come back to life at all."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-03-10T19:22:08Z",
+   "body": "For the sake of completeness this is the not yet wrapped-up change to turn it off in code for the upcoming release mentioned above: \n* https://github.com/nextcloud/server/pull/51378"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-03-10T19:28:14Z",
+   "body": "Thanks for the update; That makes sense. :-) Good to see that you take this seriously.\n\nBtw, I know this wasn't submitted in the traditional way via HackerOne; It still was a bit of work, though. So if you'd feel the need for an equally untraditional bug bounty, I'd have some suggestion who'd be _really_ happy about some attention if the opportunity should arise ;-):\n\n- https://<redacted-host>/\n- https://computertruhe.de/ (Also really likes 'old' but still usable hardware companies already wrote off and want to dispose of)\n- https://stuttgarter-tierschutz.de/ (Or, if you have the cycles and room for that commitment, consider adopting)"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-03-10T20:12:37Z",
+   "body": "Thanks for the feedback @reporter highly appreciate your judgment of us taking this matter seriously 🙏\n\nAs for the untraditional bug bounty, that is not on me personally to decide but will take the great suggestions with me to pitch them for a decision 👍"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-03-11T22:53:12Z",
+   "body": "# Little update regarding the timeline\n\nUnfortunately it took a little longer to get the quick fix in from https://github.com/nextcloud/server/pull/51378 and I don't have a packager at hand at this time (close to midnight CET).\n\nSo I have to shift the RC2 mentioned in https://github.com/nextcloud/server/issues/51335#issuecomment-2711387490 by one date to:\n\n* *release candidates shifted from 11th to 12th March.*\n\nWhile still planning to:\n\n* *maintenance release scheduled for 13th March*\n\nkeeping the original set date for the final release.\n\n---\n\nSorry if this causes any inconveniences in case you planned to test drive RC2 tonight 🙏 "
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-03-12T13:05:36Z",
+   "body": "# Update regarding analysis of reported deletion bug\n\nHi everyone,\n\nWe promised to get back on the 'deletion' issue that was reported. We concluded that from this, too, no data was leaked, nor did we have any data from users who never consented. The delete did properly remove all the user details (like name and email address), but left the ID itself. We will fix that issue and remove the stale ID's still in the database before putting the service back online.\n\nThank you, one more time, for the reporting, and your patience."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-03-12T14:20:04Z",
+   "body": "# RC 2 pre-releases published\n\nAs of this moment we published as mentioned in https://github.com/nextcloud/server/issues/51335#issuecomment-2715878855 the pre-releases (RC2) of all community supported major versions, namely:\n\n* [29.0.13 RC2](https://<redacted-host>/server/prereleases/nextcloud-29.0.13rc2.zip)\n* [30.0.7 RC2](https://<redacted-host>/server/prereleases/nextcloud-30.0.7rc2.zip)\n* [31.0.1 RC2](https://<redacted-host>/server/prereleases/nextcloud-31.0.1rc2.zip)\n\n---\n\nFinal releases remain scheduled for tomorrow 13th March"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-03-12T17:51:45Z",
+   "body": "moin,\n\nthanks for the follow up!\n\nQuick question on data deletion, though:\n\nIs there \n- a way i can (as an admin) request deletion of all data for my instance?\n- as a user, request data deletion if, in the meantime, my admin disabled the global sharing?"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-03-12T20:04:56Z",
+   "body": "Moin @reporter !\n\nSo the short answer is no but this will be implemented before we bring back the lookup solution. \n\nIn a lengthier version: No or rather complicated to do for the admin by unpublishing it for all the fields on published for each user where this is the case with the feature on active via the impersonation app for example (impersonation being something you might not want for other reasons in the same field of security/privacy). For the user if the toggle is off, not via the system they wouldn't need to be capable of forging curl requests like you did.\n\nThere is a however:\n\n* This wouldn't work in the current situation with the feature to be completely deactivated\n* We won't bring the feature back in any without the mechanisms you mentioned (as said in the beginning)\n\n---\n\nWhen bringing it back it will be ensured before re-launching that any scenario that one can think of will be covered, currently we are also in discussions with the data protection consultancy how to handle the case where a server admin just takes down the whole server, i.e. deprovisioning the machine, where we need a mechanism that allows to detect data that should be deleted even though we never received an opt-out. One idea was that lookup-server checking back with the Nextcloud instances but we didn't like that approach but are brainstorming how it can be done the other way around rather a resend of a \"keep-alive\" for records by the Nextcloud instance to the Lookup server and if that doesn't happen for not yet defined amount of time we proactively delete the data cause the age of a record is no indication, if a server is active for i.e. 10 years and a user has opted-in and never changes it would still be valid. Other thing could be to thinks about i.e. a yearly per-user ping to review the visibility settings and on top hit a \"still opted-in button\" or always show an opt-out button as a short cut and just ask for a review and if the button isn't hit, there is no delete request.\n\nSo there are a lot of ideas already while I still want the devs to focus on fully resolving the current matter at hand and get releases out before working on improving a taken down feature/component/mechanism for an improved revival.\n\n---\n\nI will continue posting any update on the matter of this issue here. If and when the feature would come back to life or the working on bringing it back to life I will than rather do in a new ticket with a reference to this. So the history is clear but not continue in this one to have a issues/context per aspect else keeping an overview and getting an understanding about decisions and approaches is in my opinion a huge challenge since each reader and the devs implementing it need to read though all comment to \"compute\" what is still relevant and what to do, so I want to ensure clarity on aspects that will than be implemented/executed. Sorry for the somewhat \"meta-explanation\" as an outlook that further tickets will come on the aspects to be implemented when there is a certain clarity on these aspects.\n\nI still try to rather write too much than too little, so if something is unclear or seems wrong to you, please comment 🙏 "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-03-13T06:58:56Z",
+   "body": "Thanks for the detailed reply, this clarifies it!"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-03-13T18:27:05Z",
+   "body": "# Final/Stable releases published\n\nAs of this moment we published as mentioned in https://github.com/nextcloud/server/issues/51335#issuecomment-2715878855 the final/stable releases of all community supported major versions, namely:\n\n* [29.0.13](https://<redacted-host>/server/releases/nextcloud-29.0.13.zip)\n* [30.0.7](https://<redacted-host>/server/releases/nextcloud-30.0.7.zip)\n* [31.0.1](https://<redacted-host>/server/releases/nextcloud-31.0.1.zip)\n\n---\n\nArchives available for direct download as well as the publishing to the updater server, so in case you are running your updates via Nextcloud's internal updater mechanism you should see the updated versions from above for the the respective major version you are currently using (just as a side-note for those not aware, you would only see v30 in the updater if you are on the latest release of 29 since the updater only offer new major version for upgrading if you are on the latest release of the previous major version)\n\nCustomer updates of Nextcloud Enterprise are also published and available in the updater's enterprise channel of course and for direct archive download in the customer portal."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-03-13T20:02:03Z",
+   "body": "Good evening @reporter \n\nI just wanted to check back with you and align on this ticket its progress and some suggestions I want to discuss with you.\n\n* I would like to change the title (original one is still tracked in the issue as a change as you might know) to make it reflect the final issue in a clear and brief way\n* I would like to add a top paragraph with the result and explanation (distilled version of the analysis results + version numbers of the release etc.)\n* When to close the ticket\n\nThe reason I ask is that I don't want to just change your title, issue description, close the tickets without alignment but also want to change it to ensure new readers understand the specific issues and the status cause see above 20h ago a ticket in a packaging repo was opened that there is a current data leak and a release pending which isn't accurate since nothing leaks with the termination of the lookup-server taken down or with the setting turned of or since today evening with the releases being out turning of the lookup-server communication on the Nextcloud server-side completely.\nSo I want to ensure people have a quick way to understand the state cause only very little people will read through the whole conversation.\n\nLooking forward to your feedback and if you want me to make a suggestion/draft or if you want to do it yourself. \n\nTo me the issue is the deletion http call with respect to the PII link while i.e. the assumption around storing the users and their profile data without prior consent could be analyzed and validated as false. And I think it is good to have a short factual summary at the very top.\n\nOther than that wishing you a nice evening and again (repeating myself, I know) a lovely evening and thanks for all the digging and contributing and participation in this matter."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-03-16T06:14:41Z",
+   "body": "Moin,\n\nconcerning your points:\n\n> I would like to change the title (original one is still tracked in the issue as a change as you might know) to make it reflect the final issue in a clear and brief way\n\nSure, please feel free to.\n\n> I would like to add a top paragraph with the result and explanation (distilled version of the analysis results + version numbers of the release etc.)\n> ...\n> To me the issue is the deletion http call with respect to the PII link while i.e. the assumption around storing the users and their profile data without prior consent could be analyzed and validated as false. And I think it is good to have a short factual summary at the very top.\n\nThere is a couple more things in there (which are partially already resolved); \n- The broken deletion call is one part of the issue\n- Another component is the submission of content (regardless whether it has been stored server side, i.e., even a delete call is an issue (even if there is no prior stored data and the call does not result in data being stored as it is a delete)\n- There is also the issue around the plain-text transmission of data (hopefully easily fixed)\n\nSo, in essence, what the focus on the delete feature kind of skips over is:\n- the feature being 'a bit unclearly described' in the knobs to turn it on/off\n- The on by default-thing\n- The interface does not provide sufficient information to individual instance users regarding data processing when they do opt in\n- The feature leads to data sharing (even if intentionally clicked by an operator fully aware of the processing that then takes place) with an (in my opinion) insufficient/absent data processing agreement.\n\n> When to close the ticket\n\nThat is, essentially, up to you. There are probably also several other steps you have to undertake internally which might be better tracked elsewhere (like the mandatory reporting to the DPA etc.); And, as with any 'big' ticket, it might always make sense if you split a ticket into the individual actionable components, given that the ticket here is more of an 'ongoing investigation' ticket."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-03-16T14:08:16Z",
+   "body": "Moin,\n\nthanks for your quick feedback to my comment, highly appreciate your responsiveness, especially since it is a Sunday, so I am sure you also have other things to do or things you'd like to do.\n\nI'll then pick things up early next week when I am back at work, like you said there are also internal(ly handled) tasks within/at Nextcloud (as a company) to be done/completed also beyond things you mentioned and yes, for aspects of improving the taken down solution they should be tracked closest to the affected component (lookup server or server repo for example).\n\nSo for transparency to also just mentioned a few things that are currently being worked on (for some the working on them means clarifying the specific text/explanation to display) developers already started looking into and working on fixing the issues you mentioned like fixing delete having the callback on `https` where possible and our DPO is already aligning with the privacy consultancy on the explanatory text in the UI for the feature so it is clear what the feature does and what the implications are using it.\n\n*Wishing you a lovely Sunday*"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-03-18T16:28:46Z",
+   "body": "# Closing statement\n\n## In short\n\n* The triggering business-logic error on the Nextcloud server-side has been fixed with the March maintenance releases (29.0.13, 30.0.7, 31.0.1, plus enterprise releases for customer), by blocking the calls to the lookup-server\n* The callback issue on the lookup-server has been temporarily resolved by taking down lookup-server, not exposing/accepting data since 4th March\n* The federated cloudID falsely kept by the lookup-server after processing a delete request of all user profile data of a user has been deleted from its database along with any backup the only remaining backup is a fresh one created _after_ the deletion (so the remaining records are record where the respective user gave consent to store the profile information/fields)\n\n## Follow-Up\n\nAs per comments above there are follow-up issues in terms of internally tracked tasks still to be completed as well as things needed to be implemented before bringing back the public/central lookup-server that leaked the federated CloudID via a callback to the Nextcloud server that originally called the lookup server with i.e. a `DELETE` request or create/update while the formerly mentioned delete-requests and a business-logic error in the maintenance releases of February 2025 triggered this spike in the creation of delete requests which led to spotting this issues.\n\nThe follow-up work items will be tracked in dedicated Github issues on the server repository (this one) as well as the lookup-server repository (https://github.com/nextcloud/lookup-server/)"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-03-18T16:41:56Z",
+   "body": "Closing as per https://github.com/nextcloud/server/issues/51335#issuecomment-2733919135 with a short summary in the first block of the original issue description"
+  },
+  {
+   "author": "participant10",
+   "created_at": "2025-04-15T08:41:49Z",
+   "body": "I am looking at the documentation with an expectation of a person setting up Nextcloud for a first time:\n\nThis documentation:\n\n\"\"\"\n[Configuring Federation Sharing](https://<redacted-host>/server/latest/admin_manual/configuration_files/federated_cloud_sharing_configuration.html#configuring-federation-sharing)\n\nFederated Cloud Sharing is now managed by the Federation app (9.0+), and is now called Federation sharing. When you enable the Federation app you can easily and securely link file shares between Nextcloud servers, in effect creating a cloud of Nextclouds.\n\"\"\"\n\ndoes not say anything about the need for the lookup server and if any centralized configuration is in place.\n\n\n\nOnly scrolling down heavily I can find \n\n\"\"\"\n[Connections to remote servers](https://<redacted-host>/server/latest/admin_manual/installation/harden_server.html#connections-to-remote-servers)\n\nSome functionalities require the Nextcloud server to be able to connect remote systems via https/443. This paragraph also includes the data which is being transmitted to the Nextcloud GmbH. Depending on your server setup, these are the possible connections:\n\n\"\"\"\n\nAnd that includes the description of the lookup server\n\n\"\"\"\n\n**<redacted-host>**\n\n        optional\n\n        for updating and lookups to the federated sharing addressbook\n\n        submitted data: pending\n\n\"\"\"\n\n\n\nIf I search for \"lookup\" I also find this setting\n\n\"\"\"\n[lookup_server](https://<redacted-host>/server/latest/admin_manual/configuration_server/config_sample_php_parameters.html#lookup-server)\n\n'lookup_server' => 'https://<redacted-host>',\n\nuse a custom lookup server to publish user data\n\"\"\"\n\nMaybe the documentation could be updated to explain how the federation works and the role of the lookup server, possibly the centralized one?\n\n(In my opinion this is not a federation, just a centralized directory).\n\nShall a new issue be opened about this?\n\n"
+  },
+  {
+   "author": "participant6",
+   "created_at": "2025-04-15T09:07:42Z",
+   "body": "> (In my opinion this is not a federation, just a centralized directory).\n\nThe look up server was only intended to find other users on federated servers, it is not needed for the sharing, but only finding the cloud id of a user by some search criteria.\nIf you know the cloud id you do not need the lookup server (disabled anyways currently).\n\n> Shall a new issue be opened about this?\n\nYes please do not revive closed issues with different topics."
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "nextcloud/server",
+  "default_branch": "master",
+  "commit_sha": "4d52b185af702b1ee6f11a84d6218b0b422417b0",
+  "as_of": "2025-03-07T22:36:32Z",
+  "method": "github_commits_until"
+ },
+ "images": [
+  {
+   "where": "c11",
+   "source_url": "https://github.com/user-attachments/assets/fab76e88-e64b-49d7-8b1e-c3259743ede8",
+   "file": "gh_nextcloud_server_51335_img0.png"
+  },
+  {
+   "where": "c16",
+   "source_url": "https://github.com/user-attachments/assets/04aa8a6f-7c19-40fb-a233-05ac4eb84491",
+   "file": "gh_nextcloud_server_51335_img1.png"
+  },
+  {
+   "where": "c16",
+   "source_url": "https://github.com/user-attachments/assets/91e5b88f-c695-4bf7-9b61-b935d3fce039",
+   "file": "gh_nextcloud_server_51335_img2.png"
+  }
+ ],
+ "slug": "gh_nextcloud_server_51335"
+}

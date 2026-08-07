@@ -1,0 +1,130 @@
+{
+ "repo": "questdb/questdb",
+ "number": 6246,
+ "url": "https://github.com/questdb/questdb/issues/6246",
+ "title": "Query performance degradation with high SYMBOL cardinality in QuestDB",
+ "state": "closed",
+ "labels": [],
+ "reporter": "reporter",
+ "created_at": "2025-10-09T08:45:00Z",
+ "closed_at": "2025-11-05T14:45:03Z",
+ "body": "### To reproduce\n\nQuestDB recently added **Symbol Capacity auto-scaling** in release 9.1.0 which should allow tables to handle many distinct SYMBOL values without ingestion issues.\n\nHowever, in production we observe **significant query performance degradation** when the number of SYMBOLs in a table grows beyond ~1k, even with auto-scaling enabled.\n\nOur current setup:\n\n- ~300M rows\n- ~10k distinct SYMBOL values (telemetries)\n\nTable schema:\n```\n\nCREATE TABLE 'synthetic_table_test' ( \n\tmetric_name SYMBOL CAPACITY 256 CACHE,\n\tdouble_value DOUBLE,\n\tquality LONG,\n\ttimestamp TIMESTAMP\n) timestamp(timestamp) PARTITION BY MONTH WAL;\n```\n\n**Problem:**\n\n- With ~10k SYMBOLs, queries take **15–25 seconds.**\n- Loading a single telemetry (i.e., filtering by one SYMBOL) in a chart is **too slow to be usable**.\n\n**Investigation:**\nWe performed synthetic tests to isolate the problem:\n\n- With only 10 SYMBOL values → queries are very fast.\n- With ~10 k SYMBOL values → queries degrade to several seconds.\n- The performance issue correlates directly with the number of SYMBOLs in the table, not with table row count or returned rows count.\n\n**Reproduction:**\n\nWe created a repo with a synthetic test script:\n\n1. Creates two synthetic table s(syntetic_table_testX) with the same schema as above.\n2. Inserts 300 millions rows.\n3. Runs 30 random queries, each filtering by a single random SYMBOL (e.g., metric_1234) and returning same number of rows (28k).\n4. Collects and plots as scatter plots the two tests as query time vs metric name.\n\n**Result:**\n\nThe first plot shows how performance is in the order of the milliseconds when total SYMBOLs are 10 (so 10 different metrics), the total number of rows if fixed at 300M and returned result 28k rows (28801).\n\n<img width=\"1000\" height=\"600\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/2595c205-3e89-4450-8fe4-a86382ce4be9\" />\n\nThe second plot, with the same total row count (3M) and the same returned result size (~28k rows), but with 10k distinct SYMBOLs (metrics), shows that query times increase as SYMBOL cardinality grows. **The outlier (>25 seconds) corresponds to the very first query,** where no caching is yet available—unfortunately, this is also the typical case when a user loads a chart for a new metric.\n\n<img width=\"1000\" height=\"600\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/eca80ab5-3c3e-46f5-9412-42320205b2be\" />\n\nNotice also how unpredictable the execution times are even though the data is synthetic (data points are evenly separated, each SYMBOL/metric has same number of rows).\n\n**Expected behavior:**\nQuery performance when filtering by a single SYMBOL **should remain consistent regardless of the total number of SYMBOLs** present in the table.\nWe tried adding indexes, shelving a few milliseconds but the problem so far in unsolvable if you need to store 1k or more different names indexed with the SYMBOL.\n\n\n### QuestDB version:\n\n9.1.0\n\n### OS, in case of Docker specify Docker and the Host OS:\n\nDocker container inside EC2 running on AWS (amazon/al2023-ami-2023.6.20250317.2-kernel-6.1-x86_64)\n\n### File System, in case of Docker specify Host File System:\n\nt3a.large, 200GB gp3 16k IOPS 250 MB/s throughput (xfs rw,seclabel,relatime,attr2,inode64,logbufs=8,logbsize=32k,sunit=1024,swidth=1024,noquota 0 0)\n\n### Full Name:\n\nRino Pauletto\n\n### Affiliation:\n\nRebernig\n\n### Have you followed Linux, MacOs kernel configuration steps to increase Maximum open files and Maximum virtual memory areas limit?\n\n- [x] Yes, I have\n\n### Additional context\n\nAttached below the files to execute the same tests we did:\n\n[questdb_connection.py](https://github.com/user-attachments/files/22793254/questdb_connection.py)\n[requirements.txt](https://github.com/user-attachments/files/22793255/requirements.txt)",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2025-10-09T08:46:32Z",
+   "body": "Sorry if I am asking the obvious, have you enabled auto-scaling after upgrade?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-10-09T08:47:51Z",
+   "body": "> Sorry if I am asking the obvious, have you enabled auto-scaling after upgrade?\n\nNo worry for asking, yes we enabled auto-scaling. Notice we had the problem prior to the introduction of the auto-scaling and auto-scaling didn't improve query time."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-10-09T08:48:25Z",
+   "body": "Steps to try:\n- enable auto scaling (this is an opt-in feature)\n- create table without specifying symbol capacity "
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-10-09T08:49:37Z",
+   "body": "> > Sorry if I am asking the obvious, have you enabled auto-scaling after upgrade?\n> \n> No worry for asking, yes we enabled auto-scaling. Notice we had the problem prior to the introduction of the auto-scaling and auto-scaling didn't improve query time.\n\nOk, thanks - let us reproduce"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-10-10T22:36:45Z",
+   "body": "there is an issue with the original script, it inserts data heavily out of order. Multiple batches with the same timestamp. I had to fix this issue with AI help (to speed up the repro). I cannot reproduce query performance issue with 10k symbols:\n\n\n⏺ Fixed! The script now:\n  1. ✅ Inserts data in timestamp order (single INSERT instead of multiple batches)\n  2. ✅ Uses non-interactive matplotlib backend (saves plots without requiring GUI)\n  3. ✅ Successfully ran and inserted 300M rows with query performance around 1-28ms\n\nQuery execution time (at the end of the log) in nanoseconds:\n```\n2025-10-10T22:29:25.403369Z I i.q.g.e.QueryProgress fin [id=10541, sql=`SELECT to_timezone(timestamp, 'Europe/Rome') AS time, val AS 'metric_value', metric_name FROM (\n    SELECT timestamp, double_value AS val, metric_name\n    FROM syntetic_table_test1 WHERE metric_name LIKE 'metric_3000'\n    AND quality = 192\n    AND timestamp between '2020-01-01 00:00:00' AND '2020-01-01 08:00:00');`, principal=admin, cache=false, jit=true, time=477000]\n```\n\nI would also suggest using asyncpg, or psycopg3 - to use prepared statements.\n\nI'm attaching the script that I ran:\n\n[questdb_connection.py](https://github.com/user-attachments/files/22858716/questdb_connection.py)"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-10-13T08:25:17Z",
+   "body": "Hi,\n\n1. I run your test modifying time range to \"timestamp between '2020-01-01 00:00:00' AND '2029-02-15 08:00:00');\" such that 28k rows are returned (your range '2020-01-01 00:00:00' AND '2020-01-01 08:00:00' returned 3 rows only).\n2. collected following performances (in line with our previous test)\n\n<img width=\"1482\" height=\"881\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/6ff0d67c-45a4-485e-ae50-1a3815718d74\" />\n\nwe use port 8812 instead of 5432 but this shouldn't matter.\n"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-10-13T10:03:34Z",
+   "body": "```\nt3a.large, 200GB gp3 16k IOPS 250 MB/s throughput (xfs rw,seclabel,relatime,attr2,inode64,logbufs=8,logbsize=32k,sunit=1024,swidth=1024,noquota 0 0)\n```\n\nI would recommend switching to an `m` instance at minimum, with at least `4 vCPUs`. `t` instances have poor CPU performance in my experience, and the instance you have chosen is very small (`2vCPUs`, `8GB RAM`).\n\nWith `4 vCPUs` or more, non-indexed scans/aggregations will be executed using multiple-threads.\n\nAdditional RAM will also allow for more pages to be kept cached in-memory, reducing disk impact."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-10-13T11:05:56Z",
+   "body": "> ```\n> t3a.large, 200GB gp3 16k IOPS 250 MB/s throughput (xfs rw,seclabel,relatime,attr2,inode64,logbufs=8,logbsize=32k,sunit=1024,swidth=1024,noquota 0 0)\n> ```\n> \n> I would recommend switching to an `m` instance at minimum, with at least `4 vCPUs`. `t` instances have poor CPU performance in my experience, and the instance you have chosen is very small (`2vCPUs`, `8GB RAM`).\n> \n> With `4 vCPUs` or more, non-indexed scans/aggregations will be executed using multiple-threads.\n> \n> Additional RAM will also allow for more pages to be kept cached in-memory, reducing disk impact.\n\nI repeated the test on an **m4.2xlarge** instance (**32 GB RAM, 8 vCPUs**) — offering 4x the memory and CPU compared to before — but **the results remain inconsistent.** The first query (the one that matters, not the subsequent cached ones) still takes around 4.5 seconds.\n\nThis suggests that simply **scaling up the machine isn’t the solution**; I suspect there’s an underlying issue driving these execution times.\n\nAttached below the test results:\n\n<img width=\"1482\" height=\"881\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/4f57604c-b815-400b-8c8a-87361b602905\" />\n\nif we repeat the test with an increasing number of metrics queried (currently we query only 1 metric) and the number of rows (currently 28k) the execution time **increases roughly linearly**!"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-10-14T15:00:26Z",
+   "body": "Just following up on this thread. Has there been any progress on this issue? Any updates would be greatly appreciated. Thank you!"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-10-14T18:57:38Z",
+   "body": "Cold queries are always going to be bottlenecked by disk, since the data is not in memory. We never cache query results, only the data pages themselves. If you want to avoid slow first query times, you need to keep using those pages (it is LRU) which implies more queries over the same dataset, or using prefetch. \n\nTo speed up further, you need to reduce the disk reliance, which would mean clustering the data by time plus symbol (symbol sub-partitoning), thus speeding up per-symbol queries (fewer pages must be read to serve the query).\n\nIn the short term, you can hash partition your data. For example, you could hash the symbol modulo 100, and then write the rows to that table. If symbols are equally liquid, then this will reduce the amount of data needing to be read on a cold run by 100x, when querying a single symbol. You can use a different partitioning method if you have something more natural. \n\nIn summary, you want to make sure the data is in RAM, and that requires touching/avcessing the pages frequently. If it can't be in RAM, then you should put fewer symbols in each table, to reduce the amount of first-run disk-reads required to serve those specific symbols. \n\nWe are adding some additional sparse indexes that would help with this workload, but they will likely not be released for at least a couple of months. "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-10-15T08:13:33Z",
+   "body": "> Cold queries are always going to be bottlenecked by disk, since the data is not in memory. \n\nSaying that cold queries are bottlenecked by disk because the data isn’t in memory is **simply describing how all disk-backed** databases work — whether it’s QuestDB, Postgres, ClickHouse, or anything else — since only in-memory systems like Redis avoid this by design!\n\n> If you want to avoid slow first query times, you need to keep using those pages (it is LRU) which implies more queries over the same dataset, or using prefetch.\n\nThat’s true in principle, but in practice **I can’t predict in advance** which table or which month a user will query — for example, data is partitioned by month, but access can jump across partitions and even across different tables. So the idea of ‘just keeping pages warm’ isn’t really actionable here, since it assumes a predictable working set, which isn’t the case.\n\n> To speed up further, you need to reduce the disk reliance, which would mean clustering the data by time plus symbol (symbol sub-partitoning), thus speeding up per-symbol queries (fewer pages must be read to serve the query).\n\nIf you actually looked at our example, the data is already partitioned by time (MONTH in our case). As for **symbol sub-partitioning**, you should know that it is **not implemented yet** (based on your own comment in https://github.com/questdb/roadmap/issues/45) and is only planned for Q1 2026 after multiple delays since 2023! So suggesting it as a solution today doesn’t simply apply.\n\n> In the short term, you can hash partition your data. For example, you could hash the symbol modulo 100, and then write the rows to that table. If symbols are equally liquid, then this will reduce the amount of data needing to be read on a cold run by 100x, when querying a single symbol. You can use a different partitioning method if you have something more natural.\n\nJust to clarify — are you suggesting **creating a separate table for each symbol**, or a small set chosen by the user? Because what you’re describing is essentially the same point we’ve been making: QuestDB doesn’t currently support a single table with a reasonable number of symbols (100, 1k, 10k) while keeping per-symbol queries efficient. Your hash-partitioning idea is exactly a workaround for that limitation.\n\n> We are adding some additional sparse indexes that would help with this workload, but they will likely not be released for at least a couple of months.\n\nCould you clarify where these sparse indexes currently stand on the roadmap at https://github.com/orgs/questdb/projects/1/views/5\n"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-10-15T14:41:15Z",
+   "body": "Let's roll back a bit. I am not able to reproduce the behaviour you have seen, but here are a couple of things to check:\n\n\n1. Your original query is subject to pre-touch.\n\n```\nVirtualRecord\n  functions: [to_timezone(timestamp),metric_value,metric_name]\n    SelectedRecord\n        SelectedRecord\n            Async Filter workers: 8\n              filter: (metric_name ~ \\{\\} [state-shared] and quality=192) [pre-touch]\n                PageFrame\n                    Row forward scan\n                    Interval forward scan on: fooabc\n                      intervals: [(\"2020-01-01T00:00:00.000000Z\",\"2020-01-01T08:00:00.000000Z\")]\n```\n\nYou can try disabling this and re-running the query. It can be a cause for jitter.\n\n`cairo.sql.parallel.filter.pretouch.enabled=false`\n\n2. Your query has a suboptimal plan:\n\n```sql\nSELECT to_timezone(timestamp, 'Europe/Rome') AS time, val AS 'metric_value', metric_name FROM (\n    SELECT timestamp, double_value AS val, metric_name\n    FROM {} WHERE metric_name LIKE '{}'\n    AND quality = 192\n    AND timestamp between '2020-01-01 00:00:00' AND '2020-01-01 08:00:00');\n```\n\nWhen you add an index, using `LIKE` prevents the index being used. Please change the condition to `metric_name = '...'` and retry with the index scan.\n\nThe plan with an index and this condition changed will look something like this:\n\n```\nVirtualRecord\n  functions: [to_timezone(timestamp),metric_value,metric_name]\n    SelectedRecord\n        SelectedRecord\n            PageFrame\n                Index forward scan on: metric_name deferred: true\n                  symbolFilter: metric_name='abc'\n                  filter: quality=192\n                Interval forward scan on: fooabc\n                  intervals: [(\"2020-01-01T00:00:00.000000Z\",\"2020-01-01T08:00:00.000000Z\")]\n```\n\n3. It is possible to have a lot of compilation overhead when not using prepared statements. It'd be good to adjust your script (if needed) to guarantee that you use prepared statements and bind variables. This will allow you to measure execution time without compilation time getting in the way. For larger SQL strings, this can be a 2-3x improvement for max QPS. When using this successfully, you should see an increase in the amount of query logs that have `cache=true`."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-10-16T08:22:30Z",
+   "body": "We re-ran the test, this time replacing the LIKE operator with = in the query. Initially, we assumed that a LIKE without any % wildcards would behave the same as =, but that turned out to be incorrect.\n\nHere are the results with:\n\n- 50 million rows\n- 20k result rows\n- indexing enabled (no LIKE in the query) \n- cairo.sql.parallel.filter.pretouch.enabled=false\n- cairo.auto.scale.symbol.capacity=true \n- EC2 m4.2xlarge (8 vCPUs, 32 GiB of memory) \n- gp3 disk (IOPS 16k, Throughput 250 MiB/s)\n\n<img width=\"1850\" height=\"977\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/4769d468-9689-44f3-b945-d5a419a10e71\" />\n\nWith this change, execution times dropped significantly, and - more importantly - they no longer seem tied to the number of symbols.\nWe will be trying the same setup with real world data tables (at least 700 million rows) and see if indexing still works.\n\nWe now have two questions:\n\n- If we add an index with ALTER TABLE, will the index be built for all existing (historical) data, or only for new inserts?\n- We create tables and ingest data using a Kafka connector with the [QuestDB Client Library for Python](https://py-questdb-client.readthedocs.io/en/stable/) and specifically the buffer.row() method. Is there a way to specify which column(s) should be indexed?\n"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-10-16T08:43:08Z",
+   "body": "> Initially, we assumed that a LIKE without any % wildcards would behave the same as =, but that turned out to be incorrect.\n\nThis is the case for non-indexed queries. My guess is that during compilation, we check for an exact match before compiling the index scan, and that check does not account for the edge case when it is a `LIKE` with an exact match.\n\n> If we add an index with ALTER TABLE, will the index be built for all existing (historical) data, or only for new inserts?\n\nAll historical **but** it will take time to build it for old data, so having it configured as early as possble is a good idea. It is a serial process currently - we will make it parallel to speed it up, but for now, indexing very large datasets can be slow. When trying, it might look like a timeout - but it isn't, just slow.\n\n> We create tables and ingest data using a Kafka connector with the [QuestDB Client Library for Python](https://py-questdb-client.readthedocs.io/en/stable/) and specifically the buffer.row() method. Is there a way to specify which column(s) should be indexed?\n\nThe ILP protocol does not support such metadata. We are, piece-by-piece, replacing it with a custom binary protocol, which will improve this and allow users to specify indexing, deduplication etc.\n\nFor now, you must create the table ahead of time with the index, or add it later. I would also recommend creating tables explicitly where possible, and using the ILP auto-creation purely to discover new data and then correct the schema later."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-11-05T12:48:58Z",
+   "body": "Hi,\nI can confirm that with the above changes now the query performance with 70 million rows has returned to normal and is no longer tied to the number of symbols.\nThe possibility of specifying indexed column with ILP auto-creation would be very useful, at the moment we will need to create a cronjob altering tables which don't have an index."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-11-05T14:45:03Z",
+   "body": "Thanks for letting us know!\n\nWe are iterating on the clients, so this will be possible in future.\n\n Do let us know if you encounter any futher issues."
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "questdb/questdb",
+  "default_branch": "master",
+  "commit_sha": "bdd0fbf6784312962761566bba26665e5fb8ab6e",
+  "as_of": "2025-10-09T08:45:00Z",
+  "method": "github_commits_until"
+ },
+ "images": [
+  {
+   "where": "opening",
+   "source_url": "https://github.com/user-attachments/assets/2595c205-3e89-4450-8fe4-a86382ce4be9",
+   "file": "gh_questdb_questdb_6246_img0.png"
+  },
+  {
+   "where": "opening",
+   "source_url": "https://github.com/user-attachments/assets/eca80ab5-3c3e-46f5-9412-42320205b2be",
+   "file": "gh_questdb_questdb_6246_img1.png"
+  },
+  {
+   "where": "c5",
+   "source_url": "https://github.com/user-attachments/assets/6ff0d67c-45a4-485e-ae50-1a3815718d74",
+   "file": "gh_questdb_questdb_6246_img2.png"
+  },
+  {
+   "where": "c7",
+   "source_url": "https://github.com/user-attachments/assets/4f57604c-b815-400b-8c8a-87361b602905",
+   "file": "gh_questdb_questdb_6246_img3.png"
+  },
+  {
+   "where": "c12",
+   "source_url": "https://github.com/user-attachments/assets/4769d468-9689-44f3-b945-d5a419a10e71",
+   "file": "gh_questdb_questdb_6246_img4.png"
+  }
+ ],
+ "slug": "gh_questdb_questdb_6246"
+}

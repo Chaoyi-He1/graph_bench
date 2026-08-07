@@ -1,0 +1,159 @@
+{
+ "repo": "triton-lang/triton",
+ "number": 2941,
+ "url": "https://github.com/triton-lang/triton/issues/2941",
+ "title": "Custom tensor roll kernel produces wrong results for variations of block size and tl.constexpr",
+ "state": "closed",
+ "labels": [],
+ "reporter": "reporter",
+ "created_at": "2024-01-16T07:58:25Z",
+ "closed_at": "2024-11-18T19:31:49Z",
+ "body": "Dear triton team,\r\n\r\nI am currently debugging an issue with a kernel that is supposed to replace torch.roll followed by zeroing out the first row of a 2D matrix. This is the code I have:\r\n\r\n```python\r\nimport torch\r\n\r\nimport triton\r\nimport triton.language as tl\r\n\r\n@participant10.jit\r\ndef triton_roll_and_zero_first_row_kernel(in_ptr, out_ptr, NUM_ROWS: tl.constexpr, XBLOCK : tl.constexpr):\r\n    xoffset = tl.program_id(0) * XBLOCK\r\n    xindex = xoffset + tl.arange(0, XBLOCK)\r\n    row_idx = xindex // 2\r\n    col_idx = xindex % 2\r\n    rolled_row = (row_idx + 1) % NUM_ROWS\r\n    rolled_xindex = 2 * rolled_row + col_idx\r\n    result = tl.load(in_ptr + rolled_xindex)\r\n    result = tl.where(row_idx == 0, 0.0, result)\r\n    tl.store(out_ptr + xindex, result)\r\n\r\ndef triton_roll_and_zero_first_row(x):\r\n    assert x.size(1) == 2\r\n    y = torch.empty_like(x)\r\n    grid = lambda meta: (triton.cdiv(inp.numel(), meta['XBLOCK']), )\r\n    triton_roll_and_zero_first_row_kernel[grid](x, y, NUM_ROWS=x.size(0), XBLOCK=256)\r\n    return y\r\n\r\ndef roll_and_zero_first_row(x):\r\n    x = torch.roll(x, -1, 0)\r\n    x[0].fill_(0.0)\r\n    return x\r\n\r\nif __name__ == \"__main__\":\r\n    inp = torch.rand(1024, 2, device=\"cuda\")\r\n\r\n    out_eager = roll_and_zero_first_row(inp)\r\n    out_triton = triton_roll_and_zero_first_row(inp)\r\n\r\n    print(\"eager\", out_eager)\r\n    print(\"triton\", out_triton)\r\n    assert torch.all(out_eager == out_triton)\r\n    print(\"PASSED\")\r\n```\r\n\r\nIn this form the assert does not pass on my system. It passes if I either set `XBLOCK=128` or if I remove `tl.constexpr` from `NUM_ROWS`. This strikes me as odd. Could you please help me to understand this behaviour?\r\n\r\nThe blueprint for this kernel was actually produced applying `torch.compile` to `roll_and_zero_first_row` and it is affected by this issue as well. I just renamed a few variables and reordered code to make it human-readable. If you can confirm this behavior I would open an issue at pytorch as well.\r\n\r\nI am currently on triton-nightly==2.1.0.post20240108192258, torch==2.1.2 and CUDA 12.1",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2024-01-19T03:51:33Z",
+   "body": "fwiw - I tried stepping through the kernel with interpreter mode, and noticed that the repro above passes when I use `TRITON_INTERPRET=1` (but fails without interpreter mode)"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-01-22T04:44:07Z",
+   "body": "I am able to repro this on main branch. Comparing between XBLOCK=128 and XBLOCK=256, ttir/ttgir look reasonable, the only difference in ttgir is\r\nsizePerThread = [1], threadsPerWarp = [32], warpsPerCTA = [4]\r\nvs\r\nsizePerThread = [2], threadsPerWarp = [32], warpsPerCTA = [4]\r\n\r\nThe differences in llir also look reasonable. One difference in ptx is that for XBLOCK=128, there is extra logic on ctaid.x:\r\nbfe.u32         %r8, %r1, 24, 1;\r\n\r\nIt is still not clear to me why XBLOCK=256 doesn't work.\r\n\r\nAttaching the ptx files.\r\n[b256-ptx.txt](https://github.com/openai/participant10/files/14004791/b256-ptx.txt)\r\n[b128-ptx.txt](https://github.com/openai/participant10/files/14004792/b128-ptx.txt)\r\n"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-01-22T18:03:02Z",
+   "body": "If we \"export DISABLE_LLVM_OPT=1\", the test case will pass. So it is related to llvm optimizations."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-01-23T18:44:59Z",
+   "body": "If we disable InstCombine in optimize_module, it will pass. But I haven't figured out why yet. It is not obvious to me by looking at the differences in ptx: disable-opt against with-opt\r\n[disable-opt-llir.txt](https://github.com/openai/participant10/files/14028589/disable-opt-llir.txt)\r\n[disable-opt-ptx.txt](https://github.com/openai/participant10/files/14028590/disable-opt-ptx.txt)\r\n[with-opt-llir.txt](https://github.com/openai/participant10/files/14028592/with-opt-llir.txt)\r\n[with-opt-ptx.txt](https://github.com/openai/participant10/files/14028593/with-opt-ptx.txt)\r\n\r\n\r\n```\r\n@@ -28,8 +26,8 @@\r\n $L__tmp0:\r\n \t.loc\t1 9 36\r\n \tmov.u32 \t%r6, %tid.x;\r\n-\tand.b32  \t%r7, %r6, 127;\r\n-\tshl.b32 \t%r8, %r7, 1;\r\n+\tshl.b32 \t%r7, %r6, 1;\r\n+\tand.b32  \t%r8, %r7, 254;\r\n \t.loc\t1 8 28\r\n \t// begin inline asm\r\n \tmov.u32 %r1, %ctaid.x;\r\n@@ -60,19 +58,14 @@\r\n \tmov.u32 %r3, 0x0;\r\n \t@%p1 ld.global.v2.b32 { %r2, %r3 }, [ %rd1 + 0 ];\r\n \t// end inline asm\r\n-\tmov.b32 \t%f1, %r2;\r\n-\tmov.b32 \t%f2, %r3;\r\n \t.loc\t1 15 33\r\n-\tsetp.eq.s32 \t%p3, %r11, 0;\r\n-\t.loc\t1 15 41\r\n-\tselp.f32 \t%f3, 0f00000000, %f1, %p3;\r\n-\tselp.f32 \t%f4, 0f00000000, %f2, %p3;\r\n+\tsetp.eq.s32 \t%p3, %r10, 0;\r\n \t.loc\t1 16 23\r\n \tmul.wide.s32 \t%rd6, %r10, 4;\r\n \tadd.s64 \t%rd2, %rd4, %rd6;\r\n \t.loc\t1 16 31\r\n-\tmov.b32 \t%r4, %f3;\r\n-\tmov.b32 \t%r5, %f4;\r\n+\tselp.b32 \t%r4, 0, %r2, %p3;\r\n+\tselp.b32 \t%r5, 0, %r3, %p3;\r\n \t// begin inline asm\r\n \t@%p1 st.global.v2.b32 [ %rd2 + 0 ], { %r4, %r5 };\r\n \t// end inline asm\r\n```"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-01-23T19:47:09Z",
+   "body": "It looks like the predication is different in the two cases.\r\n\r\nDisable opt:\r\n\r\n```\r\n\tmov.u32 %r1, %ctaid.x;\r\n\tshl.b32 \t%r9, %r1, 8;\r\n\tor.b32  \t%r10, %r9, %r8;\r\n\tshr.s32 \t%r11, %r10, 1;\r\n        setp.eq.s32 \t%p3, %r11, 0;\r\n```\r\n\r\nWith opt:\r\n\r\n```\r\n\tmov.u32 %r1, %ctaid.x;\r\n\tshl.b32 \t%r9, %r1, 8;\r\n\tor.b32  \t%r10, %r9, %r8;\r\n        setp.eq.s32 \t%p3, %r10, 0;\r\n```\r\n\r\n"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-01-23T19:59:43Z",
+   "body": "Yes, but the problem is that r10 is supposed to be a multiple of 2, so checking it against 0 vs. checking (r10 >> 1) against 0 should be the same?"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-01-23T20:03:03Z",
+   "body": "> Yes, but the problem is that r10 is supposed to be a multiple of 2, so checking it against 0 vs. checking (r10 >> 1) against 0 should be the same?\r\n\r\nI see, it could make a difference if r10 has value of 1?"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-01-23T20:04:22Z",
+   "body": "If the ptx looks correct in both cases, then this sounds like a ptxas bug.  (Have we tried the latest ptxas?)"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-01-23T20:08:16Z",
+   "body": "> If the ptx looks correct in both cases, then this sounds like a ptxas bug. (Have we tried the latest ptxas?)\r\n\r\nThat is possible. I can try it and see if it makes a difference. Mine is currently cuda-12.1."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-01-23T20:09:33Z",
+   "body": "> > Yes, but the problem is that r10 is supposed to be a multiple of 2, so checking it against 0 vs. checking (r10 >> 1) against 0 should be the same?\r\n> \r\n> I see, it could make a difference if r10 has value of 1?\r\nYes if r10 can be 1.\r\n\r\n`\tmov.u32 \t%r6, %tid.x;\r\n\tshl.b32 \t%r7, %r6, 1;\r\n\tand.b32  \t%r8, %r7, 254;\r\n\r\n\tmov.u32 %r1, %ctaid.x;\r\n\r\n\tshl.b32 \t%r9, %r1, 8;\r\n\tor.b32  \t%r10, %r9, %r8;`\r\n%r8 should be  a multiple of 2 and %r9 should be a multiple of 2."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2024-01-23T20:11:46Z",
+   "body": "> > If the ptx looks correct in both cases, then this sounds like a ptxas bug. (Have we tried the latest ptxas?)\r\n> \r\n> That is possible. I can try it and see if it makes a difference. Mine is currently cuda-12.1.\r\n\r\nyou can also disable optimizations in ptxas `--opt-level 0`"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-01-23T22:41:12Z",
+   "body": "Disabling optimization for ptxas also fixed the problem.\r\n[def-sass.txt](https://github.com/openai/participant10/files/14030529/def-sass.txt)\r\n[no-ptxas-opt-sass.txt](https://github.com/openai/participant10/files/14030530/no-ptxas-opt-sass.txt)\r\n\r\nPatch to enable debugging: https://github.com/openai/participant10/pull/2995\r\n"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-01-23T22:53:58Z",
+   "body": "> Disabling optimization for ptxas also fixed the problem. [def-sass.txt](https://github.com/openai/participant10/files/14030529/def-sass.txt) [no-ptxas-opt-sass.txt](https://github.com/openai/participant10/files/14030530/no-ptxas-opt-sass.txt)\r\n> \r\n> Patch to enable debugging: #2995\r\n\r\nThanks for giving it a shot. So the problem went away with LLVM opt on but PTX opt off?"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-01-24T18:03:12Z",
+   "body": "A quick summary:\r\n1> default config (with llvm optimizations, with ptxas optimizations)\r\n     BLOCKSIZE of 128: works; BLOCKSIZE of 256: fails\r\n2> disable llvm optimizations via DISABLE_LLVM_OPT, with ptxas optimizations\r\n     BLOCKSIZE of 256: works\r\n     2a> with llvm optimizations O0, disable InstCombinePass here https://github.com/openai/participant10/blob/e6e5d5468e92ed3af3e40babdd55c3da506ab01f/python/src/llvm.cc#L190\r\n             BLOCKSIZE of 256: works\r\n3> enable llvm optimizations without ptxas optimizations\r\n     BLOCKSIZE of 256: works\r\nI haven't looked at the differences in sass for item 3 yet.\r\n"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-01-26T17:28:32Z",
+   "body": "Attempted to debug this with cuda-gdb, but it turned out that the issue is likely in ptxas, the updating of predicate seems to be gone in sass (i.e P0 is not set but it is used).\r\n\r\n```\r\n          IMAD.MOV.U32 R1, RZ, RZ, c[0x0][0x28]\r\n          S2R R0, SR_TID.X\r\n          IMAD.MOV.U32 R6, RZ, RZ, 0x4\r\n          ULDC.64 UR4, c[0x0][0x118]\r\n          S2R R5, SR_CTAID.X\r\n          IMAD.SHL.U32 R0, R0, 0x2, RZ\r\n          LOP3.LUT R0, R0, 0xfe, RZ, 0xc0, !PT\r\n          PRMT R4, R0, 0x6540, R5\r\n          LEA.HI.SX32 R2, R4, 0x1, 0x1f\r\n          SHF.R.S32.HI R3, RZ, 0x1f, R2\r\n          LEA.HI R3, R3, R2, RZ, 0xa\r\n          LOP3.LUT R3, R3, 0x7ffffc00, RZ, 0xc0, !PT\r\n          IMAD.IADD R3, R2, 0x1, -R3\r\n          IMAD.SHL.U32 R3, R3, 0x2, RZ\r\n          IMAD.WIDE R2, R3, R6, c[0x0][0x160]\r\n          LDG.E.64 R2, [R2.64]\r\n          PRMT RZ, R0, 0x6540, R5\r\n          IMAD.WIDE R4, R4, R6, c[0x0][0x168]\r\n          SEL R6, R2, RZ, P0\r\n          SEL R7, R3, RZ, P0\r\n          STG.E.64 [R4.64], R6\r\n```\r\n\r\nSetting of predicate in ptx:\r\n```\r\n\tsetp.eq.s32 \t%p3, %r10, 0;\r\n\t.loc\t1 16 23\r\n\tmul.wide.s32 \t%rd6, %r10, 4;\r\n\tadd.s64 \t%rd2, %rd4, %rd6;\r\n\t.loc\t1 16 31\r\n\tselp.b32 \t%r4, 0, %r2, %p3;\r\n\tselp.b32 \t%r5, 0, %r3, %p3;\r\n```\r\n"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2024-01-26T17:34:42Z",
+   "body": "> Attempted to debug this with cuda-gdb, but it turned out that the issue is likely in ptxas, the updating of predicate seems to be gone in sass (i.e P0 is not set but it is used).\r\n> \r\n> ```\r\n>           IMAD.MOV.U32 R1, RZ, RZ, c[0x0][0x28]\r\n>           S2R R0, SR_TID.X\r\n>           IMAD.MOV.U32 R6, RZ, RZ, 0x4\r\n>           ULDC.64 UR4, c[0x0][0x118]\r\n>           S2R R5, SR_CTAID.X\r\n>           IMAD.SHL.U32 R0, R0, 0x2, RZ\r\n>           LOP3.LUT R0, R0, 0xfe, RZ, 0xc0, !PT\r\n>           PRMT R4, R0, 0x6540, R5\r\n>           LEA.HI.SX32 R2, R4, 0x1, 0x1f\r\n>           SHF.R.S32.HI R3, RZ, 0x1f, R2\r\n>           LEA.HI R3, R3, R2, RZ, 0xa\r\n>           LOP3.LUT R3, R3, 0x7ffffc00, RZ, 0xc0, !PT\r\n>           IMAD.IADD R3, R2, 0x1, -R3\r\n>           IMAD.SHL.U32 R3, R3, 0x2, RZ\r\n>           IMAD.WIDE R2, R3, R6, c[0x0][0x160]\r\n>           LDG.E.64 R2, [R2.64]\r\n>           PRMT RZ, R0, 0x6540, R5\r\n>           IMAD.WIDE R4, R4, R6, c[0x0][0x168]\r\n>           SEL R6, R2, RZ, P0\r\n>           SEL R7, R3, RZ, P0\r\n>           STG.E.64 [R4.64], R6\r\n> ```\r\n> \r\n> Setting of predicate in ptx:\r\n> \r\n> ```\r\n> \tsetp.eq.s32 \t%p3, %r10, 0;\r\n> \t.loc\t1 16 23\r\n> \tmul.wide.s32 \t%rd6, %r10, 4;\r\n> \tadd.s64 \t%rd2, %rd4, %rd6;\r\n> \t.loc\t1 16 31\r\n> \tselp.b32 \t%r4, 0, %r2, %p3;\r\n> \tselp.b32 \t%r5, 0, %r3, %p3;\r\n> ```\r\n\r\ninteresting findings! Ptxas bugs are always very hard to track :( \r\n\r\nHave you tried using the latest ptxas as suggested by @participant4? (we haven't upgraded to the latest one yet)\r\n\r\nYou can also run ptxas with different versions and override the cubin generated if it is simpler"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-01-26T17:45:29Z",
+   "body": "> You can also run ptxas with different versions and override the cubin generated if it is simpler\r\n\r\nThis will be super useful if we can swap the cubin and run it. How do we do it?\r\n\r\n> Have you tried using the latest ptxas as suggested by @participant4? (we haven't upgraded to the latest one yet)\r\n\r\nI haven't. Let me ask around how to get the latest."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2024-01-26T18:07:16Z",
+   "body": "> > You can also run ptxas with different versions and override the cubin generated if it is simpler\r\n> \r\n> This will be super useful if we can swap the cubin and run it. How do we do it?\r\n> \r\n\r\nIt's a bit of an experimental debug feature but here:\r\nhttps://github.com/openai/participant10/blob/main/python/participant10/compiler/compiler.py#L218\r\nThe flow I usually use:\r\n1. `export TRITON_KERNEL_DUMP=1` and clear the cache\r\n2.  run the test: `python ....`\r\n3. Find the kernel you are interested in `~/.participant10/dump/kernel_hash/`\r\n4. copy the new cubin in `~/.participant10/override/` with the same exact path as above  `~/.participant10/override/kernel_hash/kernel_name.cubin`\r\n5. clear the cache and run `TRITON_KERNEL_OVERRIDE=1 python....`\r\n6. Check in the console for the message `Overriding kernel with file kernel_name.cubin` to make sure it happened\r\n\r\n\r\n> > Have you tried using the latest ptxas as suggested by @participant4? (we haven't upgraded to the latest one yet)\r\n> \r\n> I haven't. Let me ask around how to get the latest.\r\n\r\nYou can see an example here:\r\nhttps://github.com/participant5/participant10/commit/edb74eb5bda10c7019f3717acb5d0c97eb2a411d"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-01-26T21:32:14Z",
+   "body": "Tried with cuda_12.3.r12.3 ptxas, it generates the same code. I am not familiar with SASS, maybe it is possible that P0 is set implicitly by some instructions? But the incorrect outputs are all 0.0, which looks like the predicate is always choosing 0.0."
+  },
+  {
+   "author": "participant6",
+   "created_at": "2024-01-27T02:35:54Z",
+   "body": "If it's very possible that there's a ptxas bug, we could prepare a reproducer and sent it to nvidia compiler folks. They usually respond quickly based on my experience."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-01-29T17:28:32Z",
+   "body": "@participant6 Yes here is the repro and a README, let me know how to send it over to NVidia compiler folks.\r\n[repro-ptx.txt](https://github.com/openai/participant10/files/14087642/repro-ptx.txt)\r\n[README.txt](https://github.com/openai/participant10/files/14087643/README.txt)\r\n"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-01-29T18:41:47Z",
+   "body": "Filed as https://developer.nvidia.com/bugs/4474599"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-01-30T17:02:22Z",
+   "body": "Reply from NVidia:\r\nThis is a ptxas optimization bug that we've already fixed internally. It will be available in an update release of CUDA 12.4 soon.\r\nThe optimization was incorrectly transforming a LOP3 (which supports predicate output) into a PRMT (which doesn't support predicate out)."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-01-31T10:00:03Z",
+   "body": "Thanks to everyone involved for figuring this out 🙌"
+  },
+  {
+   "author": "participant7",
+   "created_at": "2024-03-18T16:07:37Z",
+   "body": "CUDA 12.4 is out. Has anyone tested it?"
+  },
+  {
+   "author": "participant8",
+   "created_at": "2024-07-09T23:48:15Z",
+   "body": "Still running into the same issues with CUDA 12.4, torch=2.5.0.dev20240709+cu124, participant10=2.3.1"
+  },
+  {
+   "author": "participant9",
+   "created_at": "2024-11-18T19:31:49Z",
+   "body": "Seems to be working on current main"
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "participant10-lang/participant10",
+  "default_branch": "main",
+  "commit_sha": "ded624282e67e5f58db332380e6ff088f276d534",
+  "as_of": "2024-01-16T07:58:25Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_participant10-lang_participant10_2941"
+}

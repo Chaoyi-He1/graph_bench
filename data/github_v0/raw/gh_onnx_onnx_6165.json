@@ -1,0 +1,113 @@
+{
+ "repo": "onnx/onnx",
+ "number": 6165,
+ "url": "https://github.com/onnx/onnx/issues/6165",
+ "title": "Please specify the behavior of min > max in Clip",
+ "state": "closed",
+ "labels": [
+  "question",
+  "module: spec",
+  "topic: spec clarification"
+ ],
+ "reporter": "reporter",
+ "created_at": "2024-06-10T12:25:08Z",
+ "closed_at": "2024-09-27T15:52:14Z",
+ "body": "# Ask a Question\r\n\r\n### Question\r\n[onnx.Clip](https://onnx.ai/onnx/operators/onnx__Clip.html) leaves it open what happens when values for min and max are specified such that min > max.\r\nShould this\r\n- be an error (invalid model)\r\n- set all values to min\r\n- set all values to max\r\n- be unspecified \r\n \r\nThis is relevant to implement compilers.",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2024-06-10T14:46:41Z",
+   "body": "cc @participant3 "
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-07-08T14:21:50Z",
+   "body": "Scavenging the specs for other such \"out of bounds\" type situations. List below is a sample of what I found.\r\n\r\n### We often use the term `undefined` for ops that have bad inputs.\r\n\r\n**Cast**\r\n```\r\nConverting non-numerical-literal string such as \"Hello World!\" is an undefined behavior. Cases of converting string representing floating-point arithmetic value, such as \"2.718\", to INT is an undefined behavior.\r\n```\r\n\r\n**Many ops using `axes` list**\r\n\r\n```\r\nBehavior is undefined if an axis is repeated. \r\n```\r\n\r\n**Reduction ops**\r\n\r\n```\r\nReduction over an empty set of values yields minus infinity (if supported by the datatype) or undefined otherwise.\r\n```\r\n\r\n### In other places, we use the term `error`\r\n\r\n**Gather op family**\r\n```\r\nIt is an error if any of the index values are out of bounds.\r\n```\r\n\r\n**Loop**\r\n\r\n```\r\nIt is an error if the dimensions or data type of these scan_outputs change across loop iterations.\r\n```\r\n\r\n**GetElement**\r\n\r\n```\r\n It is an error if the input is an empty optional-type (i.e. does not have an element) and the behavior is undefined in this case.\r\n```\r\n\r\n**Resize**\r\n```\r\nOne of 'scales' and 'sizes' MUST be specified and it is an error if both are specified.\r\n```\r\n"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-07-08T14:26:17Z",
+   "body": "In summary, my recommendation would be to \r\n\r\n1. Declare the case where `min > max` undefined, in conformity with other such case already listed in the specs (see above)\r\n2. Have all the cases that \"does not make sense\" normalized to `undefined` (aka change `error` to `undefined`). And then define early in the specs a (non-exhaustive) list of possible actions when encountering these cases, such as \"aborting a compilation or execution with an error message\", \"generating a warning and taking a (tool specific) defined action\", \"silently ignoring it and taking a (tool specific) defined action."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-07-08T23:04:24Z",
+   "body": "> In summary, my recommendation would be to\r\n> \r\n> 1. Declare the case where `min > max` undefined, in conformity with other such case already listed in the specs (see above)\r\n> 2. Have all the cases that \"does not make sense\" normalized to `undefined` (aka change `error` to `undefined`). And then define early in the specs a (non-exhaustive) list of possible actions when encountering these cases, such as \"aborting a compilation or execution with an error message\", \"generating a warning and taking a (tool specific) defined action\", \"silently ignoring it and taking a (tool specific) defined action.\r\n\r\nSounds good. Wrt the last point: it would be good to hear from backend implementors what actions they would like to do in such cases. Specifically: when does it make sense to produce a legal output value and continue execution? Eg., in the clip case, ending execution with an error would be the safest option. But, I can imagine an argument for allowing execution to proceed (namely that AI/ML models are meant to deal with noise anyway, and maybe it is harder to do this in some SIMD-parallel-execution settings, etc.)"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-07-09T06:20:58Z",
+   "body": "> > In summary, my recommendation would be to\r\n> > \r\n> > 1. Declare the case where `min > max` undefined, in conformity with other such case already listed in the specs (see above)\r\n> > 2. Have all the cases that \"does not make sense\" normalized to `undefined` (aka change `error` to `undefined`). And then define early in the specs a (non-exhaustive) list of possible actions when encountering these cases, such as \"aborting a compilation or execution with an error message\", \"generating a warning and taking a (tool specific) defined action\", \"silently ignoring it and taking a (tool specific) defined action.\r\n> \r\n> Sounds good. Wrt the last point: it would be good to hear from backend implementors what actions they would like to do in such cases. Specifically: when does it make sense to produce a legal output value and continue execution? Eg., in the clip case, ending execution with an error would be the safest option. But, I can imagine an argument for allowing execution to proceed (namely that AI/ML models are meant to deal with noise anyway, and maybe it is harder to do this in some SIMD-parallel-execution settings, etc.)\r\n\r\nEspecially in when offloading to accelerators, error propagation is cumbersome and can be slow. On the other hand, having a lot of undefined behavior makes it really hard to differentiate backend bugs from invalid models.\r\nOne option that seems to work well is to make the resulting values unspecified (but continue) to keep accelerator implementations simple and fast, and then also provide a way to run the model with explicit error checking (e.g. through the onnx reference implementation / onnxruntime / ...) - like C++ sanitizers."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-07-10T19:31:50Z",
+   "body": "Right now, we seem to use `undefined` and `error` indiscriminately.  My suggestion is that we use in the spec `undefined` to indicate cases that are not supported by the SPECS. And to urge the backend vendors to define what they do when encountering `undefined` so that the users ultimately know what happens when a model with some operation with undefined behavior is encountered.\r\n\r\nAs you rightly pointed out in your responses, there might be multiple \"valid\" responses to encountering an operation with `undefined` behavior. In some cases, a best effort (aka ignoring) may be desired. In other case (e.g. on a validation device), a precise error would be valuable to the user.  \r\n\r\nUltimately, the goal is to better communicate to the user what is done when encountering models with undefined behavior. \r\n\r\nI struggle a bit with the name `undefined` but I think it makes sense. The behavior is `undefined` from the SPEC perspective in that there is not one expected correct outcome. And at the same time we can urge the backend vendors to precisely specify what the do when encountering `undefined models` so as to better \"define\" its behavior :-)"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-07-10T20:54:50Z",
+   "body": "As I started doing a PR to fix the documentation for clip, I realized that Numpy/Pytorch have a defined value for this case, whereas TensorFlow does not.\r\n\r\n### Frameworks\r\n\r\nNumpy and PyTorch\r\n```\r\nAn array with the elements of a, but where values < a_min are replaced with a_min, and those > a_max with a_max.\r\n```\r\nhttps://numpy.org/doc/stable/reference/generated/numpy.clip.html\r\nhttps://pytorch.org/docs/stable/generated/torch.clamp.html#torch.clamp\r\n\r\nTensorFlow:\r\n```\r\nNote: clip_value_min needs to be smaller or equal to clip_value_max for correct results.\r\n```\r\nhttps://<redacted-host>/api_docs/python/tf/clip_by_value\r\n\r\n### Implementation cost (when min/max are runtime values)\r\n\r\nThe \"undefined\" approach can use 2 compare operations in parallel and 2 sequential select operations. Implementing the PyTorch/Numpy approach can be implemented by a serialization (compare->select->compare->select) or by 1 additional compare (min/max) and one logical (or) of the compare result.\r\n\r\nNote that probably a better way would be to set a global test could be set around the entire tensor operation, and when `min>max` it can become a `memset(max)`\r\n\r\nSo should we revisit this issue in light of this?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-07-11T05:50:46Z",
+   "body": "Note that in the C++ world, `undefined` has a strong meaning where the whole model output can change upon encountering undefined behavior, *even* if the result of the op with undefined behavior isn't used. (i.e. the compiler can assume that undefined behavior will never occur).\r\nA more benign term is `unspecified` behavior, where the spec doesn't say what will happen, but compilers are not allowed to assume that this behavior never occurs in models. And then you got `implementation-defined`, which is like `unspecified` behavior but where conforming implementations must says what their behavior is."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-07-11T15:38:51Z",
+   "body": "@participant3 Any inputs on what to do with min > max? As I listed below, the result is defined for numpy & PyTorch, unspecified for TensorFlow. There is a small change in implementation, depending on how it is done, the overhead would be quite minimal (see above for options)."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-07-11T15:55:16Z",
+   "body": "Thanks for the investigation @participant2. Given this, it seems to me that PyTorch/Numpy definition seems best (since it covers TF's undefined behavior also). However, the one question that remains is whether we should make this a clarification now ... or, say it is undefined in opset 13, and make it defined in next opset with the pytorch/numpy semantics. The latter is slightly better (in a procedural sense). However, pragmatically speaking, making this a clarification may have some advantages"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-07-11T17:30:25Z",
+   "body": "> [...] it seems to me that PyTorch/Numpy definition seems best (since it covers TF's undefined behavior also)\r\n\r\ngood way to phrase it, makes sense.\r\n\r\n> [...] the one question that remains is whether we should make this a clarification now.\r\n\r\nI will defer to your judgement @participant3. Happy to do a clarification PR, can learn how to make a new op version too if needed [There should be no work on converters and front ends]."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-07-16T16:43:37Z",
+   "body": "@participant4 Any preference Michal?"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-09-19T21:11:49Z",
+   "body": "I suggest we just make it a clarification"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-09-23T16:15:11Z",
+   "body": "implemented in #6385"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-09-23T17:32:55Z",
+   "body": "> implemented in #6385\r\n@participant2, is this the correct link?\r\n"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-09-26T16:16:15Z",
+   "body": "Migrated to #6395 "
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-09-27T15:52:14Z",
+   "body": "Valuable input here on \"undefined\" vs \"unspecified\", and probably we could tighten the specs using that insight.\r\n\r\nSince the PR addressing the specific issue at hand (clip) is now merged, closing this issue. "
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "onnx/onnx",
+  "default_branch": "main",
+  "commit_sha": "88f8ef15cfaa3138d336f3502aed5018d802bf43",
+  "as_of": "2024-06-10T12:25:08Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_onnx_onnx_6165"
+}

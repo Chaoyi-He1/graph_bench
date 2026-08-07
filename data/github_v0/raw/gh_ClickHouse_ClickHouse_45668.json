@@ -1,0 +1,267 @@
+{
+ "repo": "ClickHouse/ClickHouse",
+ "number": 45668,
+ "url": "https://github.com/ClickHouse/ClickHouse/issues/45668",
+ "title": "clickhouse-format doesn't hilite some identifiers",
+ "state": "closed",
+ "labels": [
+  "unexpected behaviour"
+ ],
+ "reporter": "reporter",
+ "created_at": "2023-01-26T15:12:03Z",
+ "closed_at": "2023-04-04T20:59:48Z",
+ "body": "Hey!\r\n\r\n1. In this query the `identifier` is not hilited — is it intended behaviour? I think it should either be hilited as an identifier, or an alias.\r\n```\r\n$ ./clickhouse-format --hilite --query \"with identifier as (select * from table) select * from table\"\r\nWITH identifier AS\r\n    (\r\n        SELECT *\r\n        FROM table\r\n    )\r\n```\r\nhttps://github.com/ClickHouse/ClickHouse/blob/master/src/Parsers/ASTWithElement.cpp#L21\r\n\r\n![image](https://user-images.githubusercontent.com/5155395/214872393-ab697d98-26a7-45d7-9579-d19071debd43.png)\r\n\r\n2. And also there's another identifier output without being hilited, but I cannot come up with the query which corresponds to this code - any help?\r\nhttps://github.com/ClickHouse/ClickHouse/blob/master/src/Parsers/ASTWithAlias.cpp#L23\r\n\r\n3. There seems to be an inconsistensy of manually applied hilite, as it's never removed within this if:\r\nhttps://github.com/ClickHouse/ClickHouse/blob/master/src/Parsers/ASTFunction.cpp#L585",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2023-01-26T16:29:47Z",
+   "body": "1. Looks like a bug. Let's highlight."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-01-26T16:32:10Z",
+   "body": "2. `clickhouse format --hilite --query \"select a + 1 as b, a + 1 as b\"`."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-01-26T16:36:53Z",
+   "body": "3. Also bug\r\n`clickhouse format --hilite --query \"select * from view(select 1 from table group by 1) where 1\"`\r\n![image](https://user-images.githubusercontent.com/4092911/214894166-42d35a02-6314-4e79-acb7-4fe8b41e5a5e.png)\r\nsecond select should not be highlighted "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-01-26T16:55:11Z",
+   "body": "> 2. `clickhouse format --hilite --query \"select a + 1 as b, a + 1 as b\"`.\r\n![image](https://user-images.githubusercontent.com/5155395/214898670-cb1eabd1-e9fc-426d-b659-1c77b0f8bb37.png)\r\n\r\nThanks! I will hilite the second `b` as an identifier, then."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-01-26T19:03:19Z",
+   "body": "Another bug, as agreed with Nikolai.\r\n\r\nUsing `hilite_none` when it doesn't do anything. Not visible to user.\r\nhttps://github.com/ClickHouse/ClickHouse/blob/master/src/Parsers/ASTSystemQuery.cpp#L203"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-01-27T15:29:39Z",
+   "body": "Here hilite has not been taken off.\r\nhttps://github.com/ClickHouse/ClickHouse/blob/master/src/Parsers/Access/ASTCreateRowPolicyQuery.cpp#L153\r\n\r\n**UPD**\r\nI cannot come up with a query that would print ATTACH ROW POLICY from [here](https://github.com/ClickHouse/ClickHouse/blob/master/src/Parsers/Access/ASTCreateRowPolicyQuery.cpp#L153).\r\n\r\n`ALTER ROW POLICY name ON table` works fine, but ATTACH apparently isn't a correct query.\r\n\r\n**UPD 2**\r\nNicolai Kochetov says that with ATTACH such a query is prohibited, so this is just a code inconsistency, rather than a visible user bug."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-01-27T16:08:14Z",
+   "body": "There's very little usage of `hilite_operator`. E.g. there's one use of `hilite_operator` to hilite the string `\" = \"`, but there are also 9 occurences of `\" = \"` in Parser/* that go without hiliting.\r\n\r\nUsing hilite https://github.com/ClickHouse/ClickHouse/blob/master/src/Parsers/ASTAssignment.h#L36\r\n\r\nNot using hilite e.g. https://github.com/ClickHouse/ClickHouse/blob/master/src/Parsers/Access/ASTSettingsProfileElement.cpp#L40\r\n\r\nJust want to confirm that none of those are operators and it's not a mistake?\r\n\r\n```\r\n$ grep -rn \"\\\" = \\\"\" Parsers/*\r\nParsers/Access/ASTCreateQuotaQuery.cpp:63:        settings.ostr << \" \" << type_info.name << \" = \" << type_info.valueToString(max_value);\r\nParsers/Access/ASTSettingsProfileElement.cpp:40:        settings.ostr << \" = \" << applyVisitor(FieldVisitorToString{}, value);\r\nParsers/ASTAlterNamedCollectionQuery.cpp:33:                settings.ostr << \" = \" << applyVisitor(FieldVisitorToString(), change.value);\r\nParsers/ASTAssignment.h:33:        settings.writeOperator(\" = \");\r\nParsers/ASTCreateNamedCollectionQuery.cpp:37:            settings.ostr << \" = \" << applyVisitor(FieldVisitorToString(), change.value);\r\nParsers/ASTCreateQuery.cpp:42:        s.ostr << (s.hilite ? hilite_keyword : \"\") << s.nl_or_ws << \"ENGINE\" << (s.hilite ? hilite_none : \"\") << \" = \";\r\nParsers/ASTDictionary.cpp:121:        settings.ostr << it->name << \" = \" << applyVisitor(FieldVisitorToString(), it->value);\r\nParsers/ASTFunction.cpp:673:                \"equals\",          \" = \",\r\nParsers/ASTSetQuery.cpp:37:        format.ostr << \" = \" << applyVisitor(FieldVisitorToString(), change.value);\r\nParsers/ASTSetQuery.cpp:59:        format.ostr << \" = \" << value;\r\n\r\n```"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-01-27T16:22:28Z",
+   "body": "Hilite has not been taken off x2 (not visible to user)\r\nhttps://github.com/ClickHouse/ClickHouse/blob/master/src/Parsers/ASTAlterQuery.cpp#L165"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-01-27T16:24:23Z",
+   "body": "Unnecessary `hilite_none` (probably invisible to user)\r\nhttps://github.com/ClickHouse/ClickHouse/blob/master/src/Parsers/ASTAlterQuery.cpp#L193\r\n\r\nAnd x3 in the following if"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-01-27T16:35:50Z",
+   "body": "Hilite not taken off x3 (not visible to user)\r\n\r\n`./clickhouse-format --oneline --hilite --query \"ALTER TABLE table RENAME COLUMN name to new_name\"`\r\n\r\nhttps://github.com/ClickHouse/ClickHouse/blob/master/src/Parsers/ASTAlterQuery.cpp#L486"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-01-27T16:59:56Z",
+   "body": "Does these really need hilite before the internal thing is written?\r\nhttps://github.com/ClickHouse/ClickHouse/blob/master/src/Parsers/ASTColumnsMatcher.cpp#L49\r\nhttps://github.com/ClickHouse/ClickHouse/blob/master/src/Parsers/ASTColumnsMatcher.cpp#L124\r\nhttps://github.com/ClickHouse/ClickHouse/blob/master/src/Parsers/ASTColumnsMatcher.cpp#L202\r\nhttps://github.com/ClickHouse/ClickHouse/blob/master/src/Parsers/ASTColumnsMatcher.cpp#L248\r\n\r\nhttps://github.com/ClickHouse/ClickHouse/blob/master/src/Parsers/ASTCreateIndexQuery.cpp#L39\r\nNot visible, if index_name is always hilited as identifier"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-01-27T17:31:24Z",
+   "body": "This closing bracket should be hilited, just like its pairing opening bracket\r\nhttps://github.com/ClickHouse/ClickHouse/blob/master/src/Parsers/ASTCreateQuery.cpp#L436\r\n\r\n**UPD**\r\n\r\nCouldn't find a query to contain both a select and a comment.\r\n\r\nI checked documentation for creating table, database, and view here\r\nhttps://clickhouse.com/docs/en/sql-reference/statements/create/\r\n\r\n**UPD 2** See Nicolai Kochetov's query below."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-01-27T17:36:01Z",
+   "body": "Hilite not taken off x4 (4 cases)\r\nhttps://github.com/ClickHouse/ClickHouse/blob/master/src/Parsers/ASTDictionaryAttributeDeclaration.cpp#L59\r\n\r\n**UPD**\r\nOh boy does this query mess with your terminal!\r\n\r\n```\r\nCREATE DICTIONARY somename (\r\n    Name ClickHouseDataType DEFAULT '' EXPRESSION rand64() HIERARCHICAL INJECTIVE IS_OBJECT_ID\r\n)\r\n```\r\n\r\nThe hilite hasn't been taken off, thus the terminal remains hilited as a keyword."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-01-27T17:43:18Z",
+   "body": "Unnecessary hilite_none (probably invisible to user)\r\n\r\nhttps://github.com/ClickHouse/ClickHouse/blob/master/src/Parsers/ASTDictionary.cpp#L123"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-01-27T18:04:41Z",
+   "body": "Matching parenthesis is not hilited\r\nhttps://github.com/ClickHouse/ClickHouse/blob/master/src/Parsers/ASTDictionary.cpp#L164\r\n\r\n**UPD**\r\n\r\nNo parenthesis should be hilited in the first place.\r\n\r\n```\r\nCREATE DICTIONARY somename (`Name` ClickHouseDataType DEFAULT '' EXPRESSION rand64()) SOURCE(FILE(PATH 'path'))\r\n```"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-01-27T18:07:21Z",
+   "body": "The internal formatImpl doesn't need to be hilited\r\nhttps://github.com/ClickHouse/ClickHouse/blob/master/src/Parsers/ASTDropIndexQuery.cpp#L34\r\n\r\n**UPD**\r\nWhy `index_name` is ASTPtr in the drop index query? What would be an example of a non-string index name?\r\n\r\n**UPD2**\r\nProb not visible to user, as the formatImpl'ed thing seems to be an identifier."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-01-28T08:04:02Z",
+   "body": "Hilite not taken off\r\nhttps://github.com/ClickHouse/ClickHouse/blob/master/src/Parsers/ASTFunctionWithKeyValueArguments.cpp#L30\r\n\r\n**UPD**\r\n\r\nNeed an example of a `ASTPair` where the second value needs parenthesis\r\n\r\nHere's an example with a just pair\r\n```\r\nCREATE DICTIONARY somename (Name ClickHouseDataType DEFAULT '' EXPRESSION rand64()) SOURCE(FILE(password 'path'))\r\n```\r\n\r\n**UPD2**\r\n**Won't fix.** It would have been visible to user if `clickhouse format` had a `--hide-secrests` flag, then then `[HIDDEN]` instead of the plaintext password would have been hilited here:\r\n\r\n```\r\nCREATE DICTIONARY somename\r\n(\r\n    `Name` ClickHouseDataType DEFAULT '' EXPRESSION rand64()\r\n)\r\nSOURCE(HTTP(URL 'http://[::1]/os.tsv' FORMAT 'TabSeparated' CREDENTIALS (USER 'user' PASSWORD 'password') HEADERS (HEADER (NAME 'API-KEY' VALUE 'key'))))\r\n```"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-01-28T08:08:14Z",
+   "body": "Do the parentesis need to be keyword-hilited as well? Otherwise what's the use of canceling the hilite at the end of the function.\r\n\r\nhttps://github.com/ClickHouse/ClickHouse/blob/master/src/Parsers/ASTFunctionWithKeyValueArguments.cpp#L88\r\n(Didn't fix in refactoring yet - not sure if needed)"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-01-28T08:11:13Z",
+   "body": "Hilite applied multiple times\r\n\r\nhttps://github.com/ClickHouse/ClickHouse/blob/master/src/Parsers/ASTInsertQuery.cpp#L49\r\n\r\n**UPD**\r\nInsert queries can't be printed with `clickhouse-format`, so skipping this one"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-01-28T08:26:16Z",
+   "body": "Hilite not taken off\r\nhttps://github.com/ClickHouse/ClickHouse/blob/master/src/Parsers/ASTKillQueryQuery.cpp#L31\r\n\r\n**UPD**\r\n```\r\nKILL QUERY ON CLUSTER clustername WHERE user='username' SYNC\r\n```"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-01-28T08:27:50Z",
+   "body": "Do we need space between `TESTSYNC` or `TESTASYNC`?\r\nhttps://github.com/ClickHouse/ClickHouse/blob/master/src/Parsers/ASTKillQueryQuery.cpp#L40"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-01-28T16:04:10Z",
+   "body": "@reporter I see it can be either `TEST`, `SYNC`, or `ASYNC`."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-01-28T16:04:43Z",
+   "body": "So many bugs :) Your change will fix all of them."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-01-28T21:54:36Z",
+   "body": "Comma prob shouldn't be hilited as a keyword\r\n\r\nhttps://github.com/ClickHouse/ClickHouse/blob/master/src/Parsers/ASTTablesInSelectQuery.cpp#L212\r\n\r\nWhat is `JoinKind::Comma`? I couldn't find it in docs, thus couldn't come up with an example query\r\nhttps://clickhouse.com/docs/en/sql-reference/statements/select/join/\r\n\r\n\r\nProbably related to this\r\n\r\n`clickhouse-format --oneline --hilite --query \"SELECT one, two FROM table, mable\"`\r\n\r\ndoesn't hilite the first comma, but does hilite the second one. It's probably an unintentional hilite, as no commas are hilited in ASTExpressionList (first comma).\r\n\r\n![image](https://user-images.githubusercontent.com/5155395/228198210-b0358c18-0c52-4405-aee1-a5fe6b2c91a5.png)\r\n\r\nI attribute this unintentional behaviour to a dangling `hilite_keyword` in ASTTableJoin:\r\nhttps://github.com/ClickHouse/ClickHouse/blob/master/src/Parsers/ASTTablesInSelectQuery.cpp#L151\r\n\r\nThe issue is found when testing the https://github.com/ClickHouse/ClickHouse/pull/45649 refactoring.\r\n\r\n**UPD** In this case comma should be hilite as a keyword, as it acts in lieu of JOIN. So no bugs here."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-01-28T21:55:20Z",
+   "body": "@participant2  I keep track of the bugs so that I could later check that my hiliting refactoring didn't affect any behaviour by running format before / after change on a bunch of SQL queries. But if I fix these bugs in my change (and I will, and it's hard not to), it will change behaviour.\r\n\r\nSo I'm thinking of fixing all these issues separately before refactoring."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-01-29T02:27:39Z",
+   "body": "Good, let's proceed this way."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-01-30T14:26:43Z",
+   "body": "Opening bracket is hilited, closing isn't \r\n\r\nhttps://github.com/ClickHouse/ClickHouse/blob/master/src/Parsers/ASTFunction.cpp#L865"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-03-28T11:01:11Z",
+   "body": "```\r\nclickhouse format --hilite --query \"create table t as (select 1) comment 'hello'\"\r\n```\r\n![image](https://user-images.githubusercontent.com/4092911/228210703-84146716-6e4b-4155-b871-e2160fd1b477.png)\r\n\r\n\r\n\r\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-03-28T11:15:13Z",
+   "body": "`clickhouse format --hilite --query \"alter table tab add index index_name a + b type set GRANULARITY 1\"`\r\n`clickhouse format --hilite --query \"alter table tab drop index index_name\"`\r\n\r\n![image](https://user-images.githubusercontent.com/4092911/228219152-8c0e5a9c-26a5-499f-9c78-ce786ce17288.png)\r\n\r\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-03-28T11:49:26Z",
+   "body": "```\r\nclickhouse format --hilite --query \"CREATE DICTIONARY somename (Name ClickHouseDataType DEFAULT '' EXPRESSION rand64()) SOURCE(HTTP(url 'http://[::1]/os.tsv' format 'TabSeparated' credentials(user 'user' password 'password') headers(header(name 'API-KEY' value 'key'))))\"\r\n```\r\n\r\n![image](https://user-images.githubusercontent.com/4092911/228226127-4176eafc-c3d9-402a-9eba-417c7b1123b4.png)\r\n\r\n\r\nIt's hard to see what's wrong here.\r\nOpening brackets:\r\n`SOURCE(HTTP(URL`\r\n![image](https://user-images.githubusercontent.com/4092911/228226423-629b39d2-4e4d-4efb-ae45-d0f86bf693cb.png)\r\n(the first one is highlighted, the second one is not)\r\nClosing brackets:\r\n![image](https://user-images.githubusercontent.com/4092911/228226625-8e068499-f43b-42d0-bf71-e11ce0e8c533.png)\r\n\r\nboth not highlighted \r\n(maybe it's a different bug)\r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-03-28T11:53:08Z",
+   "body": "The one with SOURCE is listed above. I'll investigate if there are overlapping bugs.\r\n\r\nThank you!"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-03-28T13:36:56Z",
+   "body": "> `clickhouse format --hilite --query \"alter table tab add index index_name a + b type set GRANULARITY 1\"` `clickhouse format --hilite --query \"alter table tab drop index index_name\"`\r\n> \r\n> ![image](https://user-images.githubusercontent.com/4092911/228219152-8c0e5a9c-26a5-499f-9c78-ce786ce17288.png)\r\n\r\nADD INDEX prints `index_decl`, DROP INDEX prints `index`, it looks more like a decision rather than an inconsistency. Moreover, my refactoring doesn't automatically change this behaviour, so I'm keeping this as is.\r\n\r\nhttps://github.com/ClickHouse/ClickHouse/blob/bbf94a2664be9b5ba3bdc5f10ccde150cae08f34/src/Parsers/ASTAlterQuery.cpp#L220\r\n\r\n**UPD** It's even consistent with something like `CREATE TABLE name`, which wouldn't be hiliting `name` as identifier. The reasoning behind this could be: it's an identifier-to-be, so let's not hilite it just yep."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-03-29T03:40:08Z",
+   "body": "> ```\r\n> clickhouse format --hilite --query \"CREATE DICTIONARY somename (Name ClickHouseDataType DEFAULT '' EXPRESSION rand64()) SOURCE(HTTP(url 'http://[::1]/os.tsv' format 'TabSeparated' credentials(user 'user' password 'password') headers(header(name 'API-KEY' value 'key'))))\"\r\n> ```\r\n> \r\n> ![image](https://user-images.githubusercontent.com/4092911/228226127-4176eafc-c3d9-402a-9eba-417c7b1123b4.png)\r\n> \r\n> It's hard to see what's wrong here. Opening brackets: `SOURCE(HTTP(URL` ![image](https://user-images.githubusercontent.com/4092911/228226423-629b39d2-4e4d-4efb-ae45-d0f86bf693cb.png) (the first one is highlighted, the second one is not) Closing brackets: ![image](https://user-images.githubusercontent.com/4092911/228226625-8e068499-f43b-42d0-bf71-e11ce0e8c533.png)\r\n> \r\n> both not highlighted (maybe it's a different bug)\r\n\r\nSince I fixed the SOURCE bug, there's no longer an inconsistency between matching opening/closing parenthesis. `CREATE DICTIONARY`, `SOURCE`, and `HTTP` are not hilited. However, the parenthesis within `HTTP` `FunctionWithKeyValueArguments` consisting of `ASTPair`s are hilited.\r\n\r\nhttps://github.com/ClickHouse/ClickHouse/blob/8d72f75556bbbb7dbe5675324bb3e00634480492/src/Parsers/ASTFunctionWithKeyValueArguments.cpp#L30\r\n\r\n![image](https://user-images.githubusercontent.com/5155395/228416340-8902f43d-1aa7-488b-b8d9-677b0a89beca.png)\r\n\r\nIt is weird but looks like (not a very thought-through but still) a choice. Won't be fixing it here but creating an umbrella issue to collect clickhouse-format funny behaviours #48140."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-03-29T04:55:47Z",
+   "body": "> Does these really need hilite before the internal thing is written? https://github.com/ClickHouse/ClickHouse/blob/master/src/Parsers/ASTColumnsMatcher.cpp#L49 https://github.com/ClickHouse/ClickHouse/blob/master/src/Parsers/ASTColumnsMatcher.cpp#L124 https://github.com/ClickHouse/ClickHouse/blob/master/src/Parsers/ASTColumnsMatcher.cpp#L202 https://github.com/ClickHouse/ClickHouse/blob/master/src/Parsers/ASTColumnsMatcher.cpp#L248\r\n\r\nThe last thing left (hopefully). Can't come up with a triggering query with `ASTColumnsRegexpMatcher`, my best attempt is:\r\n\r\n```\r\nINSERT INTO table_name (columns.*) FROM INFILE 'filename'\r\n\r\nInsertQuery__, 0x00007efc4fe38418\r\n-Literal_'filename', 0x00007efc4fe50818\r\n-Identifier_table_name, 0x00007efc4fe201d8\r\n-ExpressionList, 0x00007efc4febedd8\r\n--QualifiedAsterisk, 0x00007efc4febecf8\r\n---Identifier_columns, 0x00007efc4fe20458\r\n```"
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "ClickHouse/ClickHouse",
+  "default_branch": "master",
+  "commit_sha": "88076b6db0df55e713073f55a4a5b40d415f404d",
+  "as_of": "2023-01-26T15:12:03Z",
+  "method": "github_commits_until"
+ },
+ "images": [
+  {
+   "where": "opening",
+   "source_url": "https://user-images.githubusercontent.com/5155395/214872393-ab697d98-26a7-45d7-9579-d19071debd43.png",
+   "file": "gh_ClickHouse_ClickHouse_45668_img0.png"
+  },
+  {
+   "where": "c2",
+   "source_url": "https://user-images.githubusercontent.com/4092911/214894166-42d35a02-6314-4e79-acb7-4fe8b41e5a5e.png",
+   "file": "gh_ClickHouse_ClickHouse_45668_img1.png"
+  },
+  {
+   "where": "c3",
+   "source_url": "https://user-images.githubusercontent.com/5155395/214898670-cb1eabd1-e9fc-426d-b659-1c77b0f8bb37.png",
+   "file": "gh_ClickHouse_ClickHouse_45668_img2.png"
+  },
+  {
+   "where": "c23",
+   "source_url": "https://user-images.githubusercontent.com/5155395/228198210-b0358c18-0c52-4405-aee1-a5fe6b2c91a5.png",
+   "file": "gh_ClickHouse_ClickHouse_45668_img3.png"
+  },
+  {
+   "where": "c27",
+   "source_url": "https://user-images.githubusercontent.com/4092911/228210703-84146716-6e4b-4155-b871-e2160fd1b477.png",
+   "file": "gh_ClickHouse_ClickHouse_45668_img4.png"
+  },
+  {
+   "where": "c28",
+   "source_url": "https://user-images.githubusercontent.com/4092911/228219152-8c0e5a9c-26a5-499f-9c78-ce786ce17288.png",
+   "file": "gh_ClickHouse_ClickHouse_45668_img5.png"
+  },
+  {
+   "where": "c29",
+   "source_url": "https://user-images.githubusercontent.com/4092911/228226127-4176eafc-c3d9-402a-9eba-417c7b1123b4.png",
+   "file": "gh_ClickHouse_ClickHouse_45668_img6.png"
+  },
+  {
+   "where": "c29",
+   "source_url": "https://user-images.githubusercontent.com/4092911/228226423-629b39d2-4e4d-4efb-ae45-d0f86bf693cb.png",
+   "file": "gh_ClickHouse_ClickHouse_45668_img7.png"
+  },
+  {
+   "where": "c29",
+   "source_url": "https://user-images.githubusercontent.com/4092911/228226625-8e068499-f43b-42d0-bf71-e11ce0e8c533.png",
+   "file": "gh_ClickHouse_ClickHouse_45668_img8.png"
+  },
+  {
+   "where": "c31",
+   "source_url": "https://user-images.githubusercontent.com/4092911/228219152-8c0e5a9c-26a5-499f-9c78-ce786ce17288.png",
+   "file": "gh_ClickHouse_ClickHouse_45668_img9.png"
+  },
+  {
+   "where": "c32",
+   "source_url": "https://user-images.githubusercontent.com/4092911/228226127-4176eafc-c3d9-402a-9eba-417c7b1123b4.png",
+   "file": "gh_ClickHouse_ClickHouse_45668_img10.png"
+  },
+  {
+   "where": "c32",
+   "source_url": "https://user-images.githubusercontent.com/4092911/228226423-629b39d2-4e4d-4efb-ae45-d0f86bf693cb.png",
+   "file": "gh_ClickHouse_ClickHouse_45668_img11.png"
+  },
+  {
+   "where": "c32",
+   "source_url": "https://user-images.githubusercontent.com/4092911/228226625-8e068499-f43b-42d0-bf71-e11ce0e8c533.png",
+   "file": "gh_ClickHouse_ClickHouse_45668_img12.png"
+  },
+  {
+   "where": "c32",
+   "source_url": "https://user-images.githubusercontent.com/5155395/228416340-8902f43d-1aa7-488b-b8d9-677b0a89beca.png",
+   "file": "gh_ClickHouse_ClickHouse_45668_img13.png"
+  }
+ ],
+ "slug": "gh_ClickHouse_ClickHouse_45668"
+}

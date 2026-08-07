@@ -1,0 +1,140 @@
+{
+ "repo": "yugabyte/yugabyte-db",
+ "number": 28368,
+ "url": "https://github.com/yugabyte/yugabyte-db/issues/28368",
+ "title": "[YSQL] Monitor the clock error from clockbound for medium-long term",
+ "state": "closed",
+ "labels": [
+  "kind/bug",
+  "area/ysql",
+  "priority/medium",
+  "status/awaiting-triage"
+ ],
+ "reporter": "reporter",
+ "created_at": "2025-08-25T04:28:39Z",
+ "closed_at": "2025-08-27T06:22:43Z",
+ "body": "Jira Link: [DB-18049](https://<redacted-host>/browse/DB-18049)\r\n### Description\n\nWhile chrony provides a clock error of less than a ms, clockbound does occassionally report a clock error higher than a ms on AWS. Track the trends in clock errors reported by clockbound on both AWS and GCP and report results here.\n\nUse this information to increase the clock error estimate appropriately.\n\n### Issue Type\n\nkind/bug\n\n### Warning: Please confirm that this issue does not contain any sensitive information\n\n- [x] I confirm this issue does not contain any sensitive information.\n\n[DB-18049]: https://<redacted-host>/browse/DB-18049?atlOrigin=eyJpIjoiNWRkNTljNzYxNjVmNDY3MDlhMDU5Y2ZhYzA5YTRkZjUiLCJwIjoiZ2l0aHViLWNvbS1KU1cifQ",
+ "comments": [
+  {
+   "author": "reporter",
+   "created_at": "2025-08-25T04:55:09Z",
+   "body": "Take the following approaches\n\n1. Log clock error reported by both chronyc and clockbound every 15s. This is a very manageable amount of data over a long period of time, say, a day. Visualize the trends for clock errors computed using both approaches and also eyeball the difference between both values.\n2. Maintain rough stats of clock error. Accumulate max, mean during the window as well as overall. Print them in the log every 15s."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-08-26T05:25:07Z",
+   "body": "Used the following scripts to monitor the clock error.\n\n1. chronyc tracking\n\n```lang=sh\n#!/usr/bin/env bash\n\n# ==============================================================================\n# Chrony Clock Error Monitor\n#\n# Description:\n# This script monitors the system clock's accuracy using the 'chronyc tracking'\n# command. It calculates the clock error in microseconds based on a specific\n# formula and logs the result along with a UTC timestamp to a CSV file.\n#\n# Usage:\n#   ./monitor_chronyc_clockerr.sh [OPTIONS]\n#\n# Options:\n#   -o, --output FILE        Output log file path (default: $HOME/chronyc_clockerr.log)\n#   -d, --duration SECONDS   Total runtime in seconds (default: 86400 = 24 hours)\n#   -f, --frequency SECONDS  Logging frequency in seconds (default: 15)\n#   -h, --help              Display this help message\n#\n# Examples:\n#   ./monitor_chronyc_clockerr.sh\n#   ./monitor_chronyc_clockerr.sh -o my_log.log\n#   ./monitor_chronyc_clockerr.sh -d 3600 -f 5\n#   ./monitor_chronyc_clockerr.sh --output my_log.log --duration 1800 --frequency 10\n#\n# Formula for Clock Error:\n#   Clock Error (seconds) = |System time| + Root dispersion + (Root delay / 2)\n# The final result is converted to an integer value in microseconds.\n#\n# Dependencies:\n#   - chrony: The command-line utility for the chronyd daemon.\n#   - python: Python interpreter for floating-point calculations.\n#\n# Output File:\n#   - A log file in CSV format will be created at the specified path or default location.\n# ==============================================================================\n\n# --- Default Configuration ---\nOUTPUT_FILE=\"$HOME/chronyc_clockerr.log\"\nRUN_DURATION_SECONDS=$((24 * 60 * 60))  # 24 hours\nFREQUENCY_SECONDS=15  # 15 seconds\n\n# --- Help Function ---\nshow_help() {\n    cat << EOF\nUsage: $0 [OPTIONS]\n\nOptions:\n  -o, --output FILE        Output log file path (default: $HOME/chronyc_clockerr.log)\n  -d, --duration SECONDS   Total runtime in seconds (default: 86400 = 24 hours)\n  -f, --frequency SECONDS  Logging frequency in seconds (default: 15)\n  -h, --help              Display this help message\n\nExamples:\n  $0\n  $0 -o my_log.log\n  $0 -d 3600 -f 5\n  $0 --output my_log.log --duration 1800 --frequency 10\n\nEOF\n}\n\n# --- Argument Parsing ---\n# Parse command line options\nwhile [[ $# -gt 0 ]]; do\n    case $1 in\n        -o|--output)\n            OUTPUT_FILE=\"$2\"\n            shift 2\n            ;;\n        -d|--duration)\n            RUN_DURATION_SECONDS=\"$2\"\n            shift 2\n            ;;\n        -f|--frequency)\n            FREQUENCY_SECONDS=\"$2\"\n            shift 2\n            ;;\n        -h|--help)\n            show_help\n            exit 0\n            ;;\n        -*)\n            echo \"Error: Unknown option $1\" >&2\n            echo \"Use -h or --help for usage information\" >&2\n            exit 1\n            ;;\n        *)\n            echo \"Error: Unexpected argument $1\" >&2\n            echo \"Use -h or --help for usage information\" >&2\n            exit 1\n            ;;\n    esac\ndone\n\n# Validate arguments\nif [[ ! \"$RUN_DURATION_SECONDS\" =~ ^[0-9]+$ ]] || [[ $RUN_DURATION_SECONDS -le 0 ]]; then\n    echo \"Error: Run duration must be a positive integer in seconds.\" >&2\n    echo \"Use -h or --help for usage information\" >&2\n    exit 1\nfi\n\nif [[ ! \"$FREQUENCY_SECONDS\" =~ ^[0-9]+$ ]] || [[ $FREQUENCY_SECONDS -le 0 ]]; then\n    echo \"Error: Frequency must be a positive integer in seconds.\" >&2\n    echo \"Use -h or --help for usage information\" >&2\n    exit 1\nfi\n\n# Display configuration\necho \"Configuration:\"\necho \"  Output file: $OUTPUT_FILE\"\necho \"  Run duration: $RUN_DURATION_SECONDS seconds ($(($RUN_DURATION_SECONDS / 3600)) hours)\"\necho \"  Logging frequency: $FREQUENCY_SECONDS seconds\"\necho \"\"\n\n# --- Configuration ---\n# These variables are now set by command line options above\n\n# --- Dependency Check ---\n# Ensure required command-line tools are installed before proceeding.\nif ! command -v chronyc &> /dev/null; then\n    echo \"Error: 'chronyc' command not found. Please ensure 'chrony' is installed and running.\" >&2\n    exit 1\nfi\n\nif ! command -v python &> /dev/null; then\n    echo \"Error: 'python' command not found. Please install 'python' to perform calculations.\" >&2\n    exit 1\nfi\n\n# --- Initialization ---\n# Record the start time to track the script's total runtime.\nSTART_TIME=$(date +%s)\nEND_TIME=$((START_TIME + RUN_DURATION_SECONDS))\n\n# Create the output file and write the CSV header.\necho \"utc_timestamp,clock_error_microseconds\" > \"$OUTPUT_FILE\"\necho \"Starting clock error monitoring for $RUN_DURATION_SECONDS seconds with $FREQUENCY_SECONDS second intervals. Log file: ${OUTPUT_FILE}\"\n\n# --- Main Monitoring Loop ---\nwhile [[ $(date +%s) -lt $END_TIME ]]; do\n    # 1. Get data from chronyc\n    # We run the command once per loop to ensure consistent data for the calculation.\n    chronyc_output=$(chronyc tracking)\n\n    # 2. Parse the required values from the output\n    # Using awk to find the line and print the relevant field.\n    system_time=$(echo \"$chronyc_output\" | awk '/System time/ {print $4}')\n    root_delay=$(echo \"$chronyc_output\" | awk '/Root delay/ {print $4}')\n    root_dispersion=$(echo \"$chronyc_output\" | awk '/Root dispersion/ {print $4}')\n\n    # Check if parsing was successful. If chronyd is not synced, these might be empty.\n    if [[ -z \"$system_time\" || -z \"$root_delay\" || -z \"$root_dispersion\" ]]; then\n        echo \"Warning: Could not parse chronyc output. Is chronyd synced?\" >&2\n        sleep 5 # Wait before retrying\n        continue\n    fi\n\n    # 3. Calculate Clock Error\n    # Bash doesn't handle floating-point math, so we use Python.\n    # First, get the absolute value of the system time offset.\n    abs_system_time=${system_time#-}\n\n    # Use Python for floating-point calculations with high precision\n    clock_error_seconds=$(python -c \"\nimport math\nsystem_time = abs(float('$system_time'))\nroot_delay = float('$root_delay')\nroot_dispersion = float('$root_dispersion')\nresult = system_time + root_dispersion + (root_delay / 2)\nprint('{:.10f}'.format(result))\n\")\n\n    # Convert the result from seconds to an integer value of microseconds.\n    # Use Python for the conversion and rounding\n    clock_error_micros=$(python -c \"\nimport math\nclock_error_seconds = float('$clock_error_seconds')\nmicroseconds = clock_error_seconds * 1000000\nprint(int(round(microseconds)))\n\")\n\n    # 4. Get current UTC timestamp\n    # ISO 8601 format is used for clarity and sortability.\n    utc_timestamp=$(date -u +\"%Y-%m-%dT%H:%M:%SZ\")\n\n    # 5. Log to CSV file\n    echo \"${utc_timestamp},${clock_error_micros}\" >> \"$OUTPUT_FILE\"\n\n    # 6. Determine sleep interval based on elapsed time\n    current_time=$(date +%s)\n    elapsed_time=$((current_time - START_TIME))\n\n    if [[ $elapsed_time -lt $FREQUENCY_SECONDS ]]; then\n        # For the first frequency seconds, poll every second\n        sleep 1\n    else\n        # After the first frequency seconds, poll at the specified frequency\n        sleep \"$FREQUENCY_SECONDS\"\n    fi\ndone\n\necho \"Monitoring complete after $RUN_DURATION_SECONDS seconds. Data saved to ${OUTPUT_FILE}.\"\n```\n\n2. clockbound_dump\n\n```lang=sh\n#!/usr/bin/env bash\n\n# ==============================================================================\n# Clockbound Clock Error Monitor\n#\n# Description:\n# This script monitors the system clock's accuracy using the 'clockbound_dump'\n# command. It calculates the clock error in nanoseconds based on the formula\n# (latest - earliest) / 2 and logs the result along with a UTC timestamp to a CSV file.\n#\n# Usage:\n#   ./monitor_clockbound_clockerr.sh [OPTIONS]\n#\n# Options:\n#   -o, --output FILE        Output log file path (default: $HOME/clockbound_clockerr.log)\n#   -d, --duration SECONDS   Total runtime in seconds (default: 86400 = 24 hours)\n#   -f, --frequency SECONDS  Logging frequency in seconds (default: 15)\n#   -p, --path PATH         Path to clockbound_dump binary (default: /home/<user>/yugabyte-2025.1.0.1/bin/clockbound_dump)\n#   -h, --help              Display this help message\n#\n# Examples:\n#   ./monitor_clockbound_clockerr.sh\n#   ./monitor_clockbound_clockerr.sh -o my_log.log\n#   ./monitor_clockbound_clockerr.sh -d 3600 -f 5\n#   ./monitor_clockbound_clockerr.sh --output my_log.log --duration 1800 --frequency 10\n#   ./monitor_clockbound_clockerr.sh --path /custom/path/clockbound_dump\n#\n# Formula for Clock Error:\n#   Clock Error (nanoseconds) = (latest - earliest) / 2\n# The result is calculated in nanoseconds and then converted to microseconds for readability.\n#\n# Dependencies:\n#   - clockbound_dump: The binary utility for clockbound operations.\n#   - jq: JSON parser for parsing the output of clockbound_dump.\n#   - python: Python interpreter for floating-point calculations.\n#\n# Output File:\n#   - A log file in CSV format will be created at the specified path or default location.\n# ==============================================================================\n\n# --- Default Configuration ---\nOUTPUT_FILE=\"$HOME/clockbound_clockerr.log\"\nRUN_DURATION_SECONDS=$((24 * 60 * 60))  # 24 hours\nFREQUENCY_SECONDS=15  # 15 seconds\nCLOCKBOUND_PATH=\"/home/<user>/yugabyte-2025.1.0.1/bin/clockbound_dump\"\n\n# --- Help Function ---\nshow_help() {\n    cat << EOF\nUsage: $0 [OPTIONS]\n\nOptions:\n  -o, --output FILE        Output log file path (default: $HOME/clockbound_clockerr.log)\n  -d, --duration SECONDS   Total runtime in seconds (default: 86400 = 24 hours)\n  -f, --frequency SECONDS  Logging frequency in seconds (default: 15)\n  -p, --path PATH         Path to clockbound_dump binary (default: /home/<user>/yugabyte-2025.1.0.1/bin/clockbound_dump)\n  -h, --help              Display this help message\n\nExamples:\n  $0\n  $0 -o my_log.log\n  $0 -d 3600 -f 5\n  $0 --output my_log.log --duration 1800 --frequency 10\n  $0 --path /custom/path/clockbound_dump\n\nEOF\n}\n\n# --- Argument Parsing ---\n# Parse command line options\nwhile [[ $# -gt 0 ]]; do\n    case $1 in\n        -o|--output)\n            OUTPUT_FILE=\"$2\"\n            shift 2\n            ;;\n        -d|--duration)\n            RUN_DURATION_SECONDS=\"$2\"\n            shift 2\n            ;;\n        -f|--frequency)\n            FREQUENCY_SECONDS=\"$2\"\n            shift 2\n            ;;\n        -p|--path)\n            CLOCKBOUND_PATH=\"$2\"\n            shift 2\n            ;;\n        -h|--help)\n            show_help\n            exit 0\n            ;;\n        -*)\n            echo \"Error: Unknown option $1\" >&2\n            echo \"Use -h or --help for usage information\" >&2\n            exit 1\n            ;;\n        *)\n            echo \"Error: Unexpected argument $1\" >&2\n            echo \"Use -h or --help for usage information\" >&2\n            exit 1\n            ;;\n    esac\ndone\n\n# Validate arguments\nif [[ ! \"$RUN_DURATION_SECONDS\" =~ ^[0-9]+$ ]] || [[ $RUN_DURATION_SECONDS -le 0 ]]; then\n    echo \"Error: Run duration must be a positive integer in seconds.\" >&2\n    echo \"Use -h or --help for usage information\" >&2\n    exit 1\nfi\n\nif [[ ! \"$FREQUENCY_SECONDS\" =~ ^[0-9]+$ ]] || [[ $FREQUENCY_SECONDS -le 0 ]]; then\n    echo \"Error: Frequency must be a positive integer in seconds.\" >&2\n    echo \"Use -h or --help for usage information\" >&2\n    exit 1\nfi\n\n# Display configuration\necho \"Configuration:\"\necho \"  Output file: $OUTPUT_FILE\"\necho \"  Run duration: $RUN_DURATION_SECONDS seconds ($(($RUN_DURATION_SECONDS / 3600)) hours)\"\necho \"  Logging frequency: $FREQUENCY_SECONDS seconds\"\necho \"  Clockbound path: $CLOCKBOUND_PATH\"\necho \"\"\n\n# --- Dependency Check ---\n# Ensure required command-line tools are installed before proceeding.\nif [[ ! -x \"$CLOCKBOUND_PATH\" ]]; then\n    echo \"Error: 'clockbound_dump' binary not found or not executable at: $CLOCKBOUND_PATH\" >&2\n    echo \"Use -p or --path to specify the correct path\" >&2\n    exit 1\nfi\n\nif ! command -v jq &> /dev/null; then\n    echo \"Error: 'jq' command not found. Please install 'jq' to parse JSON output.\" >&2\n    exit 1\nfi\n\nif ! command -v python &> /dev/null; then\n    echo \"Error: 'python' command not found. Please install 'python' to perform calculations.\" >&2\n    exit 1\nfi\n\n# --- Initialization ---\n# Record the start time to track the script's total runtime.\nSTART_TIME=$(date +%s)\nEND_TIME=$((START_TIME + RUN_DURATION_SECONDS))\n\n# Create the output file and write the CSV header.\necho \"utc_timestamp,clock_error_microseconds,clock_status\" > \"$OUTPUT_FILE\"\necho \"Starting clock error monitoring for $RUN_DURATION_SECONDS seconds with $FREQUENCY_SECONDS second intervals. Log file: ${OUTPUT_FILE}\"\n\n# --- Main Monitoring Loop ---\nwhile [[ $(date +%s) -lt $END_TIME ]]; do\n    # 1. Get data from clockbound_dump\n    # We run the command once per loop to ensure consistent data for the calculation.\n    clockbound_output=$(\"$CLOCKBOUND_PATH\" 2>/dev/null)\n\n    # Check if the command executed successfully\n    if [[ $? -ne 0 ]]; then\n        echo \"Warning: clockbound_dump command failed. Retrying in 5 seconds...\" >&2\n        sleep 5\n        continue\n    fi\n\n    # 2. Parse the required values from the JSON output using jq\n    earliest_sec=$(echo \"$clockbound_output\" | jq -r '.earliest.tv_sec // empty')\n    earliest_nsec=$(echo \"$clockbound_output\" | jq -r '.earliest.tv_nsec // empty')\n    latest_sec=$(echo \"$clockbound_output\" | jq -r '.latest.tv_sec // empty')\n    latest_nsec=$(echo \"$clockbound_output\" | jq -r '.latest.tv_nsec // empty')\n    clock_status=$(echo \"$clockbound_output\" | jq -r '.clock_status // empty')\n\n    # Check if parsing was successful\n    if [[ -z \"$earliest_sec\" || -z \"$earliest_nsec\" || -z \"$latest_sec\" || -z \"$latest_nsec\" || -z \"$clock_status\" ]]; then\n        echo \"Warning: Could not parse clockbound_dump output. Output was: $clockbound_output\" >&2\n        sleep 5\n        continue\n    fi\n\n    # 3. Calculate Clock Error\n    # Convert to nanoseconds for high precision calculation\n    earliest_total_ns=$((earliest_sec * 1000000000 + earliest_nsec))\n    latest_total_ns=$((latest_sec * 1000000000 + latest_nsec))\n    \n    # Calculate clock error: (latest - earliest) / 2\n    clock_error_nanoseconds=$(((latest_total_ns - earliest_total_ns) / 2))\n    \n    # Convert nanoseconds to microseconds for better readability\n    clock_error_microseconds=$((clock_error_nanoseconds / 1000))\n\n    # 4. Get current UTC timestamp\n    # ISO 8601 format is used for clarity and sortability.\n    utc_timestamp=$(date -u +\"%Y-%m-%dT%H:%M:%SZ\")\n\n    # 5. Log to CSV file\n    echo \"${utc_timestamp},${clock_error_microseconds},${clock_status}\" >> \"$OUTPUT_FILE\"\n\n    # 6. Determine sleep interval based on elapsed time\n    current_time=$(date +%s)\n    elapsed_time=$((current_time - START_TIME))\n\n    if [[ $elapsed_time -lt $FREQUENCY_SECONDS ]]; then\n        # For the first frequency seconds, poll every second\n        sleep 1\n    else\n        # After the first frequency seconds, poll at the specified frequency\n        sleep \"$FREQUENCY_SECONDS\"\n    fi\ndone\n\necho \"Monitoring complete after $RUN_DURATION_SECONDS seconds. Data saved to ${OUTPUT_FILE}.\"\n```"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-08-26T05:27:43Z",
+   "body": "Highest clock error observed so far.\n\n1. chronyc\n\n```lang=sh\n$ tail -n +14 ~/chronyc_clockerr.log | cut -d, -f2 | sort -nr | head -n 1\n1912\n```\n\n2. clockbound\n\n```lang=sh\n$ tail -n +15 ~/clockbound_clockerr.log | cut -d, -f2 | sort -nr | head -n 1\n1902\n```"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-08-26T05:48:22Z",
+   "body": "<img width=\"1200\" height=\"600\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/1a7cb4ef-2cde-4f52-9284-cf32cd12f50e\" />\n\nGraph representing clock error over time. The graph is not super useful since the clock error is super high initially."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-08-26T05:48:37Z",
+   "body": "<img width=\"1200\" height=\"600\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/ad87e39a-e328-483a-8c2d-ad09e4821a89\" />\n\nclock error over time with the first 15 entries ignored. Surprisingly, there isnt much difference between the highs of chrony and clockbound."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-08-26T05:55:51Z",
+   "body": "<img width=\"1200\" height=\"600\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/6def31db-1f39-45db-9cf3-3be9adaef7dd\" />\n\nAlso, plotted the difference between clockbound's error and chronyc's error. There are few unfortunate spikes. Fortunately, they are rare."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-08-26T06:07:00Z",
+   "body": "<img width=\"1200\" height=\"400\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/690102a3-d031-4716-b12a-840b0621337b\" />\n\nAlso, plotted the clock status. The status is intiially UNKNOWN and FREE_RUNNING for a bit at startup. Later on, it is always SYNCHRONIZED. The free running state smells fishy since it has lower clock error than expected."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-08-26T06:10:43Z",
+   "body": "I believe that the above graphs show enough information to close the ticket.\n\nMain takeaways:\n\n1. 2000us is a safe upper bound on this particular hardware. Give a bit of buffer and choose 2500 as the estimate.\n2. Lets not trust the free running state for the moment and only trust the synchronized state."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-08-26T15:13:30Z",
+   "body": "Reopen to do the same analysis on GCP"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-08-27T05:19:44Z",
+   "body": "<img width=\"1200\" height=\"600\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/131db728-3d5d-4452-8612-1b314b6a5eb2\" />\n\nPlot shows the clock error over time on GCP. As expected, a direct clock error comparison is not very useful because of the skew in the beginning. Omit the first 15 entries to remove the initial noise before clock synchronization."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-08-27T05:26:52Z",
+   "body": "<img width=\"1200\" height=\"600\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/6dd9fea5-cbdb-4e8e-bef2-8a3f1a2b40b0\" />\n\nPlot to visualize clock errors from both chronyc and clockbound. Unlike AWS, there were fewer spikes in GCP. ~That could be explained by the update interval in chrony config. The GCP experiment was run with an 8s update interval while no poll interval was specified in the chrony config. Most certainly, the AWS experiment had a higher update interval.~ (Strikethrough reason: Incorrect assumption)."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-08-27T05:32:36Z",
+   "body": "<img width=\"1200\" height=\"600\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/5b2b6d3c-b26d-48fd-a79b-59901846a4d3\" />\n\nDifference between clock error computation of clockbound and chronyc."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-08-27T05:34:48Z",
+   "body": "<img width=\"1200\" height=\"400\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/92167f49-6942-4b0c-b19d-1f3ff51834f0\" />\n\nPlot showing the clockbound status over time. Remains at SYNCHRONIZED after the first few updates."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-08-27T06:22:43Z",
+   "body": "Take Aways:\n\nSame as before. 2500us clock error estimate is plenty for GCP. Once the clock is SYNCHRONIZED, it does not go to FREE_RUNNING later on. Make sure that the update interval is correctly set in the chrony config."
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "yugabyte/yugabyte-db",
+  "default_branch": "master",
+  "commit_sha": "983c900367f26c9a700814783ac7cbb5f144cf6f",
+  "as_of": "2025-08-25T04:28:39Z",
+  "method": "github_commits_until"
+ },
+ "images": [
+  {
+   "where": "c3",
+   "source_url": "https://github.com/user-attachments/assets/1a7cb4ef-2cde-4f52-9284-cf32cd12f50e",
+   "file": "gh_yugabyte_yugabyte-db_28368_img0.png"
+  },
+  {
+   "where": "c4",
+   "source_url": "https://github.com/user-attachments/assets/ad87e39a-e328-483a-8c2d-ad09e4821a89",
+   "file": "gh_yugabyte_yugabyte-db_28368_img1.png"
+  },
+  {
+   "where": "c5",
+   "source_url": "https://github.com/user-attachments/assets/6def31db-1f39-45db-9cf3-3be9adaef7dd",
+   "file": "gh_yugabyte_yugabyte-db_28368_img2.png"
+  },
+  {
+   "where": "c6",
+   "source_url": "https://github.com/user-attachments/assets/690102a3-d031-4716-b12a-840b0621337b",
+   "file": "gh_yugabyte_yugabyte-db_28368_img3.png"
+  },
+  {
+   "where": "c9",
+   "source_url": "https://github.com/user-attachments/assets/131db728-3d5d-4452-8612-1b314b6a5eb2",
+   "file": "gh_yugabyte_yugabyte-db_28368_img4.png"
+  },
+  {
+   "where": "c10",
+   "source_url": "https://github.com/user-attachments/assets/6dd9fea5-cbdb-4e8e-bef2-8a3f1a2b40b0",
+   "file": "gh_yugabyte_yugabyte-db_28368_img5.png"
+  },
+  {
+   "where": "c11",
+   "source_url": "https://github.com/user-attachments/assets/5b2b6d3c-b26d-48fd-a79b-59901846a4d3",
+   "file": "gh_yugabyte_yugabyte-db_28368_img6.png"
+  },
+  {
+   "where": "c12",
+   "source_url": "https://github.com/user-attachments/assets/92167f49-6942-4b0c-b19d-1f3ff51834f0",
+   "file": "gh_yugabyte_yugabyte-db_28368_img7.png"
+  }
+ ],
+ "slug": "gh_yugabyte_yugabyte-db_28368"
+}

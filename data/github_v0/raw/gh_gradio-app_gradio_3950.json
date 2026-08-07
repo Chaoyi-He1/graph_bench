@@ -1,0 +1,167 @@
+{
+ "repo": "gradio-app/gradio",
+ "number": 3950,
+ "url": "https://github.com/gradio-app/gradio/issues/3950",
+ "title": "after prediction, the input and output files remain in the temporary directory.",
+ "state": "closed",
+ "labels": [
+  "brainstorming"
+ ],
+ "reporter": "reporter",
+ "created_at": "2023-04-24T06:18:05Z",
+ "closed_at": "2024-03-05T01:51:03Z",
+ "body": "Hello, I am using gradio to create a UI for my API. The problem is that after prediction, the input and output files remain in the temporary directory. This causes two problems\r\n1. user privacy\r\n2. I will run out of memory in the future.\r\nIs it possible to remove this automatically?",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2023-04-24T06:27:06Z",
+   "body": "@reporter Yes, it's possible to remove the input and output files from the temporary directory automatically. You can use the `tempfile` module in Python to create temporary files and directories, and set them to delete automatically when the program ends."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-04-24T06:34:59Z",
+   "body": "I use tempfile to save the input files and  I know I can program it to remove the files after the request is finished, but what I mean is that Gradio removes the files themselves. I  have swagger UI and there I do not need any code to remove the input and output files. The output file is just a stream and after the user is done with the prediction everything is deleted without me having to enter any code.\r\nI had a memory problem, and when I investigated it, I found that the input files remain in the temporary directory and cause this problem. Otherwise, I did not know anything about it, and I could not find anything in the documentation about this problem. I think it is a serious problem and should be mentioned somewhere."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-04-24T15:18:37Z",
+   "body": "Hi @reporter the basic reason for this is that Gradio doesn't \"know\" when a user has stopped using the application and it is safe to clear the temporary files. I'll open this issue up for brainstorming if anyone has any suggestions"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-04-24T16:39:42Z",
+   "body": "There is an ugly solution in the Gradio interface.\r\nI haven't started tracking the code of blocks yet, so I'm not sure if there is a similar solution.\r\n\r\n```python\r\nimport gradio as gr\r\nimport os\r\n\r\n\r\ndef ret(name):\r\n    return name\r\n\r\ndemo = gr.Interface(\r\n    ret,\r\n    \"video\",\r\n    \"video\",\r\n)\r\n\r\nif __name__ == \"__main__\":\r\n    try:\r\n        demo.launch()\r\n    finally:\r\n        print(len(demo.input_components[0].temp_files))\r\n        print(len(demo.input_components))\r\n        print(len(demo.output_components[0].temp_files))\r\n        print(len(demo.output_components))\r\n        for x in demo.input_components[0].temp_files:\r\n            try:\r\n                os.remove(x)\r\n            except OSError as e:\r\n                print(f\"Error deleting file: {e}\")\r\n            finally:\r\n                print(x)\r\n\r\n        for x in demo.output_components[0].temp_files:\r\n            try:\r\n                os.remove(x)\r\n            except OSError as e:\r\n                print(f\"Error deleting file: {e}\")\r\n            finally:\r\n                print(x)\r\n```\r\n\r\nBut there are two issues with it: \r\n\r\n1. It requires the user to write additional code\r\n2. The image will not be deleted cleanly when using `gr.Image(type='filepath')` because there are two temporary files.\r\n![image](https://user-images.githubusercontent.com/31534748/234060691-fee270dd-26f3-41c0-bd67-d503014c8036.png)\r\n![image](https://user-images.githubusercontent.com/31534748/234060778-eba8c764-6d98-4159-99bc-929df63db827.png)\r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-04-24T18:55:26Z",
+   "body": "Thank you very much for the quick reply.\r\n@participant3  I have the second problem with my input files, which are not images. They are just text files, but I still have two temporary files. I have the path of one file and can delete it, but I do not know about the second one. The same is true for the output files. Also, I use the block"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-04-25T05:37:59Z",
+   "body": "@reporter, Yes, it seems that there are some leaking resources in `temp_files`. Some temporary files are redundant or not added to `temp_files`, so they remain in the temporary directory indefinitely.\r\nSo, if we want to solve this problem, we may need to go through all the IOComponent to ensure that no temporary files are missed\r\n\r\nAnyway, I have packaged all this code so that users can use the `deconstruct` method to clear the temporary files after finishing the process. \r\n\r\n```python\r\n// IOComponent\r\n...\r\n    def deconstruct(self):\r\n        while self.temp_files:\r\n            temp_file = self.temp_files.pop()\r\n            os.remove(temp_file)\r\n...\r\n\r\n// Interface\r\n...\r\n    def deconstruct(self):\r\n        for x in self.input_components:\r\n            if isinstance(x, IOComponent):\r\n                x.deconstruct()\r\n\r\n        for x in self.output_components:\r\n            if isinstance(x, IOComponent):\r\n                x.deconstruct()\r\n...\r\n```\r\n\r\n```python\r\nimport gradio as gr\r\nimport os\r\n\r\n\r\ndef ret(name):\r\n    return name\r\n\r\n\r\ndemo = gr.Interface(\r\n    ret,\r\n    gr.Image(type=\"filepath\"),\r\n    \"image\",\r\n)\r\n\r\nif __name__ == \"__main__\":\r\n    try:\r\n        demo.launch()\r\n    finally:\r\n        demo.deconstruct()\r\n```\r\n\r\nHowever, I'm not sure where the component is stored in Blocks.\r\nI would like to hear your opinion on this, @participant2 "
+  },
+  {
+   "author": "participant4",
+   "created_at": "2023-05-04T19:35:49Z",
+   "body": "For output files, it's hard to know when a usage has expired, since we return a link to the output files and not the file itself. I think the best approach would be to \r\n1. Have some maximum total size limit to all generated temporary files. If we create a new file that causes us to exceed this limit, we delete the oldest available temporary files until we are under the limit. This will limit the app from using up all the disk and set a maximum disk usage.\r\n2. When the app exits, we clean up all the generated temporary files. "
+  },
+  {
+   "author": "participant5",
+   "created_at": "2023-06-09T16:13:21Z",
+   "body": "hello @participant2 just confirming if this is still open? do you know if users can have still access to temp files, and if yes, is there any documentation to prevent this and protect the privacy of the user?"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-06-09T16:23:38Z",
+   "body": "Hi @participant5 yes this is still open. You can take a look at the current security policy here: https://gradio.app/sharing-your-app/#security-and-file-access"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2023-06-09T16:32:15Z",
+   "body": "@participant2 so basically the highest grade of security I can get is by creating the most random custom temporary directory is that correct? even if Im deploying from a docker container hackers could get access to the files of my users?  what if I use the 'chmod' command to set the appropriate permissions. For example, setting the folder to be accessible only by the owner using chmod 700 /path/to/temp/folder ?"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2023-06-09T16:33:22Z",
+   "body": "also, dont you think this exposes all gradio users to an incredible grade of legal liability?"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2023-06-09T16:47:54Z",
+   "body": "ohh I also forgot something very important, I actually encrypted my EBS volume storage from the EC2 instance, do you think that helps random people accesing and eavesdropping the files of my users?\r\n"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2023-06-16T08:41:57Z",
+   "body": "it seems that this doesnt apply to EC2 instances docker containers, docker containers doesnt expose their temp files to users"
+  },
+  {
+   "author": "participant6",
+   "created_at": "2023-06-21T22:09:59Z",
+   "body": "Why not use the `tempfile` within a context:\r\n```py\r\n# audio_file: bytes\r\nwith tempfile.NamedTemporaryFile(suffix=\".gradio\") as temp:\r\n  temp.write(audio_file) \r\n  temp.flush()\r\n\r\n  # do the business here\r\n\r\n# The file is automatically removed now\r\n```\r\n\r\nIt is safe to suppose that once the callback returns, the file isn't needed anymore and can be removed.\r\n\r\nI'm thinking of a decorator maybe that can be added to callbacks that will use large files:\r\n```py\r\ndef temp_file_decorator(func):\r\n    @participant13(func)\r\n    def wrapper(large_file: bytes, *args, **kwargs):\r\n        with tempfile.NamedTemporaryFile(suffix=\".tmp\", delete=False) as temp_file:\r\n            temp.write(large_file)\r\n            temp.flush()\r\n            result = func(temp_file.name, *args, **kwargs)\r\n        return result\r\n    return wrapper\r\n```\r\n\r\nThen we can use it like the example in #4620 :\r\n```py\r\n@temp_file_decorator\r\ndef get_duration_ms(audio_file):\r\n    duration = mediainfo(audio_file)[\"duration\"]  # a string in seconds\r\n    duration_ms = int(float(duration) * 1000)\r\n    print(f\"{audio_file}: {duration_ms} ms\")\r\n    return duration_ms\r\n```"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2023-08-08T09:28:28Z",
+   "body": "@participant6 did this work for you?"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2023-08-14T09:42:42Z",
+   "body": "Hello @participant2 @participant9  do you have a solution by any chance in case we want to generate bigger files and avoid the app to stop working due to ram leakage in production?"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-08-14T16:50:23Z",
+   "body": "Sorry @participant5 we don't have a workaround at the moment, it's something we're going to look into. "
+  },
+  {
+   "author": "participant7",
+   "created_at": "2023-09-12T21:51:06Z",
+   "body": "> Hi @reporter the basic reason for this is that Gradio doesn't \"know\" when a user has stopped using the application and it is safe to clear the temporary files.\n\n\nSounds like a misconception in your application...\n\n1. no API to unload / destroy a component\n2. no lifetime or session id for temp files\n3. no cleanup of the session on exit / server shutdown\n4. no API to bypass temp files... allow us to refer directly to the origin source path\n"
+  },
+  {
+   "author": "participant8",
+   "created_at": "2023-10-12T02:11:11Z",
+   "body": "I'm currently messing around with the UploadButton component. I've discovered that uploading a file actually creates two `/tmp` directories, each with a copy of the file. The `.upload()` event handler method only passes one of those files into the handler function, so the other directory and file are not easily deleted. I just figured that this should get a look when the tmpfile code gets an overhaul."
+  },
+  {
+   "author": "participant9",
+   "created_at": "2023-10-12T19:18:57Z",
+   "body": "Thanks @participant8 - I believe this is fixed in the `v4` branch which will turn into gradio 4.0"
+  },
+  {
+   "author": "participant10",
+   "created_at": "2024-03-01T22:57:41Z",
+   "body": "I think you need to update the documentation to make it explicit that the temporary files are available to \"all (authenticated) users\", not just \"users\"."
+  },
+  {
+   "author": "participant10",
+   "created_at": "2024-03-01T23:42:28Z",
+   "body": "Here's my uneducated pitch: If `auth` is set in `.launch()`, generate a random key on startup, and encrypt and decrypt temporary files with a hash of that key and the uploading user's authentication token. Then even if you have a working password, and the filename, you would need the session key (which unlike the filename is never displayed on the screen) and the random key (which is server-side only, and lost when the server terminates), in order to overcome the encryption."
+  },
+  {
+   "author": "participant11",
+   "created_at": "2024-03-02T20:13:47Z",
+   "body": "Gradio temp files infinitely grow. This is problematic. Because every time I generate an image and pass it to an image component it generates another temp file, even though I'm passing as numpy array. Gradio should manage the total size of the temp files it generates. As it stands it seems like Gradio is eating up lots and lots of space on lots and lots of peoples hard drives, for no good reason.\r\n\r\n![image](https://github.com/gradio-app/gradio/assets/15312630/466c3e86-637b-4091-b50e-e0502804c6a2)\r\n"
+  },
+  {
+   "author": "participant9",
+   "created_at": "2024-03-04T23:52:11Z",
+   "body": "Hi @participant11 ! Working on cleaning up the temp directory here #7447"
+  },
+  {
+   "author": "participant9",
+   "created_at": "2024-03-05T03:17:12Z",
+   "body": "This will be possible in the next release of gradio with the `delete_cache` parameter. It is a tuple of integers (frequency, age). Set it to (3600, 3660) to delete all files older than an hour every hour."
+  },
+  {
+   "author": "participant12",
+   "created_at": "2024-03-27T10:15:52Z",
+   "body": "I think you should add a button wich can control whether delete cache"
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "gradio-app/gradio",
+  "default_branch": "main",
+  "commit_sha": "7b0f48eb2c3500ef069f24b436edc0244bea23ee",
+  "as_of": "2023-04-24T06:18:05Z",
+  "method": "github_commits_until"
+ },
+ "images": [
+  {
+   "where": "c3",
+   "source_url": "https://user-images.githubusercontent.com/31534748/234060691-fee270dd-26f3-41c0-bd67-d503014c8036.png",
+   "file": "gh_gradio-app_gradio_3950_img0.png"
+  },
+  {
+   "where": "c3",
+   "source_url": "https://user-images.githubusercontent.com/31534748/234060778-eba8c764-6d98-4159-99bc-929df63db827.png",
+   "file": "gh_gradio-app_gradio_3950_img1.png"
+  }
+ ],
+ "slug": "gh_gradio-app_gradio_3950"
+}

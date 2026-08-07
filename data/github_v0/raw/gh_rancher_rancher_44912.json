@@ -1,0 +1,324 @@
+{
+ "repo": "rancher/rancher",
+ "number": 44912,
+ "url": "https://github.com/rancher/rancher/issues/44912",
+ "title": "[BUG] Rancher can no longer provision harvester machines after restart",
+ "state": "closed",
+ "labels": [
+  "kind/bug",
+  "priority/1",
+  "internal",
+  "status/need-design-review",
+  "area/harvester",
+  "team/hostbusters",
+  "JIRA",
+  "status/backport-candidate"
+ ],
+ "reporter": "reporter",
+ "created_at": "2024-03-24T18:02:22Z",
+ "closed_at": "2025-05-27T17:02:25Z",
+ "body": "**Rancher Server Setup**\n- Rancher version: v2.8.0\n- Installation option (Docker install/Helm Chart): as a helm chart on a single-node k3s cluster\n- Proxy/Cert Details:\n\n**Information about the Cluster**\n * Infrastructure Provider = Harvester \n\n**User Information**\n- What is the role of the user logged in? (Admin/Cluster Owner/Cluster Member/Project Owner/Project Member/Custom)\n  - Admin\n\n**Describe the bug**\n\nAfter one of my harvester nodes was unexpected rebooted, rancher is no longer able to provision machines in the upstream harvester HCI infrastructure.\n\nTrying to scale up an existing managed RKE2 cluster from rancher gets the following error:\n```\n machine Downloading driver from https://192.168.20.10/assets/docker-machine-driver-harvester\n machine Doing /etc/rancher/ssl\n machine docker-machine-driver-harvester\n machine docker-machine-driver-harvester: ELF 64-bit LSB executable, x86-64, version 1 (SYSV), statically linked, stripped\n machine Trying to access option  which does not exist\n machine THIS ***WILL*** CAUSE UNEXPECTED BEHAVIOR\n machine Type assertion did not go smoothly to string for key\n machine Running pre-create checks...\n machine Error with pre-create check: \"the server has asked for the client to provide credentials (get <redacted-host> server-version)\"\n machine The default lines below are for a sh/bash shell, you can specify the shell you're using, with the --shell flag.\n```\n\nAnd creating a brand new cluster has a different error:\n```\n machine Downloading driver from https://192.168.20.10/assets/docker-machine-driver-harvester\n machine Doing /etc/rancher/ssl\n machine docker-machine-driver-harvester\n machine docker-machine-driver-harvester: ELF 64-bit LSB executable, x86-64, version 1 (SYSV), statically linked, stripped\n machine error loading host testing-pool1-31b05da3-dlchl: Docker machine \"testing-pool1-31b05da3-dlchl\" does not exist. Use \"docker-machine ls\" to list machines. Use \"docker-machine create\" to add a new one.\n```\n\nLooks like the connection between Rancher and Harvester is broken?\n\nSURE-8423\nSURE-8516",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2024-03-27T12:36:12Z",
+   "body": "maybe related to #44929 ?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-03-27T17:05:22Z",
+   "body": "Seems to occur even after the fix for #44929 , both on scaling and creating a new cluster"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-03-27T17:05:56Z",
+   "body": "And I am on rancher v2.8.2"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-03-28T08:52:15Z",
+   "body": "Looking at the created job (for a worker node scaleup): \r\n```\r\n\"args\": [ 8 items\r\n\"--driver-download-url=https://<host>/assets/docker-machine-driver-harvester\",\r\n\"--driver-hash=a9c2847eff3234df6262973cf611a91c3926f3e558118fcd3f4197172eda3434\",\r\n\"--secret-namespace=fleet-default\",\r\n\"--secret-name=staging-pool-worker-bbfc2798-d5jsj-machine-state\",\r\n\"rm\",\r\n\"-y\",\r\n\"--update-config\",\r\n\"staging-pool-worker-bbfc2798-d5jsj\"\r\n```\r\n\r\nthe first thing the driver tries is to delete the non-exisiting pod and fails.... I would expect a create instead. I just don't know in where this command is generated"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-03-28T14:08:49Z",
+   "body": "I could manually fix it: \r\n 1) go to the harvester embedded rancher and get the kube config \r\n 2) update the kubeconfig in the harvester credential in the cattle-global-data namespace in the local cluster (running rancher). they are probably name hv-cred<n>"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-03-29T19:27:13Z",
+   "body": "@participant1 do you have rancher running inside a nested VM or in the same kubernetes cluster of Harvester itself?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-03-29T19:37:33Z",
+   "body": "Following the manual fix steps by getting the kubeconfig and manually updating the secret in Rancher worked for me!"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-04-02T06:52:32Z",
+   "body": "> @participant1 do you have rancher running inside a nested VM or in the same kubernetes cluster of Harvester itself?\r\n\r\nNo, it is  running standalone."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-04-02T11:50:25Z",
+   "body": "What I observe is that the token in harvester changes.\r\n\r\nRancher is configured to use OIDC, and in the rancher logs I get \r\n```\r\nError refreshing token principals, skipping: oauth2: \"invalid_grant\" \"Token is not active\"\r\n2024/04/02 11:43:26 [ERROR] [keycloak oidc] GetPrincipal: error creating new http client: oauth2: \"invalid_grant\" \"Token is not active\"\r\n2024/04/02 11:43:26 [ERROR] error syncing 'user-XXX': handler mgmt-auth-userattributes-controller: oauth2: \"invalid_grant\" \"Token is not active\", requeuing\r\n```\r\n\r\nWith a local user, it seems to work\r\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-04-03T06:12:59Z",
+   "body": "I reregistred the harvester cluster using a non-oidc admin account, now the connections seems to be stable again. It looks like a problem with token expiration to me."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-04-05T04:29:21Z",
+   "body": "I have the same problem:\r\n```shell\r\nFailed creating server [fleet-default/rke2-rc-control-plane-2aae5bdf-2m48z] of kind (HarvesterMachine) for machine rke2-rc-control-plane-5b74797746x4dpcs-ncdxf in infrastructure provider: CreateError: Downloading driver from https://HOST/assets/docker-machine-driver-harvester Doing /etc/rancher/ssl docker-machine-driver-harvester docker-machine-driver-harvester: ELF 64-bit LSB executable, x86-64, version 1 (SYSV), statically linked, stripped Trying to access option which does not exist THIS ***WILL*** CAUSE UNEXPECTED BEHAVIOR Type assertion did not go smoothly to string for key Running pre-create checks... Error with pre-create check: \"the server has asked for the client to provide credentials (get <redacted-host> server-version)\" The default lines below are for a sh/bash shell, you can specify the shell you're using, with the --shell flag.\r\n``` \r\n\r\n[Rancher](https://github.com/rancher/rancher)\tv2.8.2\r\n[Dashboard](https://github.com/rancher/dashboard)\tv2.8.0\r\n[Helm](https://github.com/rancher/helm)\tv2.16.8-rancher2\r\n[Machine](https://github.com/rancher/machine)\tv0.15.0-rancher106\r\nHarvester: v1.2.1"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-04-05T04:34:35Z",
+   "body": "I have loop for many hours:\r\nNew VM is created, error, new VM is deleted, and new VM is created and again error and again new VM is deleted..."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-04-05T04:44:21Z",
+   "body": "> I could manually fix it:\r\n> \r\n> 1. go to the harvester embedded rancher and get the kube config\r\n> 2. update the kubeconfig in the harvester credential in the cattle-global-data namespace in the local cluster (running rancher). they are probably name hv-cred\r\n\r\nOK that's worked for me. I have Rancher with users provided by Active Directory."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-04-05T05:49:13Z",
+   "body": "Now i have this error:\r\n```shell\r\n\tFailed deleting server [fleet-default/rke2-rc-control-plane-3fba9236-dxptf] of kind (HarvesterMachine) for machine rke2-rc-control-plane-77f9455c9dx9xgsk-4kcwf in infrastructure provider: DeleteError: Downloading driver from https://HOST/assets/docker-machine-driver-harvester Doing /etc/rancher/ssl docker-machine-driver-harvester docker-machine-driver-harvester: ELF 64-bit LSB executable, x86-64, version 1 (SYSV), statically linked, stripped About to remove rke2-rc-control-plane-3fba9236-dxptf WARNING: This action will delete both local reference and remote instance. Error removing host \"rke2-rc-control-plane-3fba9236-dxptf\": the server has asked for the client to provide credentials (get <redacted-host> rke2-rc-control-plane-3fba9236-dxptf)\r\n``` "
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-05-07T14:07:42Z",
+   "body": "Hi,\r\nthanks for this bug report. May I ask which Harvester versions you were using, @participant1, @reporter and when you last updated them?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-05-07T14:15:06Z",
+   "body": "I am on  harvester 1.2.1 and rancher 2.8.3 ( and waiting for  1.2.2 to be able to upgrade to 1.3.x eventually)"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-05-11T17:37:39Z",
+   "body": "Ran in the same issue today as @participant2. I'm running harvester 1.2.1 and rancher 2.8.2."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-05-13T07:35:32Z",
+   "body": "Could you please check the expiry of your API access tokens? There needs to be a kubeconfig token that isn't expired and is associated with the Harvester cluster.\r\n\r\n![Screenshot at 2024-05-13 09-06-44](https://github.com/rancher/rancher/assets/17141774/587c2202-3494-464d-9f6c-68b763be616e)\r\n\r\n![Screenshot at 2024-05-13 09-07-18](https://github.com/rancher/rancher/assets/17141774/197287d4-bde0-49fb-a93a-08d341292c3a)\r\n\r\nIt would also be helpful to know what you were trying to do when you observed the problems and at which step in the process the problems started to occur."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-05-14T10:56:19Z",
+   "body": "I've managed to reproduce the issue in a test environment:\n\n1) Install Harvester (tested with v1.2.1, likely irrelevant)\n2) Install Rancher (tested with v2.8.2, testing with other versions TBD)\n3) Import Harvester cluster\n4) Upload a suitable cloud image and create a VM network, so VMs can be created\n5) To shorten the time to reproduce, set the default token TTL in Rancher to e.g. 10 minutes. This is a global config setting in Rancher.\n6) Create a Cloud Credential for the Harvester cluster\n7) Create a K8s cluster with the Harvester cluster as infrastructure provider, using the previously created Cloud Credential for authentication\n8) Wait until the default token TTL is over. The token associated with the Cloud Credentials will be expired and eventually removed, but the Cloud Credential will remain. This will not cause an error just yet though.\n9) Scale the K8s cluster from step 8 up or down. This operation will fail with behavior and errors similar to the reported problem.\n\nI'm not sure if and how OIDC interacts here, since it wasn't in my test environment. Since the original bug report does not include any mention of an external identity provider and it makes my test environment simpler, I'll focus on locally provided users.\n\n~As a workaround, I suggest to create Cloud Credentials associated with a token without an expiration date.\nTo do that, set the maximum token TTL and the default token TTL settings (both global settings in Rancher) both to `0`. Then create the Cloud Credentials to be used to create a K8s cluster on Harvester. Then create a K8s cluster using these Cloud Credentials.~\n\n~To recover an existing cluster, adjust the maximum token TTL and default token TTL to `0`, create a new Cloud Credential for the Harvester cluster and edit the Yaml for the cluster, such that `.spec.cloudCredentialSecretName` points to the new Cloud Credentials.\nThe K8s cluster will eventually recover and any outstanding scaling operation will be completed. The old Cloud Credentials can be disposed of afterwards.~\n\nEdit:\nPlease follow the instructions in our knowledge base to recover: https://harvesterhci.io/kb/renew_harvester_cloud_credentials/"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-05-15T20:01:51Z",
+   "body": "I was able to replicate the issue by setting the token expiry to 10 minutes as shared by @participant3. The Rancher deployed is v2.8.3, and the Harvester version is v1.2.1. I noticed that when the token associated with the downstream cluster expires, the connection between Rancher and Harvester is disrupted. Well, this token expiry value is set to 30 days by default, as documented [here](https://<redacted-host>/api/api-tokens#kubeconfig-default-token-ttl-minutes). This change has been introduced in Rancher 2.8, as mentioned in [this PR](https://github.com/rancher/rancher/pull/42269).\r\n\r\nI guess this issue has not been observed in earlier versions of Rancher, as the token value was set to infinite, as documented [here](https://<redacted-host>/v2.7/reference-guides/about-the-api/api-tokens). It appears that it has been implemented for security reasons, performance enhancements, and to manage too many unexpired tokens."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2024-05-17T07:37:37Z",
+   "body": "When reading the original issue https://github.com/rancher/rancher/issues/41919 which introduces the default TTL value (30 minutes for kubeconf) to securely manage tokens for users (or headless users for programming purposes).\r\n\r\nHowever, Harvester cloud credentials, which are used for authenticating and authorizing the Rancher cluster to manage downstream Harvester clusters, should not use the unified TTL applied in this case, as the token is not for users but an internal mechanism instead.\r\n\r\ncc @participant7 @participant15 @participant16 @participant3 "
+  },
+  {
+   "author": "participant6",
+   "created_at": "2024-05-31T05:04:50Z",
+   "body": "Same issue here- what is the workaround?"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-05-31T07:25:32Z",
+   "body": "Hi @participant6,\r\nWe've published workaround instructions in our knowledge-base here: https://harvesterhci.io/kb/renew_harvester_cloud_credentials\r\n\r\nIt's inadvisable to set the default- or maximum-token-ttl settings to 0, because this would weaken security by allowing API tokens to remain valid forever. Hence the workaround is to renew the cloud credentials (and with the cloud credentials the token as well) periodically until a permanent fix has been implemented.\r\nBy default the tokens expire after 30 days."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-06-02T04:14:54Z",
+   "body": "@participant3 thank you for adding the documentation for the work-around!\r\n\r\n> 2. Generate a new Rancher authentication token with the value of Scope set to No Scope. You can customize the TTL for the token (for example, a value of 0 results in tokens that do not expire).\r\n\r\nits unclear where we should do this. Is this in the rancher instance from Harvester itself?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-06-02T04:42:37Z",
+   "body": "I wonder if this bug is related https://github.com/rancher/rancher/issues/45449\r\n\r\nMy downstream clusters always become really unstable after 30 days and generally just break. Forcing me to restore the entire cluster from backups. Rebooting or touching any control plane nodes is always a gamble whether it will recover or not"
+  },
+  {
+   "author": "participant7",
+   "created_at": "2024-06-02T23:54:34Z",
+   "body": "does the controlplane node get deleted? "
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-06-03T08:41:54Z",
+   "body": "Hi @reporter ,\r\n\r\nthanks for drawing attention to https://github.com/rancher/rancher/issues/45449, this issue looks to me like it's the same as this one.\r\n\r\n> its unclear where we should do this. Is this in the rancher instance from Harvester itself?\r\n\r\nNo, this is supposed to be done in the Rancher Manager instance that is used to manage the downstream clusters. It may be hosted on the Harvester cluster itself using a VM or the vcluster plugin, but it can also be completely separate from the Harvester cluster.\r\n\r\nLet me draw a diagram to give you a clearer picture:\r\n\r\n```\r\n           ┌────────────────────────────────────────────────────────────────────────┐\r\n           │Harvester Cluster                                                       │\r\n           │                                                                        │\r\n           │                  ┌─────────────────────────────────────────────────────┤\r\n┌─────────►│                  │Workloads                                            │\r\n│access to │                  │                                                     │\r\n│  ┌──────►│                  │                                                     │\r\n│  │       │                  │                                                     │\r\n│  │       │                  │                                                     │\r\n│  │       │                  │                                                     │\r\n│  │       │                  │ ┌───────────────┐ ┌───────────────┐ ┌───────────────┤\r\n│  │       │                  │ │Guest Cluster 1│ │Guest Cluster 2│ │Guest Cluster 3│\r\n│  │       │                  │ │               │ │               │ │               │\r\n│  │       ├────────────────┐ │ │               │ │               │ │               │\r\n│  │       │Integrated      │ │ │               │ │               │ │               │\r\n│  │       │Rancher         │ │ │               │ │               │ │               │\r\n│  │       │                │ │ │               │ │               │ │               │\r\n│  │       │                │ │ │               │ │               │ │               │\r\n│  │       │                │ │ │               │ │               │ │               │\r\n│  │       │                │ │ │               │ │               │ │               │\r\n│  │       │                │ │ │               │ │               │ │               │\r\n│  │       │                │ │ │               │ │               │ │               │\r\n│  │       │                │ │ │      ▲        │ │      ▲        │ │       ▲       │\r\n│  │       │                │ │ │      │        │ │      │        │ │       │       │\r\n│  │       └────────────────┴─┴─┴──────┼────────┴─┴──────┼────────┴─┴───────┼───────┘\r\n│  │                                   │                 │                  │        \r\n│  │                                   │                 │                  │        \r\n│  │                                   └─────────────────┤                  │        \r\n│  │                                                     │                  │        \r\n│  │       ┌─────────────────────────────────────────┐   │                  │        \r\n│  │       │Rancher Manager (MCM)                    │   │                  │        \r\n│  │       │                                         │   │                  │        \r\n│  │       │ ┌──────────────────────┐ (used for)     │   │                  │        \r\n│  └───────┼─┤Cloud Creds 1         ├────────────────┼───┘                  │        \r\n│          │ ├──────────────────────┤                │                      │        \r\n│          │ │Token 1               │                │                      │        \r\n│          │ └──────────────────────┘                │                      │        \r\n│          │                                         │                      │        \r\n│          │ ┌──────────────────────┐                │  (used for)          │        \r\n└──────────┼─┤Cloud Creds 2         ├────────────────┼──────────────────────┘        \r\n           │ ├──────────────────────┤                │                               \r\n           │ │Token 2               │                │                               \r\n           │ └──────────────────────┘                │                               \r\n           │                                         │                               \r\n           └─────────────────────────────────────────┘                               \r\n```\r\nYou haven't provided exact details of your environment, but I assume it looks similar to the above.\r\n\r\nFor your Harvester cluster, you'll have one or more cloud credentials in your Rancher Manager (MCM) instance. Each of the Cloud Credential objects is associated with a token, provides access to the Harvester cluster and may be used for managing one or more downstream clusters. If the token expires, the Rancher Manager instance loses its ability to use that Cloud Credential object to authenticate actions for managing the associated downstream cluster's VMs. Any scaling or management operation that interacts with the VMs of that downstream cluster will fail from then on, until the token is replaced for the Cloud Credential object.\r\n\r\nBy default the tokens of the Cloud Credentials expire 30 days after the Cloud Credential object has been created, which is why your downstream clusters become fragile after 30 days.\r\nYou can change the default values for the expiration using the setting `kubeconfig-default-token-ttl-minutes` in the settings of the Rancher Manager (MCM) instance, but keep the security implications in mind.\r\nTo avoid weakening security, the tokens have to be rotated on a regular basis. The [KB article](https://harvesterhci.io/kb/renew_harvester_cloud_credentials/) describes how to do that. The workaround can also be applied to recover downstream clusters that are already affected by expired tokens.\r\n\r\nThere is indeed an integrated Rancher instance in Harvester, but that shouldn't be the one used to manage downstream clusters.\r\n\r\nI hope this clears up the picture."
+  },
+  {
+   "author": "participant8",
+   "created_at": "2024-07-11T23:39:24Z",
+   "body": "Harvester would like this in for their 1.4.0 version, which lines up with the 2.9.x milestone before October so this would need a backport. "
+  },
+  {
+   "author": "participant8",
+   "created_at": "2024-07-12T00:16:45Z",
+   "body": "Also 2.8.x."
+  },
+  {
+   "author": "participant9",
+   "created_at": "2024-07-22T23:57:13Z",
+   "body": "One comment about the KB. The patch script has variable named `CLOUD_CREDENTIAL_NAME`, which implies that the name of the credential needs to be supplied, but in Rancher UI column `Name` is the user-friendly one:\r\n![image](https://github.com/user-attachments/assets/fabe568d-2462-41b8-9351-6276c2fd88a2)\r\n\r\nAnd looking at the list in k9s:\r\n![image](https://github.com/user-attachments/assets/367aba74-55bc-4f96-900f-0de6416e52f6)\r\n\r\nName is the value called `ID` in Rancher's UI and is the value needed for the script.\r\n\r\nProbably it would be for the best update the KB with this.\r\nI could do that myself, but clicking `Edit this page` link gives me 404:\r\n![image](https://github.com/user-attachments/assets/47ed0803-13da-4666-a4f4-3adc71744b14)\r\n\r\n"
+  },
+  {
+   "author": "participant10",
+   "created_at": "2024-07-26T17:22:55Z",
+   "body": "> Now i have this error:\r\n> \r\n> ```shell\r\n> \tFailed deleting server [fleet-default/rke2-rc-control-plane-3fba9236-dxptf] of kind (HarvesterMachine) for machine rke2-rc-control-plane-77f9455c9dx9xgsk-4kcwf in infrastructure provider: DeleteError: Downloading driver from https://HOST/assets/docker-machine-driver-harvester Doing /etc/rancher/ssl docker-machine-driver-harvester docker-machine-driver-harvester: ELF 64-bit LSB executable, x86-64, version 1 (SYSV), statically linked, stripped About to remove rke2-rc-control-plane-3fba9236-dxptf WARNING: This action will delete both local reference and remote instance. Error removing host \"rke2-rc-control-plane-3fba9236-dxptf\": the server has asked for the client to provide credentials (get <redacted-host> rke2-rc-control-plane-3fba9236-dxptf)\r\n> ```\r\n\r\nAs mentioned here. The work around does allow the guest cluster to create new VMs, but it seems to fail to delete *previously* made VMs using the previous credentials. \r\n\r\nFor example, changing the worker machine spec. The work around will allow new machines to be provisioned, but rancher will hang on deleting the old servers. \r\n\r\nIs there a work around for this?"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-07-29T13:08:13Z",
+   "body": "Thanks for the feedback, @participant9 I've opened a PR with fixes: https://github.com/harvester/harvesterhci.io/pull/69\r\n\r\n@participant1 , could you please describe in more detail the steps you took and the errors you were seeing?\r\n\r\nI tried to reproduce your problem as best I could with the info you gave, but in my case, the the cluster was eventually able to delete the old guest VMs."
+  },
+  {
+   "author": "participant10",
+   "created_at": "2024-07-29T18:26:17Z",
+   "body": "Absolute, sorry for lack of detail.\r\n\r\nThe stack is Harvester on 4x nodes, using the Rancher Addon to then manage and provision guest clusters into said harvester. \r\n\r\nThe guest cluster is around 70+ days old before the upgrade from Harvester 1.3.0 to 1.3.1, which was done earlier this week.\r\n\r\nAfter the upgrade I made a change to the etcd, and one pool of worker nodes. Initially it failed to provision new VMs, like this bug initially reported.  Doing the proposed work around of updating with a newly generated kubeconfig did allow the VMs to then be created. \r\n\r\nHowever the existing VMs would not be deleted. \r\n\r\nThe evening I reported this I did spend time 'trying things'. Restarting various services, deleting the job that had all failed pods, etc, manually deleting the downstream VMs, etc. I did eventually manage to get all old nodes deleted and things 'green' again.\r\n\r\nI did still have some additional worker pools which I had *not* made a change on yet. This evening I made a change to prompt a new worker being created, and the old worker needing to be destroyed.\r\n\r\nThe result is the same as before. The new VM was provisioned, worker registered, and workloads moved over. The existing worker node has not been deleted. \r\n\r\nI am not sure what information be best to share here, but will leave the cluster in this state.\r\n\r\nSome investigation I did previous, and can confirm tonight.\r\n\r\nThe created job on the 'local' rancher cluster fails;\r\n`slack-immich-a3b974f7-qfqn5-machine-provision   0/1           62m        62m`\r\n\r\n\r\nWhich contains these errors.\r\n```\r\n> kubectl logs jobs/slack-immich-a3b974f7-qfqn5-machine-provision -n fleet-default\r\nFound 4 pods, using pod/slack-immich-a3b974f7-qfqn5-machine-provision-kgfxv\r\nDownloading driver from https://rancher.slack.house/assets/docker-machine-driver-harvester\r\nDoing /etc/rancher/ssl\r\ndocker-machine-driver-harvester\r\ndocker-machine-driver-harvester: ELF 64-bit LSB executable, x86-64, version 1 (SYSV), statically linked, stripped\r\nAbout to remove slack-immich-a3b974f7-qfqn5\r\nWARNING: This action will delete both local reference and remote instance.\r\nError removing host \"slack-immich-a3b974f7-qfqn5\": the server has asked for the client to provide credentials (get <redacted-host> slack-immich-a3b974f7-qfqn5)\r\n> \r\n```\r\n\r\nI also checked the associated secret for this job. I can confirm that secret contains the updated kubeconfig values. \r\n\r\nAs you can see this is over an hour after the cluster change was made. I will leave it 'as-is' and not do any attempts to 'push' through. I can report tomorrow if it does _eventually_ resolve itself.  \r\n\r\nPlease let me know if any other commands I should run. \r\n\r\nI'd of assumed to reproduce you would recreate the original bug (guest cluster older than Y credential time with nodes already provisioned using the first set of credentials), then make a change which results in new workers provision and old/existing needing to be deleted after having updated the expired credentials.\r\n\r\nI also have 2 more node pools which I have not done a change on. So can (i'd expect) reproduce this two more times if that would be helpful to gather information. "
+  },
+  {
+   "author": "participant10",
+   "created_at": "2024-07-30T09:45:55Z",
+   "body": "A follow up.\r\n\r\n14 hours later, the cluster has not recovered.\r\n```\r\n> kubectl logs jobs/slack-immich-a3b974f7-qfqn5-machine-provision -n fleet-default\r\nFound 4 pods, using pod/slack-immich-a3b974f7-qfqn5-machine-provision-kgfxv\r\nDownloading driver from https://rancher.slack.house/assets/docker-machine-driver-harvester\r\nDoing /etc/rancher/ssl\r\ndocker-machine-driver-harvester\r\ndocker-machine-driver-harvester: ELF 64-bit LSB executable, x86-64, version 1 (SYSV), statically linked, stripped\r\nAbout to remove slack-immich-a3b974f7-qfqn5\r\nWARNING: This action will delete both local reference and remote instance.\r\nError removing host \"slack-immich-a3b974f7-qfqn5\": the server has asked for the client to provide credentials (get <redacted-host> slack-immich-a3b974f7-qfqn5)\r\n> \r\n```\r\n\r\nI see no reason to expect this to self-heal. Checking the job, there all 4 pods failed 16 hours ago without any new jobs/attempts created.\r\n\r\n```\r\n> kubectl get pods -n fleet-default\r\nNAME                                                  READY   STATUS      RESTARTS   AGE\r\nslack-immich-a3b974f7-qfqn5-machine-provision-kgfxv   0/1     Error       0          16h\r\nslack-immich-a3b974f7-qfqn5-machine-provision-4cjwv   0/1     Error       0          16h\r\nslack-immich-a3b974f7-qfqn5-machine-provision-xk2v9   0/1     Error       0          16h\r\nslack-immich-a3b974f7-qfqn5-machine-provision-kkz47   0/1     Error       0          16h\r\n```\r\n\r\nThe guest VM remains provisioned in Harvester. The node in the guest cluster is still cordoned, with the newly provisioned node having the workloads. \r\n\r\nI will continue to leave it in this state as long as I can. Please let me know if anything else I can gather or provide."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-07-30T10:58:56Z",
+   "body": "You probably need to manually remove the node(vm) on harvester and then in rancher. The problem here is that the credentials used for deleting a harvester node are stored with the node (in the  ...-machinde-driver-secret in the rancher cluster) if I am not mistaken."
+  },
+  {
+   "author": "participant10",
+   "created_at": "2024-07-30T11:07:12Z",
+   "body": "> You probably need to manually remove the node(vm) on harvester and then in rancher. The problem here is that the credentials used for deleting a harvester node are stored with the node (in the ...-machinde-driver-secret in the rancher cluster) if I am not mistaken.\r\n\r\nThat was my assumption too. But oddly checking the machine secret created for the job has the *correct* kubeconfig. I am not sure how to share that here without exposing the actual secret :) But i've reviewed and it is the correct (new) kubeconfig.\r\n\r\nWhich confuses me. Since the 'old' credentials should not work at all, i'd assume? So it can't be that you must use the 'old' credentials to delete the 'old' machine right? \r\n\r\nWhich makes me wonder if it's possible something is using the old kubeconfig values and *not* leveraging the kube config defined in the machine-secret that is created as part of the job?\r\n\r\nI am happy to do some more debug commands or gathering if interesting. A bit shocked if this is not reproducible by others.\r\n\r\n------As to 'fixing it'. What I did the other night was what you stated. I deleted the VM by hand in Harvester, then actually deleted the job numerous times until it quit being recreated. After that the UI was accurate, guest cluster green, node removed in all places expected. "
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-07-30T14:52:22Z",
+   "body": "Hi @participant1 \r\n\r\nthank you for this in-depth description. This is really helpful in reproducing the issue.\r\nI made some progress, but I think something is getting mixed up here, because what I'm observing is that each time a machine needs to be deleted, the machine driver is supplied with the _old_ kubeconfig (which has expired) despite the cluster's manifest referencing a new one. This obviously fails because the job is trying to use expired credentials to delete a VM.\r\nI tried manually editing the corresponding secrets, but they are \"updated\" automatically with the old data every time the job is spawned again.\r\n\r\nIn any case, I'm currently trying to get a colleague, who is more familiar with the interactions between Rancher and the Harvester node driver, to weigh in on this. It might be helpful to have a support bundle."
+  },
+  {
+   "author": "participant10",
+   "created_at": "2024-08-15T13:14:54Z",
+   "body": "> Hi @participant1\r\n> \r\n> thank you for this in-depth description. This is really helpful in reproducing the issue. I made some progress, but I think something is getting mixed up here, because what I'm observing is that each time a machine needs to be deleted, the machine driver is supplied with the _old_ kubeconfig (which has expired) despite the cluster's manifest referencing a new one. This obviously fails because the job is trying to use expired credentials to delete a VM. I tried manually editing the corresponding secrets, but they are \"updated\" automatically with the old data every time the job is spawned again.\r\n> \r\n> In any case, I'm currently trying to get a colleague, who is more familiar with the interactions between Rancher and the Harvester node driver, to weigh in on this. It might be helpful to have a support bundle.\r\n\r\nApologies for delay, busy with work.\r\n\r\nI've checked again and I believe they are the same creds.\r\n\r\nI think this is a secure way to double check my work:\r\n```\r\n[dopey@participant2 ~]$ kubectl get secrets -n cattle-global-data\r\nNAME                                TYPE     DATA   AGE\r\ncluster-serviceaccounttoken-rwxnz   Opaque   1      89d\r\ncluster-serviceaccounttoken-xr74k   Opaque   1      89d\r\ncc-6fcxf                            Opaque   3      89d\r\ncc-8p7rg                            Opaque   3      19d\r\n[dopey@participant2 ~]$ kubectl get secret cc-6fcxf -n cattle-global-data -o jsonpath='{.data.harvestercredentialConfig-kubeconfigContent}' | base64 --decode | md5sum\r\nb5a07af04c5cca7d994d4c63485d4619  -\r\n[dopey@participant2 ~]$  kubectl get secret -n fleet-default slack-immich-a3b974f7-qfqn5-machine-driver-secret -o jsonpath='{.data.HARVESTER_KUBECONFIG_CONTENT}' | base64 --decode | md5sum\r\nb5a07af04c5cca7d994d4c63485d4619  -\r\n[dopey@participant2 ~]$ \r\n```\r\n\r\n\r\n\r\ncc-6fcxf is the original credentials I created within rancher to manage the harvester cluster.  This is the secret I updated using the script referenced in the instructions. Which results in this command:\r\n`kubectl patch secret cc-6fcxf -n cattle-global-data --patch-file /tmp/tmp.zcyoFCRrX9 --type merge\r\n`\r\n\r\nThe cc-8p7rg was me creating *entirely* new credentials for the harvester cluster as additional attempts to 'fix' this problem. I would say it is not relevant to this investigation. \r\n\r\nThe machine-driver-secret is the hung machine stuck in deletion phase. Extracting the harvester kube config respectively from each secret and an md5sum results in identical results. Confirming the same content.\r\n\r\nI will now 'clean up' this server, but I do still have other servers in my guest cluster that I have not modified since the upgrade if I  shall do something and attempt to reproduce again.\r\n\r\n\r\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-08-19T06:26:10Z",
+   "body": "> The machine-driver-secret is the hung machine stuck in deletion phase. Extracting the harvester kube config respectively from each secret and an md5sum results in identical results. Confirming the same content.\r\n\r\nYes, it seems like rancher tries to use the token used to create the machine( which is now expired), not the current harvester token.  I did not yet find where  this information is stored."
+  },
+  {
+   "author": "participant8",
+   "created_at": "2024-09-24T17:55:46Z",
+   "body": "@participant17 in the midst of triage, UI & Harvester need this for 2.9.3 and it left the Hostbusters board. Is there more context into what's going on?\r\n\r\n@participant18 will check with @participant19 since he's still assigned based on Frameworks overlap."
+  },
+  {
+   "author": "participant11",
+   "created_at": "2024-11-30T02:18:28Z",
+   "body": "> To recover an existing cluster, adjust the maximum token TTL and default token TTL to `0`, create a new Cloud Credential for the Harvester cluster and edit the Yaml for the cluster, such that `.spec.cloudCredentialSecretName` points to the new Cloud Credentials. The K8s cluster will eventually recover and any outstanding scaling operation will be completed. The old Cloud Credentials can be disposed of afterwards.\r\n\r\nI use this workaround to recover the VM creation capability, but same as @participant1, Rancher seems still unable to delete machine. After manully delete the node from rancher rke2 cluster and delete the VM from harvester. It is working.\r\n\r\n![image](https://github.com/user-attachments/assets/b18047e1-15c4-4df0-bf62-62509f672663)\r\n"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-12-02T09:01:23Z",
+   "body": "Hi @participant20 ,\r\nthe workaround you quoted has since been replaced with this procedure: https://harvesterhci.io/kb/renew_harvester_cloud_credentials/\r\nThe new procedure needs to be applied every time the token expires (every 30 days by default), but unlike setting the default TTL to `0`, it does not weaken your security.\r\n\r\nThe reason why you can't scale down is because there is a bug in the node driver, which prevents the renewed credentials from being loaded correctly. It has been fixed in Rancher v2.9.3 and newer, so I suggest you evaluate, if an upgrade of your Rancher installation is feasible.\r\nRancher v2.9.3 and newer also allow you to renew the cloud credentials more conveniently via the web UI."
+  },
+  {
+   "author": "participant11",
+   "created_at": "2024-12-02T10:32:51Z",
+   "body": "> Hi @participant20 , the workaround you quoted has since been replaced with this procedure: https://harvesterhci.io/kb/renew_harvester_cloud_credentials/ The new procedure needs to be applied every time the token expires (every 30 days by default), but unlike setting the default TTL to `0`, it does not weaken your security.\r\n> \r\nThanks very much for the new solution. I already deleted the old credential and created a new 0 TTL one, will it be a problem?\r\nApart from the security risk. \r\n"
+  },
+  {
+   "author": "participant12",
+   "created_at": "2025-02-10T15:45:51Z",
+   "body": "Just saw the warning about the cloud credentials expiring soon [and renewed them as described](https://harvesterhci.io/kb/renew_harvester_cloud_credentials/#expiration-of-kubeconfig-tokens-in-rancher-293), which seems to have worked. By clicking on the credentials and going to \"edit config\" there's still a warning displayed:\n\n> Warning: Harvester Cloud Credentials use an underlying authentication token that may have an expiry time - please see the following [knowledge base article](https://harvesterhci.io/kb/renew_harvester_cloud_credentials) for possible implications on management operations.\n\nI have 2 questions:\n\n1. Is this warning just a general warning about cloud credentials needing renewal every 30 days which is fixed by pressing the renewal button? Or do I need to change another token? I am assuming hitting renew, renews the token this warning mentions.\n2. Is there a way to tell rancher to automatically renew the harvester cloud credentials? Doing it manually every 30 days seems kind of needlessly arduous and error prone."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-02-11T15:53:54Z",
+   "body": "Hi @participant12 \n\n> 1. Is this warning just a general warning about cloud credentials needing renewal every 30 days which is fixed by pressing the renewal button? Or do I need to change another token? I am assuming hitting renew, renews the token this warning mentions.\n\nThis is exactly what the warning is about. There is no need to change another token.\n\n> 2. Is there a way to tell rancher to automatically renew the harvester cloud credentials? Doing it manually every 30 days seems kind of needlessly arduous and error prone.\n\nAt the moment, no. But we are currently working on fixing this, so you don't have to manually renew the cloud credentials.\n\nThere are two settings which you can use to tune this:\nThe [auth-token-max-ttl-minutes](https://<redacted-host>/api/api-tokens#auth-token-max-ttl-minutes) and the [kubeconfig-default-token-ttl-minutes](https://<redacted-host>/api/api-tokens#kubeconfig-default-token-ttl-minutes).\nIf you increase these settings, you can stretch the interval in which you need to renew the cloud credentials. But be warned, this has security implications."
+  },
+  {
+   "author": "participant12",
+   "created_at": "2025-02-11T16:12:09Z",
+   "body": "Awesome, thanks for clearing this up for me!"
+  },
+  {
+   "author": "participant13",
+   "created_at": "2025-03-09T18:30:59Z",
+   "body": "I also still had issues updating a cluster config, even after following the instructions in the workaround. What I also had to do was create a new cloud-credential, then edit the managed cluster and select the new credential. After doing that, the node pool configurations I was trying to update were able to be applied successfully.\n\nUnfortunately I am also getting the same error as @participant20 did above.\n\nRancher Prime 2.9.6, Harvester 1.4.0\n\nFailed deleting server [fleet-default/test-bootstrap-workers-bs5vl-7ftcg] of kind (HarvesterMachine) for machine test-bootstrap-workers-bs5vl-7ftcg in infrastructure provider: DeleteError: Downloading driver from https://[rancher-url]/assets/docker-machine-driver-harvester Doing /etc/rancher/ssl docker-machine-driver-harvester docker-machine-driver-harvester: ELF 64-bit LSB executable, x86-64, version 1 (SYSV), statically linked, stripped About to remove test-bootstrap-workers-bs5vl-7ftcg WARNING: This action will delete both local reference and remote instance. (test-bootstrap-workers-bs5vl-7ftcg) Remove node Error removing host \"test-bootstrap-workers-bs5vl-7ftcg\": {\"Code\":{\"Code\":\"Forbidden\",\"Status\":403},\"Message\":\"<redacted-host> \\\"c-m-b5kr8bll\\\" is forbidden: User \\\"system:unauthenticated\\\" cannot get resource \\\"clusters\\\" in API group \\\"<redacted-host>\\\" at the cluster scope\",\"Cause\":<nick>,\"FieldName\":\"\"} (get <redacted-host> test-bootstrap-workers-bs5vl-7ftcg)"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-03-10T07:28:38Z",
+   "body": "Hi @participant13 ,\n\n> What I also had to do was create a new cloud-credential, then edit the managed cluster and select the new credential\n\nThis is the wrong way to go about it and won't really work.\nYou will regain the ability to deploy new nodes for the guest cluster, but unfortunately existing nodes can't be deleted this way.\n\nPlease follow these instructions here instead: https://harvesterhci.io/kb/renew_harvester_cloud_credentials/\n\nGiven that you're on Rancher Prime v2.9.6, renewing cloud credentials should just be one click on the \"Renew\" action.\n\nI'm sorry my earlier comment created some confusion here."
+  },
+  {
+   "author": "participant13",
+   "created_at": "2025-03-10T12:20:02Z",
+   "body": "I understand now, the mix of instructions was a little bit confusing.\n\nUnfortunately the 2.9.x instructions also didn't work for me. None of the credentials were showing that they were expired in the multiple view mentioned. I had to add an annotation to them `rancher.io/expiration-timestamp: \"0\"` to allow that to show. Is that an ok workaround for the workaround?"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-03-11T10:37:22Z",
+   "body": "> Is that an ok workaround for the workaround?\n\nYes. \n\nOn Rancher v2.9.6, if the credentials don't show an expiration date, they are still more than a week from expiring.\nThe action menu on the right hand side should offer renewal regardless of close the expiration date is.\nKeep in mind that the only cloud credentials that expire are the ones for Harvester. Cloud credentials for public clouds like AWS or GCP don't expire as far as I know.\n\n"
+  },
+  {
+   "author": "participant13",
+   "created_at": "2025-03-24T15:13:42Z",
+   "body": "Sorry, replying a bit late, was out for SUSEcon. I've confirmed that the 2.9.6 actions menu unfortunately does not show the renewal option without adding the annotation in my last comment"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-03-24T18:11:18Z",
+   "body": "> Sorry, replying a bit late, was out for SUSEcon. I've confirmed that the 2.9.6 actions menu unfortunately does not show the renewal option without adding the annotation in my last comment\n\nNo problem, hope you enjoyed it.\n\nUnfortunately, I can't reproduce this in my local test environment. Please file a separate bug, so we can investigate without derailing the conversation here.\nParticularly interesting here would be which versions of Rancher you've been using for that instance in the past, i.e. what the upgrade path was.\nAlso interesting would be if there is a config map named `migrateharvestercloudcredentialexpiration` in the `cattle-system` namespace of Rancher's `local` cluster and what the content of that config map is."
+  },
+  {
+   "author": "participant13",
+   "created_at": "2025-04-10T20:52:28Z",
+   "body": "Created a separate issue, thanks! https://github.com/rancher/rancher/issues/49810"
+  },
+  {
+   "author": "participant14",
+   "created_at": "2025-05-27T17:02:25Z",
+   "body": "Closing as (now) duplicate of https://github.com/rancher/rancher/issues/49685 where the full fix is now tracked."
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "rancher/rancher",
+  "default_branch": "main",
+  "commit_sha": "99ed2753daf76dcc00453f0094f82e705459b062",
+  "as_of": "2024-03-24T18:02:22Z",
+  "method": "github_commits_until"
+ },
+ "images": [
+  {
+   "where": "c29",
+   "source_url": "https://github.com/user-attachments/assets/fabe568d-2462-41b8-9351-6276c2fd88a2",
+   "file": "gh_rancher_rancher_44912_img0.png"
+  },
+  {
+   "where": "c29",
+   "source_url": "https://github.com/user-attachments/assets/367aba74-55bc-4f96-900f-0de6416e52f6",
+   "file": "gh_rancher_rancher_44912_img1.png"
+  },
+  {
+   "where": "c29",
+   "source_url": "https://github.com/user-attachments/assets/47ed0803-13da-4666-a4f4-3adc71744b14",
+   "file": "gh_rancher_rancher_44912_img2.png"
+  },
+  {
+   "where": "c40",
+   "source_url": "https://github.com/user-attachments/assets/b18047e1-15c4-4df0-bf62-62509f672663",
+   "file": "gh_rancher_rancher_44912_img3.png"
+  }
+ ],
+ "slug": "gh_rancher_rancher_44912"
+}

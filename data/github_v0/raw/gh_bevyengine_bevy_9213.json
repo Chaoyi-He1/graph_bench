@@ -1,0 +1,244 @@
+{
+ "repo": "bevyengine/bevy",
+ "number": 9213,
+ "url": "https://github.com/bevyengine/bevy/issues/9213",
+ "title": "Translucent color blending leads to unexpected results",
+ "state": "closed",
+ "labels": [
+  "C-Bug",
+  "A-Rendering",
+  "S-Needs-Review"
+ ],
+ "reporter": "reporter",
+ "created_at": "2023-07-19T23:45:53Z",
+ "closed_at": "2026-04-24T04:21:38Z",
+ "body": "## Bevy version\r\n\r\nBevy 0.11\r\n\r\n## What you did\r\n\r\nI attempted to create a rectangle with the alpha set to 0.5 on a black background.\r\n\r\n## What went wrong\r\n\r\nI expected the rectangle to be rendered with a final color of `rgb(128, 128, 128)`\r\n\r\nThe resulting color is `rgb(187, 187, 187)`, much brighter than what I expected.\r\n\r\n## Additional information\r\n\r\nI suspect that this is caused by some kind of sRGB color space correction.\r\nAs `rgb(187, 187, 187)` is directly the result of a linear to non-linear (sRGB) transformation applied on `rgb(128, 128, 128)`\r\n\r\nOne possible cause is the fact that Bevy prefers sRGB surfaces by default: https://github.com/bevyengine/bevy/blob/a0972c2b1bae30f705b2559026d1d4267e97abfd/crates/bevy_render/src/view/window.rs#L247\r\nSo there might be some kind of automatic conversion going on there.\r\n\r\nOne workaround is to make a post processing pass that \"undos\" the sRGB-ness of the image.\r\nSo by pre-`non_linear_srgb_to_linear`ing the surface, the final displayed image will simply reverse that operation instead of giving a sRGB corrected image.\r\n\r\nI think this deserves an issue as it is not really the norm with other renderers (as far as I know) to give a sRGB corrected color.\r\nFor example, spawning a rectangle with the alpha set to 0.5 on a black background in PixiJS yields the expected result of `rgb(128, 128, 128)`.\r\n\r\n[Here's the small test I made using PixiJS's playground](https://pixijs.com/playground?source=eyJjb2RlIjoiaW1wb3J0ICogYXMgUElYSSBmcm9tICdwaXhpLmpzJztcblxuY29uc3QgYXBwID0gbmV3IFBJWEkuQXBwbGljYXRpb24oeyBiYWNrZ3JvdW5kOiAnIzAwMDAwMCcsIHJlc2l6ZVRvOiB3aW5kb3cgfSk7XG5cbmRvY3VtZW50LmJvZHkuYXBwZW5kQ2hpbGQoYXBwLnZpZXcpO1xuXG5jb25zdCByZWN0YW5nbGUgPSBQSVhJLlNwcml0ZS5mcm9tKFBJWEkuVGV4dHVyZS5XSElURSk7XG5yZWN0YW5nbGUud2lkdGggPSAzMDA7XG5yZWN0YW5nbGUuaGVpZ2h0ID0gMjAwO1xucmVjdGFuZ2xlLnRpbnQgPSAweEZGRkZGRjtcbnJlY3RhbmdsZS5hbHBoYSA9IDAuNTtcbmFwcC5zdGFnZS5hZGRDaGlsZChyZWN0YW5nbGUpO1xuXG4ifQ%3D%3D)\r\n\r\n<details>\r\n<summary>Here's the test code I used for Bevy</summary>\r\n\r\n```\r\nuse bevy::prelude::*;\r\n\r\nfn main() {\r\n    App::new()\r\n        .add_plugins(DefaultPlugins)\r\n        .add_systems(Startup, setup)\r\n        .run();\r\n}\r\n\r\nfn setup(mut commands: Commands, mut clear_color: ResMut<ClearColor>) {\r\n    clear_color.0 = Color::BLACK;\r\n    commands.spawn(Camera2dBundle::default());\r\n    commands.spawn(SpriteBundle {\r\n        sprite: Sprite {\r\n            color: Color::rgba(1., 1., 1., 0.5),\r\n            custom_size: Some(Vec2::new(300., 200.)),\r\n            ..default()\r\n        },\r\n        ..default()\r\n    });\r\n}\r\n```\r\n\r\n",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2023-07-20T17:41:26Z",
+   "body": "It’s a bit unclear exactly what your test setup is. If you provide a minimal example in code that will make your observation more easily reproducible."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-07-20T17:53:49Z",
+   "body": "@participant1 Edited to add a minimal example."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-08-30T02:12:29Z",
+   "body": "same https://github.com/bevyengine/bevy/discussions/14968 https://github.com/bevyengine/bevy/discussions/8937\r\n\r\nThis is a serious problem,  all render results that involves transparency blending be wrong.\r\n\r\n## My Test\r\nBlend test image with white background.\r\n### Original Image\r\n![test_original_gridbg](https://github.com/user-attachments/assets/38c4b46b-d6af-4cb0-9757-df31016094bb)\r\n### Bevy result\r\n![test_bevy](https://github.com/user-attachments/assets/14d95f3d-e346-4c33-b088-4c13e538ed43)\r\n### Code\r\n``` rust\r\nuse bevy::prelude::*;\r\n\r\n\r\nfn main() {\r\n    App::new()\r\n        .add_plugins(DefaultPlugins)\r\n        .add_systems(Startup, setup)\r\n        .run();\r\n}\r\n\r\nfn setup(\r\n    mut commands: Commands,\r\n    asset_server: Res<AssetServer>,\r\n){\r\n    let mut camera: Camera2dBundle = Camera2dBundle::default();\r\n    camera.camera.clear_color = ClearColorConfig::from(Color::WHITE);\r\n    commands.spawn((\r\n        camera,\r\n    ));\r\n\r\n    commands.spawn((\r\n        SpriteBundle {\r\n            texture: asset_server.load(\"test.png\"),\r\n            ..default()\r\n        },\r\n    ));    \r\n}\r\n```\r\n"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-10-16T14:31:13Z",
+   "body": "I'll take a look at this, I've been concerned about our color-management for a while. Do note that our color api changed significantly in 0.14, what version was the last example built with?"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-10-16T15:09:45Z",
+   "body": "Generally our blending seems to be very wrong. A white ui element at 50% opacity is almost completely opaque and a black element is almost completely transparent. \n\nBlack UI square in Bevy with 50% alpha on the left. I imported the screenshot to photopea and added a blob of the same color with (presumably) correct blending to the right.\n![Image](https://github.com/user-attachments/assets/57c7d7a1-c321-4921-b03a-9fa891bceca1)\n\nThe same with white with 50% alpha.\n![Image](https://github.com/user-attachments/assets/43a97892-273b-4b65-857f-10116bcfd729)\n"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-10-16T15:57:21Z",
+   "body": "A clearer example: Correct Photopea blending above and incorrect Bevy blending below. Colors are white and black at 50% opacity.\n\n![Image](https://github.com/user-attachments/assets/cffb885d-79ec-49fb-b202-236da8dd0631)\n"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-10-17T00:09:15Z",
+   "body": "As Alice pointed out, this looks like an issue with premultiplied alpha."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-10-17T00:50:53Z",
+   "body": "Could be but we are not using premultiplied alpha currently. I also tried to switch the sprite pipeline and shader to use premultiplied blending and that fixed 50% opacity white but 50% black became even dimmer, so something weird is going on."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-10-17T18:56:28Z",
+   "body": "Wgpu actually has examples for demonstrating blending. It looks like we are doing blending in non-linear srgb, which messes things up. So maybe we just need to flip a setting in wgpu.\n\n`cargo run --bin wgpu-examples srgb_blend` (incorrect, just like in Bevy)\n![Image](https://github.com/user-attachments/assets/a92b7baf-1100-4e88-a639-0a68adb4782e)\n\n`cargo run --bin wgpu-examples srgb_blend linear` (correct)\n![Image](https://github.com/user-attachments/assets/ff6744b3-3277-4794-aaaf-cf5b847d8885)\n"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-10-25T17:21:18Z",
+   "body": "It looks like that wgpu example just sets all texture formats to `Rgba8Unorm` instead of `Rgba8UnormSrgb`. I tried to do the same to bevy but the end result is dim like it doesn't have any srgb gamma correction, even though the wgpu example does. Though I guess the blending looks kind of correct.\n\n50% opacity white and black with my changes:\n![Image](https://github.com/user-attachments/assets/68b95bda-2f39-4e26-9bfa-093bd79ab3eb)\n\nHow it looks on main:\n![Image](https://github.com/user-attachments/assets/2155ae4c-63e1-4601-91cb-67c900406064)\n\n\nWhat it should look like (pixiJS)\n![Image](https://github.com/user-attachments/assets/3efd7e50-48c3-4858-ae77-2b2ebe0c8c6d)\n\n\nI don't really know much about swapchains and such, but I couldn't get any combination of window and swapchain texture formats to produce the correct result.\n\nMy code: https://github.com/bevyengine/bevy/compare/main...participant4:bevy:linear-blending"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-10-25T21:33:32Z",
+   "body": "For completeness wgpu blending examples with the same shapes and colors:\n\n`cargo run --bin wgpu-examples srgb_blend linear` (looks like pixiJS, blending is correct)\n![Image](https://github.com/user-attachments/assets/21a2dcc4-b64b-4735-b42e-306c774a9fce)\n\n`cargo run --bin wgpu-examples srgb_blend` (looks like bevy, but also seems a bit brighter, probably too bright)\n![Image](https://github.com/user-attachments/assets/4ec8ec91-a3a2-4607-a972-0f51a2acca54)\n\n"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-10-25T22:46:55Z",
+   "body": "As a side note @participant5 do you know if we could add regression-test for this, comparing our result to the standard reference?"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2024-10-26T10:14:54Z",
+   "body": "Yes, but it should be noted that this can be dependent on the OS and the GPU, the type of the texture Bevy renders to is decided from wgpu based on the target surface.\n\nCovering every case automatically won't be possible.\n\nBefore trying to fix this, you should add logging for the target texture type that is being used, and check if its consistent across several cases"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-10-26T12:33:56Z",
+   "body": "We did some experimentation last night, and it seems to me like maybe the EOTF gamma curve is being applied to the alpha of material colors."
+  },
+  {
+   "author": "participant6",
+   "created_at": "2024-11-20T03:33:13Z",
+   "body": "Experimenting with this issue, I have a minimal example to aid in diagnosis:\n\n```rust\nuse bevy::prelude::*;\n\nfn main() {\n    App::new()\n        .add_plugins(DefaultPlugins)\n        .insert_resource(ClearColor(Color::srgba(0., 0.5, 0., 1.)))\n        .add_systems(\n            Startup,\n            |mut commands: Commands| {\n                commands.spawn(Camera2d);\n\n                commands.spawn((\n                    Sprite::from_color(Color::WHITE.with_alpha(0.5), Vec2::new(512., 512.)),\n                    Transform::from_xyz(-256., 0., 0.),\n                ));\n\n                commands.spawn((\n                    Sprite::from_color(Color::BLACK.with_alpha(0.5), Vec2::new(512., 512.)),\n                    Transform::from_xyz(256., 0., 0.),\n                ));\n            },\n        )\n        .run();\n}\n```\n\nWhen run, this produces the following image:\n\n![Image](https://github.com/user-attachments/assets/95aa1c44-4260-4732-8398-ae8e767811ef)\n\nThe white square is `rgb(187, 205, 187)`, the black is `rgb(0, 92, 0)`, and the background is `rgb(0, 128, 0)`.\n\nCreating a similar image in GIMP produces the following image:\n\n![Image](https://github.com/user-attachments/assets/24cfc27c-9627-427e-8c5d-c42ead56a474)\n\nThe white square is `rgb(188, 204, 188)`, the black is `rgb(0, 92, 0)`, and the background is `rgb(0, 127, 0)`.\n\nThese values are close enough for me to say that GIMP and Bevy blend transparent colours in a similar way.\n\nNow, comparing to Photopea (previously included as a comparison point):\n\n![Image](https://github.com/user-attachments/assets/49baeca3-eafa-4752-a448-af6acfc40679)\n\nThe white square is `rgb(128, 191, 128)`, the black is `rgb(0, 64, 0)`, and the background is `rgb(0, 127, 0)`.\n\nAs a final test, I created a white square in HTML/CSS:\n\n![Image](https://github.com/user-attachments/assets/742fc7d9-dd53-4e27-b424-d269409f04d8)\n\nThis gives results consistent with Photopea. The white square is `rgb(128, 191, 128)`, the black is `rgb(0, 64, 0)`, and the background is `rgb(0, 127, 0)`.\n\nI wasn't expecting GIMP to _also_ give \"incorrect\" results, which made reproduction much harder than it needed to be. So, for anyone wanting to work on this bug, the following HTML document produces the same test pattern as the Bevy application, but with the \"correct\" colour values:\n\n```html\n<html>\n  <head>\n    <style>\n      body {\n        background-color: rgba(0, 127, 0, 1);\n      }\n\n      div#white {\n        background-color: rgba(255, 255, 255, 0.5);\n      }\n\n      div#black {\n        background-color: rgba(0, 0, 0, 0.5);\n      }\n\n      div {\n        float: left;\n        width: 512px;\n        height: 512px;\n      }\n    </style>\n  </head>\n  <body>\n    <div id=\"white\"></div>\n    <div id=\"black\"></div>\n  </body>\n</html>\n```"
+  },
+  {
+   "author": "participant7",
+   "created_at": "2024-11-20T04:39:59Z",
+   "body": "I poked around with GIMP and was able to get the other behavior by enabling the [legacy layer modes](https://<redacted-host>/en/gimp-concepts-layer-modes-legacy.html) and also found an article claiming that [CSS3 alpha blending is actually wrong](https://erikmcclure.com/blog/everyone-does-srgb-wrong-because/). \n\nIf I'm understanding things correctly, Bevy and GIMP do the blending by converting all colors to linear space, performing the blending, and then converting back. While by contrast, CSS and Photopea operate directly on sRGB colors. "
+  },
+  {
+   "author": "participant6",
+   "created_at": "2024-11-20T05:56:10Z",
+   "body": "> I poked around with GIMP and was able to get the other behavior by enabling the [legacy layer modes](https://<redacted-host>/en/gimp-concepts-layer-modes-legacy.html)\n\nOk I'm glad it wasn't obvious (I tried looking myself and couldn't find it!)\n\n> also found an article claiming that [CSS3 alpha blending is actually wrong](https://erikmcclure.com/blog/everyone-does-srgb-wrong-because/).\n\nAwesome haha\n\n> If I'm understanding things correctly, Bevy and GIMP do the blending by converting all colors to linear space, performing the blending, and then converting back. While by contrast, CSS and Photopea operate directly on sRGB colors.\n\nYes, Bevy does all blending in Linear SRGB. We confirmed this in [discord](https://discord.com/channels/691052431525675048/743663924229963868/1308649866758590464) by replicating Bevy's GPU alpha blending in software using `bevy_color`. `Srgba::mix` matches Photopea and CSS, while `LinearSrgba::mix` matches Bevy."
+  },
+  {
+   "author": "participant8",
+   "created_at": "2024-11-20T15:29:40Z",
+   "body": "There's a workaround for this at least!\n\n>  Hello! The artist here, just to let you know this works. Made some tests this morning, changing the gamma to 1.0 in photoshop immediately changes the assets to what we exactly have in bevy. Thanks!\n\nI'm not *sold* on what the correct behavior here is TBH. Mostly I think that color blending should be done in Laba or some other perceptual color space, rather than SRGBA *or* linear RGBA >.>"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-11-20T15:50:22Z",
+   "body": "Ok now I'm convinced too that Bevy does this \"correctly\". Still that doesn't change the fact that I can't dynamically adjust the \"opacity\" of UI elements in a way that makes sense perceptually. Non linear srgb blending just looks better, as 50% alpha black and white \"look as transparent\", and that is probably why CSS does it that way.\n\nAlso why does linear mode in these examples look like what we discovered to be non linear blending? https://github.com/bevyengine/bevy/issues/9213#issuecomment-2438911632"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-11-20T19:46:25Z",
+   "body": ">  Mostly I think that color blending should be done in Laba or some other perceptual color space, rather than SRGBA or linear RGBA >.>\n\nThe choice of blending space is really context dependent. For UI? Absolutely. For 3d models? Probably not. For 2d work? Seems like most people expect srgb (as it's the space 2d artists are most accustomed to). It just needs to be predictable and (ideally) configurable.\n\nUnity lets you choose between linear or gamma-corrected \"color workflows\", which applies to *everything*. I think we should probably do something similar (this would amount to either sending data to the gpu in srgb instead of linear, or re-applying the gamma curve in shaders) In the end, it's an artist tooling problem, and that means looking at other artist tools and trying to reach feature parity IMO.\n\nFor some examples of srgb blending looking really really bad, see <https://ninedegreesbelow.com/photography/linear-gamma-blur-normal-blend.html>."
+  },
+  {
+   "author": "participant9",
+   "created_at": "2025-02-04T20:47:19Z",
+   "body": "hey !\n\njust wanted to say it was pretty hard to find this problem from \"why are my sprite color off\" 😄 \ni dont know if this issue can be fixed easily or a documentation can be added ? searching on google or the discord gave nothing\n\nthanks !"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-02-04T23:08:19Z",
+   "body": "We do need to document this, and we maybe need to make things configurable in engine. In the short term, try to create and save your assets in `Linear-SRGB` space."
+  },
+  {
+   "author": "participant9",
+   "created_at": "2025-02-04T23:15:48Z",
+   "body": "nice ! in the mean time i have like you said converted all my sprites to rgb8 from rgb16. `magick $file --depth 8 $file`\n\nedit: 7 months later, trying to figure out why a sprite colors are off, just to be here again lol"
+  },
+  {
+   "author": "participant9",
+   "created_at": "2025-12-17T20:54:53Z",
+   "body": "hello !\n\nI needed that feature as we're using adobe animate which only use srgb/gamma color space, and shadows overlay / semi transparent sprite caused problem.\nive vibe coded a probably bad implementation, that doesn't support MSAA and HDR here https://github.com/participant9/bevy/commit/1067b765e013c794d8396c29cae5c19d013bf925 but works for my use case.\nit implements sRGB blending for 2D sprites by manually encoding colors to gamma space in a dedicated render pass, blending into an intermediate Rgba8Unorm texture, then decoding back to linear space via a composite pass before merging with the main render pipeline. but it add some overhead because of the intermediary texture, and with my limited knowledge i didn't find a better way.\n\nis there a better way of implementing this ? thanks :)\n\nedit: my linked impl is BAD and is probably a lot of AI slop. its just an example prototype, that im using for my specific use case."
+  },
+  {
+   "author": "participant8",
+   "created_at": "2025-12-17T21:17:05Z",
+   "body": "I'd be happy to see a fix here, but don't have the expertise to advise further myself.\n\nThanks for the pointers in the right direction :) I will note that the implementation will have to be redone to conform with [Bevy's AI Policy](https://bevy.org/learn/contribute/policies/ai/), but that shouldn't be a challenge here."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2026-02-19T12:52:22Z",
+   "body": "https://github.com/bevyengine/bevy/pull/23049 should mostly resolve this issue."
+  },
+  {
+   "author": "participant8",
+   "created_at": "2026-04-24T04:21:38Z",
+   "body": "Closing as fixed with #23963 merging too. Please open new issues for any recurring problems!"
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "bevyengine/bevy",
+  "default_branch": "main",
+  "commit_sha": "a0972c2b1bae30f705b2559026d1d4267e97abfd",
+  "as_of": "2023-07-19T23:45:53Z",
+  "method": "github_commits_until"
+ },
+ "images": [
+  {
+   "where": "c2",
+   "source_url": "https://github.com/user-attachments/assets/38c4b46b-d6af-4cb0-9757-df31016094bb",
+   "file": "gh_bevyengine_bevy_9213_img0.png"
+  },
+  {
+   "where": "c2",
+   "source_url": "https://github.com/user-attachments/assets/14d95f3d-e346-4c33-b088-4c13e538ed43",
+   "file": "gh_bevyengine_bevy_9213_img1.png"
+  },
+  {
+   "where": "c4",
+   "source_url": "https://github.com/user-attachments/assets/57c7d7a1-c321-4921-b03a-9fa891bceca1",
+   "file": "gh_bevyengine_bevy_9213_img2.png"
+  },
+  {
+   "where": "c4",
+   "source_url": "https://github.com/user-attachments/assets/43a97892-273b-4b65-857f-10116bcfd729",
+   "file": "gh_bevyengine_bevy_9213_img3.png"
+  },
+  {
+   "where": "c5",
+   "source_url": "https://github.com/user-attachments/assets/cffb885d-79ec-49fb-b202-236da8dd0631",
+   "file": "gh_bevyengine_bevy_9213_img4.png"
+  },
+  {
+   "where": "c8",
+   "source_url": "https://github.com/user-attachments/assets/a92b7baf-1100-4e88-a639-0a68adb4782e",
+   "file": "gh_bevyengine_bevy_9213_img5.png"
+  },
+  {
+   "where": "c8",
+   "source_url": "https://github.com/user-attachments/assets/ff6744b3-3277-4794-aaaf-cf5b847d8885",
+   "file": "gh_bevyengine_bevy_9213_img6.png"
+  },
+  {
+   "where": "c9",
+   "source_url": "https://github.com/user-attachments/assets/68b95bda-2f39-4e26-9bfa-093bd79ab3eb",
+   "file": "gh_bevyengine_bevy_9213_img7.png"
+  },
+  {
+   "where": "c9",
+   "source_url": "https://github.com/user-attachments/assets/2155ae4c-63e1-4601-91cb-67c900406064",
+   "file": "gh_bevyengine_bevy_9213_img8.png"
+  },
+  {
+   "where": "c9",
+   "source_url": "https://github.com/user-attachments/assets/3efd7e50-48c3-4858-ae77-2b2ebe0c8c6d",
+   "file": "gh_bevyengine_bevy_9213_img9.png"
+  },
+  {
+   "where": "c10",
+   "source_url": "https://github.com/user-attachments/assets/21a2dcc4-b64b-4735-b42e-306c774a9fce",
+   "file": "gh_bevyengine_bevy_9213_img10.png"
+  },
+  {
+   "where": "c10",
+   "source_url": "https://github.com/user-attachments/assets/4ec8ec91-a3a2-4607-a972-0f51a2acca54",
+   "file": "gh_bevyengine_bevy_9213_img11.png"
+  },
+  {
+   "where": "c14",
+   "source_url": "https://github.com/user-attachments/assets/95aa1c44-4260-4732-8398-ae8e767811ef",
+   "file": "gh_bevyengine_bevy_9213_img12.png"
+  },
+  {
+   "where": "c14",
+   "source_url": "https://github.com/user-attachments/assets/24cfc27c-9627-427e-8c5d-c42ead56a474",
+   "file": "gh_bevyengine_bevy_9213_img13.png"
+  },
+  {
+   "where": "c14",
+   "source_url": "https://github.com/user-attachments/assets/49baeca3-eafa-4752-a448-af6acfc40679",
+   "file": "gh_bevyengine_bevy_9213_img14.png"
+  },
+  {
+   "where": "c14",
+   "source_url": "https://github.com/user-attachments/assets/742fc7d9-dd53-4e27-b424-d269409f04d8",
+   "file": "gh_bevyengine_bevy_9213_img15.png"
+  }
+ ],
+ "slug": "gh_bevyengine_bevy_9213"
+}

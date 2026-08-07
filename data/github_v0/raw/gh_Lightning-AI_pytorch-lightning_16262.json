@@ -1,0 +1,113 @@
+{
+ "repo": "Lightning-AI/pytorch-lightning",
+ "number": 16262,
+ "url": "https://github.com/Lightning-AI/pytorch-lightning/issues/16262",
+ "title": "Bug with isolate_rng \"Cannot re-initialize CUDA in forked subprocess\"",
+ "state": "closed",
+ "labels": [
+  "bug",
+  "help wanted",
+  "reproducibility"
+ ],
+ "reporter": "reporter",
+ "created_at": "2023-01-05T12:28:01Z",
+ "closed_at": "2023-01-19T00:09:26Z",
+ "body": "### Bug description\r\n\r\nI was using isolate_rng in pytorch dataset for some augmentations in pytorch lightning 1.7.1 but after update to latest 1.8.6 I experience error now.\r\n\r\n```\r\nRuntimeError: Cannot re-initialize CUDA in forked subprocess. To use CUDA with multiprocessing, you must use the 'spawn' start method\r\n\r\n```\r\n\r\n### How to reproduce the bug\r\n\r\n```python\r\nfrom torch.utils.data import DataLoader\r\nimport pytorch_lightning as pl\r\nfrom torch.utils.data import Dataset\r\nimport torch\r\nfrom torch import nn\r\nimport torch.nn.functional as F\r\n\r\nclass LitAutoEncoder(pl.LightningModule):\r\n    def __init__(self):\r\n        super().__init__()\r\n        self.encoder = nn.Sequential(nn.Linear(28 * 28, 128), nn.ReLU(), nn.Linear(128, 3))\r\n        self.decoder = nn.Sequential(nn.Linear(3, 128), nn.ReLU(), nn.Linear(128, 28 * 28))\r\n\r\n    def forward(self, x):\r\n        # in lightning, forward defines the prediction/inference actions\r\n        embedding = self.encoder(x)\r\n        return embedding\r\n\r\n    def training_step(self, batch, batch_idx):\r\n        # training_step defines the train loop. It is independent of forward\r\n        x, y = batch\r\n        x = x.view(x.size(0), -1)\r\n        z = self.encoder(x)\r\n        x_hat = self.decoder(z)\r\n        loss = F.mse_loss(x_hat, x)\r\n        self.log(\"train_loss\", loss)\r\n        return loss\r\n\r\n    def configure_optimizers(self):\r\n        optimizer = torch.optim.Adam(self.parameters(), lr=1e-3)\r\n        return optimizer\r\n\r\nclass DummyDataset(Dataset):\r\n    def __init__(self) -> None:\r\n        super().__init__()\r\n        \r\n    def __getitem__(self,  index: int):\r\n        with pl.utilities.seed.isolate_rng():\r\n            return [torch.ones(28,28),torch.ones(28,28)] \r\n    \r\n    def __len__(self):\r\n        return 10\r\n\r\ndataset = DummyDataset()\r\n\r\ntrainer = pl.Trainer(logger=None, accelerator='gpu')\r\ntrainer.fit(LitAutoEncoder(), DataLoader(dataset, num_workers=2))\r\n```\r\nif you remove num_workers=2 the bug will go away but I need multiple workers.\r\n\r\n\r\n\r\n### Error messages and logs\r\n\r\n```\r\nTraceback (most recent call last):\r\n  File \"check_bug_in_pl.py\", line 47, in <module>\r\n    trainer.fit(LitAutoEncoder(), DataLoader(dataset, num_workers=2))\r\n  File \"/usr/local/lib/python3.8/dist-packages/pytorch_lightning/trainer/trainer.py\", line 603, in fit\r\n    call._call_and_handle_interrupt(\r\n  File \"/usr/local/lib/python3.8/dist-packages/pytorch_lightning/trainer/call.py\", line 38, in _call_and_handle_interrupt\r\n    return trainer_fn(*args, **kwargs)\r\n  File \"/usr/local/lib/python3.8/dist-packages/pytorch_lightning/trainer/trainer.py\", line 645, in _fit_impl\r\n    self._run(model, ckpt_path=self.ckpt_path)\r\n  File \"/usr/local/lib/python3.8/dist-packages/pytorch_lightning/trainer/trainer.py\", line 1098, in _run\r\n    results = self._run_stage()\r\n  File \"/usr/local/lib/python3.8/dist-packages/pytorch_lightning/trainer/trainer.py\", line 1177, in _run_stage\r\n    self._run_train()\r\n  File \"/usr/local/lib/python3.8/dist-packages/pytorch_lightning/trainer/trainer.py\", line 1200, in _run_train\r\n    self.fit_loop.run()\r\n  File \"/usr/local/lib/python3.8/dist-packages/pytorch_lightning/loops/loop.py\", line 199, in run\r\n    self.advance(*args, **kwargs)\r\n  File \"/usr/local/lib/python3.8/dist-packages/pytorch_lightning/loops/fit_loop.py\", line 267, in advance\r\n    self._outputs = self.epoch_loop.run(self._data_fetcher)\r\n  File \"/usr/local/lib/python3.8/dist-packages/pytorch_lightning/loops/loop.py\", line 199, in run\r\n    self.advance(*args, **kwargs)\r\n  File \"/usr/local/lib/python3.8/dist-packages/pytorch_lightning/loops/epoch/training_epoch_loop.py\", line 188, in advance\r\n    batch = next(data_fetcher)\r\n  File \"/usr/local/lib/python3.8/dist-packages/pytorch_lightning/utilities/fetching.py\", line 184, in __next__\r\n    return self.fetching_function()\r\n  File \"/usr/local/lib/python3.8/dist-packages/pytorch_lightning/utilities/fetching.py\", line 265, in fetching_function\r\n    self._fetch_next_batch(self.dataloader_iter)\r\n  File \"/usr/local/lib/python3.8/dist-packages/pytorch_lightning/utilities/fetching.py\", line 280, in _fetch_next_batch\r\n    batch = next(iterator)\r\n  File \"/usr/local/lib/python3.8/dist-packages/pytorch_lightning/trainer/supporters.py\", line 568, in __next__\r\n    return self.request_next_batch(self.loader_iters)\r\n  File \"/usr/local/lib/python3.8/dist-packages/pytorch_lightning/trainer/supporters.py\", line 580, in request_next_batch\r\n    return apply_to_collection(loader_iters, Iterator, next)\r\n  File \"/home/<user>/.local/lib/python3.8/site-packages/lightning_utilities/core/apply_func.py\", line 47, in apply_to_collection\r\n    return function(data, *args, **kwargs)\r\n  File \"/usr/local/lib/python3.8/dist-packages/torch/utils/data/dataloader.py\", line 530, in __next__\r\n    data = self._next_data()\r\n  File \"/usr/local/lib/python3.8/dist-packages/torch/utils/data/dataloader.py\", line 1224, in _next_data\r\n    return self._process_data(data)\r\n  File \"/usr/local/lib/python3.8/dist-packages/torch/utils/data/dataloader.py\", line 1250, in _process_data\r\n    data.reraise()\r\n  File \"/usr/local/lib/python3.8/dist-packages/torch/_utils.py\", line 457, in reraise\r\n    raise exception\r\nRuntimeError: Caught RuntimeError in DataLoader worker process 0.\r\nOriginal Traceback (most recent call last):\r\n  File \"/usr/local/lib/python3.8/dist-packages/torch/utils/data/_utils/worker.py\", line 287, in _worker_loop\r\n    data = fetcher.fetch(index)\r\n  File \"/usr/local/lib/python3.8/dist-packages/torch/utils/data/_utils/fetch.py\", line 49, in fetch\r\n    data = [self.dataset[idx] for idx in possibly_batched_index]\r\n  File \"/usr/local/lib/python3.8/dist-packages/torch/utils/data/_utils/fetch.py\", line 49, in <listcomp>\r\n    data = [self.dataset[idx] for idx in possibly_batched_index]\r\n  File \"check_bug_in_pl.py\", line 38, in __getitem__\r\n    with pl.utilities.seed.isolate_rng():\r\n  File \"/usr/lib/python3.8/contextlib.py\", line 113, in __enter__\r\n    return next(self.gen)\r\n  File \"/usr/local/lib/python3.8/dist-packages/pytorch_lightning/utilities/seed.py\", line 42, in isolate_rng\r\n    states = _collect_rng_states()\r\n  File \"/usr/local/lib/python3.8/dist-packages/lightning_lite/utilities/seed.py\", line 112, in _collect_rng_states\r\n    \"torch.cuda\": torch.cuda.get_rng_state_all(),\r\n  File \"/usr/local/lib/python3.8/dist-packages/torch/cuda/random.py\", line 39, in get_rng_state_all\r\n    results.append(get_rng_state(i))\r\n  File \"/usr/local/lib/python3.8/dist-packages/torch/cuda/random.py\", line 22, in get_rng_state\r\n    _lazy_init()\r\n  File \"/usr/local/lib/python3.8/dist-packages/torch/cuda/__init__.py\", line 206, in _lazy_init\r\n    raise RuntimeError(\r\nRuntimeError: Cannot re-initialize CUDA in forked subprocess. To use CUDA with multiprocessing, you must use the 'spawn' start method\r\n\r\nEpoch 0:   0%|          | 0/10 [00:00<?, ?it/s]   \r\n```\r\n\r\n### Environment\r\n\r\n<details>\r\n  <summary>Current environment</summary>\r\n\r\n```\r\n#- Lightning Component (e.g. Trainer, LightningModule, LightningApp, LightningWork, LightningFlow):\r\n#- PyTorch Lightning Version (e.g., 1.5.0): 1.8.6\r\n#- Lightning App Version (e.g., 0.5.2): \r\n#- PyTorch Version (e.g., 1.10): 1.11.0+cu102\r\n#- Python version (e.g., 3.9):  3.8.10\r\n#- OS (e.g., Linux): ubuntu\r\n#- CUDA/cuDNN version: 10.2\r\n#- GPU models and configuration: Tesla T4 \r\n#- How you installed Lightning: pip\r\n#- Running environment of LightningApp : local\r\n```\r\n\r\n</details>\r\n\r\n\r\n### More info\r\n\r\n_No response_\n\ncc @participant1",
+ "comments": [
+  {
+   "author": "reporter",
+   "created_at": "2023-01-05T12:49:55Z",
+   "body": "Error with this code starts to appear after pytorch-lightning 1.8.0"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-01-05T12:56:02Z",
+   "body": "seems I've found what this is about \r\n```\r\n # torch.cuda rng_state is only included since v1.8.\r\n    if \"torch.cuda\" in rng_state_dict:\r\n        torch.cuda.set_rng_state_all(rng_state_dict[\"torch.cuda\"])\r\n```\r\nThe question is can we make isolate_rng with parameter to not include cuda even if trainer has \"gpu\" accelerator? Or it's better to write my own version locally?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-01-05T19:15:08Z",
+   "body": "@reporter Thanks for the reproducible code. Did you try wrapping the code with this guard?\r\n\r\n```py\r\nif __name__ == \"__main__\": \r\n    dataset = DummyDataset()\r\n    trainer = pl.Trainer(logger=None, accelerator='gpu')\r\n    trainer.fit(LitAutoEncoder(), DataLoader(dataset, num_workers=2))\r\n```\r\n\r\nI will take a closer look otherwise."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-01-05T19:24:40Z",
+   "body": "> @reporter Thanks for the reproducible code. Did you try wrapping the code with this guard?\r\n> \r\n> ```python\r\n> if __name__ == \"__main__\": \r\n>     dataset = DummyDataset()\r\n>     trainer = pl.Trainer(logger=None, accelerator='gpu')\r\n>     trainer.fit(LitAutoEncoder(), DataLoader(dataset, num_workers=2))\r\n> ```\r\n> \r\n> I will take a closer look otherwise.\r\n\r\nTried but result is same. It works if you remove collecting cuda state from `_collect_rng_states` function and skip setting cuda state in _set_rng_states. Maybe this collection and setting could be skipped if start method of trainer is not spawn\r\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-01-06T09:12:23Z",
+   "body": "Adding an argument to exclude the cuda seed would be possible, but let me first check what the root cause is and whether we can fix it properly. "
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-01-06T23:42:15Z",
+   "body": "@reporter I cannot reproduce this with the pytorch version 1.11.0 and PL version 1.8.6 like you have reported. This is weird, I can't explain how you get this error. \r\n\r\nSomehow you get your processes being created with the fork start method. Is there anything special about your environment? Are you running this in a notebook? I'm not sure what I'm doing different."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-01-09T07:52:25Z",
+   "body": "> @reporter I cannot reproduce this with the pytorch version 1.11.0 and PL version 1.8.6 like you have reported. This is weird, I can't explain how you get this error.\r\n> \r\n> Somehow you get your processes being created with the fork start method. Is there anything special about your environment? Are you running this in a notebook? I'm not sure what I'm doing different.\r\n\r\nInteresting, I'm running this in dev-contaier(docker image) on the kubeflow as a python script. Maybe it somehow changes the start method because some of the docker settings or environment settings🤔\r\nHow can I log the start method in my script?\r\n \r\nDocker image is `nvidia/cuda:11.3.1-cudnn8-devel-ubuntu20.04`"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-01-11T22:19:51Z",
+   "body": "Hey @reporter sorry for the late answer. You can check the start method like this:\r\n\r\n```py\r\nimport torch.multiprocessing as mp\r\nprint(mp.get_start_method())\r\n```"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-01-14T12:28:57Z",
+   "body": "> Hey @reporter sorry for the late answer. You can check the start method like this:\r\n> \r\n> ```python\r\n> import torch.multiprocessing as mp\r\n> print(mp.get_start_method())\r\n> ```\r\n\r\n@participant1 \r\nhere is the method`starting method fork`\r\n\r\nthe code that I've used\r\n```\r\nfrom torch.utils.data import DataLoader\r\nimport pytorch_lightning as pl\r\nfrom torch.utils.data import Dataset\r\nimport torch\r\nfrom torch import nn\r\nimport torch.nn.functional as F\r\n\r\nimport torch.multiprocessing as mp\r\n\r\n\r\nclass LitAutoEncoder(pl.LightningModule):\r\n    def __init__(self):\r\n        super().__init__()\r\n        self.encoder = nn.Sequential(nn.Linear(28 * 28, 128), nn.ReLU(), nn.Linear(128, 3))\r\n        self.decoder = nn.Sequential(nn.Linear(3, 128), nn.ReLU(), nn.Linear(128, 28 * 28))\r\n\r\n    def forward(self, x):\r\n        # in lightning, forward defines the prediction/inference actions\r\n        embedding = self.encoder(x)\r\n        return embedding\r\n\r\n    def training_step(self, batch, batch_idx):\r\n        # training_step defines the train loop. It is independent of forward\r\n        x, y = batch\r\n        x = x.view(x.size(0), -1)\r\n        z = self.encoder(x)\r\n        x_hat = self.decoder(z)\r\n        loss = F.mse_loss(x_hat, x)\r\n        self.log(\"train_loss\", loss)\r\n        return loss\r\n\r\n    def configure_optimizers(self):\r\n        optimizer = torch.optim.Adam(self.parameters(), lr=1e-3)\r\n        return optimizer\r\n\r\nclass DummyDataset(Dataset):\r\n    def __init__(self) -> None:\r\n        super().__init__()\r\n        \r\n    def __getitem__(self,  index: int):\r\n        with pl.utilities.seed.isolate_rng():\r\n            return [torch.ones(28,28),torch.ones(28,28)] \r\n    \r\n    def __len__(self):\r\n        return 10\r\n        \r\nif __name__ == \"__main__\": \r\n    print(\"starting method\", mp.get_start_method())\r\n    dataset = DummyDataset()\r\n    trainer = pl.Trainer(logger=None, accelerator='gpu')\r\n    trainer.fit(LitAutoEncoder(), DataLoader(dataset, num_workers=2))\r\n```\r\nError with `RuntimeError: Cannot re-initialize CUDA in forked subprocess. To use CUDA with multiprocessing, you must use the 'spawn' start method` persists"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-01-14T12:31:15Z",
+   "body": "Maybe this starting method could be checked in the `isolate_rng` so it will not result in the error"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-01-18T01:38:35Z",
+   "body": "@reporter I think it would be fine to add an argument to the function `include_cuda=True|False`. \r\n\r\nOne could detect the start method yes, but that alone doesn't tell us whether we are running the function in a forked process or the main one, which I don't know how to detect like that.  So, if it's between the two, I would prefer the optional argument."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-01-18T17:03:02Z",
+   "body": "> @reporter I think it would be fine to add an argument to the function `include_cuda=True|False`.\r\n> \r\n> One could detect the start method yes, but that alone doesn't tell us whether we are running the function in a forked process or the main one, which I don't know how to detect like that. So, if it's between the two, I would prefer the optional argument.\r\n\r\nAgree, sounds good. I can make PR to add the argument"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-01-19T14:47:01Z",
+   "body": "Hi folks, just hit this same issue in lightning 1.9.0, but via a different path. I'm using fault tolerant training on a map-style dataset, using the \"ddp\" strategy. The worker loop ends up calling `state_dict` on `CaptureMapDataset` which makes a call to `_collect_rng_states()` and ends up triggering the same code path as stated above, leading to the same crash.\r\n\r\n```\r\nOriginal Traceback (most recent call last):\r\n  File \".../torch/utils/data/_utils/worker.py\", line 302, in _worker_loop\r\n    data = fetcher.fetch(index)\r\n  File \".../torch/utils/data/_utils/fetch.py\", line 52, in fetch\r\n    return self.collate_fn(data)\r\n  File \".../pytorch_lightning/utilities/auto_restart.py\", line 418, in _capture_metadata_collate\r\n    metadata = dataset.state_dict()\r\n  File \".../pytorch_lightning/utilities/auto_restart.py\", line 275, in state_dict\r\n    return {self.worker_id: {\"rng_states\": _collect_rng_states()}}\r\n  File \".../lightning_fabric/utilities/seed.py\", line 111, in _collect_rng_states\r\n    \"torch.cuda\": torch.cuda.get_rng_state_all(),\r\n  File \".../torch/cuda/random.py\", line 39, in get_rng_state_all\r\n    results.append(get_rng_state(i))\r\n  File \".../torch/cuda/random.py\", line 22, in get_rng_state\r\n    _lazy_init()\r\n  File \".../torch/cuda/__init__.py\", line 207, in _lazy_init\r\n    raise RuntimeError(\r\nRuntimeError: Cannot re-initialize CUDA in forked subprocess. To use CUDA with multiprocessing, you must use the 'spawn' start method\r\n```\r\n\r\nWould you prefer a new bug for this one, or is there already sufficient info on this ticket to propose a way of solving this?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-01-22T15:54:43Z",
+   "body": "@participant2 Yes, in the `CaptureMapDataset.state_dict`, we should call the function `_collect_rng_states` with `include_cuda=True` only on systems that don't use fork as the default (macos and windows) for dataloader processes, and on Linux we should call `include_cuda=False`. That's my guess. A PR for this would be welcome :) "
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-01-23T10:15:56Z",
+   "body": "@participant1 - I can certainly take a look, though I'm not familiar at all with these lower level cuda calls. Do you think it would be more robust to instead check whether we're _in_ a forked process (and then set `include_cuda=False`) rather than just checking the system default? It's perfectly reasonable to collect the cuda rng states if we're using num_workers=0 for example, even on Linux.\r\nI could modify `state_dict` to look something like this instead, which should handle all cases?\r\n```\r\ndef state_dict(self) -> Dict[int, Dict[str, Any]]:\r\n    return {self.worker_id: {\"rng_states\": _collect_rng_states(include_cuda=torch.cuda.is_initialized())}}\r\n```\r\nIf you think this is ok, I'll raise a PR. The only concern I would still have with this is that nothing will collect the cuda random state for num_workers>0 on linux, because no worker has access to initialised CUDA. But that could be discussed on the PR."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-01-23T10:29:00Z",
+   "body": "Sounds good. Unfortunately, with a quick research I couldn't find a good way to check whether we are in a forked process. \r\n`torch.cuda.is_initialized()` could be a way around, but technically no what we want. \r\n\r\n> The only concern I would still have with this is that nothing will collect the cuda random state for num_workers>0 on linux, because no worker has access to initialised CUDA. But that could be discussed on the PR.\r\n\r\nUnfortunately I have no better idea."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-01-23T10:59:12Z",
+   "body": "> Unfortunately I have no better idea.\r\n\r\nNor do I! I'll get a PR sorted."
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "Lightning-AI/pytorch-lightning",
+  "default_branch": "master",
+  "commit_sha": "ce5ea92b5372dd9ad157a16654f25c4ab2e2066e",
+  "as_of": "2023-01-05T12:28:01Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_Lightning-AI_pytorch-lightning_16262"
+}

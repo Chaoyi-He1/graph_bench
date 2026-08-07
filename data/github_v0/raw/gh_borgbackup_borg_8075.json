@@ -1,0 +1,158 @@
+{
+ "repo": "borgbackup/borg",
+ "number": 8075,
+ "url": "https://github.com/borgbackup/borg/issues/8075",
+ "title": "borg extract (subfolder) very slow",
+ "state": "closed",
+ "labels": [
+  "bug",
+  "help wanted",
+  "cmd: extract"
+ ],
+ "reporter": "reporter",
+ "created_at": "2024-02-06T12:59:38Z",
+ "closed_at": "2024-12-14T23:40:46Z",
+ "body": "## Have you checked borgbackup docs, FAQ, and open GitHub issues?\r\n\r\nYes\r\n\r\n## Is this a BUG / ISSUE report or a QUESTION?\r\n\r\nISSUE\r\n\r\n## System information. For client/server mode post info for both machines.\r\n\r\n#### Your borg version (borg -V).\r\nBoth client and server machine run:\r\nborg 1.2.0\r\n\r\n\r\n#### Operating system (distribution) and version.\r\nClient: Ubuntu 22.04.2\r\nServer: Ubuntu 22.04.3\r\n\r\n#### Hardware / network configuration, and filesystems used.\r\nClient: 8C/16T CPU, 64GB RAM, 12x 20TB HDD in RAID6\r\nServer: 6C/12T CPU, 128GB RAM, 10x 10TB HDD in RAID6\r\n\r\n#### How much data is handled by borg?\r\n```\r\n------------------------------------------------------------------------------\r\n                       Original size      Compressed size    Deduplicated size\r\nThis archive:               66.93 TB             52.38 TB              1.64 TB\r\nAll archives:                1.06 PB            836.84 TB             44.05 TB\r\n\r\n                       Unique chunks         Total chunks\r\nChunk index:                32418600            632333526\r\n------------------------------------------------------------------------------\r\n```\r\n\r\n#### Full borg commandline that lead to the problem (leave away excludes and passwords)\r\n`borg extract --progress ssh://<USER>@<IP>:<PORT>/path/to/backup/::2024-01-24-1706130008 /path/into/subfolder`\r\n\r\n## Describe the problem you're observing.\r\nInitially (on the first day) when extracting, the speed is as expected around 100MB/s (on a 1 Gbit/s line).\r\n\r\nAfter some time the speed crawls down to 20KB/s, or even 0. Rarely it also goes back up to around 100MB/s.\r\n\r\nThis makes it look like it will take assumed ~50 days, instead of the anticipated ~2 days. (The subfolder should be around 10 TB)\r\n\r\nI'm suspecting this has to do with specifying the \"/path/into/subfolder\". Compared to running a plain borg extract of the full archive (no subfolder specified), I could not observe that drop in speed.\r\n\r\nThe \"fun\" part is, that the repository also has some Integrity errors, so after ~21% of running a full extract (`borg extract --progress ssh://<repopath>::2024-01-24-1706130008`), I get:\r\n```\r\nTraceback (most recent call last):\r\n  File \"/usr/lib/python3/dist-packages/borg/archiver.py\", line 5089, in main\r\n    exit_code = archiver.run(args)\r\n  File \"/usr/lib/python3/dist-packages/borg/archiver.py\", line 5020, in run\r\n    return set_ec(func(args))\r\n  File \"/usr/lib/python3/dist-packages/borg/archiver.py\", line 183, in wrapper\r\n    return method(self, args, repository=repository, **kwargs)\r\n  File \"/usr/lib/python3/dist-packages/borg/archiver.py\", line 198, in wrapper\r\n    return method(self, args, repository=repository, manifest=manifest, key=key, archive=archive, **kwargs)\r\n  File \"/usr/lib/python3/dist-packages/borg/archiver.py\", line 907, in do_extract\r\n    archive.extract_item(item, stdout=stdout, sparse=sparse, hardlink_masters=hardlink_masters,\r\n  File \"/usr/lib/python3/dist-packages/borg/archive.py\", line 804, in extract_item\r\n    for data in self.pipeline.fetch_many(ids, is_preloaded=True):\r\n  File \"/usr/lib/python3/dist-packages/borg/archive.py\", line 338, in fetch_many\r\n    yield self.key.decrypt(id_, data)\r\n  File \"/usr/lib/python3/dist-packages/borg/crypto/key.py\", line 380, in decrypt\r\n    payload = self.cipher.decrypt(data)\r\n  File \"src/borg/crypto/low_level.pyx\", line 326, in borg.crypto.low_level.AES256_CTR_BASE.decrypt\r\n  File \"src/borg/crypto/low_level.pyx\", line 444, in borg.crypto.low_level.AES256_CTR_BLAKE2b.mac_verify\r\nborg.crypto.low_level.IntegrityError: MAC Authentication failed\r\n```\r\nThis is why I tried to extract subfolders at all.\r\n\r\nI ran `borg check --verify-data` before too, which gave me:\r\n```\r\nborg check --verify-data --progress ssh://<repopath>::2024-01-24-1706130008\r\nRemote: Index object count mismatch.\r\nRemote: committed index: 32418586 objects\r\nRemote: rebuilt index:   32418590 objects\r\nRemote: ID: 1bdb6a802aa5122a7b4df38fe2174a874b7c30c0a7be9a722d7cea86d1aa6712 rebuilt index: (53554, 8)       committed index: <not found>     \r\nRemote: ID: 106a0f95ff82f19e5c753302f62034bdb122cc90ed81e57e05783fd7f7d060c8 rebuilt index: (34806, 137419498) committed index: <not found>     \r\nRemote: ID: b54154794ab4fbccce0af4d4c538fcba09ea281de747a3945754ec36c9efd312 rebuilt index: (48625, 151966847) committed index: <not found>     \r\nRemote: ID: 51098c822edc1631f8c80c4f889f28320cac66b28111123033800e901748621f rebuilt index: (46567, 11881867) committed index: <not found>     \r\nRemote: Finished full repository check, errors found.\r\n```\r\nFollowed by a `borg check --repair --progress ssh://<repopath>::2024-01-24-1706130008` - But I still got the same IntegrityError when trying to extract everything afterwards.\r\n\r\nWould a `borg check --repair --verify-data ...` actually fix that issue?\r\n\r\nI am a bit lost currently, and would be happy for any pointers on how to proceed.\r\n\r\n\r\n#### Can you reproduce the problem? If so, describe how. If not, describe troubleshooting steps you took before opening the issue.\r\nYes. Always happens in a similar fashion. (Cancel and retry). Also tried borg mount + rsync, but that was similarly slow.\r\n\r\n#### Include any warning/errors/backtraces from the system logs\r\nAlready above\r\n",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2024-02-06T13:21:42Z",
+   "body": "Hmm, IIRC borg always sequentially goes over the full archive, matching the pattern to each encountered item path and extracting it if it matches.\r\n\r\nSo it is very likely (considering the usual borg recursion behaviour at `borg create` time) that initially the path pattern will not match (close to 0 transfer rate), then it will match for a while (high transfer rate, actually extracting stuff), then it will stop matching for the rest of the archive (close to 0 transfer rate).\r\n\r\nThe \"close to zero\" rate is when borg only reads metadata from the archive metadata stream, not file content data.\r\n\r\nSo, guess we could \"short circuit\" that and stop borg extract when it leaves the desired folder. That would only work for the most simple use case (as you had) and only for the current single-threaded borg internal recursor though.\r\n\r\nMulti-threading (in future) and also an external recursor that behaves differently would be problematic.\r\n\r\nSo, could it be borg is already finished extracting the data you wanted?\r\n\r\nAn alternative explanation for widely varying transfer rate can be file size:\r\n- if borg extracts big files, you'll see a high transfer rate, because there is minimal overhead and content size determines processing time.\r\n- if borg extracts very small files, you'll see a much lower transfer rate, because overhead determines per-file processing time.\r\n\r\nYet another explanation of course can be outside factors:\r\n- your network connection being used otherwise also\r\n- your disks being actively used otherwise also\r\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-02-06T13:31:09Z",
+   "body": "Hmm, it seems strange that you see MAC authentication errors after running `borg check --repair` - I would expect that the check finds and \"fixes\" (uses all-zero replacement chunks) all such errors, so you should not see MAC errors afterwards.\r\n\r\nMaybe check if your borg client hardware (which runs the crypto) works OK, especially CPU and RAM, but also do a SMART test on the disks.\r\n\r\nUpdate: I was slightly wrong:\r\n- check --repair does not cryptographically verify (== check the MAC) file **content** data, one needs to add `--verify-data` if one wants that (and wait quite a bit longer)\r\n- but simple cases of corruption can usually be also found by the repository check checking the crc32 of all chunks. in that case, the chunk would be removed and the files would be \"patched\" with all-zero replacement chunk.\r\n- looks like this issue was a case of crc32 check being \"OK\", but the MAC (or the data) being wrong and thus failing the MAC test."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-02-06T13:40:00Z",
+   "body": "Another issue might be that you specified the extraction pattern **with** a leading slash.\r\n\r\nborg archives store paths **without** a leading slash (like tar), so that might not match at all.\r\n\r\nIn some borg versions there were workarounds for this though, but later we removed them because they only worked for the most simple patterns, but not for more complex ones, see the change log.\r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-02-06T14:48:01Z",
+   "body": "Hi Thomas,\r\n\r\nfirst of all thanks a lot for your quick replies and suggestions!\r\n\r\n### borg always sequentially goes over the full archive\r\nThank you for confirming! Yes this was my suspicion as well, but it still \"feels\" slower compared to directly extracting everything. (The ~20% / ~14 TB until it fails were done in ~2 days)\r\n\r\n### The \"close to zero\" rate is when borg only reads metadata from the archive metadata stream\r\nI also checked the \"DISK READ\" rate on the server. That also shows no read activity when it is close to zero. If it still scans metadata, I would have expected more activity on the serverside? (Or even clientside if something is cached. But both seem to more or less idle. The only thing I notice in those \"close to zero\" periods is one Core on the client being at 100% - but I can not see this reflected in any processes CPU% (using htop).\r\n\r\n\r\n### So, could it be borg is already finished extracting the data you wanted?\r\nProbably not. The used diskpace on the client is still very much below what I expect. And I can still see those occasional 100MB/s peaks for some minutes. Also I can still see the target folder growing (using `du`)\r\n\r\n### if borg extracts very small files, you'll see a much lower transfer rate\r\nI agree, this is a very common pattern seen when copying files too. The smallest files are in the range of 100KB to 500KB range. But usually much bigger. Even with such small files, I would expect to see more than the 20KB/s I'm seeing in the low activity phases.\r\n\r\n### Network and Disk usage\r\nI made sure of that. Even SCP'd a large file between the very same client and server from and to the very same RAID volume. -> Constant 100MB/s, while borg sits at 20KB/s. Using `sudo htop` to look at disk usage. Also checked `cat /proc/mdstat` to make sure no raid check is running.\r\n\r\n### MAC auth errors after borg check --repair\r\nThe error happened twice at the same % value when extracting, so I'm pretty confident it is something reproducible, and not clientside CPU/RAM issue.\r\n\r\nIs there actually a difference between `borg check --repair` and `borg check --verify-data --repair`?\r\n\r\nOther remarks to MAC errors / repair:\r\n- I did not get any output when `borg check --repair` finished. Could it be it silently prematurely exited? At least from searching the github issue, I think there should have been some output to what it actually fixed?\r\n- Is it correct / a difference to specify the Archive path for --repair / --verify-data? Or just the repo in general? For --verify-data and also --repair I specified the Archive `::2024-01-24-1706130008`\r\n\r\n\r\n### extraction pattern with a leading slash.\r\nI think I must be using a version with that workaround, as the extraction seems to work, files are populating where they should.\r\n\r\nCould that leading slash be a cause of this slowdown? Or is it more like it just gets stripped from the pattern initially and thats it?\r\n\r\nThank you for your help so far!\r\n\r\nI'm currently torn between:\r\n- a) leaving the extraction continue with this slow speed\r\n- b) Stopping it. Running another `borg check --repair` and extracting the full archive again."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-02-06T19:45:39Z",
+   "body": "If borg unexpectedly terminates/crashes, you should see a traceback usually.\r\n\r\nBut as long as nothing bad happens, there might not be much output, because the default log level is warning (`-v` aka `--info` sets that to info, `--debug` to debug).\r\n\r\nNot sure if you are dealing with some bug here and I can't remember fixing anything related since 1.2.0, but you could install the fat 1.2.7 binary from github releases and give it a try.\r\n\r\nMaybe it could be also some network issue, like e.g. a hanging connection?\r\n\r\nMaybe we can send the running borg a signal to find out what it does."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-02-06T19:50:38Z",
+   "body": "About borg check: usually I let it verify all archives (so I only give the repo spec), but as you have a quite big repo (and maybe many archives), I can see why you don't want to do that. :-)\r\n\r\nIf you give --verify-data, it will cryptographically check the integrity of **content** data chunks also (otherwise it just checks if the referred content data chunks are present).\r\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-02-06T19:54:05Z",
+   "body": "You could try sending SIGUSR1 and SIGUSR2 to the borg process.\r\n\r\nThat outputs some info and a traceback (but, IIRC, just continues after outputting that).\r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-02-07T09:45:33Z",
+   "body": "SIGUSR1 did not seem to print anything, but SIGUSR2 dumped this:\r\n```\r\nReceived SIGUSR2 at 2024-02-07 08:59:29, dumping trace...\r\nCurrent thread 0x00007f481c115000 (most recent call first):\r\n  File \"/usr/lib/python3/dist-packages/borg/archiver.py\", line 5049 in sig_trace_handler\r\n  File \"/usr/lib/python3/dist-packages/borg/archive.py\", line 812 in extract_item\r\n  File \"/usr/lib/python3/dist-packages/borg/archiver.py\", line 907 in do_extract\r\n  File \"/usr/lib/python3/dist-packages/borg/archiver.py\", line 198 in wrapper\r\n  File \"/usr/lib/python3/dist-packages/borg/archiver.py\", line 183 in wrapper\r\n  File \"/usr/lib/python3/dist-packages/borg/archiver.py\", line 5020 in run\r\n  File \"/usr/lib/python3/dist-packages/borg/archiver.py\", line 5089 in main\r\n  File \"/usr/bin/borg\", line 33 in <module>\r\n  ```\r\n\r\nI will try the --repair on the repo spec, and hope it will take care if the integrity error."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-02-07T10:05:34Z",
+   "body": "Line 812 is borg writing content data while extracting a file.\r\n\r\nMaybe try sending SIGUSR2 multiple times to see whether you get different locations in the code."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-02-07T10:24:36Z",
+   "body": "SIGUSR1 / SIGINFO should also print something IF borg is currently in `extract_item`.\r\n\r\nMaybe this is also helpful:\r\n\r\nhttps://github.com/borgbackup/borg/issues/2419#issuecomment-345118768"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-02-07T11:02:18Z",
+   "body": "I already cancelled the slow `borg extract /sub/folder` now.\r\n\r\nCurrently I moved the clientside `.config/borg` to the server and run the `borg check --verify-data --repair --progress <repo spec>` locally. Let's see if this fixes the IntegrityErrors during full extract."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-02-12T10:02:40Z",
+   "body": "### Update\r\nThe full repair seems to have done something this time:\r\n```\r\nThis is a potentially dangerous function.\r\ncheck --repair might lead to data loss (for kinds of corruption it is not\r\ncapable of dealing with). BE VERY CAREFUL!\r\n\r\nType 'YES' if you understand this and want to continue: YES\r\nchunk 92b1f06092a33feb486aff54d075de18ed072ff2f4e265826b3e7df9deaf6273, integrity error: MAC Authentication failed\r\nFound defect chunks. They will be deleted now, so affected files can get repaired now and maybe healed later.\r\nFinished cryptographic data integrity verification, verified 32418621 chunks with 1 integrity errors.\r\n2023-06-30-1688126422: data/xyz.zip: New missing file chunk detected (Byte 447908978693-447910088265, Chunk 92b1f06092a33feb486aff54d075de18ed072ff2f4e265826b3e7df9deaf6273). Replacing with all-zero chunk.      \r\n2023-07-31-1690804824: data/xyz.zip: New missing file chunk detected (Byte 447908978693-447910088265, Chunk 92b1f06092a33feb486aff54d075de18ed072ff2f4e265826b3e7df9deaf6273). Replacing with all-zero chunk.      \r\n2023-08-31-1693515612: data/xyz.zip: New missing file chunk detected (Byte 447908978693-447910088265, Chunk 92b1f06092a33feb486aff54d075de18ed072ff2f4e265826b3e7df9deaf6273). Replacing with all-zero chunk.      \r\n2023-09-30-1696107615: data/xyz.zip: New missing file chunk detected (Byte 447908978693-447910088265, Chunk 92b1f06092a33feb486aff54d075de18ed072ff2f4e265826b3e7df9deaf6273). Replacing with all-zero chunk.      \r\n2023-10-31-1698786013: data/xyz.zip: New missing file chunk detected (Byte 447908978693-447910088265, Chunk 92b1f06092a33feb486aff54d075de18ed072ff2f4e265826b3e7df9deaf6273). Replacing with all-zero chunk.      \r\n2023-11-30-1701378002: data/xyz.zip: New missing file chunk detected (Byte 447908978693-447910088265, Chunk 92b1f06092a33feb486aff54d075de18ed072ff2f4e265826b3e7df9deaf6273). Replacing with all-zero chunk.      \r\n2023-12-24-1703451615: data/xyz.zip: New missing file chunk detected (Byte 447908978693-447910088265, Chunk 92b1f06092a33feb486aff54d075de18ed072ff2f4e265826b3e7df9deaf6273). Replacing with all-zero chunk.      \r\n2023-12-31-1704056415: data/xyz.zip: New missing file chunk detected (Byte 447908978693-447910088265, Chunk 92b1f06092a33feb486aff54d075de18ed072ff2f4e265826b3e7df9deaf6273). Replacing with all-zero chunk.      \r\n2024-01-07-1704661215: data/xyz.zip: New missing file chunk detected (Byte 447908978693-447910088265, Chunk 92b1f06092a33feb486aff54d075de18ed072ff2f4e265826b3e7df9deaf6273). Replacing with all-zero chunk.      \r\n2024-01-14-1705266028: data/xyz.zip: New missing file chunk detected (Byte 447908978693-447910088265, Chunk 92b1f06092a33feb486aff54d075de18ed072ff2f4e265826b3e7df9deaf6273). Replacing with all-zero chunk.      \r\n2024-01-18-1705611601: data/xyz.zip: New missing file chunk detected (Byte 447908978693-447910088265, Chunk 92b1f06092a33feb486aff54d075de18ed072ff2f4e265826b3e7df9deaf6273). Replacing with all-zero chunk.      \r\n2024-01-19-1705698018: data/xyz.zip: New missing file chunk detected (Byte 447908978693-447910088265, Chunk 92b1f06092a33feb486aff54d075de18ed072ff2f4e265826b3e7df9deaf6273). Replacing with all-zero chunk.      \r\n2024-01-20-1705784428: data/xyz.zip: New missing file chunk detected (Byte 447908978693-447910088265, Chunk 92b1f06092a33feb486aff54d075de18ed072ff2f4e265826b3e7df9deaf6273). Replacing with all-zero chunk.      \r\n2024-01-21-1705870807: data/xyz.zip: New missing file chunk detected (Byte 447908978693-447910088265, Chunk 92b1f06092a33feb486aff54d075de18ed072ff2f4e265826b3e7df9deaf6273). Replacing with all-zero chunk.      \r\n2024-01-22-1705957248: data/xyz.zip: New missing file chunk detected (Byte 447908978693-447910088265, Chunk 92b1f06092a33feb486aff54d075de18ed072ff2f4e265826b3e7df9deaf6273). Replacing with all-zero chunk.      \r\n2024-01-23-1706043602: data/xyz.zip: New missing file chunk detected (Byte 447908978693-447910088265, Chunk 92b1f06092a33feb486aff54d075de18ed072ff2f4e265826b3e7df9deaf6273). Replacing with all-zero chunk.      \r\n2024-01-24-1706130008: data/xyz.zip: New missing file chunk detected (Byte 447908978693-447910088265, Chunk 92b1f06092a33feb486aff54d075de18ed072ff2f4e265826b3e7df9deaf6273). Replacing with all-zero chunk.      \r\n57 orphaned objects found!\r\nArchive consistency check complete, problems found.\r\n```\r\n\r\nI'm trying a full extract now, hopefully not stopping at the previously corrupt file anymore."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-02-12T11:10:44Z",
+   "body": "@reporter yeah, extract should \"work\" after that (but that one file will have that internal damage, where borg replaced the corrupt chunk with an all-zero chunk).\r\n\r\nIf you still could reproduce the now missing chunk (by doing a `borg create` that produces that chunk) and you would run another `borg check --repair` after that, borg would even heal that file in the archives.\r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-02-14T09:16:12Z",
+   "body": "Luckily this specific file we can restore from another source, so this is fine.\r\nThe critical point / file in borg extract has been passed, so I'm positive the rest will work fine now.\r\n\r\nThanks again for your support!\r\n\r\n(Ticket can be closed from my point of view)"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-02-14T22:01:43Z",
+   "body": "Ah, good. Then restore the file, do another backup with that file, then run borg check --repair again to heal the archives."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-02-15T12:02:51Z",
+   "body": "Reopening it for reviewing it later whether the experience with this issue can be improved."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-02-16T12:21:48Z",
+   "body": "As reported the specific corrupted file has been passed (around 21% of full extract).\r\n\r\nMy current issue is, it is getting extremely slow again. Meaning it sits at 33% for more than 24 hours now.\r\nDisk Write speed is at `0.00 B/s` when watching it in `sudo htop`\r\n\r\nI already tried to send SIGUSR1 and 2, but so far I do not see any output.\r\n![image](https://github.com/borgbackup/borg/assets/7237502/d0c5b8ea-3b4b-4f7b-90c9-0fbdf2572d96)\r\n\r\nAny advice would be welcome, how to investigate or proceed here.\r\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-02-17T20:24:45Z",
+   "body": "@reporter you have a lot of RAM in these machines, but you also have a rather big repo, so maybe check whether you do run out of RAM on client or server.\r\n\r\nSIGUSR2 should always print a traceback.\r\nSIGUSR1 only prints an information, if it finds the `extract_item` function in the stack (then it will tell the file path and the seek position in that file).\r\n\r\nDoes your ssh/sshd setup use the ServerAlive ClientAlive feature (so it would automatically break down a non-functioning connection)?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-02-19T10:32:28Z",
+   "body": "I checked the RAM usage (and the journalctl logs, for any OOM-Killer invocation), but it seems completely fine. As you can see from the previous image, RAM usage is somewhere around 3GB (looks the same serverside). Very far away from available RAM.\r\n\r\nYesterday (2 days later) the stacktrace was actually printed out - as well as it continued to extract files (33% to 38%).\r\n![borg_trace](https://github.com/borgbackup/borg/assets/7237502/92bff11d-5037-4994-830f-4d0dfb1a8320)\r\nSo the SSH connection seems to be working."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-02-24T19:26:10Z",
+   "body": "Hmm, bit out of ideas here.\r\n\r\nMaybe one could try to reproduce this issue on a developer machine and check if there is anything unusual going on, like getting stuck somehow. Finding the place where it is stuck would be useful already (that's what I hoped getting from signalling borg to get a traceback).\r\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-02-24T19:27:28Z",
+   "body": "I suspect there is a bug somewhere (could be in borg or elsewhere)."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-02-26T17:50:15Z",
+   "body": "Just as an update: It is currently at 77%. The finish line gets into sight :<nick>: \r\n\r\nI still do not have a good explanation for that behavior. Inspecting the kernel what it is currently busy with, points into ext4 allocation:\r\n![image](https://github.com/borgbackup/borg/assets/7237502/c6dad672-1a51-4ba6-a130-aafa5f1b7a26)\r\nWhile I found some mailing list posts about this potentially being an issue, I can not fully relate it to my current speed issue.\r\n\r\nI will most likely create a new borg repo from scratch with the same data, and then test another full extract."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-04-11T14:18:51Z",
+   "body": "For the record:\r\n- It got stuck again at 78.1% for more than 3 weeks (and never finished, as another approach finished first)\r\n\r\nDuring that time I followed the kernel stacktrace / ext4 allocation issue track:\r\n- References:\r\n  -  https://<redacted-host>/lists/raid/msg75409.html\r\n  - https://bugzilla.kernel.org/show_bug.cgi?id=217965\r\n- Set up another server with a copy of the borg repository\r\n- I could reproduced the slow / stuck behavior using the same 6.5 kernel (Extracting locally)\r\n- Downgrading to a 5.15 kernel did not expose any of this slowness / getting stuck (Extracting locally), which finally lead to a successful full extract and data restore\r\n\r\nHope it helps someone else :<nick>: "
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-04-11T16:03:13Z",
+   "body": "@reporter Interesting. Now the question is whether this is just random or whether it always fails with kernel 6.5 and always succeeds with 5.15. The latter would indicate a regression bug related to kernel 6.5 (if everything else is the same)."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-04-11T16:12:31Z",
+   "body": "I tested 2 times with kernel 5.15, and also multiple times with 6.5 with the same behavior, so I'm pretty positive it is related to this.\r\nAccording to the second link, the issue might have been fixed in kernel 6.8. I will re-test once Ubuntu24.04 is released in a few weeks."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-12-14T23:40:46Z",
+   "body": "@reporter closing this as it is not a borg issue, but a kernel issue. Reopen if you found anything else."
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "borgbackup/borg",
+  "default_branch": "master",
+  "commit_sha": "c59b8fa079a648f85d899a79fc9fcd675c782de0",
+  "as_of": "2024-02-06T12:59:38Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_borgbackup_borg_8075"
+}

@@ -1,6 +1,6 @@
 # Review: gh_denoland_deno_20594
 
-**Encrypted mssql connections stall during TLS negotiation in Deno**
+**mssql ConnectionError**
 
 - source: https://github.com/denoland/deno/issues/20594
 - kind: LLM draft (needs review)
@@ -10,21 +10,21 @@
 ```mermaid
 flowchart LR
     N0["<b>N0 encrypted mssql connection stalls</b><br/><small>info: 6</small>"]
-    N1["<b>N1 encryption dependency isolated</b><br/><small>info: 8</small>"]
-    N2["<b>N2 protocol and server evidence collected</b><br/><small>info: 11</small>"]
-    N3["<b>N3 duplex TLS compatibility blocker identified</b><br/><small>info: 12</small>"]
-    N_terminal["<b>terminal encrypted connection works</b><br/><small>info: 13</small>"]
-    N0 -.->|"❓ mssql_encrypt_false_allows_connection"| N1
+    N1["<b>N1 raw TLS probes collected</b><br/><small>info: 9</small>"]
+    N2_x["<b>N2_x ordinary version upgrade aftermath</b><br/><small>info: 10</small>"]
+    N3["<b>N3 Node-compatibility root cause identified</b><br/><small>info: 13</small>"]
+    N_terminal["<b>terminal fix available but original reporter not verified</b><br/><small>info: 15</small>"]
+    N0 -.->|"❓ openssl_and_connecttls_probes_run_on_deno_1_38_3, openssl_reports_unexpected_eof_without_peer_certificate, sql_server_reports_error_17821_for_strict_tds_connection"| N1
     linkStyle 0 stroke:#3b82f6,stroke-width:2px
-    N1 -.->|"❓ openssl_direct_probe_unexpected_eof_no_certificate, sql_server_logs_strict_tds_certificate_error"| N2
-    linkStyle 1 stroke:#3b82f6,stroke-width:2px
-    N2 ==>|"🔀 ❓same_database_endpoint_accessible_without_encryption + ⚡Identify and fix the Deno Node-compatibility gap in the TLS upgrade used by tedious: mssql starts TLS over an existing duplex stream after TDS prelogin, while Deno only supported terminating TLS directly on a TCP stream."| N3
-    linkStyle 2 stroke:#a855f7,stroke-width:2px
-    N3 ==>|"⚡ Use a Deno build containing the duplex-stream TLS compatibility fix, retain encrypted mssql configuration, and ask the user to verify the original connection before declaring resolution."| N_terminal
+    N1 ==>|"💥 blind: Try a routine Deno upgrade in case newer Node-compatibility or TLS code already resolves the mssql timeout."| N2_x
+    linkStyle 1 stroke:#ef4444,stroke-width:2px
+    N2_x ==>|"⚡ Diagnose the failure as a Deno Node-compatibility limitation: mssql/tedious starts TLS over a duplex stream, while Deno's internal TLS termination supports only a TCP stream and cannot operate on the fake net.Socket expected by Node internals."| N3
+    linkStyle 2 stroke:#f97316,stroke-width:2px
+    N3 ==>|"⚡ Ship the Deno Node-compatibility implementation that permits TLS termination over the duplex/fake-net.Socket path used by mssql, then ask the original reporter to retest encrypted mssql on a build containing that fix."| N_terminal
     linkStyle 3 stroke:#f97316,stroke-width:2px
     class N0 start
     class N1 normal
-    class N2 normal
+    class N2_x normal
     class N3 normal
     class N_terminal terminal
     classDef start fill:#fee2e2,stroke:#b91c1c,color:#000
@@ -34,34 +34,34 @@ flowchart LR
 
 ## Opening (body)
 
-> I'm trying to use npm:mssql@10.0.1 from Deno 1.37.0 to connect to SQL Server on localhost:1433 in a Docker container. Deno reaches the server but fails after 15 seconds with `ConnectionError: Failed to connect to localhost:1433 in 15000ms`. The equivalent program works with Node v18.16.0. I added logging to tedious: Node proceeds from `SentTLSSSLNegotiation` through a successful TLSv1.2 negotiation and login, while Deno reaches `SentTLSSSLNegotiation`, waits for the timeout, and closes the connection.
+> I'm using Deno 1.37.0 with npm:mssql@10.0.1 to connect to SQL Server at localhost:1433 in a Docker container, with trustServerCertificate enabled. The connection times out after 15000ms, while the equivalent code works with Node 18.16.0. I instrumented tedious: Node connects, negotiates ECDHE-RSA-AES128-GCM-SHA256 with TLS 1.2, logs in, and executes requests; Deno connects and reaches SentTLSSSLNegotiation but then times out and closes.
 
 ## Satisfaction conditions
 
-1. Must identify the root cause as a Deno Node-compatibility limitation in terminating TLS over the existing duplex/fake `net.Socket` stream used by mssql/tedious after TDS prelogin, rather than a basic TCP reachability failure.
-2. The diagnosis must be grounded in the collected evidence: Deno and Node both reach the endpoint, only Deno stalls at `SentTLSSSLNegotiation`, and `encrypt: false` reaches the same database from Deno.
-3. Must not present `encrypt: false` as the complete production fix; it is only a temporary workaround and is unavailable where encrypted transport is required, including Azure SQL.
-4. Must not conclude that the Docker container or database endpoint is simply inaccessible, because Node and unencrypted Deno mssql connections reach the same address and port.
-5. Must recommend a Deno build containing the duplex-stream TLS fix and have the user verify the original encrypted mssql connection before treating the issue as resolved.
+1. Must identify the accepted root cause: mssql/tedious terminates TLS on a duplex stream, while Deno's Node-compatibility internals supported TLS termination only on a TCP stream and lacked the required duplex-to-fake-net.Socket bridge.
+2. The diagnosis must be grounded in the collected evidence: Node completes TLS 1.2 and logs in against the same database, while Deno reaches SentTLSSSLNegotiation and times out; the requested openssl and server-side logs provide additional raw observations.
+3. Must not treat an ordinary upgrade to Deno 1.40.1 as the fix, because the reporter tried it and still received the same timeout.
+4. The technical fix must support the encrypted mssql duplex path rather than relying on disabling encryption.
+5. Must ask the original reporter to verify the connection on a build containing the fix before declaring their case resolved. A different affected user's successful canary test is supporting evidence but is not the reporter's own verification.
 
 ## Edges
 
 | edge | type | gates / info | payload |
 |---|---|---|---|
-| `e1_N0__N1` | clarification_only | asks: mssql_encrypt_false_allows_connection | Yes. With `encrypt: false` I can connect to SQL Server from Deno. With encryption enabled, it still stops duri |
-| `e2_N1__N2` | clarification_only | asks: openssl_direct_probe_unexpected_eof_no_certificate, sql_server_logs_strict_tds_certificate_error | It connects to the port, then prints `unexpected eof while reading`. It says `no peer certificate available`,  / The container logs `Error: 17821, Severity: 20, State: 1` and `A valid TLS certificate is not configured to ac |
-| `e3_N2__N3` | mixed | req_info: tedious_logs_stall_at_tls_negotiation_in_deno, node_logs_complete_tls12_and_login, mssql_encrypt_false_allows_connection, same_database_endpoint_accessible_without_encryption, same_mssql_connection_works_in_node_18, openssl_direct_probe_unexpected_eof_no_certificate, sql_server_logs_strict_tds_certificate_error<br>elements: identifies_tls_upgrade_over_existing_duplex_stream, identifies_deno_node_compat_limitation_to_tcp_stream_tls, does_not_misdiagnose_database_as_unreachable | Identify and fix the Deno Node-compatibility gap in the TLS upgrade used by tedious: mssql starts TLS over an existing duplex stream after TDS prelogin, while Deno only supported terminating TLS directly on a TCP stream. |
-| `e4_N3__N_terminal` | solution_only | req_info: deno_mssql_connection_times_out_localhost_1433, same_mssql_connection_works_in_node_18, mssql_encrypt_false_allows_connection, azure_sql_requires_encrypted_connections, tedious_logs_stall_at_tls_negotiation_in_deno, sql_server_logs_strict_tds_certificate_error<br>elements: uses_build_containing_duplex_stream_tls_fix, keeps_mssql_encryption_enabled, asks_user_to_verify_on_a_build_containing_the_fix | Use a Deno build containing the duplex-stream TLS compatibility fix, retain encrypted mssql configuration, and ask the user to verify the original connection before declaring resolution. |
+| `e1_N0__N1` | clarification_only | asks: openssl_and_connecttls_probes_run_on_deno_1_38_3, openssl_reports_unexpected_eof_without_peer_certificate, sql_server_reports_error_17821_for_strict_tds_connection | I ran both against localhost:1433 with Deno 1.38.3. openssl says CONNECTED, then 'unexpected eof while reading / It prints 'no peer certificate available', 'SSL handshake has read 0 bytes and written 302 bytes', and 'Cipher / The container logs: 'Error: 17821, Severity: 20, State: 1. A valid TLS certificate is not configured to accept |
+| `e2_N1__N2_x` | solution_only **BLIND** | req_info: deno_1_37_mssql_10_0_1_localhost_timeout, same_connection_works_with_node_18_16<br>elements: recommends_retrying_on_newer_stable_deno | Try a routine Deno upgrade in case newer Node-compatibility or TLS code already resolves the mssql timeout. |
+| `e3_N2_x__N3` | solution_only | req_info: same_connection_works_with_node_18_16, node_log_completes_tls12_and_login, deno_log_stops_at_sent_tls_ssl_negotiation, openssl_and_connecttls_probes_run_on_deno_1_38_3, openssl_reports_unexpected_eof_without_peer_certificate, sql_server_reports_error_17821_for_strict_tds_connection<br>elements: identifies_mssql_tls_over_duplex_as_root_cause, explains_deno_tls_only_supported_tcp_streams, identifies_missing_duplex_to_fake_net_socket_bridge | Diagnose the failure as a Deno Node-compatibility limitation: mssql/tedious starts TLS over a duplex stream, while Deno's internal TLS termination supports only a TCP stream and cannot operate on the fake net.Socket expected by Node internals. |
+| `e4_N3__N_terminal` | solution_only | req_info: same_connection_works_with_node_18_16, deno_log_stops_at_sent_tls_ssl_negotiation, openssl_and_connecttls_probes_run_on_deno_1_38_3, sql_server_reports_error_17821_for_strict_tds_connection<br>elements: implements_tls_termination_for_the_mssql_duplex_path, keeps_mssql_encryption_enabled, asks_original_reporter_to_verify_on_a_build_containing_the_fix, does_not_declare_reporter_resolved_without_their_retest | Ship the Deno Node-compatibility implementation that permits TLS termination over the duplex/fake-net.Socket path used by mssql, then ask the original reporter to retest encrypted mssql on a build containing that fix. |
 
 ## Nodes
 
 | node | terminal | volunteered | images | symptoms |
 |---|---|---|---|---|
-| `N0` |  | 2 | 0 | My Deno mssql connection reaches localhost:1433 but remains at `SentTLSSSLNegotiation` until it fails after 15000ms. The equivalent Node v18 |
-| `N1` |  | 1 | 0 | The same endpoint connects from Deno when I set `encrypt: false`, but the encrypted connection still stalls during TLS negotiation. For an A |
-| `N2` |  | 1 | 0 | Encrypted mssql connections still stop at `SentTLSSSLNegotiation`; an unencrypted mssql connection can reach the same database address and p |
-| `N3` |  | 0 | 0 | Encrypted mssql connections continue to fail in Deno, while Node completes the same connection and Deno can reach the database when encrypti |
-| `N_terminal` | ✓ | 1 | 0 | The encrypted mssql connection works in Deno Canary without setting `encrypt: false`. |
+| `N0` |  | 2 | 0 | My Deno connection to localhost:1433 times out after 15000ms, although the equivalent Node 18.16.0 program connects and runs the stored proc |
+| `N1` |  | 1 | 0 | The mssql connection still stalls during TLS negotiation. openssl connects to port 1433 but reads zero handshake bytes and reports an unexpe |
+| `N2_x` |  | 1 | 0 | With Deno 1.40.1 and mssql 10.0.2, I see deprecated Deno.TcpConn.rid warnings and the connection still times out at localhost:1433 after 150 |
+| `N3` |  | 0 | 0 | On my last tested Deno setup, encrypted mssql connections still reach the TLS-negotiation state and then time out. |
+| `N_terminal` | ✓ | 0 | 0 | The last result from my own Docker setup is still the encrypted mssql timeout, and I have not posted a canary retest. A different affected u |
 
 ## Machine review (audit pass, adversarially verified)
 

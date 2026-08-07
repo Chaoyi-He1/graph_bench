@@ -1,0 +1,162 @@
+{
+ "repo": "gradio-app/gradio",
+ "number": 11582,
+ "url": "https://github.com/gradio-app/gradio/issues/11582",
+ "title": "Events do not fire for hidden components since gradio v5.36+",
+ "state": "closed",
+ "labels": [
+  "bug",
+  "Regression"
+ ],
+ "reporter": "reporter",
+ "created_at": "2025-07-15T16:39:53Z",
+ "closed_at": "2025-07-23T19:38:43Z",
+ "body": "### Describe the bug\n\nsince version 5.36.2 the users don't see the gradio initialized. they can see the gradio page but the app is not running.\nusing this method to launch the app:\n\n```\n        os.environ['no_proxy'] = ' ,'.join(all_ips)\n        interface.queue(default_concurrency_limit=interface_concurrency_limit).launch(show_error=debug_mode, server_name=interface_host, server_port=interface_port, share=is_gui_shared, max_file_size=max_upload_size)\n\n```\n### Have you searched existing issues?  🔎\n\n- [x] I have searched and found no existing issues\n\n### Reproduction\n\npip install 'gradio>5.36.0'\n\n\n\n### Logs\n\n```shell\nIndex.svelte:373 Failed to execute 'postMessage' on 'DOMWindow': The target origin provided ('https://huggingface.co') does not match the recipient window's origin ('http://192.168.1.10:7860').\n(anonymous) @ Index.svelte:373Understand this warning\nmanifest.json:1  Failed to load resource: the server responded with a status of 404 (Not Found)\n```\n\n### System Info\n\n```shell\nALL\n```\n\n### Severity\nvery high\nI can not work around it",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2025-07-15T22:29:37Z",
+   "body": "Hi @reporter can you tell us more about the environment you are launching on, and a complete minimal example?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-07-16T11:46:34Z",
+   "body": "I cannot provide a complete minimal example, working full time on our repo here https://github.com/DrewThomasson/ebook2audiobook\nyou can git clone and install it for your test. all code related to gradio is in ./lib/functions.py in the function web_interface(), last function in the file.\nthe issue is also OS agnostic. same test on Mac OS Sonoma, Linux Ubuntu 20.04+,  Windows 11.\nfor now we regressed gradio to version 5.35.0, thanks\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-07-16T18:46:36Z",
+   "body": "Hi @reporter we'd love to help but there's too much going on in that repo for us to be able to figure out if this is related to gradio itself, or some unsupported usage of gradio. If you can help us out with a minimal repro, we're happy to look further. Otherwise, I'll go ahead and close for now (can reopen with a minimal repro)."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-07-16T23:14:47Z",
+   "body": "ok no worry. I'm trying to debug it. seems more an issue between the gradio load with js. there is no data coming from javascript to initialize the app."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-07-17T02:57:30Z",
+   "body": "I confirm the issue comes from demo.load()\n\nthis code works with 5.35.0 but not with 5.36+\n```\n        demo.load(\n            fn=None,\n            js=\"\"\"\n            () => {\n                // Define the global function ONCE\n                if (typeof window.redraw_audiobook_player !== 'function') {\n                    window.redraw_audiobook_player = () => {\n                        try {\n                            const audio = document.querySelector('#gr_audiobook_player audio');\n                            if (audio) {\n                                const url = new URL(window.location);\n                                const theme = url.searchParams.get('__theme');\n                                let osTheme;\n                                let audioFilter = '';\n                                if (theme) {\n                                    if (theme === 'dark') {\n                                        audioFilter = 'invert(1) hue-rotate(180deg)';\n                                    } \n                                } else {\n                                    osTheme = window.matchMedia?.('(prefers-color-scheme: dark)').matches;\n                                    if (osTheme) {\n                                        audioFilter = 'invert(1) hue-rotate(180deg)';\n                                    }\n                                }\n                                if (!audio.style.transition) {\n                                    audio.style.transition = 'filter 1s ease';\n                                }\n                                audio.style.filter = audioFilter;\n                            }\n                        } catch (e) {\n                            console.log('redraw_audiobook_player error:', e);\n                        }\n                    };\n                }\n\n                // Now safely call it after the audio element is available\n                const tryRun = () => {\n                    const audio = document.querySelector('#gr_audiobook_player audio');\n                    if (audio && typeof window.redraw_audiobook_player === 'function') {\n                        window.redraw_audiobook_player();\n                    } else {\n                        setTimeout(tryRun, 100);\n                    }\n                };\n                tryRun();\n\n                // Return localStorage data if needed\n                try {\n                    const data = window.localStorage.getItem('data');\n                    if (data) return JSON.parse(data);\n                } catch (e) {\n                    console.log(\"JSON parse error:\", e);\n                }\n\n                return null;\n            }\n            \"\"\",\n            outputs=[gr_read_data]\n        )\n```"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-07-17T12:25:56Z",
+   "body": "OK I found the issue, the component JSON has its \"change\" event not fired anymore since gradio version 5.36.2\n\nhere is a minimal script test JSON component change event:\n\n```py\nimport gradio as gr\n\n# 1) Python callback that runs when the JSON changes\ndef screen_data(data):\n    # data is the object returned by your JS\n    ts = data.get(\"timestamp\", \"unknown time\")\n    msg = data.get(\"message\", \"\")\n    return f\"At {ts}, JS says: “{msg}”\"\n\nwith gr.Blocks() as demo:\n    # Hidden JSON to capture the raw JS return value\n    hidden_json = gr.JSON(visible=False)\n    # Visible Textbox to show the screened output\n    display     = gr.Textbox(label=\"Screened Output\")\n\n    # 2) demo.load() uses only JS to populate hidden_json\n    demo.load(\n        fn=None,\n        js=\"\"\"\n        () => {\n            const data = {\n                message: \"Hello from client JS!\",\n                timestamp: new Date().toLocaleTimeString()\n            };\n            return data;  // this goes into hidden_json\n        }\n        \"\"\",\n        outputs=[hidden_json]\n    )\n\n    # 3) When hidden_json changes (i.e. immediately after load), run screen_data\n    hidden_json.change(\n        fn=screen_data,\n        inputs=[hidden_json],\n        outputs=[display]\n    )\n\ndemo.launch()\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-07-17T16:56:28Z",
+   "body": "Ah so the issue is that the events for _any_ hidden components don't fire anymore. If you change `visible=True` in `gr.JSON()`,  it'll work. Let me discuss with the team what a good fix for this would be. I'll reopen. By the way, in the meantime, you could use a component like `gr.State` instead of `gr.JSON`"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-07-17T16:57:30Z",
+   "body": "Thanks so much for providing the repro by the way"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-07-17T18:05:05Z",
+   "body": "![](https://<redacted-host>/media/v1.Y2lkPTc5MGI3NjExeGppdG4zdWQ2bW8xMm9zanc5eGhrcDZ1MjExYjhmcXAxbGQ3NWNheCZlcD12MV9pbnRlcm5hbF9naWZfYnlfaWQmY3Q9Zw/3o7WTqo27pLRYxRtg4/giphy.gif)"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-07-17T19:30:21Z",
+   "body": "it would be very nice to mention it in your changelog, this behavior is too important to let the developers guess and debug themselves for hours why it's happening....\nbtw. how do you have a JSON automatically in gr.State? our entire logic is based on JSON.change to communicate with javascript.\nwithout this we can trash our project....\nPS: if gradio depends strictly on JS behavior so use visibility: hidden will continue to fire the events rather than display: none."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-07-17T19:34:05Z",
+   "body": "> it would be very nice to mention it in your changelog, this behavior is too important to let the developers guess and debug themselves for hours why it's happening....\n\nagreed, this was very much unintentional. \n\n> btw. how do you have a JSON automatically in gr.State? our entire logic is based on JSON.change to communicate with javascript.\n\nI see, actually If you are using `js`, you wouldn't be able to store that in `gr.State`, since that's only preserved in the backend. \n\nWe'll fix this bug and release a new patch as soon as we can!"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-07-17T19:36:50Z",
+   "body": "ok thank you very much!"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-07-20T15:56:41Z",
+   "body": "> Ah so the issue is that the events for _any_ hidden components don't fire anymore. If you change `visible=True` in `gr.JSON()`, it'll work. Let me discuss with the team what a good fix for this would be. I'll reopen. By the way, in the meantime, you could use a component like `gr.State` instead of `gr.JSON`\n\nHi guys\n\nI'm wondering if anyone else has experienced an issue where using `uvicorn` as the entry point and putting `gr.State` component inside `gr.Blocks` just like me, on Windows, Linux, even on macOS cause the process into hang-on state when you try to terminate(ctrl-c) the process until to manually kill the process.\n\nSo, I think there might be some users (like me :) ) are using the **invisible** components instead of gr.State? although we can use css to hide the element."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-07-20T16:04:15Z",
+   "body": "gr.state is a server side component. here we are talking of hidden client side component to  able to receive events anymore from gradio."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-07-20T16:39:07Z",
+   "body": "Sorry for wasn’t that clear., \nI'm now facing the problem is, using the component with `visible=False` attribute will make javascript can't trigger .click() event."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-07-20T19:48:11Z",
+   "body": "this issue talk about change event, not click"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-07-24T15:45:56Z",
+   "body": "ok everything is fine with 5.38.1 thanks, BUT, @participant3 is right about the click event.\nif the buttons are in a non visible div for example, and make it visible so the button click event stil not work....\n"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-07-24T20:57:11Z",
+   "body": "I dont understand sorry. Does someone have an example?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-07-24T22:55:30Z",
+   "body": "@participant2  here is a minimal script reproducing the issue on 5.38.1 but not on 5.35.0 and below:\n\n```\nimport gradio as gr\n\n# JavaScript functions to show/hide the modal\ndef show_modal(type, msg):\n    return f'''\n    <style>\n        .modal {{\n            position: fixed;\n            top: 0;\n            left: 0;\n            width: 100%;\n            height: 100%;\n            background-color: rgba(0, 0, 0, 0.5);\n            z-index: 9999;\n            display: flex;\n            justify-content: center;\n            align-items: center;\n        }}\n        .modal-content {{\n            background-color: #333;\n            padding: 20px;\n            border-radius: 8px;\n            text-align: center;\n            max-width: 300px;\n            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.5);\n            border: 2px solid #FFA500;\n            color: white;\n            position: relative;\n        }}\n        .confirm-buttons {{\n            display: flex;\n            justify-content: space-evenly;\n            margin-top: 20px;\n        }}\n        .confirm-buttons button {{\n            padding: 10px 20px;\n            border: none;\n            border-radius: 5px;\n            font-size: 16px;\n            cursor: pointer;\n        }}\n        .confirm_yes_btn {{ background-color: #28a745; color: white; }}\n        .confirm_no_btn {{ background-color: #dc3545; color: white; }}\n    </style>\n    <div id=\"custom-modal\" class=\"modal\">\n        <div class=\"modal-content\">\n            <p>{msg}</p>\n            {show_confirm() if type == 'confirm' else '<div class=\"spinner\"></div>'}\n        </div>\n    </div>\n    '''\n\ndef show_confirm():\n    return '''\n    <div class=\"confirm-buttons\">\n        <button class=\"confirm_yes_btn\" onclick=\"document.getElementById('confirm_yes_btn').click()\">✔</button>\n        <button class=\"confirm_no_btn\" onclick=\"document.getElementById('confirm_no_btn').click()\">⨉</button>\n    </div>\n    '''\n\n# Gradio Interface\nwith gr.Blocks() as demo:\n    modal_html = gr.HTML()\n    result_text = gr.Textbox(label=\"Result\")\n\n    confirm_yes_btn = gr.Button(\"\", elem_id=\"confirm_yes_btn\", visible=False)\n    confirm_no_btn = gr.Button(\"\", elem_id=\"confirm_no_btn\", visible=False)\n\n    def on_yes():\n        return \"ok\", \"\"\n\n    def on_no():\n        return gr.update(), \"\"\n\n    def open_modal():\n        return show_modal('confirm', 'Are you sure you want to continue?')\n\n    trigger_modal_btn = gr.Button(\"Show Modal\")\n\n    trigger_modal_btn.click(open_modal, outputs=modal_html)\n    confirm_yes_btn.click(on_yes, outputs=[result_text, modal_html])\n    confirm_no_btn.click(on_no, outputs=[result_text, modal_html])\n\ndemo.launch()\n```\n"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-07-25T07:19:10Z",
+   "body": "Yeah okay. This is expected and was never explicitly supported and actively discouraged. We do not version the DOM generated by gradio and encourage people not to rely on it for this exact reason. \n\nTo achieve this kind of behaviour you should do it via gradio, or if you must do this kind of thing then do not attempt to interact with components that aren't visible. "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-07-25T22:09:47Z",
+   "body": "well, do you think it's logical to continue to disable the buttons once the modal showing them is visible? so it means gradio starts to completely diverge from the css/javascript logic and rules."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-07-26T06:19:34Z",
+   "body": "That's an implementation detail of the modal. The developer is in control of what is visible or not visible. \n\nBut it is perfectly reasonable that a user action cannot be performed on a component that isn't visible. "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-07-28T23:24:34Z",
+   "body": "@participant2 I agree, but once it's visible gradio does not update it and keep it disable putting gradio completely out of the javascript state. it was not an issue before. why not to just follow the JS status of the buttons? for now even if I set the button as visible=True inside a modal invisible, then once I click on a button show the modal the gradio button should work as it worked until all versions of gradio before 5.36.0. So please explain why for you a modal becoming visible through a button click does not let the buttons inside the modal clickable. thanks. PS: when I talk about modal, it can be a simple div. see my minimal code above.\n\nso my question is is the next gradio version will fix it or will stay like this so we will stay stuck on version 5.35.0 for ever until we find a gradio replacement?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-07-29T18:56:26Z",
+   "body": "I think it's better I open a new issue as it has nothing to do with this closed issue."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-08-07T03:29:21Z",
+   "body": "@reporter I am facing the exact same issue. My code rely on JS to find hidden components. I understand the developers discourage this behavior and encourage users to rely solely on Gradio components. But the issue is Gradio at the moment simply do not have all the features users need and we have to work around it. It is sad that I have to stay at 5.35 for now."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-08-07T04:11:04Z",
+   "body": "@participant4 Could you open an issue explaining what you are doing with custom JS that isn't possible with gradio? Then we can help figure out the best solution. "
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-08-21T16:42:55Z",
+   "body": "> [@participant4](https://github.com/participant4) Could you open an issue explaining what you are doing with custom JS that isn't possible with gradio? Then we can help figure out the best solution.\n\n@participant2  Sorry I did not reply earlier. There is a lot I did with custom JS beyond the scope of Gradio's standard components: pop-up menus, dynamically creating / removing components, and a big part of the entire UI was custom. All of them can only rely on finding hidden components to interact with python backend. Without rendering the hidden components, my entire app basically cannot function. So I have to stay at 5.35 for now. I would imagine a lot of high-end users may prefer writing their own JS and HTML, at lease partially."
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "gradio-app/gradio",
+  "default_branch": "main",
+  "commit_sha": "f5a6fa8c52bcb8f508e10ea54a3427f3dab8e3f8",
+  "as_of": "2025-07-15T16:39:53Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_gradio-app_gradio_11582"
+}

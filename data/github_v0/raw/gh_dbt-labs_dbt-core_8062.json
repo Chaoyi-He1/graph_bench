@@ -1,0 +1,124 @@
+{
+ "repo": "dbt-labs/dbt-core",
+ "number": 8062,
+ "url": "https://github.com/dbt-labs/dbt-core/issues/8062",
+ "title": "[CT-2809] Support `ref` in foreign key constraint expressions",
+ "state": "closed",
+ "labels": [
+  "type:feature",
+  "paper_cut",
+  "multi_project",
+  "model_contracts"
+ ],
+ "reporter": "jtcohen6",
+ "created_at": "2023-07-10T13:50:28Z",
+ "closed_at": "2024-07-25T14:56:18Z",
+ "body": "### Problem\r\n\r\n```yml\r\n    constraints:\r\n      - type: FOREIGN_KEY # multi_column\r\n        columns: [FIRST_COLUMN, SECOND_COLUMN, ...]\r\n        expression: \"OTHER_MODEL_SCHEMA.OTHER_MODEL_NAME (OTHER_MODEL_FIRST_COLUMN, OTHER_MODEL_SECOND_COLUMN, ...)\"\r\n    \r\n    columns:\r\n      - name: FIRST_COLUMN\r\n        data_type: DATA_TYPE\r\n        \r\n        # column-level constraints\r\n        constraints:\r\n          - type: foreign_key\r\n            expression: OTHER_MODEL_SCHEMA.OTHER_MODEL_NAME (OTHER_MODEL_COLUMN)\r\n```\r\n\r\nBecause you must hard-code your database.schema.table name when setting a foreign key constraint:\r\n- DAG dependencies are incorrect\r\n- multi-environment is not supported (it's very hacky)\r\n\r\nThis feature has become more important now that warehouses use foreign key constraints for better performance.\r\n\r\nInstead, we should support `ref` in foreign key [constraint](https://docs.getdbt.com/reference/resource-properties/constraints) expression - both at the model and column level.\r\n\r\nThis is similar to how the [relationships data test](https://docs.getdbt.com/reference/resource-properties/data-tests#relationships) works.\r\n```yml\r\nmodels:\r\n  - name: orders\r\n    columns:\r\n      - name: customer_id\r\n        tests:\r\n          - relationships:\r\n              to: ref('customers')\r\n              field: id\r\n```\r\n\r\n### Current workaround\r\n\r\nHaving to use jinja to specify the expression based on the target:\r\n```yml\r\n- type: foreign_key\r\n  expression: \"{{ 'prod_dataset.' if target.name!='dev' else target.dataset ~ '.prod_dataset__' }}foreign_table(foreign_key)\"\r\n```\r\n\r\n### Acceptance criteria\r\n\r\n- For foreign key constraint, I can specify which table I want to reference using `ref` at the column level\r\n```yml\r\n    columns:\r\n      - name: my_column\r\n        data_type: int\r\n        constraints:\r\n          - type: foreign_key\r\n              to: ref('my_other_model')\r\n              to_column: other_my_column\r\n```\r\n- or at the model level\r\n```yml\r\n    constraints:\r\n      - type: foreign_key\r\n        columns: [first_column, second_column, ...]\r\n        to: ref('my_other_model')\r\n        to_columns: [other_first_column, other_second_column, ...]\r\n```\r\n\r\n### Notes from technical refinement\r\n- [this](https://github.com/dbt-labs/dbt-adapters/blob/e964302121f70bacc8f827683c329e06696216cf/dbt/adapters/base/impl.py#L1690) is where the current rendering happens\r\n- [here](https://github.com/dbt-labs/dbt-core/blob/64c59476f4aded46b1bf2003d40160852c4f57c8/core/dbt/parser/schemas.py#L916)’s where we parse constraints currently \r\n---\r\n\r\n_originally left as comment in https://github.com/dbt-labs/dbt-core/issues/7417_\r\n\r\nI'm opening this issue to track upvotes/comments that could inform eventual prioritization. Is this something people want/need in their production workflows? Are happy to solve by other means in the meantime (e.g. [`dbt_constraints`](https://github.com/Snowflake-Labs/dbt_constraints))?\r\n\r\n---\r\n\r\nIf we were to take FK constraints more seriously, we're missing a pretty important ingredient, which is the ability to include & template ref inside the expression field — or providing more structure, i.e.\r\n```yml\r\nconstraints:\r\n  - type: foreign_key\r\n    ref_table_name: ref('other_table_name')\r\n    ref_column_names: ['id'] # could be multiple\r\n```\r\n\r\nPer https://github.com/dbt-labs/dbt-core/issues/6754#issuecomment-1449200569, we kicked that out of scope for v1.5, and we're unlikely to prioritize it while this remains a metadata-only (nonfunctional & unenforceable) feature on the majority of data platforms.",
+ "comments": [
+  {
+   "author": "jgillies",
+   "created_at": "2023-08-03T21:01:48Z",
+   "body": "An argument in favor of prioritizing this is that BigQuery now supports the use of foreign keys for optimizing joins.\r\n\r\nhttps://cloud.google.com/blog/products/data-analytics/join-optimizations-with-bigquery-primary-and-foreign-keys?hl=en"
+  },
+  {
+   "author": "noahjgreen295",
+   "created_at": "2023-11-09T20:51:51Z",
+   "body": "I would also submit that, database enforcement implementation aside, forcing the usage of explicit `<schema>.<table>` hardcodings and not supporting `ref()` is a crack in dbt's abstraction model. On its own it's certainly not the end of the world, but these breaks in the overall architectural vision and product conceptualization tend to proliferate if left unaddressed."
+  },
+  {
+   "author": "awal11",
+   "created_at": "2023-11-17T14:19:58Z",
+   "body": "Snowflake can also use foreign keys for optimizing joins: \r\nhttps://docs.snowflake.com/en/user-guide/join-elimination#setting-the-rely-constraint-property-to-eliminate-unnecessary-joins\r\n"
+  },
+  {
+   "author": "Juniper-vdg",
+   "created_at": "2023-11-22T16:20:53Z",
+   "body": "I'd really be interested in referencing a FK constraint to a model that lives in a custom schema. The referred model lives in a custom schema that is dependent on an Environment Variable that is passed in at runtime, so I cannot hardcode a `<schema>.<table>` reference in my constraint as I do not know what it will be ahead of time.\r\n\r\nUntil dbt is enhanced to support `ref()` in a foreign key constraint, I cannot model my FKs in constraints."
+  },
+  {
+   "author": "noahjgreen295",
+   "created_at": "2023-11-29T16:53:47Z",
+   "body": "Another reason to add this is to ensure that dbt builds DAG dependencies that support the foreign keys.  Because there is no `ref()`, but instead the hard-coding specification of `<schema.table>`, there’s no way to for dbt to understand the DAG dependency that a foreign key constraint creates.\r\n\r\nFor example, let’s say I have 3 models:  `A`, `B`, and `C`\r\n\r\n`B` depends on `A`.\r\n\r\nSo if I say `dbt run -m +B`  it will first build `A`, then `B`.\r\n\r\nSo far so good. Now, suppose I specify a foreign key constraint on a column in `B`, referring to a column in `C`.  For this to work, `C` has to exist. In other words, there’s now a DAG dependency between `B` and `C`, for that reason.\r\n\r\nBut with that constraint specified, `dbt run -m +B` still just builds `A` and then `B`. The constraint itself causes an error, because `C` does not exist.\r\n\r\nIn any non-trivial sized DAG, this will cause constant errors in builds, because there is no guarantee of a thread getting to `C` before `B`. \r\n\r\nThe workaround is to force the dependency by placing a SQL-commented `ref()` in the model `.sql`, as described [here](https://docs.getdbt.com/reference/dbt-jinja-functions/ref#forcing-dependencies). In other words, something like:\r\n\r\n`-- {{ ref('C') }}`\r\n\r\nBut this is just more extra work, and it becomes difficult to maintain as it scales. So this is one more reason to support `ref` in foreign key constraints expressions in the `.yml`; i.e. all in the same place."
+  },
+  {
+   "author": "horony",
+   "created_at": "2023-12-06T11:58:25Z",
+   "body": "Like Snowflake and BigQuery, Redshift also uses foreign keys for optimizing joins:\r\nhttps://docs.aws.amazon.com/redshift/latest/dg/c_best-practices-defining-constraints.html\r\n"
+  },
+  {
+   "author": "elyobo",
+   "created_at": "2023-12-20T00:27:07Z",
+   "body": "During development we build into developer dependent datasets (e.g. `dev_developer_name.dataset_name__model_name` instead of `dataset_name.model_name` in production), so hard coding foreign keys seems impossible."
+  },
+  {
+   "author": "Stochastic-Squirrel",
+   "created_at": "2023-12-20T06:34:53Z",
+   "body": "> During development we build into developer dependent datasets (e.g. `dev_developer_name.dataset_name__model_name` instead of `dataset_name.model_name` in production), so hard coding foreign keys seems impossible.\r\n\r\n@elyobo \r\n\r\nThe dependency issue raised by @noahjgreen295 will still be an issue and was a major issue for us in using this feature. Our pipelines were less reliable and there was essentially a race condition when running multiple models in parallel.\r\n\r\nI use a similar naming convention to you and I used something like this in the model YAML\r\n\r\n```yaml\r\n- type: foreign_key\r\n  expression: \"{{ 'warehouse' if target.name!='dev' else target.dataset }}.tableA(tableB_ForeignKey)\"\r\n```\r\nyou can define simple if-else logic in the brackets. This allows for the FKs to be created in a `dev_developer_name` schema under a `dev` target. Hope this helps!"
+  },
+  {
+   "author": "elyobo",
+   "created_at": "2023-12-20T09:59:58Z",
+   "body": "Thanks @Stochastic-Squirrel, I didn't realise you could do that; ends up something like this for ours and does indeed work, leaving the logic duplication (this is already handled in the naming macros that `ref` calls) and the dependency issue.\r\n\r\n```yaml\r\n- type: foreign_key\r\n  expression: \"{{ 'prod_dataset.' if target.name!='dev' else target.dataset ~ '.prod_dataset__' }}foreign_table(foreign_key)\"\r\n```\r\n\r\nAnother option might be a post hooks alterations with alter table statements, but also not ideal. `ref` support would be ideal but can appreciate that it's a pain to implement."
+  },
+  {
+   "author": "ataft",
+   "created_at": "2024-02-13T19:35:32Z",
+   "body": "@jtcohen6 Given that Snowflake, Redshift and BigQuery use foreign keys to optimize joins, will this issue get re-prioritized? Also, I'll add that downstream tools can use PK/FK to infer table relationships, perhaps bumping the priority further."
+  },
+  {
+   "author": "babschlott",
+   "created_at": "2024-06-18T14:06:30Z",
+   "body": "Any updates on the priority for this? I feel like dbt focus a lot in adding new features but pushes aside the improvement of great features already present..."
+  },
+  {
+   "author": "vishaalkk",
+   "created_at": "2024-06-25T20:22:00Z",
+   "body": "Any updates on this? It defeats the purpose of foreign key constraints as we cannot use them because it seems that dbt is unable to build a correct DAG. I have to run the project a couple of times so that parent tables get built. "
+  },
+  {
+   "author": "EliasAthey",
+   "created_at": "2024-07-10T20:34:11Z",
+   "body": "+1 for this functionality\r\n\r\nI am currently using this workaround successfully. Specifying this in the in-sql config block, in the post_hook argument:\r\n```\r\n{% if (is_incremental == false) and execute%}\r\nALTER TABLE {{this}} ADD FOREIGN KEY ('my_root_column') REFERENCES {{ref('my_foreign_model')}} ('my_foreign_column')\r\n{% endif %}\r\n```\r\nThis applies the constraint only when the model is materialized for the first time, avoiding unnecessary runs.\r\n"
+  },
+  {
+   "author": "gskoff",
+   "created_at": "2024-07-15T22:28:38Z",
+   "body": "I would definitely appreciate a feature which fixes this open issue. I tried to implement the workaround below but found that my foreign table is built after the table I am defining the foreign key for. So, I had to go create the primary key for the foreign table manually in BigQuery in order for the production DAG to build properly.\r\n\r\n`- type: foreign_key\r\n  expression: \"{{ 'prod_dataset.' if target.name!='dev' else target.dataset ~ '.prod_dataset__' }}foreign_table(foreign_key)\"`"
+  },
+  {
+   "author": "shettynithya",
+   "created_at": "2024-08-06T08:50:50Z",
+   "body": "Hello Team,\r\n\r\nI checked this [pull request](https://github.com/dbt-labs/dbt-core/pull/10414), it does not state that \"ref\" are now supported in the \"expression\" for constraints (foregin_key).\r\n\r\nIt does not work in the following version, so is it planned to be fixed ?\r\n\r\ndbt --version\r\nusing legacy validation callback\r\nCore:\r\n  - installed: 1.8.4\r\n  - latest:    1.8.4 - Up to date!\r\n\r\nPlugins:\r\n  - databricks: 1.8.4 - Up to date!\r\n  - spark:      1.8.0 - Up to date!\r\n\r\n"
+  },
+  {
+   "author": "elyobo",
+   "created_at": "2024-08-06T10:03:03Z",
+   "body": "There has not been a release since before that PR was merged; did you check the code from that PR (which does show examples of `ref()` in a `to` option - it looks like `expression` has split into `to` (which takes the ref) and `to_columns` (the columns referenced in the `to` table) and if so did you use the new options, or are you using the older `1.8.4` release which doesn't have this change yet?"
+  },
+  {
+   "author": "shettynithya",
+   "created_at": "2024-08-06T10:08:14Z",
+   "body": "@elyobo thanks i tried out using `to` and `to_columns` with the 1.8.4 release, i got the following error message\r\n\r\n```\r\nCompilation Error in model customer_interactions (models/silver/customer_interactions.sql)\r\n  No parent table defined for foreign key:  \r\n```\r\n\r\nI will try it later today with the beta 1.9 version today."
+  },
+  {
+   "author": "caileyfitzgerald",
+   "created_at": "2024-08-08T18:23:40Z",
+   "body": "Is this enabled for DBT Cloud as well?"
+  },
+  {
+   "author": "graciegoheen",
+   "created_at": "2024-08-28T20:52:15Z",
+   "body": "This will be available in the 1.9 release of dbt-core! \r\n\r\nIf you're using dbt Cloud, you can access this early if you're running on [versionless](https://docs.getdbt.com/docs/dbt-versions/upgrade-dbt-version-in-cloud#versionless). \r\n\r\nDocumentation will be added soon -> https://github.com/dbt-labs/docs.getdbt.com/issues/5983"
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "dbt-labs/dbt-core",
+  "default_branch": "main",
+  "commit_sha": "15ef88d2ed36fd8bb6aad26325ee11789ff02ffe",
+  "as_of": "2023-07-10T13:50:28Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_dbt-labs_dbt-core_8062"
+}

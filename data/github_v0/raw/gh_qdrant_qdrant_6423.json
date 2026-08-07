@@ -1,0 +1,217 @@
+{
+ "repo": "qdrant/qdrant",
+ "number": 6423,
+ "url": "https://github.com/qdrant/qdrant/issues/6423",
+ "title": "Very high LA on server after update to v1.14.0",
+ "state": "closed",
+ "labels": [
+  "bug"
+ ],
+ "reporter": "reporter",
+ "created_at": "2025-04-23T14:34:28Z",
+ "closed_at": "2025-05-23T13:51:15Z",
+ "body": "I updated my test server from v1.13.6 to v1.14.0\nI got high Server LA\n\nMy use case is\n1. search input vectors (batching) (~ 100 - 1000 queries with limit 1)\n2. process search results\n3. update vectors with blocking API (~ 100 - 2000 points)\n\n## Current Behavior\nIt picture is  from monitoring.\n1 section - qdrant v1.13.6. from: 6:00 to: 11:30\n2. section - qdrant v1.14.0. from: 11:30 to: 16:50\n3. section - revert qdrant v1.13.6\n\n![Image](https://github.com/user-attachments/assets/5935f221-ae27-4234-ace2-bb57b70caeeb)\n\n## Context (Environment)\nserver has 56 CPUs\n\nI tried\n1. set `incremental_hnsw_building: false` in config\n2. change value for collection `optimizer_config.max_optimization_threads`. `null -> 2`\n3. change value for collection `hnsw_config.max_indexing_threads`. `0` -> `8`\n4. change value in config file `performance.update_rate_limit`. `null` -> `32`\n5. change value in config file `service.max_workers`. `0` -> `32`\n\nIt did not work.",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2025-04-23T15:41:25Z",
+   "body": "Could you share the following?\n1. collection configuration (`GET /collections/name`)\n2. collection distribution (if you have multiple peers) (`GET /collections/name/cluster`)\n3. an example of one of your search requests\n4. how many batches are you sending concurrently, just one or multiple?\n5. what is QPS like in 1.13.6 and in 1.14.0?\n\nCould you try the following:\n1. is using much smaller batches (10 queries) faster?\n\nIt could potentially be related to <https://github.com/qdrant/qdrant/pull/6326>."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-04-23T15:52:37Z",
+   "body": "To confirm hypothesis about https://github.com/qdrant/qdrant/pull/6326 we wound need to know some more details:\n\n- What's the number of segments in the collection?\n- What's the latency of response with 1.13.6 vs 1.14.0\n- How is you search process looks like: do you have queue of requests? Do you send requests in parallel?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-04-24T07:37:47Z",
+   "body": "> Could you share the following?\n> \n>     1. collection configuration (`GET /collections/name`)\n> \n>     2. collection distribution (if you have multiple peers) (`GET /collections/name/cluster`)\n> \n>     3. an example of one of your search requests\n> \n>     4. how many batches are you sending concurrently, just one or multiple?\n> \n>     5. what is QPS like in 1.13.6 and in 1.14.0?\n> \n> \n> Could you try the following:\n> \n>     1. is using much smaller batches (10 queries) faster?\n> \n> \n> It could potentially be related to [#6326](https://github.com/qdrant/qdrant/pull/6326).\n\n1.\n\n```\n{\n  \"result\": {\n    \"status\": \"green\",\n    \"optimizer_status\": \"ok\",\n    \"indexed_vectors_count\": 97450000,\n    \"points_count\": 91000000,\n    \"segments_count\": 300,\n    \"config\": {\n      \"params\": {\n        \"vectors\": {\n          \"size\": 384,\n          \"distance\": \"Cosine\"\n        },\n        \"shard_number\": 12,\n        \"replication_factor\": 1,\n        \"write_consistency_factor\": 1,\n        \"on_disk_payload\": true\n      },\n      \"hnsw_config\": {\n        \"m\": 16,\n        \"ef_construct\": 100,\n        \"full_scan_threshold\": 10000,\n        \"max_indexing_threads\": 8,\n        \"on_disk\": false\n      },\n      \"optimizer_config\": {\n        \"deleted_threshold\": 0.3,\n        \"vacuum_min_vector_number\": 1000,\n        \"default_segment_number\": 24,\n        \"max_segment_size\": 500000,\n        \"memmap_threshold\": 50000,\n        \"indexing_threshold\": 20000,\n        \"flush_interval_sec\": 5,\n        \"max_optimization_threads\": 2\n      },\n      \"wal_config\": {\n        \"wal_capacity_mb\": 32,\n        \"wal_segments_ahead\": 1\n      },\n      \"quantization_config\": {\n        \"scalar\": {\n          \"type\": \"int8\",\n          \"quantile\": 0.99,\n          \"always_ram\": true\n        }\n      },\n      \"strict_mode_config\": {\n        \"enabled\": false\n      }\n    },\n    \"payload_schema\": {\n      \"timestamp\": {\n        \"data_type\": \"integer\",\n        \"params\": {\n          \"type\": \"integer\",\n          \"lookup\": true,\n          \"range\": true,\n          \"is_principal\": true\n        },\n        \"points\": 91000000\n      }\n    }\n  },\n  \"status\": \"ok\",\n  \"time\": 0.002249831\n}\n```\n\npayload `timestamp` for deleting of old points.\n\n2. I have 3 nodes now\nI made 12 shards\n1) 4 shards\n2) 6 shards\n3) 2 shards\n\nfor example local shards on one of nodes\n\n```\n\"local_shards\": [\n      {\n        \"shard_id\": 1,\n        \"points_count\": 7827674,\n        \"state\": \"Active\"\n      },\n      {\n        \"shard_id\": 3,\n        \"points_count\": 8066941,\n        \"state\": \"Active\"\n      },\n      {\n        \"shard_id\": 5,\n        \"points_count\": 7742946,\n        \"state\": \"Active\"\n      },\n      {\n        \"shard_id\": 7,\n        \"points_count\": 7650973,\n        \"state\": \"Active\"\n      }\n    ]\n```\n\n3.\nhundred or more vectors without filters\n\nOne vector from batch\n\n```rust\nSearchPoints {\n  vector: embedding.to_vec(),\n  limit: 1,\n  score_threshold: Some(0.955),\n  collection_name: \"test-test\".to_string(),\n  with_payload: Some(WithPayloadSelector {\n      selector_options: Some(with_payload_selector::SelectorOptions::Enable(false)),\n  }),\n  with_vectors: Some(WithVectorsSelector {\n      selector_options: Some(with_vectors_selector::SelectorOptions::Enable(false)),\n  }),\n  params: Some(qdrant_client::qdrant::SearchParams {\n      hnsw_ef: Some(32),\n      quantization: Some(qdrant_client::qdrant::QuantizationSearchParams {\n          rescore: Some(false),\n          ..Default::default()\n      }),\n      ..Default::default()\n  }),\n  ..Default::default()\n}\n```\n\n4. one batch\n\n![Image](https://github.com/user-attachments/assets/e666ed24-0d98-4782-b74b-9bb9e971e1a9)\n\n5. I have no data\n\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-04-24T07:41:07Z",
+   "body": "> what is QPS like in 1.13.6 and in 1.14.0?  \n> What's the latency of response with 1.13.6 vs 1.14.0\n\nI'm wondering, is it possible that CPU is higher but it also completes the query quicker?\n\nIt using more CPU within less time would actually be ideal."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-04-24T07:47:43Z",
+   "body": "> payload `timestamp` for deleting of old points.\n\nUnrelated to this topic, but potentially having custom sharing for this would yield better performance, as deleting random points across all shards might trigger unnecessary re-indexing"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-04-24T07:50:19Z",
+   "body": "> To confirm hypothesis about [#6326](https://github.com/qdrant/qdrant/pull/6326) we wound need to know some more details:\n> \n>     * What's the number of segments in the collection?\n> \n>     * What's the latency of response with 1.13.6 vs 1.14.0\n> \n>     * How is you search process looks like: do you have queue of requests? Do you send requests in parallel?\n\n\n1. this collection has 300 segments in 12 shards\n2. \n\n![Image](https://github.com/user-attachments/assets/3d7872d8-1a83-4332-bac1-0aab6ee3f998)\n\n![Image](https://github.com/user-attachments/assets/0446c213-75c4-413f-a2e6-ee168be275b4)\n\n![Image](https://github.com/user-attachments/assets/d9b5576b-af6a-4014-b9ce-291272cfabf8)\n\n3. I have 1 worker.\n1) It processes a big batch input data\n2) It searches vectors in one batch request\n3) It processes search results\n4) It inserts a part of new vectors into collection\n5) It checks old points by timestamp payload field"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-04-24T07:53:56Z",
+   "body": "Looks like the `avg_duration` raised more than 10 times with upgrade? It that from qdrant telemetery?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-04-24T07:57:06Z",
+   "body": "> Looks like the `avg_duration` raised more than 10 times with upgrade? It that from qdrant telemetery?\n\nYes\nendpoint `/metrics`\n\na query in monitoring system \n\n```\ngrpc_responses_avg_duration_seconds {endpoint=\"/qdrant.Points/SearchBatch\"}\n```"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-04-24T08:06:33Z",
+   "body": "> > what is QPS like in 1.13.6 and in 1.14.0?\n> > What's the latency of response with 1.13.6 vs 1.14.0\n> \n> I'm wondering, is it possible that CPU is higher but it also completes the query quicker?\n> \n> It using more CPU within less time would actually be ideal.\n\nI added +1 node yesterday but it did not help.\n\nqdrant sometimes has high latency but it does not bit CPU LA\nv1.14.0 changed it\n\ngraphs 15 days\n\n![Image](https://github.com/user-attachments/assets/e90255ae-24ff-4b9e-a4b1-17aadf8b2f30)\n\n![Image](https://github.com/user-attachments/assets/63a5c25c-8435-452a-8ddb-9492cfda6821)\n\n![Image](https://github.com/user-attachments/assets/154fbd07-f135-4e7e-98ae-c1d2cf52d937)\n\n "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-04-24T08:08:57Z",
+   "body": "> > payload `timestamp` for deleting of old points.\n> \n> Unrelated to this topic, but potentially having custom sharing for this would yield better performance, as deleting random points across all shards might trigger unnecessary re-indexing\n\nCould You explain `having custom sharing`?\n\nI tried many different settings."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-04-24T08:12:47Z",
+   "body": "> Could you try the following:\n> \n>     1. is using much smaller batches (10 queries) faster?\n\n I tried to use chunks 256, 512 before creating batch search request only and sum time was more than one big batch request."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-04-24T08:54:40Z",
+   "body": "> Could You explain having custom sharing?\n\n![Image](https://github.com/user-attachments/assets/69288408-8502-4d18-9181-f815d999c2e8)\n\nThis: https://qdrant.tech/documentation/guides/distributed_deployment/#user-defined-sharding"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-04-24T08:57:31Z",
+   "body": "> > Could You explain having custom sharing?\n> \n> ![Image](https://github.com/user-attachments/assets/69288408-8502-4d18-9181-f815d999c2e8)\n> \n> This: https://qdrant.tech/documentation/guides/distributed_deployment/#user-defined-sharding\n\nI use it in another project. thanks!"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-04-24T10:55:26Z",
+   "body": "I faced the same issue. \n\nMy nodes were restarted around 3 AM(maybe because of node pool auto-upgrade), and that’s when the Qdrant pods got updated from v1.13.6 to v1.14.0 — I didn’t trigger any upgrade myself. Right after that, I noticed a sharp spike in both CPU and memory usage.\n\nThis happened even though I never explicitly upgraded via Helm. The only event was a node restart in the cluster.\n\nHere’s the usage pattern from my GKE dashboard — there’s a clear jump on April 24th:\n\n<img width=\"1204\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/dd6a1298-e0d9-4607-83ef-258f51025548\" />\n\n\nSeparately, I realized my Helm config had the image tag left empty:\n\n```\nimage:\n  repository: docker.io/qdrant/qdrant\n  tag: \"\"  \n```\n\nSince the tag was \"\", Kubernetes pulled the latest image during pod recreation, which explains how the version changed even though I never explicitly upgraded it.\n\nThis silent upgrade caught me off guard.\n\nHappy to share additional logs or metrics if it would help troubleshoot further. \n\n"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-04-24T11:16:45Z",
+   "body": "@participant3 do you also use batch-search? "
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-04-24T15:22:19Z",
+   "body": "@participant2 No, we don't."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-04-24T15:38:54Z",
+   "body": "@participant3 then it's not related issue"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-04-24T15:47:28Z",
+   "body": "@participant2 \nWhile I’m not using batch-search, the spike in resource usage started immediately after the pods were updated to v1.14.0. so it still seems version-related."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-04-24T15:54:27Z",
+   "body": "@participant3 please feel free to create a separate issue, but I think your problem is related to shard sync after restart and not version upgrade."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-04-28T10:30:15Z",
+   "body": "> Could you try the following:\n> \n>     1. is using much smaller batches (10 queries) faster?\n\nI tried batch 32 vectors\n\n![Image](https://github.com/user-attachments/assets/702badee-396d-4a44-9588-6c484076119e)\n\n![Image](https://github.com/user-attachments/assets/1ba93173-5c5a-41f7-a35a-c45c5d291660)\n\n![Image](https://github.com/user-attachments/assets/31b85518-fdf9-4baf-bb72-d9d1c1386c69)\n\n![Image](https://github.com/user-attachments/assets/4a0bf487-259f-4d30-84af-95044ac0675d)\n\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-04-28T10:50:19Z",
+   "body": "> Could you try the following:\n> \n>     1. is using much smaller batches (10 queries) faster?\n\nprocessing pipeline with batch 16 slower than 32 from this https://github.com/qdrant/qdrant/issues/6423#issuecomment-2834776001"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-05-01T10:42:37Z",
+   "body": "Thank you for all the details, it has been very valuable!\n\nI'd just like to let you know that we'll be tackling this issue in the next patch release."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-05-23T13:51:12Z",
+   "body": "Hi @reporter.\n\nI'd just like to let you know that we've released [Qdrant 1.14.1](https://github.com/qdrant/qdrant/releases/tag/v1.14.1) which includes a patch for this problem."
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "qdrant/qdrant",
+  "default_branch": "master",
+  "commit_sha": "3617a0111fc8590c4adcc6e88882b63ca4dda9e7",
+  "as_of": "2025-04-23T14:34:28Z",
+  "method": "github_commits_until"
+ },
+ "images": [
+  {
+   "where": "opening",
+   "source_url": "https://github.com/user-attachments/assets/5935f221-ae27-4234-ace2-bb57b70caeeb",
+   "file": "gh_qdrant_qdrant_6423_img0.png"
+  },
+  {
+   "where": "c2",
+   "source_url": "https://github.com/user-attachments/assets/e666ed24-0d98-4782-b74b-9bb9e971e1a9",
+   "file": "gh_qdrant_qdrant_6423_img1.png"
+  },
+  {
+   "where": "c5",
+   "source_url": "https://github.com/user-attachments/assets/3d7872d8-1a83-4332-bac1-0aab6ee3f998",
+   "file": "gh_qdrant_qdrant_6423_img2.png"
+  },
+  {
+   "where": "c5",
+   "source_url": "https://github.com/user-attachments/assets/0446c213-75c4-413f-a2e6-ee168be275b4",
+   "file": "gh_qdrant_qdrant_6423_img3.png"
+  },
+  {
+   "where": "c5",
+   "source_url": "https://github.com/user-attachments/assets/d9b5576b-af6a-4014-b9ce-291272cfabf8",
+   "file": "gh_qdrant_qdrant_6423_img4.png"
+  },
+  {
+   "where": "c8",
+   "source_url": "https://github.com/user-attachments/assets/e90255ae-24ff-4b9e-a4b1-17aadf8b2f30",
+   "file": "gh_qdrant_qdrant_6423_img5.png"
+  },
+  {
+   "where": "c8",
+   "source_url": "https://github.com/user-attachments/assets/63a5c25c-8435-452a-8ddb-9492cfda6821",
+   "file": "gh_qdrant_qdrant_6423_img6.png"
+  },
+  {
+   "where": "c8",
+   "source_url": "https://github.com/user-attachments/assets/154fbd07-f135-4e7e-98ae-c1d2cf52d937",
+   "file": "gh_qdrant_qdrant_6423_img7.png"
+  },
+  {
+   "where": "c11",
+   "source_url": "https://github.com/user-attachments/assets/69288408-8502-4d18-9181-f815d999c2e8",
+   "file": "gh_qdrant_qdrant_6423_img8.png"
+  },
+  {
+   "where": "c12",
+   "source_url": "https://github.com/user-attachments/assets/69288408-8502-4d18-9181-f815d999c2e8",
+   "file": "gh_qdrant_qdrant_6423_img9.png"
+  },
+  {
+   "where": "c13",
+   "source_url": "https://github.com/user-attachments/assets/dd6a1298-e0d9-4607-83ef-258f51025548",
+   "file": "gh_qdrant_qdrant_6423_img10.png"
+  },
+  {
+   "where": "c19",
+   "source_url": "https://github.com/user-attachments/assets/702badee-396d-4a44-9588-6c484076119e",
+   "file": "gh_qdrant_qdrant_6423_img11.png"
+  },
+  {
+   "where": "c19",
+   "source_url": "https://github.com/user-attachments/assets/1ba93173-5c5a-41f7-a35a-c45c5d291660",
+   "file": "gh_qdrant_qdrant_6423_img12.png"
+  },
+  {
+   "where": "c19",
+   "source_url": "https://github.com/user-attachments/assets/31b85518-fdf9-4baf-bb72-d9d1c1386c69",
+   "file": "gh_qdrant_qdrant_6423_img13.png"
+  },
+  {
+   "where": "c19",
+   "source_url": "https://github.com/user-attachments/assets/4a0bf487-259f-4d30-84af-95044ac0675d",
+   "file": "gh_qdrant_qdrant_6423_img14.png"
+  }
+ ],
+ "slug": "gh_qdrant_qdrant_6423"
+}

@@ -1,0 +1,102 @@
+{
+ "repo": "vitessio/vitess",
+ "number": 15151,
+ "url": "https://github.com/vitessio/vitess/issues/15151",
+ "title": "Feature Request: support for managed TRUNCATE statements",
+ "state": "closed",
+ "labels": [
+  "Type: Feature",
+  "Component: Online DDL"
+ ],
+ "reporter": "reporter",
+ "created_at": "2024-02-06T18:02:05Z",
+ "closed_at": "2024-02-08T17:50:49Z",
+ "body": "### Feature Description\r\n\r\nAdd an option to make Vitess execute `TRUNCATE` with the Online DDL system.\r\n\r\nCurrently, when `@@ddl_strategy` is set to `vitess`, `TRUNCATE` statements are not handled by the Online DDL system.\r\n\r\nThis is what happens currently when `--enable_direct_ddl=false` and `@@ddl_strategy='vitess'`:\r\n\r\n```mysql\r\nmysql> use commerce;\r\nReading table information for completion of table and column names\r\nYou can turn off this feature to get a quicker startup with -A\r\n\r\nDatabase changed\r\nmysql> create table foo (id int);\r\nERROR 1105 (HY000): direct DDL is disabled\r\nmysql> set @@ddl_strategy='vitess';\r\nQuery OK, 0 rows affected (0.00 sec)\r\n\r\nmysql> create table foo (id int);\r\n+--------------------------------------+\r\n| uuid                                 |\r\n+--------------------------------------+\r\n| 4dfbb05a_c519_11ee_b164_9e8adcc50d2a |\r\n+--------------------------------------+\r\n1 row in set (0.01 sec)\r\n\r\nmysql> truncate table foo;\r\nERROR 1105 (HY000): direct DDL is disabled\r\n```\r\n\r\nIf there are concerns that changing the current `TRUNCATE` behavior will break existing use cases, and additional CLI or `@@ddl_strategy` flag could resolve the conflict.\r\n\r\n### Use Case(s)\r\n\r\nHaving `--enable_direct_ddl=false` set with `--enable_online_ddl=true` is a powerful combination that ensures, if and when users run DDL, they do so with the safety of Vitess' built-in online DDL.\r\n\r\nUsers and some frameworks (e.g. certain WordPress plugins) will sometimes run `TRUNCATE` in the normal course of business activity, and not as a maintenance action. It would be great if Vitess clusters configured with `--enable_direct_ddl=false` were able to accommodate these users/frameworks.",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2024-02-07T05:39:10Z",
+   "body": "While running `TRUNCATE` as part of Online DDL is feasible, and I believe rather simple, the problem is with the synchronous nature of the command. Online DDL operates asynchronously. The challenge would be to make the `TRUNCATE` command wait until the operation is complete. And this would need to take place in both `vtgate` as well as `vtctldclient`. I don't have an immediate solution in mind as this goes against the existing design."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-02-07T05:42:45Z",
+   "body": "@participant1 for my purposes, I don't think this is needed for `vtctldclient`. `vtgate` would be enough. What do you think of an `--wait` flag for `@ddl_strategy`. I don't know anything about how `vtgate` and Online DDL interact, so sorry if that suggestion is nonsensical. If it isn't nonsensical, I can open a separate GH issue to explore that idea."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-02-07T06:23:13Z",
+   "body": "I'm thinking the way a `--wait` would be implemented in VTGate is for VTGate to invoke the command on the tablet, then poll for results. Or polling could take place on the tablet.\r\nIs there then some timeout? What if there's multiple shards, some return and some don't? Does it make sense to run `TRUNCATE` while another, long migration, is running? How about a migration running on the same table? Adding the synchronous nature brings some complexity.\r\n\r\nSay we did timeout; say even we provide `--wait=30s`. But what then happens to the app? If it's a Wordpress, how does it react to a timeout? It will probably retry, thus creating yet another migration. But that won't run until the previous one is complete, so it's doomed to wait even more.\r\n\r\nI'm thinking of the worst case scenarios of course, and trying to understand whether adding sychronousity is at all safe or whether it adds a risk."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-02-07T06:40:19Z",
+   "body": "All good questions. My thinking on some of this:\r\n\r\n * Personally, I'd be fine if we just returned an `unsupported` error if `--wait` is requested in the sharded case. My interest is to enable WordPress users to easily and safely use the Vitess clusters my organization operates, not so much to enable them to shard.\r\n * I think it would be reasonable as a starting point to reject a `TRUNCATE` altogether when there is a long migration running on the same table, at least when `--wait` is supplied. If this turned out to be a problem for enough people, we could refine further.\r\n * For the retry case, conceivably we could just have retries `--wait` for the currently queued/running `TRUNCATE` to finish."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-02-07T06:45:22Z",
+   "body": "> Personally, I'd be fine if we just returned an unsupported error if --wait is requested in the sharded case.\r\n\r\nThat's doable.\r\n\r\n> I think it would be reasonable as a starting point to reject a TRUNCATE altogether when there is a long migration running on the same table, at least when --wait is supplied. If this turned out to be a problem for enough people, we could refine further.\r\n\r\nThere's actually a mechanism for that (`--singleton`).\r\n\r\n> For the retry case, conceivably we could just have retries --wait for the currently queued/running TRUNCATE to finish.\r\n\r\nThat's a bit more complex, because the retries could be made from another connection. How can you tell if this weren't a valid new request? Or maybe it doesn't matter after all."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-02-07T06:52:31Z",
+   "body": "> That's a bit more complex, because the retries could be made from another connection. How can you tell if this weren't a valid new request? Or maybe it doesn't matter after all.\r\n\r\nI'm naively imagining Online DDL `TRUNCATE` would work like this:\r\n\r\n 1. Create new empty table\r\n 2. Swap new and old table\r\n 3. Evac old table (maybe over the course of days)\r\n\r\nIf we had two inflight `TRUNCATE` commands for the same table, I'm thinking that the second inflight command could merge with the first when the first has not yet started step 2. \r\n\r\nOnce the first inflight has advanced past step 2., then in theory new records could be arriving at the new table, at which point it doesn't make sense to merge the second inflight `TRUNCATE` command with the first."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-02-07T07:01:12Z",
+   "body": "Actually, I think it must fall under the same conditions as:\r\n\r\n> I think it would be reasonable as a starting point to reject a TRUNCATE altogether when there is a long migration running on the same table, at least when --wait is supplied. If this turned out to be a problem for enough people, we could refine further.\r\n\r\nSo if there's a pending `TRUNCATE`, then it _is_ considered as a long running migration on the same table."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-02-07T07:04:52Z",
+   "body": "> So if there's a pending TRUNCATE, then it is considered as a long running migration on the same table.\r\n\r\nThat may be fine for most cases, depending on how frequently `TRUNCATE` is run and how big the tables are.\r\n\r\nOne other question that may impact how some of this is handled is..at what point would we return to the user who has requested `TRUNCATE` with `--wait`? After the evac is complete? Or after the table swap?\r\n\r\nAt the risk of complicating things, maybe it would be better to start simple and return after the evac. But I can see a case to be made for returning after the table swap."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-02-07T07:30:05Z",
+   "body": "> One other question that may impact how some of this is handled is..at what point would we return to the user who has requested TRUNCATE with --wait? After the evac is complete? Or after the table swap?\r\n\r\nMost definitely not after the evac, since that can take long minutes. Why do you feel it's safer to wait for the evac?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-02-07T07:30:50Z",
+   "body": "The other thing is, would the user/app need to know they must supply `--wait`? That doesn't make sense. In which case, will `--wait` be pre-configured? In which case, how will it affect all other migrations?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-02-07T07:33:00Z",
+   "body": "I should point out the evac it outside Online DDL's control, and under the TableGC mechanism. Online DDL does not have the information to say whether the old table has been purged or dropped.\r\n\r\nAnother point of discussion: should `TRUNCATE` be revertible?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-02-07T07:36:03Z",
+   "body": "> Why do you feel it's safer to wait for the evac?\r\n\r\nMaybe not safer, just thought it might be easier implementation-wise. I definitely agree it's a better user experience to do it before the evac, so if you're onboard w/ that I won't stand in your way!\r\n\r\n>  In which case, will --wait be pre-configured?\r\n\r\nYes, pre-configure `@@ddl_strategy`.\r\n\r\n>  In which case, how will it affect all other migrations?\r\n\r\nThat's a good question. I know how I would handle it for my use case: restrict VTGate-submitted Online DDL to `TRUNCATE` commands, and rely on pre-configured `@@ddl_strategy` to `--wait`; require all other Online DDL to go through `vtctldclient`.\r\n\r\nIn the general case.. I don't know."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-02-07T07:49:30Z",
+   "body": "It seems like there'a lot of specialized handling for `TRUNCATE` and that more might show up the more we think about it."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-02-08T17:49:26Z",
+   "body": "After having the discussion with you I agree. I'm inclined to close this out unless you want to keep it open?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-02-08T17:50:49Z",
+   "body": "Let's close for now, and reopen if needed."
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "vitessio/vitess",
+  "default_branch": "main",
+  "commit_sha": "c189cf400bcddc1f600f328c4cccad657ab49e38",
+  "as_of": "2024-02-06T18:02:05Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_vitessio_vitess_15151"
+}

@@ -97,6 +97,12 @@ def build_chat_client(
     headers = _identity_headers()
     if headers:
         kwargs['default_headers'] = headers
+    # A hung upstream must not pin a worker forever: the gateway returns
+    # intermittent 502/ReadTimeout under load, and without an explicit
+    # timeout a stuck call blocks its slot indefinitely. Both knobs are
+    # env-overridable for slow local endpoints.
+    kwargs['timeout'] = float(os.environ.get('GRAPH_BENCH_LLM_TIMEOUT', 420))
+    kwargs['max_retries'] = int(os.environ.get('GRAPH_BENCH_LLM_RETRIES', 3))
     effort = effort or os.environ.get('GRAPH_BENCH_LLM_EFFORT')
     if effort and api == 'responses':
         kwargs['reasoning'] = {'effort': effort}

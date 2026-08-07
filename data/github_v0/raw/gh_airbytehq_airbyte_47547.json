@@ -1,0 +1,195 @@
+{
+ "repo": "airbytehq/airbyte",
+ "number": 47547,
+ "url": "https://github.com/airbytehq/airbyte/issues/47547",
+ "title": "[source-postgres] Change Data Capture (CDC) Not Working",
+ "state": "closed",
+ "labels": [
+  "cdc",
+  "community",
+  "connectors/source/postgres",
+  "team/db-dw-sources"
+ ],
+ "reporter": "Nanagoud007",
+ "created_at": "2024-10-28T12:49:02Z",
+ "closed_at": "2026-07-23T17:55:43Z",
+ "body": "### Topic\n\nI have enabled Change Data Capture (CDC) on my PostgreSQL source following the instructions provided in the Airbyte PostgreSQL source documentation. However, during each sync, Airbyte is loading the entire dataset instead of only the changes. This issue persists even when there are no updates in the source database.\n\n### Relevant information\n\n**Steps Taken:**\n  - Enabled logical replication in PostgreSQL.\n  - Created a replication slot and a publication as per the documentation.\n  - Set max_slot_wal_keep_size, max_wal_size, and wal_keep_size to 10GB.\n  - Verified that CDC is correctly configured on the PostgreSQL side.\n\n**Logs**:This 4th time ran sync log[default_workspace_logs_1388_txt.txt](https://github.com/user-attachments/files/17542553/default_workspace_logs_1388_txt.txt)\n\n**Expected Behavior:**\nAirbyte should only sync the changed records instead of reloading the entire dataset on every sync.\n\n**Actual Behavior:**\nEach sync loads the whole dataset, resulting in increased load times and performance issues.\n\n**Additional Information:**\nPostgreSQL Version: 16\nAirbyte Version: 0.58.0 >\n\n\n**Questions:**\n\n1. What could be the underlying cause of the incremental changes not being detected?\n2. Are there specific logs or configurations I should examine to troubleshoot this issue?\n\nI would appreciate any assistance in diagnosing and resolving this problem.\n",
+ "comments": [
+  {
+   "author": "jduckwo",
+   "created_at": "2024-10-28T13:53:17Z",
+   "body": "I am running into a similar issue. It appears that the subscriber to the replication slot is not being registered properly. When I check the `active` status of the replication slot, it is set to `active=false` and the `restart_lsn` is not advancing as expected. I have dropped/recreated the PG publication, PG Replication Slot, AB Source, AB Destination, and AB Connection objects and still cannot get the incremental replication to work properly. I also verified in the Airbyte logs that the query against the ` pg_replication_slots` view does find the replication slot.\n\nHere is my current config:\n\n- Airbyte version: 1.1.0\n- Airbyte Postgres Source Version: 3.6.22\n- Airbyte Postgres Destination Version: 2.4.0\n\nPostgres config:\n\n- Postgres 16\n\n```\nALTER SYSTEM SET wal_keep_size = '1GB';\nSELECT pg_reload_conf();\nSHOW wal_keep_size;\n\nCREATE ROLE airbyte_role;\nALTER ROLE airbyte_role REPLICATION LOGIN;\n\nGRANT SELECT ON TABLE public.table_1 TO airbyte_role;\nALTER TABLE public.table_1 REPLICA IDENTITY DEFAULT;\n \nCREATE PUBLICATION airbyte_publication FOR TABLES IN SCHEMA public;\nSELECT pg_create_logical_replication_slot('airbyte_slot', 'pgoutput');\n```\n\nI also would appreciate any help getting this resolved. If helpful, I can provide my logs in addition to the ones in the original post."
+  },
+  {
+   "author": "Nanagoud007",
+   "created_at": "2024-10-28T14:05:12Z",
+   "body": "@jduckwo active status will be true when the sync is running "
+  },
+  {
+   "author": "jduckwo",
+   "created_at": "2024-10-28T14:07:25Z",
+   "body": "@Nanagoud007 I queried the status repeatedly while the sync was running and did not see it ever return as active. Also, the `restart_lsn` is not advancing as expected. Here are the logs from my latest run:\n\n[default_workspace_logs_84_txt.txt](https://github.com/user-attachments/files/17543610/default_workspace_logs_84_txt.txt)\n"
+  },
+  {
+   "author": "Nanagoud007",
+   "created_at": "2024-10-28T14:12:01Z",
+   "body": "@jduckwo in my log this is causing the full refresh for me\n2024-10-28 10:04:37 \u001b[46mplatform\u001b[0m > SOURCE analytics [airbyte/source-postgres:3.6.22] | Type: db-sources-cdc-cursor-invalid | Value: 1"
+  },
+  {
+   "author": "Nanagoud007",
+   "created_at": "2024-10-28T14:28:50Z",
+   "body": "@jduckwo i have analysed your attached log the sync mode is full refresh in you case\nime\",\"airbyte_type\":\"timestamp_with_timezone\"}}},supportedSyncModes=[full_refresh],sourceDefined\n=true,defaultCursorField=[_ab_cdc_lsn],sourceDefinedPrimaryKey=[[id]],namespace=reporting,isResumable=true,additionalProperties={}],syncMode=full_refresh,cursorField=[_ab_cdc_lsn],destinationSyncMode=overwrite,primaryKey=[[id]],generationId=55,minimumGenerationId=55,syncId=84,additionalProperties={}] will sync in resumeable full refresh mode."
+  },
+  {
+   "author": "jduckwo",
+   "created_at": "2024-10-28T14:35:40Z",
+   "body": "There are multiple tables and views in that specific log. Some of those are set to have a full sync while others are not. `table_1` should be set to incremental. I am currently upgrading Airbyte to the latest version and recreating all my resources. Once that is done, I will upload a cleaner log with the one table."
+  },
+  {
+   "author": "Nanagoud007",
+   "created_at": "2024-10-28T14:43:00Z",
+   "body": "@jduckwo sure, first you try to give publisher to one table let me know if you make any progress, i tried other method xmin column it re-syncing very past only down site is no deletions are captured"
+  },
+  {
+   "author": "jduckwo",
+   "created_at": "2024-10-28T19:17:33Z",
+   "body": "I rebuilt my Airbyte installation, source, destination, and connection. I dropped and recreated my PG publication and replication slot. I granted access to 1 table `table_1` to the database role I am using for the connection.\n\n### table_1\n- There are 6255 records in the table\n- The table size is 2Mb\n\n### results\n- The replication slot is now `active` when the sync runs.\n- The `restart_lsn` is now advancing as expected.\n- The sync is still doing a `FULL OVERWRITE` of the data instead of an `INCREMENTAL` append as expected.\n\nI attached the logs from my latest run. They should be cleaner then the earlier log I posted.\n![Image](https://github.com/user-attachments/assets/968b9182-7a05-4446-9302-c2578e9f912b)\n[default_workspace_logs_12_txt.txt](https://github.com/user-attachments/files/17547745/default_workspace_logs_12_txt.txt)\n"
+  },
+  {
+   "author": "marcosmarxm",
+   "created_at": "2024-10-28T21:50:27Z",
+   "body": "Hello @jduckwo and @Nanagoud007 I shared this issue with the connector team to take a look.\n\n@Nanagoud007 it looks you're using an old version of Airbyte. Is it possible to upgrade to latest? Also can you share what is the source connector version you're using?"
+  },
+  {
+   "author": "rodireich",
+   "created_at": "2024-10-28T22:48:11Z",
+   "body": "The above log [provided](https://github.com/airbytehq/airbyte/issues/47547#issue-2618334320) by @Nanagoud007 is showing that the last saved offset is no longer on the database server and as a result we are falling back to rebuilding the tables from scratch :\n```\n2024-10-28 10:04:37 \u001b[44msource\u001b[0m > WARN main i.a.i.s.p.c.PostgresCdcCtidInitializer(cdcCtidIteratorsCombined):188 Saved offset is before Replication slot's confirmed_flush_lsn, Airbyte will trigger sync from scratch\n```\n\nPostgres has a retention period for CDC logs. In order for CDC based incremental sync to function we need Airbyte's sync timeout to be shorter than the retention period so postgres won't recycle the CDC logs we need before airbyte has a chance to read them.\nIs this happening on every attempt to sync? "
+  },
+  {
+   "author": "Nanagoud007",
+   "created_at": "2024-10-29T01:53:03Z",
+   "body": "@marcosmarxm These re the versions of air byte services\n![Image](https://github.com/user-attachments/assets/bbe0800c-f1f3-4abc-a107-4837eee222c0)\nand i am using air byte 1.0.0\n\nAirbyte service containers![Image](https://github.com/user-attachments/assets/72a9ac17-0896-41dc-9164-c2661abc8713)\n"
+  },
+  {
+   "author": "Nanagoud007",
+   "created_at": "2024-10-29T01:56:37Z",
+   "body": "@rodireich Thank you for clarifying! To ensure that the sync timeout is shorter than PostgreSQL’s CDC log retention period, could you advise on where exactly I should look to check and configure these settings? Specifically, if there are any files or parameters within Airbyte or PostgreSQL that I need to adjust, I'd appreciate some direction. Also, is there a recommended timeout setting for the sync to avoid this issue?\n\nand \nwhen i change the Invalid CDC position behavior (Advanced) to fail sync it is giving me error and if make it re-sync it will refresh whole\nFailure in source: Saved offset is before replication slot's confirmed lsn. Please reset the connection, and then increase WAL retention and/or increase sync frequency to prevent this from happening in the future. See https://docs.airbyte.com/integrations/sources/postgres/postgres-troubleshooting#under-cdc-incremental-mode-there-are-still-full-refresh-syncs for more details."
+  },
+  {
+   "author": "jduckwo",
+   "created_at": "2024-10-29T14:14:21Z",
+   "body": "@rodireich \n\nFor my setup _(I'm on the latest version of AB and the PG connectors)_, I change the InvalidCdcCursorPositionBehaviour to `Fail Sync` for testing to see if I could flush out any more details. It looks like the first sync is successful, then every sync after fails _(even if triggered immediately after the first sync)_ with this error:\n\n> Failure in source: Saved offset is before replication slot's confirmed lsn. Please reset the connection, and then increase WAL retention and/or increase sync frequency to prevent this from happening in the future. See https://docs.airbyte.com/integrations/sources/postgres/postgres-troubleshooting#under-cdc-incremental-mode-there-are-still-full-refresh-syncs for more details.\n\n"
+  },
+  {
+   "author": "rodireich",
+   "created_at": "2024-10-29T16:18:49Z",
+   "body": "> when i change the Invalid CDC position behavior (Advanced) to fail sync it is giving me error and if make it re-sync it will refresh whole\nFailure in source\n\n@Nanagoud007 this is the expected behavior. Rather than falling automatically to a full rebuild of the table it will stop with an error asking the admin to do so. This is intended for making the problem visible rather than resending by itself."
+  },
+  {
+   "author": "jduckwo",
+   "created_at": "2024-10-29T17:00:59Z",
+   "body": "@rodireich I think it is understood that this is the expected behavior when this error occurs if the `InvalidCdcCursorPositionBehaviour` is set to `Fail Sync`. The question is how do we correct this issue _(what settings do we need to change)_ on the Postgres server so that the incremental loads run as expected. Is this in fact an issue with the Postgres config, or is this a problem with the AB connector itself.\n\n> this is the expected behavior. Rather than falling automatically to a full rebuild of the table it will stop with an error asking the admin to do so. This is intended for making the problem visible rather than resending by itself."
+  },
+  {
+   "author": "rodireich",
+   "created_at": "2024-10-29T20:47:58Z",
+   "body": "@jduckwo the first sync is actually done by going to the table and selecting from it. not some CDC operation.\nThink of it essentially as a `SELECT * from table`.\nThe second sync is the one where we attempt to find our place in the CDC log (or WAL in postgres) and in your case if it fails immediately after the first sync it indicates that something is misconfigured.\nOn the log you provided I don't see the same problem with an offset no longer on server. But maybe that log doesn't cover the second sync."
+  },
+  {
+   "author": "rodireich",
+   "created_at": "2024-10-29T20:49:19Z",
+   "body": "@Nanagoud007 how often is airbyte set to sync this connection?"
+  },
+  {
+   "author": "jduckwo",
+   "created_at": "2024-10-29T22:21:25Z",
+   "body": "@rodireich I just recreated a new connection and the sync ran twice. One to initially populate the tables, then the second as an incremental sync _(no actual data changes for the second)_. The sync is scheduled to run every 1 hour. The first completed successfully, the second failed with the aforementioned error. Here are the logs from both runs. \n\n[Initial Sync: default_workspace_logs_47_txt.txt](https://github.com/user-attachments/files/17563672/default_workspace_logs_47_txt.txt)\n[Incremental Sync: default_workspace_logs_48_txt.txt](https://github.com/user-attachments/files/17563673/default_workspace_logs_48_txt.txt)\n"
+  },
+  {
+   "author": "Nanagoud007",
+   "created_at": "2024-10-30T04:22:03Z",
+   "body": "> [@Nanagoud007](https://github.com/Nanagoud007) how often is airbyte set to sync this connection?\n\ni have set sync for every hour, i have tried minute sync also its not happening"
+  },
+  {
+   "author": "Nanagoud007",
+   "created_at": "2024-11-11T04:36:38Z",
+   "body": "@marcosmarxm @rodireich  @octavia-squidington-iii is there any updates regrading this issue its been while....?"
+  },
+  {
+   "author": "rowanmoul",
+   "created_at": "2024-11-14T00:41:17Z",
+   "body": "We've started having a very similar problem since upgrading to Postgres 16 last week (previously we were using 14). For the upgrade, the replication slots needed to be dropped of course, but after re-creating them and selecting \"clear data\" in the connections, subsequent syncs keep failing with the the \"Saved offset is before replication slot's confirmed lsn\" error. Nothing else has changed. \nThe `max_slot_wal_keep_size` is set to the default of `-1` (infinite) and the disk is not full, so there is no reason why it should be out of sync. Nothing else is using this replication slot. We are only syncing once per day, but this was never a problem before now since there is no limit on the amount of WAL logs being kept (aside from the disk size, which never gets full)\n\nSteps taken following the upgrade and dropping of replication slots:\n1. Re-create replication slots for each connection with identical settings as before.\n2. Run \"clear data\" on the connection\n3. Sync (initial sync, pulls all data)\n4. Sync again - FAIL - _Saved offset is before replication slot's confirmed lsn_\n\nEdit:\nI also just tried changing `InvalidCdcCursorPositionBehaviour` to \"Re-sync Data\" and this allowed the sync to succeed, however runnng the sync a second time immediately after the first one shows the same warning message (_Saved offset is before Replication slot's confirmed_flush_lsn, Airbyte will trigger sync from scratch_), which tells me that had `InvalidCdcCursorPositionBehaviour` been set to \"Fail sync\", it would have indeed failed.\n\n*We are running the latest Airbyte 1.2 via Helm Chart, and the latest versions of all the connectors."
+  },
+  {
+   "author": "rowanmoul",
+   "created_at": "2024-11-26T00:01:47Z",
+   "body": "I've been digging WAY too deep into this, and it looks like the final CDC state isn't being saved in some cases, but I can't figure out why. The final state is logged during the save process on each sync:\n```\nsource > INFO main i.a.i.s.p.c.PostgresCdcStateHandler(saveState):38 debezium state: {\"[\\\"redacted\\\",{\\\"server\\\":\\\"redacted\\\"}]\":\"{\\\"transaction_id\\\":null,\\\"lsn\\\":1950553113328,\\\"txId\\\":266233230,\\\"ts_usec\\\":1732059523586293}\"}\nsource > INFO main i.a.c.i.s.r.s.SourceStateIterator(computeNext):84 sending final state message, with count per stream: {}\n```\nBut on connections that are not working as described in my previous comment, the value printed in this log line is NOT the value saved to the airbyte database. The value that is saved is... _\"before Replication slot's confirmed_flush_lsn\"_, but the value printed in the log is NOT.\n\n----\nSomehow I have managed to get some connections to work again by running a sync once with \"Re-Sync Data\" set on the source, and subsequent syncs continue to work (with `InvalidCdcCursorPositionBehaviour` set to \"Fail Sync\" again). In these cases, the logs are slightly different:\n```\nsource > INFO main i.a.i.s.p.c.PostgresCdcStateHandler(saveState):38 debezium state: {\"[\\\"redacted\\\",{\\\"server\\\":\\\"redacted\\\"}]\":\"{\\\"lsn_proc\\\":1980886834104,\\\"messageType\\\":\\\"INSERT\\\",\\\"lsn_commit\\\":1980886097776,\\\"lsn\\\":1980886834104,\\\"txId\\\":269703434,\\\"ts_usec\\\":1732574595236910}\"}\nsource > INFO main i.a.c.i.s.r.s.SourceStateIterator(computeNext):84 sending final state message, with count per stream: {redacted large list of streams and counts}\n```\nNot only is the state data slightly different (and actually saved to the airbyte database), but the \"final state message\" actually lists the counts per stream, as opposed to the blank line in the first example.\n\n\nPerhaps this is enough of a clue for someone who actually knows how the postgres source connector works to find the problem? I'd be happy to share full log files privately via Slack."
+  },
+  {
+   "author": "rowanmoul",
+   "created_at": "2024-12-04T22:07:33Z",
+   "body": "The differences in behaviour and state described in my previous post seem to be connected to whether or not there is any changes to the database between when the sync starts and ends. On databases with consistent traffic, there is no problem, but on databases with zero traffic during the sync, Airbyte/debezium appears to complete the re-sync, then sit and wait for a change to happen and then after 120 \"puts\" it quitely gives up and completes the sync as \"successful\" without recording the final state, causing the next sync to fail (or re-sync again) due to the saved LSN being before the slot's confirmed flush LSN.\nSample logs:\n```\n2024-11-28 22:14:00 source > INFO pool-2-thread-1 i.a.c.i.d.AirbyteDebeziumHandler$CapacityReportingBlockingQueue(reportQueueUtilization):48 CDC events queue stats: size=0, cap=10000, puts=117, polls=0\n2024-11-28 22:14:00 source > INFO main i.a.c.i.d.i.DebeziumRecordIterator(computeNext):87 CDC events queue poll(): blocked for PT10.522608394S after its previous call which was also logged.\n2024-11-28 22:14:00 source > INFO main i.a.c.i.d.i.DebeziumRecordIterator(computeNext):140 CDC events queue poll(): returned a heartbeat event: no progress since last heartbeat.\n2024-11-28 22:14:10 source > INFO pool-2-thread-1 i.a.c.i.d.AirbyteDebeziumHandler$CapacityReportingBlockingQueue(reportQueueUtilization):48 CDC events queue stats: size=0, cap=10000, puts=118, polls=0\n2024-11-28 22:14:10 source > INFO main i.a.c.i.d.i.DebeziumRecordIterator(computeNext):87 CDC events queue poll(): blocked for PT10.021465577S after its previous call which was also logged.\n2024-11-28 22:14:10 source > INFO main i.a.c.i.d.i.DebeziumRecordIterator(computeNext):140 CDC events queue poll(): returned a heartbeat event: no progress since last heartbeat.\n2024-11-28 22:14:20 source > INFO pool-2-thread-1 i.a.c.i.d.AirbyteDebeziumHandler$CapacityReportingBlockingQueue(reportQueueUtilization):48 CDC events queue stats: size=0, cap=10000, puts=119, polls=0\n2024-11-28 22:14:20 source > INFO main i.a.c.i.d.i.DebeziumRecordIterator(computeNext):87 CDC events queue poll(): blocked for PT10.021492157S after its previous call which was also logged.\n2024-11-28 22:14:20 source > INFO main i.a.c.i.d.i.DebeziumRecordIterator(computeNext):140 CDC events queue poll(): returned a heartbeat event: no progress since last heartbeat.\n2024-11-28 22:14:30 source > INFO pool-2-thread-1 i.a.c.i.d.AirbyteDebeziumHandler$CapacityReportingBlockingQueue(reportQueueUtilization):48 CDC events queue stats: size=0, cap=10000, puts=120, polls=0\n2024-11-28 22:14:30 source > INFO main i.a.c.i.d.i.DebeziumRecordIterator(computeNext):87 CDC events queue poll(): blocked for PT10.02233072S after its previous call which was also logged.\n2024-11-28 22:14:30 source > INFO main i.a.c.i.d.i.DebeziumRecordIterator(computeNext):140 CDC events queue poll(): returned a heartbeat event: no progress since last heartbeat.\n2024-11-28 22:14:30 source > INFO main i.a.c.i.d.i.DebeziumRecordIterator(requestClose):275 Closing: Heartbeat indicates sync is not progressing\n```\n\nA work around for this issue appears to be the Debezium Heartbeat Query in the source settings.\n[The documentation](https://docs.airbyte.com/integrations/sources/postgres/postgres-troubleshooting#advanced-wal-disk-consumption-and-heartbeat-action-query) suggests this is only needed for a specific issue with disk usage spikes, but setting a query to update a table that is part of the Publication appears to \"force\" an update on low traffic databases and allow the sync to succeed (and save the final state). In my case, I created a special table with datetime column, and set the query in the airbyte source to update the column's value to `now()` whenever it runs.\nSample Logs:\n```\n2024-11-28 23:34:05 source > INFO pool-2-thread-1 i.d.c.c.BaseSourceTask(logStatistics):323 1 records sent during previous 00:00:12.277, last recorded offset of {server=redacted} partition is {lsn=2000066412936, txId=271489410, ts_usec=1732835849309056}\n2024-11-28 23:34:05 source > INFO pool-2-thread-1 i.a.c.i.d.AirbyteDebeziumHandler$CapacityReportingBlockingQueue(reportQueueUtilization):48 CDC events queue stats: size=0, cap=10000, puts=1, polls=0\n2024-11-28 23:34:05 source > INFO main i.a.c.i.d.i.DebeziumRecordIterator(computeNext):87 CDC events queue poll(): blocked for PT12.693975043S in its first call.\n2024-11-28 23:34:05 source > INFO main i.a.c.i.d.i.DebeziumRecordIterator(computeNext):140 CDC events queue poll(): returned a heartbeat event: progressing to 2000066412936.\n2024-11-28 23:34:15 source > INFO pool-2-thread-1 i.d.c.c.BaseSourceTask(logStatistics):323 1 records sent during previous 00:00:10.044, last recorded offset of {server=redacted} partition is {lsn_proc=2000148179280, messageType=NOOP, lsn_commit=2000148179280, lsn=2000148179280, txId=271496815, ts_usec=1732836845586001}\n2024-11-28 23:34:15 source > INFO pool-2-thread-1 i.a.c.i.d.AirbyteDebeziumHandler$CapacityReportingBlockingQueue(reportQueueUtilization):48 CDC events queue stats: size=0, cap=10000, puts=2, polls=0\n2024-11-28 23:34:15 source > INFO main i.a.c.i.d.i.DebeziumRecordIterator(computeNext):87 CDC events queue poll(): blocked for PT10.035974086S after its previous call which was also logged.\n2024-11-28 23:34:15 source > INFO main i.a.c.i.d.i.DebeziumRecordIterator(computeNext):140 CDC events queue poll(): returned a heartbeat event: progressing to 2000148179280.\n2024-11-28 23:34:15 source > INFO main i.a.i.s.p.c.PostgresCdcTargetPosition(reachedTargetPosition):80 Signalling close because heartbeat LSN : 2000148179280 is after target LSN : PgLsn{lsn=2000066422912}\n2024-11-28 23:34:15 source > INFO main i.a.c.i.d.i.DebeziumRecordIterator(requestClose):275 Closing: Heartbeat indicates sync is done by reaching the target position\n```\n\nI can reliably reproduce the above behaviour in our test environment.\n\n_I also had one instance where having a stream (table) selected in the connection that was not part of the Publication caused the final state to not be recorded in the Airbyte DB, despite the sync otherwise succeeding (as per the second set of logs). I have not tried to reproduce this case._"
+  },
+  {
+   "author": "ssay-work",
+   "created_at": "2025-02-12T20:40:57Z",
+   "body": "I ran into this same problem, did you implement the heartbeat workaround @rowanmoul ? Did that alleviate the issue? "
+  },
+  {
+   "author": "rowanmoul",
+   "created_at": "2025-02-12T22:23:33Z",
+   "body": "Yes, the heartbeat appears to have alleviated the issue entirely for us.\nHow to add a heartbeat table:\n1. Create a simple table - I had columns \"id\", \"value\", and \"updated\", though I could have skipped the \"value\" column in hindsight\n2. Add this table to the publication  - *this is critical*\n3. Put a query like this into the debezium heartbeat query field in the source: `update yourSchema.yourTable set value='heartbeat', updated=now();`\nYou do NOT need to replicate this stream in airbyte for this to work. In fact we don't have the schema this table is in selected in the source configuration.\n\nThis is definitely just a workaround though. There is clear underlying problem that should be addressed. I'm not sure if it's a problem with Airbyte, Debezium, or both."
+  },
+  {
+   "author": "ssay-work",
+   "created_at": "2025-02-14T14:00:59Z",
+   "body": "@rowanmoul , this has drastically shortened our sync times. I was hoping to see a decrease in our WAL logs but that hasn't materialized yet. At the risk of increasing the scope of this issue, have you observed any unexpected behavior with WAL logs? My assumption is that postgres should clean out any un-needed WAL logs based on the LSN's for the replication slot. FWIW, we are using Aurora Postgres. "
+  },
+  {
+   "author": "kev-datams",
+   "created_at": "2025-04-25T05:37:16Z",
+   "body": "Hello, any news on a reliable fix?"
+  },
+  {
+   "author": "octavia-bot[bot]",
+   "created_at": "2025-11-07T09:01:18Z",
+   "body": "At Airbyte, we seek to be clear about the project priorities and roadmap. This issue has not had any activity for 180 days, suggesting that it's not as critical as others. It's possible it has already been fixed. It is being marked as stale and will be closed in 20 days if there is no activity. To keep it open, please comment to let us know why it is important to you and if it is still reproducible on recent versions of Airbyte."
+  },
+  {
+   "author": "kev-datams",
+   "created_at": "2025-11-07T11:29:11Z",
+   "body": "Up"
+  },
+  {
+   "author": "FVidalCarneiro",
+   "created_at": "2025-12-12T12:35:15Z",
+   "body": "@Nanagoud007 , we are also facing issues with this connector, but different to these. The error we are experiencing is:\n```\nSaved offset is before replication slot's confirmed lsn. Please reset the connection, and then increase WAL retention and/or increase sync frequency to prevent this from happening in the future. See https://docs.airbyte.com/integrations/sources/postgres/postgres-troubleshooting#under-cdc-incremental-mode-there-are-still-full-refresh-syncs for more details.\n```\nOn our end, versions of the connector superior to `3.6.15` fail with this error.\n\nFo your issue however, I would suggest chcking two things:\n- Do your tables have primary keys?\n- Have you tried downgrading to this version?\n\nIf you are facing the same issue as me, you can also refer to this issue (https://github.com/airbytehq/airbyte/issues/55846)"
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "airbytehq/airbyte",
+  "default_branch": "master",
+  "commit_sha": "97514e6b3693ecc3ee3cfcec051dfa7a42f4956e",
+  "as_of": "2024-10-28T12:49:02Z",
+  "method": "github_commits_until"
+ },
+ "images": [
+  {
+   "where": "c7",
+   "source_url": "https://github.com/user-attachments/assets/968b9182-7a05-4446-9302-c2578e9f912b",
+   "file": "gh_airbytehq_airbyte_47547_img0.png"
+  },
+  {
+   "where": "c10",
+   "source_url": "https://github.com/user-attachments/assets/bbe0800c-f1f3-4abc-a107-4837eee222c0",
+   "file": "gh_airbytehq_airbyte_47547_img1.png"
+  },
+  {
+   "where": "c10",
+   "source_url": "https://github.com/user-attachments/assets/72a9ac17-0896-41dc-9164-c2661abc8713",
+   "file": "gh_airbytehq_airbyte_47547_img2.png"
+  }
+ ],
+ "slug": "gh_airbytehq_airbyte_47547"
+}

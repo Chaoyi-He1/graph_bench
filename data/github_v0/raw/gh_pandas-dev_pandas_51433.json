@@ -1,0 +1,216 @@
+{
+ "repo": "pandas-dev/pandas",
+ "number": 51433,
+ "url": "https://github.com/pandas-dev/pandas/issues/51433",
+ "title": "API: Setting Arrow-backed dtypes by default",
+ "state": "closed",
+ "labels": [
+  "API Design",
+  "Needs Discussion",
+  "Typing",
+  "API - Consistency",
+  "Arrow"
+ ],
+ "reporter": "reporter",
+ "created_at": "2023-02-16T16:09:47Z",
+ "closed_at": "2023-03-29T10:01:23Z",
+ "body": "I've been using the new Arrow backed dtypes, and I'm a bit confused on how it is decided which backend is used. One example:\r\n\r\n```python\r\n>>> with pandas.option_context(\"mode.dtype_backend\", \"pyarrow\"):\r\n...     pandas.Series([1, 2, 3, 4])\r\n... \r\n0    1\r\n1    2\r\n2    3\r\n3    4\r\ndtype: int64\r\n```\r\n\r\nWhy is setting the `dtype_backend` to `pyarrow` not enough to use Arrow in the `Series` constructor when no dtype is specified?\r\n\r\nAlso, when using for example `read_csv`:\r\n\r\n```python\r\n>>> import pandas\r\n>>> pandas.read_csv('test.csv').dtypes\r\nname    object\r\nage      int64\r\ndtype: object\r\n>>> pandas.read_csv('test.csv', use_nullable_dtypes=True).dtypes\r\nname    string[python]\r\nage              Int64\r\ndtype: object\r\n>>> with pandas.option_context(\"mode.dtype_backend\", \"pyarrow\"):\r\n...     pandas.read_csv('test.csv').dtypes\r\n... \r\nname    object\r\nage      int64\r\ndtype: object\r\n>>> with pandas.option_context(\"mode.dtype_backend\", \"pyarrow\"):\r\n...     pandas.read_csv('test.csv', use_nullable_dtypes=True).dtypes\r\n... \r\nname    string[pyarrow]\r\nage      int64[pyarrow]\r\ndtype: object\r\n```\r\n\r\nWhy again is not enough that the user set the backend to `pyarrow` to use Arrow dtypes, and needs to call `use_nullable_dtypes`? This s what we returned, which doesn't make sense to me:\r\n\r\n| | dtype_backend=None | dtype_backend=pyarrow |\r\n|-|-|-|\r\n| use_nullable_dtypes=False| NumPy | **NumPy ???** |\r\n| use_nullable_dtypes=True| Arrow+NumPy nullables | Arrow |\r\n\r\nWhat I would expect:\r\n\r\n| | dtype_backend=None | dtype_backend=pyarrow |\r\n|-|-|-|\r\n| use_nullable_dtypes=False| NumPy | Arrow |\r\n| use_nullable_dtypes=True| Arrow eventually, Arrow+Numpy nullables for now | Arrow |\r\n\r\nSorry if I missed the discussion, maybe I'm just missing something. But I don't see what's the use case for a user to explicitly say they want Arrow types with the option, but still giving them NumPy backed series and dataframes... Is this something it was agreed, or we just didn't make the changes to have a more intuitive behavior?\r\n\r\nCC: @participant1 ",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2023-02-16T16:21:25Z",
+   "body": "Yeah it was discussed previously that this setting should only apply when `use_nullable_dtype=True` was set or `df.convert_dtypes()`.  This was chosen instead of changing `use_nullable_dtypes=\"pandas\"|\"pyarrow\"` for example\r\n\r\nI think your first example should eventually return pyarrow backed types in the future for any method, but that would require a lot more changes. "
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-02-16T16:44:48Z",
+   "body": "Additionally, neither our own nullables nor pyarrow dtypes are yet implemented in our constructors"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-02-16T17:42:08Z",
+   "body": "I see that for the constructor it's just that it's not implemented, I thought it was related to the IO readers decision. Sorry for mixing both things, I guess we agree on that.\r\n\r\nFor the readers, I've been reading the discussions, but I still couldn't find the reason why we want to ignore the user preference unless `use_nullable_dtype` is specified. The API seems quite cumbersome, and I see in the discussion in #50291 that @participant2 seems to agree, and emphasizes that the behavior should be well documented, since it's not intuitive. For what I understand, seems like it was motivated by the original option being `nullable_backend` before being renamed to `dtype_backend`. Before the rename it made sense to use it if `use_nullable_dtypes` was `True`. I understand that decision in the historical context, but I think the final API after the rename is counter-intuitive for no reason.\r\n\r\nPersonally, I'd make the `nullable_dtypes` option and the `use_nullable_dtype` parameter just a value of `dtype_backend` (which could be a parameter too). Not proposing to change that now, but feels like  we could have an option for `numpy` (now named `pandas`), another for `custom-nullable` (the mix of numpy nullables and the Arrow string type used now with `use_nullable_dtype=True`), and the last one `pyarrow` (which should be respected). That would probably simplify things IMO.\r\n\r\nBut regardless of that, I don't see a use case when a user says (with the option) \"I want pyarrow dtypes\", and we still give them numpy dtypes, because a mostly unrelated parameter `use_nullable_dtypes` is set. pyarrow dtypes can be nullable, but still that option is mostly unrelated, and having it to false would make users expect to have pyarrow dtypes without the NA mask, not numpy types.\r\n\r\nAm I missing something? Is there an advantage on forcing the user to set the `use_nullable_dtype` even if it set the `pyarrow` backend option?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-02-16T18:11:51Z",
+   "body": "True, the coupling the `use_nullable_dtypes` keyword with the `nullable_backend` global option is heavily tied due to the historical renaming during development, inspired from the revelation of \"pyarrow is an alternative nullable type implementation\" to \"pyarrow is generically a whole different type implementation\".\r\n\r\nI think @participant2 expressed this before too, but an ideal end state is decoupling these two and only needing to set `dtype_backend` to `'numpy', 'pandas', 'pyarrow'` (or similar) and getting numpy, pandas-nullable, and pyarrow-backed dtypes everywhere respectively and not needing `use_nullable_dtypes` at all"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-02-16T19:25:27Z",
+   "body": "I see that parquet works as expected (as expected by me :)\r\n\r\n```python\r\n>>> with pandas.option_context(\"mode.dtype_backend\", \"pyarrow\"):\r\n...     print(pandas.read_parquet('test.parquet').dtypes)\r\nDate       string[pyarrow]\r\nOpen       double[pyarrow]\r\nHigh       double[pyarrow]\r\nLow        double[pyarrow]\r\nClose      double[pyarrow]\r\nVolume      int64[pyarrow]\r\nOpenInt     int64[pyarrow]\r\ndtype: object\r\n```\r\n\r\nBut I test also ORC, and seems it's behaving like CSV.\r\n\r\nIs there any objection to make all readers return parquet types if `mode.dtype_backend=pyarrow` (regardless of the parameter `use_nullable_dtypes`? @pandas-dev/pandas-core "
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-02-16T19:30:26Z",
+   "body": "I‘d prefer implementing this everywhere before creating an option that is not tied to a keyword. Right now it works in half or 2/3 of our methods/functions and it‘s kind of vodoo when it works and when it does not.\r\n\r\nI think we used this approach to avoid having two keywords, e.g. use_nullable_dtypes and something like use_pyarrow_dtypes"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-02-16T20:13:48Z",
+   "body": "Thanks for the feedback @participant2. I don't fully understand what you propose. What exactly works in half or two thirds of methods?\r\n\r\nMy understanding is that the `dtype_backend` option should affect mostly when data is created or loaded. For the constructor doesn't seem immediate to implement using it. But for the readers I think we can change the behavior to what `read_parquet` is doing relatively fast if there is agreement, no? And that would help avoid this magic of not understanding when it's working one way or another, and things would be better than the current state, no?\r\n\r\nOr am I missing something?"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-02-16T20:18:17Z",
+   "body": "If we don't tie the ``dtype_backend`` to a keyword, I would expect (as a user) that I'll get arrow-backed data everywhere. This is not the case right now, since constructors, among others, aren't implemented yet.\r\n\r\nThe alternative we considered was adding a ``dtype_backend`` keyword to every method where the option is supported, which is something I would prefer over the option magically working for some functions but not for others\r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-02-16T20:31:04Z",
+   "body": "I see your point, thanks for clarifying. Personally I think users will still expect that data is loaded with the Arrow backend, even if we create this (in my opinion arbitrary) link with a keyword. And it'd be better to give them as much of that even if we can't immediately use Arrow types for any data loaded into pandas.\r\n\r\nI don't know what regular users would expect, but I don't think as a user I'd expect that the option will get me Arrow data \"everywhere\" in the sense that `df['numpy_backed_column'] + 1` would return an Arrow backend column. I see the scope here being data loaded/imported into pandas, via I/O or from Python structures via constructors.\r\n\r\nIf you really think the current approach to make that option only relevant when `use_nullable_dtypes` is set to `True` (which as I said, I think it's a very bad idea from the user experience point of view), would you make `read_parquet` use NumPy types when `dtype_backend='pyarrow'` and `use_nullable_dtype=False` then?"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-02-16T20:43:40Z",
+   "body": "@reporter these are great longer term points but we need a transition and complete implementation before every single last thing works\n\ndocumented behavior even if only half working is better than nothing"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-02-16T20:58:29Z",
+   "body": "Fully agree with you @participant3, and I think there is agreement that for the constructors we will have this half working behavior.\r\n\r\nBut if I'm not wrong, for the readers we're literally talking about removing the `use_nullable_dtypes` from this condition:\r\n\r\nhttps://github.com/pandas-dev/pandas/blob/main/pandas/io/parsers/base_parser.py#L754\r\n\r\nSo, it's not about being half working, it's about making the decision to not give the user Arrow types when they explicitly asked for them, unless they also specify `use_nullable_dtypes=True` in the call. Which kind of make sense to us since nullable dtypes is the origin of the `dtype_backend` option, but for the user is just an arbitrary parameter that we're asking in the documentation to pass, without being able to explain why. At least I can't explain it in the post I'm writing about pandas 2.0 and Arrow."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-02-16T21:20:37Z",
+   "body": "> user is just an arbitrary parameter that we're asking in the documentation to pass, without being able to explain why\r\n\r\nThis is fair. For the \"why\", it's just categorizing the numpy-nulllable-backed vs pyarrow-backed types as \"nullable\" answering \"if you specified `use_nullable_dtypes=True`, _which_ nullable implementation would you like\". With this categorization, `use_nullable_dtypes=False` and `dtype_backend=\"pyarrow\"` would seem clashing the pyarrow types are nullable so should we still return Arrow ( I know you highlighted this in your OP that this should be Arrow) ?\r\n\r\nOverall this is just semantics though and maybe not significantly meaningful to users. I am not opposed to `dtype_backend` taking effect whether or not `use_nullable_dtypes=True|False` for the IO methods. Implementation wise IIRC some readers \"piggy back\" off of `use_nullable_dtypes=True` code paths, so some untangling will be needed."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-03-05T02:58:17Z",
+   "body": "I still think we should change this before the release. I understand where the current behavior is coming from, but to me it's obvious that every user will expect that setting the backend option to arrow will make pandas use arrow for the constructors and readers. I understand that for the constructors is more work and maybe worth waiting for 2.1 (I'm surely +1 in making it a blocker for the release). But for the readers, the change is trivial, and feels like the current behavior only makes sense for the people involved in the development of the parameter, but for everyone else this will be misleading and frustrating. For reference, I just read this: https://<redacted-host>/rasbt/status/1632095663532957700\r\n\r\nAlso, for parquet we're not requiring `use_nullable_dtypes`, there is no consistency among formats.\r\n\r\nAny objection if I open a PR to make the behavior consistent to use arrow dtypes if the backend option is set to arrow, regardless of the nullable dtypes parameter, which would only apply to the numpy backend?"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2023-03-05T03:43:04Z",
+   "body": "> every user will expect that setting the backend option to arrow will make pandas use arrow for the constructors\r\n\r\n\"io_dtype_backend\"?\r\n\r\nChanging this may require an rc2"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-03-05T10:09:28Z",
+   "body": "This would only solve the problem partly, since we don’t have a implementation for all io methods (but probably not really relevant because we covered the common ones)\r\n\r\nthere is another reason why I don’t like the option only approach. Arrow is still new and experimental, we have lots of places where arrow support doesn’t exist or has probably a bunch of bugs, using dtype_backend option and nothing else removes local control over turning the option on or off. I think a more likely approach is that you’ll try it out in a couple of functions but not everywhere. I agree that the coupling isn’t ideal but having a global option only is worse imo. \r\n\r\nIf you really want to opt in globally you can just set \r\n\r\npd.options.mode.nullable_dtypes = True\r\n\r\nas well. \r\n\r\nI don’t like making this behavior Option only, which removes control that is quite helpful in the beginning without adding much. \r\n\r\nAnd yes we should change parquet to be consistent "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-03-05T12:14:36Z",
+   "body": "I understand those concerns. The option only applying in some cases where it's been already implemented, and not having control over a single operation after setting the option are surely not ideal.\r\n\r\nBut I think the current approach just makes things worse. We're going to confuse every single users, and get a cumbersome API that we won't be able to fix immediately after the release for backward compatibility.\r\n\r\nI'm ok eplacing the `use_nullable_dtypes` parameter by a `dtypes_backed` one that accepts \"numpy\", \"pandas\" and \"pyarrow\". That addresses your concerns, and maybe worth to remove the option for now, or make it generate a warning saying this is experimental, and only supported by some operations.\r\n\r\nOf course this would delay a bit the release and require another RC as Brock says. But totally worth doing in my opinion. What do you think?\r\n\r\nPS: Here you have another example of someone using the option in the obvious but incorrect way: https://github.com/pola-rs/tpch/pull/36/files"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2023-03-05T13:46:20Z",
+   "body": "Would an acceptable option just be for ``dtype_backend`` to set ``use_nullable_dtypes`` to True when it's set to pyarrow. "
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-03-05T14:40:07Z",
+   "body": "Yeah renaming sounds like a solution, not great on such short notice though :(\r\n\r\nI am ok with a global option, this makes definitely sense, but I don't think that it should be the only way of switching yet.\r\n\r\nAutomatically switching use_nullable_dtypes to True might create more confusion"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-03-05T23:49:31Z",
+   "body": "> Yeah renaming sounds like a solution, not great on such short notice though :(\r\n\r\nAgree, it'd been much better to have this conversation earlier, and surely before the RC. But IMO better now than never. And I personally think the cost of postponing the pandas 2.0 a bit is much less than the cost of releasing things as they are now. First because of how much more effort will be to change things in a backward compatible way once they are released. And second, because I think the current API is confusing and will make users interested in Arrow feel frustrated, and the reputational damage will be quite significant (and pandas doesn't have a great reputation for a consistent API already.\r\n\r\nThis is something I saw on twitter the other day, I guess we all can more or less relate... ;)\r\n\r\n![41eaf906-86d1-4a5f-bcb9-58de1d990303](https://user-images.githubusercontent.com/10058240/222993084-27625c6b-b79b-4aac-aa12-f35a6283d5ba.jpeg)\r\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-03-06T10:37:34Z",
+   "body": "> using dtype_backend option and nothing else removes local control over turning the option on or off.\r\n\r\nWouldn't a user's local control of testing this option on a subset of code can be done through use of the `option_context` context manager?\r\n\r\n\r\nI can see how tying a global option to a method parameter can be confusing to users and would be more work in the future if we walk that back, so I do think it's a good idea to decouple the `dtypes_backend` option from `use_nullable_dtypes` parameter before 2.0. I would be okay with moving forward with just having the `dtypes_backend` option dictate whether numpy, pandas nullable, or pyarrow types are returned. I think eventually we want to get to a state where the global option can dictate what dtype implementation is used without the use of method parameters.\r\n\r\n\r\nShould the steps forward be:\r\n\r\n1. Remove the newly added `use_nullable_dtypes` parameter from methods (everything except `read_parquet` IIRC)\r\n2.  Ensure the `dtypes_backend` option affects the dtype implementation of the result regardless\r\n3. (Optional) deprecate `use_nullable_dtypes` in `read_parquet`?\r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-03-07T18:36:11Z",
+   "body": "I agree with @participant1 here. I think if a user sets the `dtype_backend` to a backend, and for a particular call prefers a different backend, is reasonable for them to use the context manager, instead of having an argument to each I/O call.\r\n\r\nTo the proposed steps I think it's missing adding a `numpy` (default) option to `dtype_backend`, which doesn't seem to exist, as I guess `use_nullable_dtype=False` is the current way to tell pandas that we want pure-numpy dtypes.\r\n\r\nAlso, since one of the concerns is that pyarrow is experimental and after selecting `dtypes_backend=pyarrow` it won't always be satisfied, I think we should add a warning when setting the option to pyarrow let users know. Besides what we can say in the documentation, I think the warning will help manage expectations much better.\r\n\r\n@participant2 @pandas-dev/pandas-core is everybody happy with this approach, and to make the change before pandas 2.0 (which would require another RC)?"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-03-07T22:18:19Z",
+   "body": "I didn't really consider the context manager but I am not sure this is practical in general.\r\n\r\nI think we have quite different expectations how an arrow backend adaption would go.\r\n\r\nWe have a big chunk of users with existing code bases. I can't imagine that they would consider turning the option on globally. Couple of reasons why not:\r\n\r\n- You would probably be busy fixing tests for weeks \r\n- You'll probably run into a bunch of bugs\r\n- Performance bottlenecks in some areas (try a groupby with pyarrow vs NumPy dtypes for example)\r\n\r\nA reasonable migration approach would look similar to this (imo):\r\n\r\n- Add the arrow backend one step at a time to keep the failing tests limited and investigate performance if relevant.\r\n- move on to another area\r\n\r\nI think this is how most adaptions would go. I don't think that a relevant part of our users will just do\r\n\r\n```\r\npd.options.mode.dtype_backend = \"pyarrow\"\r\n```\r\n\r\n You could of course argue that all of this can be done via a context manager as well, but imo this is significantly more cumbersome than just setting a keyword. \r\n\r\nI'd like to put this on the agenda tomorrow and happy to provide a pr afterwards no matter what we decide. This way we should be able to push he rc end of this week?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-03-07T23:17:46Z",
+   "body": "I think there are two  independent conversations we are discussing:\r\n\r\n### Q1) What is the way to define the backend to use globally:\r\n\r\nOption 1:\r\n```\r\ndtype_backend\r\n      |\r\n      |---> numpy\r\n      |---> pandas\r\n      |---> pyarrow\r\n```\r\nOption 2:\r\n```\r\n                         yes                           pandas\r\nis_nullable_dtype ----------------> dtype_backend --------------> (pandas)\r\n        |                                   |\r\n        | no                                | pyarrow\r\n        V                                   V\r\n  (numpy backend)                       (pyarrow)\r\n```\r\nTo me it's obvious that option 2 is harder to understand, confusing, and doesn't provide any value. Unless the goal here is to overcomplicate things so users don't use any backend other than the numpy one.\r\n\r\n\r\n### Q2) Which API to provide users to overwrite the default backend:\r\n\r\nOption 1:\r\n\r\n```python\r\nwith pandas.option_context('mode.dtype_backend', 'pyarrow'):\r\n    df = pandas.read_csv(fname)\r\n```\r\n\r\nOption 2:\r\n\r\n```python\r\ndf = pandas.read_csv(fname, dtype_backend='pyarrow')\r\n```\r\n\r\nOption 2 is clearly nicer, but other than to migrate the dtype backend, it will be rarely used, and option 1 has couple of advantages IMO:\r\n- Simpler, literally no change to any of the read functions is needed (once the global option is working)\r\n- Avoids duplication, and possibly lack of consistency. Not only in the signature, but in the documentation of the parameter, which needs to be duplicated, or use one of the template hacks\r\n- Some of the readers have a huge number of parameters, like `read_csv`, not adding more things there would be nice\r\n\r\nI'll be teaching tomorrow at the time of the meeting, I can't join, but my opinion: Strong -1 to the `is_nullable_dtypes (option 2) to the first question. Preference for the context manager to the second as it simplifies our codebase significantly and makes things simpler, but adding a parameter to all readers is also fine if that's what others prefer.\r\n\r\nAlso, as I said, I'd add a warning when settings the `dtype_backend` to any backend we consider experimental (surely pyarrow, not sure the pandas/nullable backend)."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-03-07T23:19:51Z",
+   "body": "I am on board with option 1 for question 1, should probably have stated this a bit more explicit before "
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-03-08T21:18:39Z",
+   "body": "@reporter during today's dev call, there was a sense that 2.0 should _not_ introduce a global option `dtype_backend` and stick to introducing a `dtype_backend=lib.no_default| \"numpy_nullable\" | \"pyarrow\"` keyword in IO readers, `convert_dtypes` and `to_numeric`. The reasoning was a global option might have a user expectation to work everywhere but in reality will not yet for 2.0, and a parameter would be an easier migration/testing path for users. But a global option can be introduced in a later version when we have better arrow support (like in constructors). \r\n\r\nWhat do you think?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-03-08T22:16:20Z",
+   "body": "Sounds good to me, not sure if for the long term we may still want to deprecate those parameters in favor of the global option, but for pandas 2.0 seems the most reasonable thing to do. 100% onboard with the idea.\r\n\r\nI assume we're still getting rid of the `use_nullable_dtypes` for everything except `read_parquet`, right?\r\n\r\n@participant2 I think you said you'll work on this. Let me know if you need help. Is the plan still to do a second RC once this is done, and try to release the final 2.0 around two weeks after?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-03-08T22:21:01Z",
+   "body": "> I assume we're still getting rid of the use_nullable_dtypes for everything except read_parquet, right?\r\n\r\nI think we agreed to deprecate `use_nullable_dtypes` in favor of a `dtype_backend` keyword too\r\n\r\n> Is the plan still to do a second RC once this is done, and try to release the final 2.0 around two weeks after?\r\n\r\nYup, sounds good to me. I can help out with this too."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-03-08T22:44:15Z",
+   "body": "> > I assume we're still getting rid of the use_nullable_dtypes for everything except read_parquet, right?\n> \n> \n> \n> I think we agreed to deprecate `use_nullable_dtypes` in favor of a `dtype_backend` keyword too\n> \n> \n> \n> > Is the plan still to do a second RC once this is done, and try to release the final 2.0 around two weeks after?\n> \n> \n> \n> Yup, sounds good to me. I can help out with this too.\n\n+1 on these decisions "
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-03-09T08:51:32Z",
+   "body": "I opened #51853 \r\n\r\nFeedback very welcome"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2023-03-29T00:24:25Z",
+   "body": "#51853 has been merged, is this closable?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-03-29T10:01:23Z",
+   "body": "Yes, thanks @participant4 "
+  },
+  {
+   "author": "participant6",
+   "created_at": "2023-07-25T01:27:11Z",
+   "body": "It seems that it was once possible to use `pd.options.mode.dtype_backend = \"pyarrow\"` to do the global setting, as I saw it in at least two different code snippets. Yet when I tried it myself today, I got an error `OptionError: 'You can only set the value of existing options'`. \r\n\r\nIs `with pandas.option_context('mode.dtype_backend', 'pyarrow'):` the recommended way of reverting the backend now? \r\n\r\n"
+  },
+  {
+   "author": "participant7",
+   "created_at": "2023-08-24T12:22:04Z",
+   "body": "> It seems that it was once possible to use `pd.options.mode.dtype_backend = \"pyarrow\"` to do the global setting, as I saw it in at least two different code snippets. Yet when I tried it myself today, I got an error `OptionError: 'You can only set the value of existing options'`.\r\n> \r\n> Is `with pandas.option_context('mode.dtype_backend', 'pyarrow'):` the recommended way of reverting the backend now?\r\n\r\nEven `with pandas.option_context('mode.dtype_backend', 'pyarrow'):` doesn't work now, it spits out: `OptionError: No such keys(s): 'mode.dtype_backend'`"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-08-24T12:23:28Z",
+   "body": "This option was removed, it was only available for a short time in a release candidate, never in a proper release"
+  },
+  {
+   "author": "participant8",
+   "created_at": "2023-11-01T13:16:41Z",
+   "body": "@participant2  so if I use \r\n` df = pd.DataFrame.from_dict(prices)`\r\nThe only way to use arrow is set the data types after create the dataframe?"
+  },
+  {
+   "author": "participant9",
+   "created_at": "2025-03-31T09:49:39Z",
+   "body": "Is there any plan on adding back the option to choose `pyarrow` as the default dtype backend? "
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "pandas-dev/pandas",
+  "default_branch": "main",
+  "commit_sha": "32f1faddc35ace8dbddd22fcefa925856405016e",
+  "as_of": "2023-02-16T16:09:47Z",
+  "method": "github_commits_until"
+ },
+ "images": [
+  {
+   "where": "c18",
+   "source_url": "https://user-images.githubusercontent.com/10058240/222993084-27625c6b-b79b-4aac-aa12-f35a6283d5ba.jpeg",
+   "file": "gh_pandas-dev_pandas_51433_img0.jpg"
+  }
+ ],
+ "slug": "gh_pandas-dev_pandas_51433"
+}

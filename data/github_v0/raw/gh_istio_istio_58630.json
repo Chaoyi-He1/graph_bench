@@ -1,0 +1,263 @@
+{
+ "repo": "istio/istio",
+ "number": 58630,
+ "url": "https://github.com/istio/istio/issues/58630",
+ "title": "zTunnel error io error: invalid peer certificate: Other(OtherError(identity verification error: peer did not present the expected SAN",
+ "state": "closed",
+ "labels": [
+  "feature/Multi-cluster",
+  "area/ambient"
+ ],
+ "reporter": "reporter",
+ "created_at": "2025-12-22T18:32:28Z",
+ "closed_at": "2026-03-18T20:59:36Z",
+ "body": "### Is this the right place to submit this?\n\n- [x] This is not a security vulnerability or a crashing bug\n- [x] This is not a question about how to use Istio\n\n### Bug Description\n\nI'm running a multi primary, multi cluster ambient mesh setup with zTunnel east west gateways between my clusters `cluster1` and `cluster2`.\nI installed Istio using these instructions: https://istio.io/latest/docs/setup/install/multicluster/multi-primary_multi-network/\nand used Helm with the following shared values:\n```\nistiod:\n  env:\n    AMBIENT_ENABLE_MULTI_NETWORK: \"true\"\n  profile: ambient\n  meshConfig:\n    defaultConfig:\n      proxyMetadata:\n        ISTIO_META_DNS_CAPTURE: \"true\"\n        ISTIO_META_DNS_AUTO_ALLOCATE: \"true\"\ncni:\n  profile: ambient\nztunnel:\n  profile: ambient\n```\nand for cluster specific values:\n`cluster1`:\n```\nistiod:\n  global:\n    meshID: mesh1\n    multiCluster:\n      clusterName: cluster1\n    network: network1\n\nztunnel:\n  global:\n    network: network1\n  multiCluster:\n    clusterName: cluster1\n```\n`cluster2`\n```\nistiod:\n  global:\n    meshID: mesh1\n    multiCluster:\n      clusterName: cluster2\n    network: network2\n\nztunnel:\n  global:\n    network: network2\n  multiCluster:\n    clusterName: cluster2\n```\n\nMy clusters are using intermediate certs from the same root CA. (Followed the instructions here: https://istio.io/latest/docs/tasks/security/cert-management/plugin-ca-cert/)\nThe clusters exist on different networks and in different regions (AWS)\nOutput from `istioctl remote-clusters`\n```\nistioctl remote-clusters --context=cluster1\nNAME                   SECRET                                          STATUS     ISTIOD\ncluster1                                                               synced     istiod-75d587bb9d-drgx4\ncluster2               istio-system/istio-remote-secret-cluster1       synced     istiod-75d587bb9d-drgx4\n```\n```\nNAME                   SECRET                                                  STATUS     ISTIOD\ncluster2                                                                       synced     istiod-8567699f9f-hd7ms\ncluster1               istio-system/istio-remote-secret-cluster2               synced     istiod-8567699f9f-hd7ms\n```\nI have a global service called `my-service` that looks similar to this that is deployed in `cluster1` and `cluster2`:\n```\napiVersion: v1\nkind: Service\nmetadata:\n  labels:\n    app: my-service\n    istio.io/global: \"true\"\n  name: my-service\n  namespace: namespace1 (and another one in namespace2)\nspec:\n  clusterIP: x.x.x.x\n  clusterIPs:\n  - x.x.x.x\n  internalTrafficPolicy: Cluster\n  ports:\n  - port: 3000\n    protocol: TCP\n    targetPort: 3000\n  selector:\n    app: my-service\n  type: ClusterIP\n```\nBoth `namespace1` and `namespace2` in both clusters have been labeled `istio.io/dataplane-mode=ambient`\nWithin `cluster1`, I have the `Deployment` that this service points to scaled down to 0 replicas so that any queries to `my-service` would be routed to `cluster2`.\nFor the _majority_ of requests, this works properly:\nFrom a `Pod` in `cluster1`:\n```\ncurl my-service.namespace1:3000\nSUCCESS\n```\nwith the following log in zTunnel:\n```\nztunnel-9bnrk 2025-12-22T17:34:19.554393Z    info    access    connection complete    src.addr=10.100.154.220:55714 src.workload=\"curl-5c79bf695-jl5pb\" src.namespace=\"namespace1\" src.identity=\"spiffe://cluster.local/ns/namespace1/sa/default\" dst.addr=x.x.x.x:15008 dst.hbone_addr=<redacted-host>:3000 dst.service=\"<redacted-host>\" dst.workload=\"NetworkGateway/region-1/x.x.x.x/0\" dst.namespace=\"istio\n-system\" dst.identity=\"spiffe://cluster.local/ns/istio-system/sa/istio-eastwestgateway\" direction=\"outbound\" bytes_sent=114 bytes_recv=250 duration=\"14ms\"\n```\nHowever, occasionally I'll get a failure with a zTunnel log like this:\n```\nztunnel-9bnrk 2025-12-22T16:42:07.046871Z    error    access    connection complete    src.addr=10.100.154.220:52658 src.workload=\"curl-5c79bf695-jl5pb\"\nsrc.namespace=\"namespace1\" src.identity=\"spiffe://cluster.local/ns/namespace1/sa/default\" dst.addr=x.x.x.x:15008 dst.hbone_addr=<redacted-host>:3000 dst.service=\"<redacted-host>\" dst.workload=\"NetworkGateway/region-2/x.x.x.x/0\" dst.namespace=\"istio-system\" dst.identity=\"spiffe://cluster.local/ns/istio-system/sa/istio-eastwestgateway\" direction=\"outbound\" bytes_sent=0 bytes_recv=0 duration=\"187\nms\" error=\"io error: invalid peer certificate: Other(OtherError(identity verification error: peer did not present the expected SAN (spiffe://cluster.local/ns/namespace1/sa/default), got spiffe://cluster.local/ns/namespace2/sa/default))\"\n```\nNotice how the destination namespace is `namespace1`, but for some reason `cluster2` occasionally presents a cert for `namespace2`. \nThe desired behavior is that when I query my global service `my-service` on `namespace1` that `cluster2` would present the expected SAN of `spiffe://cluster.local/ns/namespace1/sa/default` instead of the incorrect SAN of `spiffe://cluster.local/ns/namespace2/sa/default`.\nAny ideas on what's going on here?\n\n\n### Version\n\n```Text\n`cluster1`\n\nistioctl version --context=cluster1\nclient version: 1.28.1\ncontrol plane version: 1.28.1\ndata plane version: 1.28.1 (4 proxies)\n\n\n`cluster2`\n\nistioctl version --context=cluster2                                                                                                                                                                                   \nclient version: 1.28.1\ncontrol plane version: 1.28.1\ndata plane version: 1.28.1 (14 proxies)\n\n\n\nkubectl version\nClient Version: v1.34.3\nKustomize Version: v5.7.1\nServer Version: v1.32.9\n\n\n\nhelm version --short\nv3.19.3+g0707f56\n```\n\n### Additional Information\n\n_No response_",
+ "comments": [
+  {
+   "author": "reporter",
+   "created_at": "2026-01-05T16:12:02Z",
+   "body": "I tried using unique `ServiceAccount` and even unique `Service` and this error still occurs:\n```\nztunnel-2hlkm 2026-01-05T15:51:15.344410Z    error    access    connection complete    src.addr=10.100.154.220:42538 src.workload=\"curl-5c79bf695-jl5pb\" src.namespace=\"namespace1\" src.identity=\"spiffe://cluster.local/ns/namespace1/sa/default\" dst.addr=x.x.x.x:15008 dst.hbone_addr= <redacted-host>:3000 dst.service=\"<redacted-host>\" dst.workload=\"NetworkGateway/region-1/x.x.x.x/0\" dst.namespace=\"istio-system\" dst.identity=\"spiffe:/\n/cluster.local/ns/istio-system/sa/istio-eastwestgateway\" direction=\"outbound\" bytes_sent=0 bytes_recv=0 duration=\"7ms\" error=\"io error: invalid peer certificate: Other(OtherError(identity verification error: peer did not present the expected SAN (spiffe://cluster.local/ns/namespace1/sa/service-account-1), got spiffe://cluster.local/ns/namespace2/sa/service-account-2))\"\n```\n\nThis is starting to feel like a caching issue to me"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2026-01-05T16:15:26Z",
+   "body": "What do you mean by \"ztunnel east/west gateways\"?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-01-05T16:32:43Z",
+   "body": "> What do you mean by \"ztunnel east/west gateways\"?\n\nI might've gotten the naming wrong, but the setup is very similar to https://github.com/istio/istio/issues/58427\n\nI have multiple Kubernetes clusters, each cluster has a zTunnel `DaemonSet` and within each cluster, I have a east/west gateway"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-01-05T18:16:55Z",
+   "body": "Restarting the zTunnel pods and Istiod pod on both the source and destination seems to temporarily fix the issue, but after some time (anywhere from 1 to 3 hours) this issue shows up again"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-01-06T21:20:43Z",
+   "body": "Running `istioctl ztunnel-config workloads` shows me an output like this:\n```\nnamespace-2         region2/SplitHorizonWorkload/istio-system/istio-eastwestgateway/a.b.c.d/namespace-2/<redacted-host>                                           None     HBONE\nnamespace-6         region2/SplitHorizonWorkload/istio-system/istio-eastwestgateway/a.b.c.d/namespace-6/<redacted-host>                                               None     HBONE\n```\nDoes it matter that both of these services share the same gateway ip?\n\nI'm also using Cursor to try and understand this problem more and it came up with this:\n```\nThe intermittent routing issue appears to be a race condition or stale configuration in one of these areas:\nFilter chain configuration mismatch: When the svcHostnameMap is built, if a service has no addresses temporarily, traffic may fall through to a wrong match.\nEDS endpoint caching: The EDS endpoints are cached and may become stale, causing traffic to be routed to old endpoints.\nDouble-HBONE metadata propagation: The metadata containing hbone_target_address might not be propagated correctly in some edge cases.\n```\nIs any of this relevant?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2026-01-06T23:12:13Z",
+   "body": "/cc @participant5 if you've got bandwidth to take a look at this"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2026-01-09T12:49:11Z",
+   "body": "@reporter just to make sure I understand you, you're saying that your have service `my-service` in namespace `namespace1` and a service with the same name in `namespace2` in both clusters, is that correct?\n\nThe error you've presented seems to suggest the following:\n\n1. ztunnel tried to route a request to service `my-service` in `namespace1` to a remote cluster (that's why `dst.workload` points to a network gateway)\n2. E/W gateway presented an expected identity and the error does not complain about E/W gateway identity, so I conclude that E/W gateway terminated the outer HBONE tunnel correctly\n3. For whatever reason, E/W gateway seem to be routing the request to the `my-service` service in `namespace2` instead of the one in `namespace1` in the remote cluster\n\nCan you share the E/W gateway envoy config in the remote cluster? You can get it with the command `istioctl pc all <E/W gateway pod name> -n istio-system -o yaml`?\n\nI will try to reproduce it locally in the meantime, I'd imagine if we confusing the services between namespace it shouldn't be that hard."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2026-01-09T13:18:37Z",
+   "body": "@reporter one more thing, I see in the config that you named networks `network1` and `network2`, but in the logs network gateways are using `region-1` and `region-2`, was it a copying mistake when your reported the bug and in the actual setup there is no difference?"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2026-01-09T13:29:29Z",
+   "body": "I created a similar setup locally and checked EDS configuration on E/W gateway and it appear to be fine - we are not mixing up endpoints from different namespaces. And I wasn't able to reproduce the issue yet.\n\n@reporter said that the issue happens after some time, so I will let it bake for a few hours and see if I'm going to notice anything.\n\nAlso answering some of the questions posted above:\n\n> Does it matter that both of these services share the same gateway ip?\n\nNo it does not matter and it's expected that you'll have a gateway per cluster and therefore a single IP. When ztunnel (or waypoint) talks to remote network, it uses HBONE protocol, which is essnetially HTTP2 connect, as part of that connect request we can transfer all the information that E/W gateway needs to route the request correctly. You can see in the logs for example `dst.hbone_addr` field which include the fully qualified service name and port - that's what E/W gateway will receive."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-01-09T18:11:32Z",
+   "body": "> The error you've presented seems to suggest the following:\n> ztunnel tried to route a request to service my-service in namespace1 to a remote cluster (that's why dst.workload points to a network gateway)\n> E/W gateway presented an expected identity and the error does not complain about E/W gateway identity, so I conclude that E/W gateway terminated the outer HBONE tunnel correctly\n> For whatever reason, E/W gateway seem to be routing the request to the my-service service in namespace2 instead of the one in namespace1 in the remote cluster\n\nI'm not positive that its a routing error; I actually tried a different experiment where I created \"unique\" services across namespaces, so there would be\n`my-service-1` in `namespace1` using `service-account-1`\nand\n`my-service-2` in `namespace2` using `service-account-2`\n\nBoth of these services would exist in the same k8s cluster in the same Istio mesh.\nOn a separate k8s cluster in my multi-cluster setup I would send curl requests to `my-service-1.namespace1` and I would actually run into the same error:\n70% of my requests succeed by hitting `my-service-1.namespace1`\nbut 30% of my requests would fail with the error\n```\nidentity verification error: peer did not present the expected SAN (spiffe://cluster.local/ns/namespace1/sa/service-account-1), got spiffe://cluster.local/ns/namespace2/sa/service-account-2)\n```\nRestarting my zTunnel pods would temporarily resolve the issue\nCould this potentially be a caching issue where maybe the identity of `spiffe://cluster.local/ns/namespace2/sa/service-account-2` got cached and then starting serving it when requests for `my-service-1` started coming in?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-01-09T18:11:43Z",
+   "body": "> Can you share the E/W gateway envoy config in the remote cluster? You can get it with the command istioctl pc all <E/W gateway pod name> -n istio-system -o yaml?\n\nRunning `istioctl pc all <E/W gateway pod name> -n istio-system -o yaml` gives me about 6400 lines of config, and it looks like there's some sensitive info inside of it. Is there a particular part of the config you want me to share? \n\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-01-09T18:13:40Z",
+   "body": "> one more thing, I see in the config that you named networks network1 and network2, but in the logs network gateways are using region-1 and region-2, was it a copying mistake when your reported the bug and in the actual setup there is no difference?\n\nSorry for the confusion, the network and the region have the same name, we split our networking based on the AWS region the cluster is in, e.g. us-east-1, us-east-2 etc.\nIn this example, my clusters exist in different networks/regions"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2026-01-09T18:42:38Z",
+   "body": "> I'm not positive that its a routing error; I actually tried a different experiment where I created \"unique\" services across namespaces, > so there would be\n> my-service-1 in namespace1 using service-account-1\n> and\n> my-service-2 in namespace2 using service-account-2\n\nI'm basing my suggestion on the fact that ztunnel tries to reach E/W gateway (you can see it from the logs), it does not complain about E/W gateway identity, but it does complain about end workload identity, so it means that it reached E/W gateway, E/W gateway routed the request to some workload and that workload responded with some identity, but it was not the identity that ztunnel expected. \n\nI don't know what the issue is, but I'd like to make sure that E/W gateway routing configuration is in order. I also consider the fact that out of all ambient components ambient E/W gateway is the yongest, so if I wanted to search for a bug that's where I'd consdier starting first.\n\nCan you please provide clarifications regarding this:\n\n> @reporter just to make sure I understand you, you're saying that your have service my-service in namespace namespace1 and a service with the same name in namespace2 in both clusters, is that correct?\n\nIn either of your setup, when you test service X and encounter this error, does this service exist in the same namespace in both clusters?\n\n> Could this potentially be a caching issue where maybe the identity of spiffe://cluster.local/ns/namespace2/sa/service-account-2 got cached and then starting serving it when requests for my-service-1 started coming in?\n\nztunnel is deployed per node, so one ztunnel serves multiple workloads at the same time - it's normal for ztunnels even in single cluster deployment.\n\nPurely hypotehtically there could be some caching issue somewhere in ztunnel, but given that ztunnels are designed to handle multiple workloads with different identities at the same time and given that fact that we haven't seen the issue you're describing in single cluster ambient deployment where such caching also could happen, I think that ztunnel is less likely to be the cause here compared to E/W gateway.\n\nAnd again, I don't know what the issue here yet, but we need to start ruling out possibilities to get to the bottom of it and I'd like to start with E/W gateway first.\n\n> Running istioctl pc all <E/W gateway pod name> -n istio-system -o yaml gives me about 6400 lines of config, and it looks like there's some sensitive info inside of it. Is there a particular part of the config you want me to share?\n\nEDS configs for the problematic service cluster is what I'm after. Let's try a sliughtly different variation of the command maybe it would be easier to inspect: `istioctl pc eds <E/W gateway pod name> -n istio-system`.\n\n> Sorry for the confusion, the network and the region have the same name, we split our networking based on the AWS region the > cluster is in, e.g. us-east-1, us-east-2 etc.\n> In this example, my clusters exist in different networks/regions\n\nI'm still a bit confused. What should go after `NetworkGateway` in the error is not a region, but network name and in the intial error messages you posted I see there `region-1` and `region-2` (while network names are `network1` and `network2`), can you confirm that instead of `region-1` and `region-2` you have the actual correct network names there in the error messages after `NetworkGateway`?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-01-09T19:06:29Z",
+   "body": "> just to make sure I understand you, you're saying that your have service my-service in namespace namespace1 and a service with the same name in namespace2 in both clusters, is that correct?\n> In either of your setup, when you test service X and encounter this error, does this service exist in the same namespace in both clusters?\n\nCorrect, my-service does exist in the same namespace in both clusters, though I'm doing something a bit different where I use a \"headless\" service that doesn't point to an actual Deployment.\nIt looks something like this\n\n\n## Cluster 1\n`Service` `my-service-1`\n`ServiceAccount` `service-account-1`\n`Namespace` `namespace1`\nNo `Deployment` resource\n\n`Service` `my-service-2`\n`ServiceAccount` `service-account-2`\n`Namespace` `namespace2`\nNo `Deployment` resource\n\n`Service` `curl`\n`ServiceAccount` `curl`\n`Namespace` `curl`\n`Deployment` `curl`\nThis is what I'm using to curl `my-service-1.namespace1` and `my-service-2.namespace2`\n\n## Cluster 2\n`Service` `my-service-1`\n`ServiceAccount` `service-account-1`\n`Namespace` `namespace1`\n`Deployment` `deployment-1` (`my-service-1` points to this)\n\n`Service` `my-service-2`\n`ServiceAccount` `service-account-2`\n`Namespace` `namespace2`\n`Deployment` `deployment-2` (`my-service-2` points to this)\n\n---\nOutput of `istioctl pc eds <E/W gateway pod name> -n istio-system` for Cluster 2\n```\nNAME                                                  STATUS      LOCALITY        CLUSTER\n127.0.0.1:15020                                       HEALTHY                     agent\nenvoy://forward_inner_connect/10.100.44.145:3000      HEALTHY     /us-east-1c     inbound-vip|3000|tcp|<redacted-host>\nenvoy://forward_inner_connect/10.100.81.146:3000      HEALTHY     /us-east-1a     inbound-vip|3000|tcp|<redacted-host>\nenvoy://forward_inner_connect/10.100.81.154:3000      HEALTHY     /us-east-1a     inbound-vip|3000|tcp|<redacted-host>\nenvoy://forward_inner_connect/10.100.44.145:3000      HEALTHY     /us-east-1c     inbound-vip|3000|tcp|<redacted-host>\nenvoy://forward_inner_connect/10.100.81.146:3000      HEALTHY     /us-east-1a     inbound-vip|3000|tcp|<redacted-host>\nenvoy://forward_inner_connect/10.100.81.154:3000      HEALTHY     /us-east-1a     inbound-vip|3000|tcp|<redacted-host>\nenvoy://forward_inner_connect/                        HEALTHY                     encap\nenvoy://forward_inner_connect/10.100.44.139:5000      HEALTHY     /us-east-1c     inbound-vip|5000|tcp|<redacted-host>\nenvoy://main_internal/                                HEALTHY                     main_internal\n127.0.0.1:15000                                       HEALTHY                     prometheus_stats\n./var/run/secrets/workload-spiffe-uds/socket          HEALTHY                     sds-grpc\n./etc/istio/proxy/XDS                                 HEALTHY                     xds-grpc\n```\n\n---\n> I'm still a bit confused. What should go after NetworkGateway in the error is not a region, but network name and in the intial error messages you posted I see there region-1 and region-2 (while network names are network1 and network2), can you confirm that instead of region-1 and region-2 you have the actual correct network names there in the error messages after NetworkGateway?\n\nYes, it does have the correct network names there.\nMy network names are `us-east-1` and `us-east-2`\n```\ndst.workload=\"NetworkGateway/us-east-1/x.x.x.x/0\"\ndst.workload=\"NetworkGateway/us-east-2/x.x.x.x/0\"\n```"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2026-01-09T19:17:52Z",
+   "body": "@reporter thank you!\n\nLooking at the EDS endpoints, it appears that E/W gateway in cluster2 does not have any endpoints for `my-service2`, is it typo or you don't actually have anything deployed there?\n\nI'm asking all these detailed questions because I'm in parallel actually trying to reproduce the issue locally as well and that's why your exact setup is important here."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-01-09T19:29:58Z",
+   "body": "> Looking at the EDS endpoints, it appears that E/W gateway in cluster2 does not have any endpoints for my-service2, is it typo or you don't actually have anything deployed there?\n\nAh sorry about that, I'm getting mixed up with \"real\" info vs the redacted info. \nOutput of `istioctl pc eds <E/W gateway pod name> -n istio-system` but in cluster3 (which has `my-service-2`)\n```\nNAME                                                  STATUS      LOCALITY           CLUSTER\n127.0.0.1:15020                                       HEALTHY                        agent\nenvoy://forward_inner_connect/10.100.122.70:3000      HEALTHY     /eu-central-1a     inbound-vip|3000|tcp|<redacted-host>\nenvoy://forward_inner_connect/10.100.122.87:3000      HEALTHY     /eu-central-1a     inbound-vip|3000|tcp|<redacted-host>\nenvoy://forward_inner_connect/10.100.122.70:3000      HEALTHY     /eu-central-1a     inbound-vip|3000|tcp|<redacted-host>\nenvoy://forward_inner_connect/10.100.122.87:3000      HEALTHY     /eu-central-1a     inbound-vip|3000|tcp|<redacted-host>\nenvoy://forward_inner_connect/                        HEALTHY                        encap\nenvoy://main_internal/                                HEALTHY                        main_internal\n127.0.0.1:15000                                       HEALTHY                        prometheus_stats\n./var/run/secrets/workload-spiffe-uds/socket          HEALTHY                        sds-grpc\n./etc/istio/proxy/XDS                                 HEALTHY                        xds-grpc\n```\nRegardless of which cluster it is, I still get that `peer did not present the expected SAN` error, however the \"wrong\" SAN is exclusive to whichever service exists on that specific cluster.\nSo for example:\nCluster 2 has `my-service-1` `my-service-4` `my-service-5`\nCluster 3 has `my-service-2` `my-service-6`\nIf I try to curl `my-service-1`, I'll sometimes get the error with it being presented with the SAN for `my-service-4` and `my-service-5`\nIf I try to curl `my-service-2`, I'll sometimes get the error with it being presented with the SAN for `my-service-6`"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2026-01-12T12:59:36Z",
+   "body": "> Ah sorry about that, I'm getting mixed up with \"real\" info vs the redacted info.\n\nBy any chance, would you be able to reproduce this issue in kind (or minukube) with syntethic names to not reveal real production setup and avoid confusion between the real and redacted info?\n\nFWIW, I hasn't been able to reproduce the issue yet, which makes me think that I'm overlooking something in your setup that triggers the problem. To make progress it seems that we either need to start looking at the logs associated with the failed request (e.g., logs on the source ztunnel, E/W gateway and the destination ztunnel, to see how the request was processed) or try to create a small reproducible, so that I can replicate it and poke into the issue locally."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2026-02-17T19:34:16Z",
+   "body": "We are facing the same issue. \n\nOur setup is: Grafana (single pod) on cluster 1, reaching out to 2 services - Thanos and Loki in cluster 2.\nBoth namespaces have ambient dataplane enabled and the services are present on two clusters.\nBoth Thanos and Loki Deployments are not present on cluster 1.\n\nThe URLs are:\n- http://<redacted-host>:3100/\n- http://<redacted-host>:9090/\n\nWe can see errors on ztunnel:\n```\n2026-02-17T14:47:31.362779Z\terror\taccess\tconnection complete\tsrc.addr=10.42.5.219:37154 src.workload=\"rancher-monitoring-grafana-8c69ccb97-h84mk\" src.namespace=\"cattle-monitoring-system\" src.identity=\"spiffe://cluster.local/ns/cattle-monitoring-system/sa/rancher-monitoring-grafana\" dst.addr=57.130.11.222:15008 dst.hbone_addr=<redacted-host>:9090 dst.service=\"<redacted-host>\" dst.workload=\"NetworkGateway/eu-west-par-hub-network/57.130.11.222/0\" dst.namespace=\"istio-system\" dst.identity=\"spiffe://cluster.local/ns/istio-system/sa/istio-eastwestgateway\" direction=\"outbound\" bytes_sent=0 bytes_recv=0 duration=\"26ms\" error=\"io error: invalid peer certificate: Other(OtherError(identity verification error: peer did not present the expected SAN (spiffe://cluster.local/ns/thanos-system/sa/thanos-query), got spiffe://cluster.local/ns/loki-system/sa/loki))\"\n```"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2026-02-18T11:57:39Z",
+   "body": "@participant3 can you share the steps you used to setup the jobs and reproduce the issue?"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2026-02-18T12:21:21Z",
+   "body": "@participant2 \nWhat's required:\nCluster 1:\n- Loki\n- Thanos\n- Tempo\n\nCluster 2:\n- Grafana (single pod trying to access all three services).\n\nImport/export is standard. Ambient data plane + global service labels.\n\n\nDo you know a simple, automated way to spin up two local clusters (e.g., kind on Docker) with Istio Ambient enabled?\nI could try to reproduce this on a minimal setup."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2026-02-18T14:23:56Z",
+   "body": "@participant3 you take a look at https://github.com/participant2/istio-setup-on-kind - that's what I use to spin up multicluster locally."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2026-02-18T21:06:25Z",
+   "body": "The script is very helpful — thank you.\nI tried to reproduce our setup from this commit:\nhttps://github.com/participant3/istio-setup-on-kind/commit/5756b49b9fcc6b31e3832dda5eb39f13c3348e20\n\nUnfortunately, I wasn’t able to reproduce the issue yet. I’ll continue debugging tomorrow.\nEven though the attempt was unsuccessful, I’m sharing it here because it reflects our real setup: two workloads with services in cluster 1, exported in exactly the same way and consumed from single pod from cluster 2.\n\nThe only difference is that I replaced Grafana, Loki, and Tempo with simple nginx/curl containers.\nMaybe that makes a difference."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2026-02-18T21:11:24Z",
+   "body": "@participant3 if you coulld share the exact configs and commands that would be helpful even if you cannot reproduce the issue yet - gives us some idea of what setup triggered the issue.\n\nCan you share details of your environment? E.g., if you run on cloud k8s offering, then what cloud provider is it? k8s version, if you use things like calico or anything like that - that might be relevant as well."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2026-02-19T18:04:25Z",
+   "body": "It's RKE2, Istio 1.27+, We use Cilium with the following settings:\n\n```\napiVersion: <redacted-host>/v1\nkind: HelmChartConfig\nmetadata:\n  name: rke2-cilium\n  namespace: kube-system\nspec:\n  valuesContent: |-\n    kubeProxyReplacement: true\n    k8sServiceHost: \"localhost\"\n    k8sServicePort: \"6443\"\n    # Settings required by istio: https://<redacted-host>/en/latest/network/servicemesh/istio/\n    cni:\n      exclusive: false\n    socketLB:\n      hostNamespaceOnly: true\n```\n\nAlso observed on K3s, on two different cloud providers (Hetzner Cloud and Harvester HCI on bare metal).\nWe've been facing this issue multiple times, previously with otel collector (one Pod sending both - logs and traces).\n\n\nThe rest is standard, Multi-cluster, multi-primary with ambient data plane.\nWe've destroyed the environment where the error was visible, I'll continue the investigation once it's up.\n\nAs a workaround, I am creating in-cluster proxies per service, so that there is always one Pod reaching out to the service in Ambient."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2026-02-19T18:38:48Z",
+   "body": "Are any of Grafana, Loki, Tempo services headless by any chance?"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2026-02-19T21:25:39Z",
+   "body": "No, standard Services, similar to what I have in the repo mentioned above."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2026-02-24T20:55:16Z",
+   "body": "We are having this issue again:\n\n```\n2026-02-24T20:30:58.399067Z\terror\taccess\tconnection complete\tsrc.addr=10.42.3.225:46968 src.workload=\"streamx-dashboard-67cb85fdd8-kjz9q\" src.namespace=\"streamx-dashboard\" src.identity=\"spiffe://cluster.local/ns/streamx-dashboard/sa/streamx-dashboard-platform-services\" dst.addr=57.130.11.171:15008 dst.hbone_addr=<redacted-host>:3100 dst.service=\"<redacted-host>\" dst.workload=\"NetworkGateway/eu-west-par-hub-network/57.130.11.171/0\" dst.namespace=\"istio-system\" dst.identity=\"spiffe://cluster.local/ns/istio-system/sa/istio-eastwestgateway\" direction=\"outbound\" bytes_sent=0 bytes_recv=0 duration=\"27ms\" error=\"io error: invalid peer certificate: Other(OtherError(identity verification error: peer did not present the expected SAN (spiffe://cluster.local/ns/loki-system/sa/loki), got spiffe://cluster.local/ns/thanos-system/sa/thanos-query))\"\n```\n\n\n\nThis time we try to reach out to these services using dashboards.\nThe pattern is the same:\nSingle Pod -> east-west Gateway -> Two services (workloads) on another cluster\n\nI can SSH to the Pod and do curl calls to loki, thanos and other systems, this time it all works:\n```\ncurl <redacted-host>:8080\n```\n\nBut whenever I click the \"show logs\" button in the console, I have the error mentioned above.\nMaybe it's connected with long running client applications like Grafana or our Dashboards (Quarkus application)?\nMaybe some certificates informations or paths can be cached?\n\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2026-02-24T21:28:20Z",
+   "body": "As @participant2 mentioned, having a minimal reproducer that we can run, e.g in a kind cluster would be very helpful here. FWIW, we have tests that run on every PR and on master and we haven't come across this. So it would be super useful to know what exactly you're running so we can figure out if there's a diff. Is it enough to just run OSS tempo, grafana, and loki for example?"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2026-02-24T21:33:11Z",
+   "body": "I've tried to reproduce it here:\nhttps://github.com/participant3/istio-setup-on-kind/\n\nunfortunately with no luck so far. As a workaround we deploy Pod with proxy per external service to avoid calling two services from one pod. I'll continue to work on reproducible environment.\n\nWith next try will probably be cilium with kube-proxy replacement"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2026-02-24T22:13:31Z",
+   "body": "<img width=\"1447\" height=\"389\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/1c549202-1569-49a9-bf9e-e52a50259844\" />\n\nThe error is there:\n```\n2026-02-24T22:09:56.901674Z\terror\taccess\tconnection complete\tsrc.addr=10.244.1.7:52208 src.workload=\"grafana-7d5b6bb56d-48qdd\" src.namespace=\"ns-c\" src.identity=\"spiffe://cluster.local/ns/ns-c/sa/default\" dst.addr=172.18.0.7:15008 dst.hbone_addr=<redacted-host>:9090 dst.service=\"<redacted-host>\" dst.workload=\"NetworkGateway/network1/172.18.0.7/0\" dst.namespace=\"istio-system\" dst.identity=\"spiffe://cluster.local/ns/istio-system/sa/istio-eastwestgateway\" direction=\"outbound\" bytes_sent=0 bytes_recv=0 duration=\"3ms\" error=\"io error: invalid peer certificate: Other(OtherError(identity verification error: peer did not present the expected SAN (spiffe://cluster.local/ns/prometheus-system/sa/default), got spiffe://cluster.local/ns/loki-system/sa/default))\"\n```\n\nIt appeared after leaving Grafana idle for 20 minutes.\n\nTo reproduce it click Data sources -> test connection (this one is successful, it's just for reference):\nOnce for Loki, once for Prometheus\n\n<img width=\"1727\" height=\"1035\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/7e16a1a9-f2ed-40b0-bded-0017038742cb\" />\n\nThe code is here:\n https://github.com/participant3/istio-setup-on-kind/\n\n@participant1 @participant2 \n\n[EDIT]\nIt's still not reproducible in every attempt, but as observed above, it's enough for reproduction. Maybe more replicas, or more nodes are factors too.\n"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2026-02-25T18:40:00Z",
+   "body": "> It's still not reproducible in every attempt, but as observed above, it's enough for reproduction. Maybe more replicas, or more nodes are factors too.\n\nThat's fine - so far we were not able to reproduce it at all, that's a big step to know that it's possible to reproduce it in kind - that's already an indication that it's not exactly environment specific."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2026-03-03T13:46:39Z",
+   "body": "A small update - just to share that I didn't forget about this bug, I just so far wasn't successful at reproducing it locally."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2026-03-12T13:36:04Z",
+   "body": "I was able to reproduce the issue locally now. Onbe thing to mention, it was reproduced on 1.28.1, but I couldn't reproduce it on 1.29.0. I will dig through it to see what was causing the issue, but it's possible that the issue has been fixed by one of the changes."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2026-03-12T13:38:44Z",
+   "body": "We do face the issue on 1.29.0 too. The result I get from  https://github.com/participant3/istio-setup-on-kind/  :\n```\n2026-02-24T22:09:56.901674Z\terror\taccess\tconnection complete\tsrc.addr=10.244.1.7:52208 src.workload=\"grafana-7d5b6bb56d-48qdd\" src.namespace=\"ns-c\" src.identity=\"spiffe://cluster.local/ns/ns-c/sa/default\" dst.addr=172.18.0.7:15008 dst.hbone_addr=<redacted-host>:9090 dst.service=\"<redacted-host>\" dst.workload=\"NetworkGateway/network1/172.18.0.7/0\" dst.namespace=\"istio-system\" dst.identity=\"spiffe://cluster.local/ns/istio-system/sa/istio-eastwestgateway\" direction=\"outbound\" bytes_sent=0 bytes_recv=0 duration=\"3ms\" error=\"io error: invalid peer certificate: Other(OtherError(identity verification error: peer did not present the expected SAN (spiffe://cluster.local/ns/prometheus-system/sa/default), got spiffe://cluster.local/ns/loki-system/sa/default))\"\n```\n\nwere on 1.29.0 too."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2026-03-12T15:32:47Z",
+   "body": "I can see from the E/W gateway logs that the request arrives there correctly with the right authority in hte headers, however when Envoy unwraps the CONNECT request and routes the inner data to the `main_internal` listener from `connect_terminate` listener something weird happens - I can see Envoy establishing a new internal connection, but in `main_internal` listener when it tries to find the right filter chain the input it uses during matching contains the wrong string pointing to a wrong service.\n\nLooking at the config after the failure I suspect that the wrong input is taken from the `io.istio.connect_authority` filter state (which was captured in the `connect_originate` listener and judging by the logs it was captured correctly). So it's not clear to me at what point and why the change happen.\n\nThe configuration I dumped from the E/W gateway looks correct to me - I don't see there anything that would explain the behavior I saw.\n\nOne more observation - I don't know if it will reveal anything useful, but:\n\n1. First time when I reproduced it I connected to loki first and then to prometheus and it succeeded for loki and failed for prometheus\n2. The second time I reproduced it (in the same deployment) - I connected to prometheus and then to loki and again first time it was successful and failed for the second connection to loki\n\nThere are a few things that I'm going to do:\n1. Given that I couldn't reproduce the issue on 1.29.0, I'm going to compare the E/W gateway configuration generated on 1.28.1 and 1.29.0 to see if some differences will stand out to me\n   - Could it be that we do some connection pooling there and re-use internal connections somehow (unlikely)?\n2. Try with custom Envoy build to add more details to see a bit more clearly what happens there"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2026-03-16T10:49:32Z",
+   "body": "I think I know what the issue is - I suspect that the issue is in envoy. When we use `envoy.string` factory for the filter state it's not correctly shared with the upstream connections. And it looks like somebody actually beat me to it and added a fix to upstream envoy.\n\nI'm going to test it out now..."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2026-03-16T12:44:56Z",
+   "body": "The test passed - the fix seem to have worked. I need to think a bit about a better fix and why we didn't hit the same problem before, but here is seem to be the gist of the problem:\n\n1. Istio configuration for Envoy consists of multiple layers of listeners, specifically for E/W gateway in ambient, we have two listeners that are relevant: `connect_terminate` and `main_internal`.\n2. When we send request over E/W gateway we wrap it in double-HBONE tunnel, E/W gateway terminates the outer HBONE tunnel, but transfers the inner HBONE tunnel to the destination unmodified\n    - E/W gateway figures out the destination by looking at the authority and headers of the outer-HBONE CONNECT request\n3. `connect_terminate` listener is responsible for terminating the outer HBONE tunnel and extracting and saving all the required details for later use, but the actual routing (e.g., picking the right endpoint) happens in the `main_internal` listener\n    - we use Envoy filter state to communicate the required details from `connect_terminate` listener to `main_internal` listener\n\nThe important part here is that we use `envoy.string` encoded filter state values for communication between `connect_terminate` and `main_internal` listeners. `envoy.string` filter state, as it turns out, does not affect connection pooling because it does not implement `Hashable` interface. Which basically means that it's possible that two requests with completely different authority will use the same connection pool.\n\nI'm not super familiar with the Envoy code after that point, but checking quickly, it appears that using the same connection pool implies using the same transport socket options which is where we preserve the filter state objects to be shared with the upstream internal listener.\n\nWe can deal with that issue, but what surprises me is that we rely on `envoy.string` filter state objects (or specifically `connect_authority` `set_filter_state` filter) is used in waypoints and not just E/W gateways. So how come we don't see the same issue in plain waypoint traffic?\n\nI think the answer here lies in the difference in authority between inter and intra network requests. Within the same network we use IP address and port as authority in the HBONE CONNECT request. For multi-network, we cannot rely on VIPs, so we have to use hostname and port.\n\nNow, why is that important? We store authority to multiple different filter state objects used for different purposes, in particular we also try to save it to `envoy.filters.listener.original_dst.local_ip`. It works differently from `envoy.string` in the sense that it implements `Hashable` interface. The problem is that this filter state object can only accept valid IP + port and fails to accept the hostname.\n\n@participant1 @participant2 @participant1 - I think you might be interested in this one. That might be relevant to moving ambient HBONE to using hostnames instead of VIPs for authority as it might not work as intended in Envoy. It's not a big deal and it could be fixed, but requires a bit of work before we can move ztunnel to using hostnames instead of VIPs as request the authority."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2026-03-16T13:05:57Z",
+   "body": "Nice detective work; I never knew filter state needed to implement Hashable to affect connection pooling (and that envoy.string doesn't). I think your analysis is spot on as to why this only affects multi-network.  It's strange it isn't happening more frequently though...I guess you'd need other connection pooling characteristics to match up? It doesn't seem like kuat's fix (envoyproxy/envoy#43208) made it into 1.37 unfortunately so we'll either need to cherry pick it or create/use a different factory that implements hashable. "
+  },
+  {
+   "author": "participant2",
+   "created_at": "2026-03-16T13:32:21Z",
+   "body": "I think we are lucky and don't need that fix at the moment.\n\nThere is an option in Envoy to allocate a separate connection pool per downstream connection, so if we assume that ztunnel (or waypoint) does not multiplex requests to different services over the same connection to the E/W gateway (which I think we don't do), it should be enough to just require E/W gateway to create a separate connection pool per dowstream connection and it will fix the problem.\n\nI think we still should migrate to `envoy.hashable_string` instead of `envoy.string` as a less fragile approach, but we don't have to cherry pick the fix to envoy 1.37 just to fix this ticket - the next Istio release will pick up `envoy.hashable_string` and we can start using it in newer Istio releases.\n\nAs for why we don't see it that much, it looks like the other factor is the client address. Basically different client addresses result in using different connection pools, but when requests arrive to E/W gateway from the same IP we can hit this issue. So basically the same pod has to connect to different services through the E/W gateway in somewhat close succession and don't do any retries to overcome transient issues.\n\nStill, it's a bit weird that we didn't hit it in our tests before, I need to play around with the integration tests a bit to see why we didn't catch it and fix that. "
+  },
+  {
+   "author": "participant2",
+   "created_at": "2026-03-16T13:34:50Z",
+   "body": "Another factor to consider here is the number of threads Envoy uses - Envoy has a separate connection pool per working thread, so running with many worker threads makes hitting this issue less likely as well."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2026-03-16T15:43:49Z",
+   "body": "It does not aggree with how I remembered things, but in my tests it seems that we are actually sharing the same TCP connection to E/W gateway between HBONE connections to different services. I guess it makes sense, since each CONNECT request uses its own HTTP2 stream, so we can multiplex things, but that's not how I remembered what we implemented there.\n\nThat means that we cannot rely on `connection_pool_per_downstream_connection` cluster property to fix this issue and probably need to backport the `envoy.hashable_string` implementation to Envoy 1.37. "
+  },
+  {
+   "author": "participant2",
+   "created_at": "2026-03-16T16:04:56Z",
+   "body": "I looked a bit at the context of https://github.com/envoyproxy/envoy/pull/43208 and I don't think it will be right to backport it to the Envoy's 1.37 release branch. Essentially, from the Envoy point of view it's a new feature and I think it's quite a reasonable stance to not backport new features to stable release branches as a general rule.\n\nI need to think about the best way to fix it in the Istio 1.29 release branch."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2026-03-16T16:36:08Z",
+   "body": "I looked at outher filter state types Envoy already has in search of something that could be temporarily abused, but Envoy does not have anything that will take an arbitrary string and will be hashable at the same time. It seems that backporting Envoy PR to the 1.37 release branch and having a custom Istio implementation are our only options (I'm ignoring the possibility of changing ztunnel to reduce connection pooling)."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2026-03-19T12:16:12Z",
+   "body": "There is one last PR to cherry pick the fix to the 1.29 release branch left: #59524."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2026-03-19T13:52:38Z",
+   "body": "Try restaurant with default settings\r\n\r\nOn Thu, Mar 19, 2026, 12:16 PM Krinkin, Mike ***@***.***>\r\nwrote:\r\n\r\n> *participant2* left a comment (istio/istio#58630)\r\n> <https://github.com/istio/istio/issues/58630#issuecomment-4089721071>\r\n>\r\n> There is one last PR to cherry pick the fix to the 1.298 release branch\r\n> left: #59524 <https://github.com/istio/istio/pull/59524>.\r\n>\r\n> —\r\n> Reply to this email directly, view it on GitHub\r\n> <https://github.com/istio/istio/issues/58630#issuecomment-4089721071>, or\r\n> unsubscribe\r\n> <https://github.com/notifications/unsubscribe-auth/B74HBR4DXGWTUIAK7WRCEPD4RPQKLAVCNFSM6AAAAACPY26K22VHI2DSMVQWIX3LMV43OSLTON2WKQ3PNVWWK3TUHM2DAOBZG4ZDCMBXGE>\r\n> .\r\n> You are receiving this because you are subscribed to this thread.Message\r\n> ID: ***@***.***>\r\n>\r\n"
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "istio/istio",
+  "default_branch": "master",
+  "commit_sha": "21f81ccab0bd16cba0647bc1619c31225c180ebb",
+  "as_of": "2025-12-22T18:32:28Z",
+  "method": "github_commits_until"
+ },
+ "images": [
+  {
+   "where": "c29",
+   "source_url": "https://github.com/user-attachments/assets/1c549202-1569-49a9-bf9e-e52a50259844",
+   "file": "gh_istio_istio_58630_img0.png"
+  },
+  {
+   "where": "c29",
+   "source_url": "https://github.com/user-attachments/assets/7e16a1a9-f2ed-40b0-bded-0017038742cb",
+   "file": "gh_istio_istio_58630_img1.png"
+  }
+ ],
+ "slug": "gh_istio_istio_58630"
+}

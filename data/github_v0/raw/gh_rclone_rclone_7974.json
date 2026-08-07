@@ -1,0 +1,182 @@
+{
+ "repo": "rclone/rclone",
+ "number": 7974,
+ "url": "https://github.com/rclone/rclone/issues/7974",
+ "title": "Excess memory use when syncing millions of files in one directory",
+ "state": "closed",
+ "labels": [
+  "bug"
+ ],
+ "reporter": "reporter",
+ "created_at": "2024-07-25T08:44:35Z",
+ "closed_at": "2025-04-08T19:28:52Z",
+ "body": "## Background - Amazon S3 rclone problems\r\n\r\nI'm trying to backup a datalake with 100 million files at the root. They are mostly small files < 1mb.\r\n\r\nrclone was simply not designed for this use case and will eat up all available memory and then crash. There was no machine instance that I could throw at it that would fix this issue. Even running locally in a docker instance would eat up all available memory and then crash.\r\n\r\nAll advice in the forums did nothing to help the situation. And a lot of people seem to be running into this. Therefore I wanted to post this here so that anyone searching for this problem can try our solution.\r\n\r\n## Solution in a nutshell: PUT YOUR FILES INTO FOLDERS!!!!\r\n\r\nWhat's interesting is the behavior: rclone would never start transferring files, it would always sit there saying 0 files transferred, 0 bytes transferred, eat up all available memory before crashing with an OOM.\r\n\r\nI tried all the suggestions in the forums, reducing the buffering memory, reducing the number of checkers and transfers. Nothing worked.\r\n\r\n## Cause & Fix\r\n\r\nWithout looking at the code or doing any profiling, my hypothesis was that rclone scans an all files in a\"directory\" into RAM before executing on it. This seems true whether not `--fast-scan` is used or not.\r\n\r\nObviously, having 100 million files at the root was causing our org a whole bunch of problems anyway and it's been something that I've wanted to fix for a while, so this problem gave me enough reason to go ahead and re-organize our entire datalakes.\r\n\r\nSince each file is referenced in our database with a datestamp, I was able to write python scripts that would move these files from the root into folders by the service and year-month (for example name.html -> service/2023-04/name.html)\r\n\r\nThis worked extremely well and I was able to now run rclone and have it at least start transferring some files. However, there were still folders with 5+ million files, and eventually ran into the same out-of-memory error.\r\n\r\nSo again, I further re-organized the files in our datalake into service/yrmo/day. And now that seems to have done the trick. rclone now consistently runs under 2GB memory and I've been able to increase the number of transfers and checkers up to 100 each and have 3mb of buffer per transfer.\r\n\r\n## Dead ends\r\n\r\nAll the advice about adjust memory buffers and number of transfers is mostly wrong. They will only cut your minimum memory usage by a constant factor, but will do very little to prevent the absolute unbounded memory that rclone uses for extremely large \"directories\".\r\n\r\nIf you have this same problem, no amount of setting tweaking will work... you MUST re-organize your data into folders or rclone will just run out of memory every single time. If you have too many files at the root, rclone will simply never start transferring anything and just crash. If one of your subdirectories is too big, you'll get a memory pattern that looks like this:\r\n\r\n![image](https://github.com/user-attachments/assets/cad7926e-48b7-46f7-be81-543edc896460)\r\n\r\n## Recommendations to the Devs of rclone\r\n\r\nPlease serialize your directory scans to disk if you start exceeding a certain threshold of memory or files in the current directory. You can probably just get away with just always doing that since the disk is so much faster than network anyway. I'm currently doing an inventory scan of our datalakes and 50 million files entries is only taking up 12 gb of disk without any fancy compression. I know you are storing a lot more file information, like metadata, so it could easily be double or triple that.\r\n\r\nBut it is simply so much easier and cheaper to allocate disk space to a docker instance than it is to get a machine with much more ram.\r\n\r\nAn additional pain point about an out of memory issue crash is that when the rclone process gets a kill signal, it will **exit 0** making it look like it succeeded. According to this thread https://github.com/rclone/rclone/issues/7966 this is a feature of linux and you must get the exit code from the operating system instead of the return value of the exited rclone process.\r\n\r\nThis is super scary if you are relying on rclone to backup your datalake but in reality, it starts failing because one of your directories has millions of files in it. I know on Digital Ocean it's easy to see that a docker instance has failed, on Render.com however you'll get a \"Run Succeeded\" and it's not until you look at the run history that you'll see that in fact your instance ran out of memory. I'm not sure about the other hosting providers.\r\n\r\nAnyway, I'm glad this huge task is finally over with, and we have started syncing up our data for redundancy and backup purposes. So far so good!\r\n\r\n![image](https://github.com/user-attachments/assets/5c2b7096-ade2-45d7-993e-4fd0b0f52196)\r\n",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2024-07-25T19:42:34Z",
+   "body": "I'll just note that this is mentioned in the FAQ https://rclone.org/faq/#rclone-is-using-too-much-memory-or-appears-to-have-a-memory-leak\r\n\r\nAnd also that I'm scheduled to implement an out of memory sync later this year which will fix the problem properly."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-07-30T03:43:41Z",
+   "body": "@reporter very articulate post, thank you for raising the large scale experiment issue."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-07-30T08:27:35Z",
+   "body": "I forgot to say there is a workaround for this written up in the wiki\r\n\r\n- https://github.com/rclone/rclone/wiki/Big-syncs-with-millions-of-files\r\n\r\nWhich came from this forum post originally\r\n\r\n- https://<redacted-host>/t/rclone-sync-s3-to-s3-runs-for-hours-and-copy-nothing/39687/23\r\n\r\nIt isn't the best solution, but it will work until the out of memory sync is in."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-10-02T11:38:18Z",
+   "body": "@participant1 is there any workround for this issue. Because I have 50 million objects in single directory. Also I tried the way of sorting it. Almost I have waited for 2 hours, still the sorting is not completed."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-10-02T12:08:06Z",
+   "body": "@participant1 yes it worked ! Took Almost two and half hours. Now I can able to chunk and sync it.\r\n\r\nBelow is the  automated script to split and sync\r\n\r\n#!/bin/bash\r\n\r\n# Step 1: Split the list into chunks of 10,000 lines each\r\nsplit -l 10000 need-to-transfer transfer_chunk_\r\n\r\n# Step 2: Process each chunk with rclone\r\nfor chunk in transfer_chunk_*\r\ndo\r\n    echo \"Processing $chunk\"\r\n    # Perform the sync operation for this chunk\r\n    rclone copy src:bucket dst:bucket --files-from $chunk --no-traverse\r\ndone\r\n\r\n# Step 3: Log completion\r\necho \"All chunks processed.\""
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-11-16T13:31:07Z",
+   "body": "> I forgot to say there is a workaround for this written up in the wiki\r\n> \r\n>     * https://github.com/rclone/rclone/wiki/Big-syncs-with-millions-of-files\r\n> \r\n> \r\n> Which came from this forum post originally\r\n> \r\n>     * https://<redacted-host>/t/rclone-sync-s3-to-s3-runs-for-hours-and-copy-nothing/39687/23\r\n> \r\n> \r\n> It isn't the best solution, but it will work until the out of memory sync is in.\r\n\r\nIs there a way to make that solution take in to account changed files? Not sure if there is a good way to do that"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-02-04T18:21:52Z",
+   "body": "If anyone would like to try the solution to this, here is rclone with an out of memory sync for directories with lots of entries. This should fix the memory usage problems.\n\nTesting appreciated :-)\n\n[v1.69.0-beta.8480.59a5530ce.fix-7974-out-of-memory-sync](https://<redacted-host>/branch/fix-7974-out-of-memory-sync/v1.69.0-beta.8480.59a5530ce.fix-7974-out-of-memory-sync/) on branch [fix-7974-out-of-memory-sync](https://github.com/rclone/rclone/tree/fix-7974-out-of-memory-sync) (uploaded in 15-30 mins)"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2025-02-05T14:35:17Z",
+   "body": "I just tried this new version and it's working perfectly. The sync has been running for almost 2 hours and it has replicated 850k / 5M without an issue.\n\nWith the version v1.69 it was always crashing on OOM. 👏 "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-02-05T17:23:06Z",
+   "body": "Thanks, ill try this this week, i have exactly this problem "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-02-06T22:18:30Z",
+   "body": "I installed the binary and ran dedupe. Machine ran out of memory. Not sure if this patch has been applied to this tool. I have yet to run this on sync.\n\nThe machine in question was 2GB."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2025-02-07T15:44:16Z",
+   "body": "I made more tests today but unfortunately the OOM is still happening on a bigger bucket. It takes more time now but after a while the memory usage go from 3G to 30G quickly"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-02-07T16:30:14Z",
+   "body": "@participant5 I noticed that once in my testing but I didn't manage to replicate it. How many files of what size did you have?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-02-07T23:52:29Z",
+   "body": "@participant1 I'm going to start testing this hardcore on monday. Right now I'm using 16GB and 32GB instances for some of the large datalakes that I'm copying. Do you have a recommendation on the machine ram size? Should I do 2GB, 4GB or ?\n\nThanks."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-02-08T00:03:43Z",
+   "body": "@reporter in theory it shouldn't use more than 1 or 2 GB ever. However that hasn't been tested much yet so I'd appreciate hearing about your findings. If you can report number of items in the biggest directory that would be great too."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-02-10T17:00:31Z",
+   "body": "Hey, running ``fix-7974-out-of-memory-sync`` branch on about 6 million files and so far did not pass 1.2GB of ram on a raspsberrpi. Will update when its done but it looks good!\n\nThe command I am using is:\n```\nrclone sync /mnt/XXX XXX://XXX --exclude-from rclone.lst --log-file=log.txt --links --stats 5m -P -vv --drive-chunk-size 512M --multi-thread-streams 8 --transfers 16\n```"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-02-11T05:44:37Z",
+   "body": "Some of the workers are going filling up 100% of 4GB of memory.\n\n\nThis is the shell command that's being issued:\n\n```\nrclone --config rclone.conf sync 45062:zlib3_files dst:TorrentBooks/zlib3_files --checkers 1000 --timeout 20m --contimeout 2m --transfers 256 --low-level-retries 100 --progress --metadata --fast-list --max-backlog 10000 --size-only -vvvv --multi-thread-cutoff 32Mi \n--max-depth -1\n````\n\n![Image](https://github.com/user-attachments/assets/4c9d6bcb-10c2-421b-ae98-b4d819e9e384)\n\n\nThis confirms the version:\n\n```\nroot@participant11:~# rclone --version\nrclone v1.69.0-beta.8480.59a5530ce.fix-7974-out-of-memory-sync\n- os/version: ubuntu 24.10 (64 bit)\n- os/kernel: 6.11.0-9-generic (x86_64)\n- os/type: linux\n- os/arch: amd64\n- go/version: go1.23.4\n- go/linking: static\n- go/tags: none\nroot@participant11:~# \n```"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-02-11T10:13:24Z",
+   "body": "@reporter thanks for the info. It would be useful to know what the distribution of files is in the source bucket. So roughly how many files and how big?\n\nI note --transfers 256 and --multi-thread-cutoff 32Mi ? These can potentially be using lots of RAM if you have lots of larger files, potentially --s3-upload-concurrency * --s3-chunk-size * --transfers so 5 GB with those settings.\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-02-12T20:10:23Z",
+   "body": "The distribution here is WILD. Some files are a few megabytes, some are 300 GB+\n\nThanks for pointing out `--s3-upload-concurrency`\n\nI'm a bit confused on whether this overlaps with `--multi*` threaded mode for the file transfers.\n\nIf you can clarify this for me then I'll update your docs.\n\nSo bear with me:\n\nI have a large distribution of files sizes. I'd like to be able to have as many threads as possible, obviously. But if I oversaturate then connections start being reset and that's bad.\n\nso...\n\nDoes `--s3-upload-concurrency` cap the number of total connections to the s3 bucket?\n\nSo for example let's say I have `--transfers N` and I also have  `--multi-thread-streams M`. In the degenerate case this will produce N*M uploading threads.\n\nWhat I'm hoping is that `--s3-upload-concurrency` caps it. So so `--s3-upload-concurrency X` would yield that:\n\n  * `--transfers N` + `--multi-thread-streams M` <= `--s3-upload-concurrency X`\n  * N + M <= X\n\nI this true? This forum post here was the closest answer I got:\n\nhttps://<redacted-host>/t/s3-concurrency-multi-thread-streams-vs-s3-upload-concurrency/34191\n\n\nIf so this would be great as I can simply do all the uploading for all files in one pass instead of small/big pass.\n"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-02-17T10:09:07Z",
+   "body": "Ok, fix-7974-out-of-memory-sync branch actually fixes the issue for me. Is there a PR @participant1 ?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-02-17T18:13:50Z",
+   "body": "@reporter wrote:\n> The distribution here is WILD. Some files are a few megabytes, some are 300 GB+\n\nOK\n \n> Thanks for pointing out `--s3-upload-concurrency`\n> \n> I'm a bit confused on whether this overlaps with `--multi*` threaded mode for the file transfers.\n> \n> If you can clarify this for me then I'll update your docs.\n\nIt is super confusing and something that I'd like to fix.\n\nThere is discussion of how the options actually work and how we'd like them to work here https://github.com/rclone/rclone/issues/8225\n\n> I have a large distribution of files sizes. I'd like to be able to have as many threads as possible, obviously. But if I oversaturate then connections start being reset and that's bad.\n> \n> so...\n> \n> Does `--s3-upload-concurrency` cap the number of total connections to the s3 bucket?\n\nNo it doesn't and that is a potential problem.\n\nHowever I've been working on a fix for that which adds a single flag\n\n      --max-buffer-memory SizeSuffix   If set, don't allocate more than this amount of memory as buffers (default off)\n\nSomewhat WIP but you can try it here.\n\n[v1.70.0-beta.8603.7dfc93cfe.fix-max-buffer-memory](https://<redacted-host>/branch/fix-max-buffer-memory/v1.70.0-beta.8603.7dfc93cfe.fix-max-buffer-memory/) on branch [fix-max-buffer-memory](https://github.com/rclone/rclone/tree/fix-max-buffer-memory) (uploaded in 15-30 mins)\n\nYou might find that is actually the correct fix for your problem rather than this issue which is specifically for directories will millions of files in.\n\n"
+  },
+  {
+   "author": "participant6",
+   "created_at": "2025-02-20T01:37:57Z",
+   "body": "The fix-7974-out-of-memory-sync branch (for the large dir) made a huge difference in my testing, would love to see it get merged. "
+  },
+  {
+   "author": "participant7",
+   "created_at": "2025-03-24T15:39:36Z",
+   "body": "The fix-7974-out-of-memory-sync branch : How to express the value of the flag --max-buffer-memory SizeSuffix ? \n\n--max-buffer-memory 16M ?\n"
+  },
+  {
+   "author": "participant8",
+   "created_at": "2025-03-24T15:49:12Z",
+   "body": "> SizeSuffix ?\n\nhttps://rclone.org/docs/#size-option"
+  },
+  {
+   "author": "participant6",
+   "created_at": "2025-03-24T15:57:56Z",
+   "body": "Any update on when this fix might make it into actual release?"
+  },
+  {
+   "author": "participant7",
+   "created_at": "2025-03-25T12:43:36Z",
+   "body": "I have always the out of memory error with rclone sync to a google drive shared directory : Only 4 files (81Mo and 134K) !\nSame thing with only a copy !"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-04-08T19:29:35Z",
+   "body": "Thanks for testing everyone.\n\nI've merged this to master now which means it will be in [the latest beta](https://<redacted-host>/) in 15-30 minutes and released in v1.70 "
+  },
+  {
+   "author": "participant9",
+   "created_at": "2025-06-09T05:56:20Z",
+   "body": "Glad to see this change!\n~~What I want to know is, does this `list_cutoff` optimization also work on the rclone `copy` command?\nI also encountered the above **excess memory use problem** when rclone `copy` millions of small files in the one directory~~\nI checked the code and found that `list-cutoff` should be executed as a default behavior of list and is expected to work in rclone `copy` 👍"
+  },
+  {
+   "author": "participant10",
+   "created_at": "2025-06-25T21:14:18Z",
+   "body": "While this change fixed the memory issue, the whole transfer and check process is significantly slower now (which is to be expected, probably). Only checking the source and destination for change using checksum for 8 million objects takes 8+ hours and is still running.\n\n However, I noticed something else. Let’s say I have 8 million objects on the source and 6 million on the destination. When I run the rclone sync with the --progress flag,  it shows the listed object count. When it ends counting every object, it stops listing and starts running the sync. But after a while (acouple of hours), it creates a new file in the /tmp directory, and listing starts all over again. The list output from the progress is going up again for some time and stops after the number doubles.\n\nThe sync process is still running for more than 8 hours, and it doesn’t seem like it will end anytime soon."
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "rclone/rclone",
+  "default_branch": "master",
+  "commit_sha": "f26d2c6ba86854bd1e65ebfd460a98b96db6a9e7",
+  "as_of": "2024-07-25T08:44:35Z",
+  "method": "github_commits_until"
+ },
+ "images": [
+  {
+   "where": "opening",
+   "source_url": "https://github.com/user-attachments/assets/cad7926e-48b7-46f7-be81-543edc896460",
+   "file": "gh_rclone_rclone_7974_img0.png"
+  },
+  {
+   "where": "opening",
+   "source_url": "https://github.com/user-attachments/assets/5c2b7096-ade2-45d7-993e-4fd0b0f52196",
+   "file": "gh_rclone_rclone_7974_img1.png"
+  },
+  {
+   "where": "c15",
+   "source_url": "https://github.com/user-attachments/assets/4c9d6bcb-10c2-421b-ae98-b4d819e9e384",
+   "file": "gh_rclone_rclone_7974_img2.png"
+  }
+ ],
+ "slug": "gh_rclone_rclone_7974"
+}

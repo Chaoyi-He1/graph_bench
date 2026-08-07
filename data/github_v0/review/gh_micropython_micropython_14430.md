@@ -9,22 +9,22 @@
 
 ```mermaid
 flowchart LR
-    N0["<b>N0 unsupported relocations reported</b><br/><small>info: 6</small>"]
-    N1["<b>N1 Xtensa relocation patch tested</b><br/><small>info: 7</small>"]
-    N2_x["<b>N2_x residual ARMv6m failure after general linking support</b><br/><small>info: 11</small>"]
-    N3["<b>N3 PIC model probe completed</b><br/><small>info: 12</small>"]
-    N_terminal["<b>terminal ARM absolute relocation supported</b><br/><small>info: 15</small>"]
-    N0 -.->|"❓ xtensa_asm_expand_patch_test_builds_successfully"| N1
-    linkStyle 0 stroke:#3b82f6,stroke-width:2px
-    N1 ==>|"💥 blind: Treat the new native-module archive linking and relocation support from issue 15838 as the complete resolution for modules that pull sin, cos and soft-float objects from libm and libgcc."| N2_x
-    linkStyle 1 stroke:#ef4444,stroke-width:2px
-    N2_x -.->|"❓ fpic_uppercase_still_emits_armv6m_assertion_2"| N3
+    N0["<b>N0 unsupported sin/cos relocations reported</b><br/><small>info: 8</small>"]
+    N1["<b>N1 archive linking adopted, armv6m case remains</b><br/><small>info: 13</small>"]
+    N2["<b>N2 fPIC probe unchanged</b><br/><small>info: 14</small>"]
+    N3["<b>N3 toolchain-dependent relocation output established</b><br/><small>info: 15</small>"]
+    N_terminal["<b>terminal fix landed, reporter verification pending</b><br/><small>info: 18</small>"]
+    N0 ==>|"⚡ Adopt the newer native-module linking support that can load libgcc and libm archives and resolve their required object dependencies, then rebuild the module."| N1
+    linkStyle 0 stroke:#f97316,stroke-width:2px
+    N1 -.->|"❓ fpic_uppercase_still_hits_same_absolute_relocation_assertion"| N2
+    linkStyle 1 stroke:#3b82f6,stroke-width:2px
+    N2 -.->|"❓ arch_gcc_armv6m_build_completes_with_different_object_relocations"| N3
     linkStyle 2 stroke:#3b82f6,stroke-width:2px
-    N3 ==>|"⚡ Add correct R_ARM_ABS32 relocation support for ARM text sections by reusing mpy_ld.py's existing absolute-relocation logic for read-only data, then update to the MicroPython revision containing that fix and verify the native math module on armv6m hardware."| N_terminal
+    N3 ==>|"⚡ Extend mpy_ld.py's existing ARM absolute-relocation handling to R_ARM_ABS32 entries located in text sections, using the same relocation logic already used for read-only data, and ask the reporter to verify the landed change on the minimal armv6m module."| N_terminal
     linkStyle 3 stroke:#f97316,stroke-width:2px
     class N0 start
     class N1 normal
-    class N2_x normal
+    class N2 normal
     class N3 normal
     class N_terminal terminal
     classDef start fill:#fee2e2,stroke:#b91c1c,color:#000
@@ -34,35 +34,34 @@ flowchart LR
 
 ## Opening (body)
 
-> I am building dynamic native modules that use sinf/cosf with MicroPython 1.22.2 from git. Because libm and libgcc object files are not linked automatically, I extract the required objects from their archives and add them to SRC_O. Linking with tools/mpy_ld.py raises AssertionError: 11 for ARCH=xtensawin and AssertionError: 2 for ARCH=armv7emsp instead of producing a functional module. My toolchains are xtensa-esp32-elf-gcc 11.2.0 and arm-none-eabi-gcc 13.2.0. This appears to happen whenever code calling sin/cos or sinf/cosf is present, even if that code path is unused, because mpy_ld.py does not appear to strip dead code. I can inspect the objects with readelf or objdump, but I do not know how to interpret why these relocations differ from the others.
+> I am building dynamic native modules for esp32/xtensawin and armv7emsp with MicroPython 1.22.2 from git. The module uses sinf/cosf, with the required libm and libgcc object files extracted from their archives and added manually. mpy_ld.py aborts while linking: xtensawin reports AssertionError: 11 and armv7emsp reports AssertionError: 2. I expect linking to succeed and the module to work, or at least for the error and documentation to explain the limitation and possible remedies. I have shared the verbose xtensawin linker log and object files related to __ieee754_rem_pio2f. I believe merely including code that calls sin/cos or sinf/cosf can trigger this, even if that code is unused, because mpy_ld.py does not appear to strip dead code.
 
 ## Satisfaction conditions
 
-1. Must identify the remaining root cause as R_ARM_ABS32 relocations attached to data in ARM text sections, such as addresses of floating-point constant tables used by sin/cos and soft-float routines; the assertion number alone is not a sufficient diagnosis.
-2. Must ground the diagnosis in the armv6m minimal floating-point-division reproduction, compiler-dependent object output, and the unchanged relocation after the -fPIC probe.
-3. Must recommend the implemented fix descriptively: handle R_ARM_ABS32 in text sections using the existing ro-data absolute-relocation logic, and point the reporter at a MicroPython revision containing that fix.
-4. Must not treat the new archive-linking support the reporter already adopted, or the earlier simplistic ARM absolute-relocation calculation, as the complete fix: the former left armv6m failing, and a module built with the latter crashed on-device.
-5. Must not present switching from -fpic to -fPIC as the fix because the reporter tested it and still received AssertionError: 2.
-6. Must ask the user to rebuild and run the division or sin/cos module on an armv6m build containing the fix, and only treat the issue as resolved after successful runtime verification.
+1. Must identify the final accepted root cause: affected armv6m libgcc/libm objects contain R_ARM_ABS32 relocations for data or addresses embedded in text sections, while mpy_ld.py handled that absolute relocation in read-only data but not in text.
+2. Must ground the diagnosis in the minimal floating-point-division failure, relocation type 2, the compiler-package-dependent object output, and the unchanged result with -fPIC.
+3. The fix must route ARM text-section R_ARM_ABS32 entries through the existing absolute-relocation logic used for read-only data; it must not preserve the earlier claim that a new runtime relocation section or major opcode-rewriting system is necessarily required.
+4. Must not present -fPIC as the solution, because the reporter tested it and observed the same assertion.
+5. Must ask the reporter to rebuild and run the minimal armv6m division or sin/cos case on a build containing the fix before declaring the reporter's issue resolved; maintainer testing on an RP2040 does not substitute for the reporter's own verification.
 
 ## Edges
 
 | edge | type | gates / info | payload |
 |---|---|---|---|
-| `e1_N0__N1` | clarification_only | asks: xtensa_asm_expand_patch_test_builds_successfully | Yes, the suggested patch did help in my Xtensa case and the module build completed. |
-| `e2_N1__N2_x` | solution_only **BLIND** | req_info: dynamic_module_using_sin_cos_and_manual_libm_libgcc_objects, xtensa_asm_expand_patch_test_builds_successfully<br>elements: mentions_new_archive_linking_support, treats_it_as_complete_fix_for_all_reported_architectures | Treat the new native-module archive linking and relocation support from issue 15838 as the complete resolution for modules that pull sin, cos and soft-float objects from libm and libgcc. |
-| `e3_N2_x__N3` | clarification_only | asks: fpic_uppercase_still_emits_armv6m_assertion_2 | I tried building the module with -fPIC, and I still get caught on the same assertion due to the absolute reloc |
-| `e4_N3__N_terminal` | solution_only | req_info: armv6m_float_division_minimal_repro_assertion_2, armv6m_failure_depends_on_gcc_package, naive_arm_abs32_patch_builds_but_crashes_on_device, new_archive_linking_support_fixes_other_arm_and_xtensawin_cases, fpic_uppercase_still_emits_armv6m_assertion_2<br>elements: identifies_r_arm_abs32_in_text_as_the_remaining_root_cause, reuses_existing_rodata_absolute_relocation_logic_for_text, recommends_a_micropython_revision_containing_the_arm_absolute_relocation_fix, asks_user_to_verify_on_a_build_containing_the_fix | Add correct R_ARM_ABS32 relocation support for ARM text sections by reusing mpy_ld.py's existing absolute-relocation logic for read-only data, then update to the MicroPython revision containing that fix and verify the native math module on armv6m hardware. |
+| `e1_N0__N1` | solution_only | req_info: dynamic_native_module_uses_sin_cos_soft_float_objects, libm_libgcc_objects_manually_extracted, verbose_xtensawin_link_log_shared<br>elements: uses_new_native_module_archive_linking_support, rebuilds_with_libgcc_and_libm_archives | Adopt the newer native-module linking support that can load libgcc and libm archives and resolve their required object dependencies, then rebuild the module. |
+| `e2_N1__N2` | clarification_only | asks: fpic_uppercase_still_hits_same_absolute_relocation_assertion | I tried building the module with -fPIC, and it did not help. I still get caught on the same assertion due to t |
+| `e3_N2__N3` | clarification_only | asks: arch_gcc_armv6m_build_completes_with_different_object_relocations | Using the Arch Linux arm-none-eabi-gcc 14.2.0 package, the same command finishes and creates the MPY file. Its |
+| `e4_N3__terminal` | solution_only | req_info: armv6m_float_division_still_asserts_relocation_2, armv6m_failure_depends_on_gcc_package, arch_gcc_armv6m_build_completes_with_different_object_relocations, minimal_armv6m_reproducer_and_verbose_output_shared, fpic_uppercase_still_hits_same_absolute_relocation_assertion<br>elements: supports_r_arm_abs32_in_text_sections, reuses_existing_read_only_data_absolute_relocation_logic, does_not_treat_fpic_as_the_fix, asks_user_to_verify_on_a_build_containing_the_fix | Extend mpy_ld.py's existing ARM absolute-relocation handling to R_ARM_ABS32 entries located in text sections, using the same relocation logic already used for read-only data, and ask the reporter to verify the landed change on the minimal armv6m module. |
 
 ## Nodes
 
 | node | terminal | volunteered | images | symptoms |
 |---|---|---|---|---|
-| `N0` |  | 2 | 0 | When I link a dynamic native module containing sinf/cosf and the extracted libm and libgcc objects, mpy_ld.py stops with AssertionError: 11  |
-| `N1` |  | 0 | 0 | The original mpy_ld.py still raises unsupported-relocation assertions for these native-module inputs. |
-| `N2_x` |  | 4 | 0 | After updating to the new linking support, my other ARM and xtensawin builds complete, but the minimal armv6m module containing a floating-p |
-| `N3` |  | 0 | 0 | Building the minimal armv6m module with -fPIC still stops at the same do_relocation_text assertion for relocation type 2. |
-| `N_terminal` | ✓ | 0 | 0 | On a MicroPython build containing the fix, sin and cos can be used from armv6m native modules on an RP2040, and the minimal module with the  |
+| `N0` |  | 3 | 0 | When I link my dynamic native module, mpy_ld.py exits with AssertionError: 11 for xtensawin and AssertionError: 2 for armv7emsp. The failure |
+| `N1` |  | 5 | 0 | After updating my project to the new linking support, the other ARM and Xtensawin builds are no longer a problem, but an armv6m module conta |
+| `N2` |  | 0 | 0 | Building the armv6m module with -fPIC instead of -fpic still reaches the same assertion for the absolute relocation. |
+| `N3` |  | 0 | 0 | The minimal armv6m module still fails with my usual GCC packages, while the Arch Linux GCC build completes and produces the MPY file. |
+| `N_terminal` | ✓ | 1 | 0 | I have not yet retested my minimal armv6m example with a build containing the landed relocation change; my last own test still stopped at As |
 
 ## Machine review (audit pass, adversarially verified)
 

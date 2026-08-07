@@ -1,0 +1,238 @@
+{
+ "repo": "apache/arrow",
+ "number": 44342,
+ "url": "https://github.com/apache/arrow/issues/44342",
+ "title": "[Python] Segmentation fault occurs on libarrow load when using the pyarrow 17.0.0 arm64 wheel",
+ "state": "closed",
+ "labels": [
+  "Type: bug",
+  "Component: Python",
+  "Priority: Blocker"
+ ],
+ "reporter": "reporter",
+ "created_at": "2024-10-08T22:28:46Z",
+ "closed_at": "2024-10-14T10:58:06Z",
+ "body": "### Describe the bug, including details regarding any error messages, version, and platform.\r\n\r\nUnder some very specific set of circumstances, importing pyarrow 17.0.0 from an arm wheel triggers a segmentation fault. The error comes from the jemalloc function `background_thread_entry` that is statically linked into libarrow.so. I can see libarrow.so being opened via strace, and when I run under gdb I see the following backtrace:\r\n```\r\n[Detaching after vfork from child process 895]\r\n[New Thread 0xfffe18fff1d0 (LWP 960)]\r\n--Type <RET> for more, q to quit, c to continue without paging--c\r\n\r\nThread 128 \"jemalloc_bg_thd\" received signal SIGSEGV, Segmentation fault.\r\n[Switching to Thread 0xfffe18fff1d0 (LWP 960)]\r\n0x0000fffe1b2d2844 in background_thread_entry () from /pyenv/versions/3.12.6/lib/python3.12/site-packages/pyarrow/libarrow.so.1700\r\n\r\n(gdb) backtrace\r\n#0  0x0000fffe122f1844 in background_thread_entry () from /pyenv/versions/3.12.6/lib/python3.12/site-packages/pyarrow/libarrow.so.1700\r\n#1  0x0000ffff94a3a624 in start_thread (arg=0xfffe122f17e0 <background_thread_entry>) at pthread_create.c:477\r\n#2  0x0000ffff94b3562c in thread_start () at ../sysdeps/unix/sysv/linux/aarch64/clone.S:78\r\n(gdb) bt full\r\n#0  0x0000fffe122f1844 in background_thread_entry () from /pyenv/versions/3.12.6/lib/python3.12/site-packages/pyarrow/libarrow.so.1700\r\nNo symbol table info available.\r\n#1  0x0000ffff94a3a624 in start_thread (arg=0xfffe122f17e0 <background_thread_entry>) at pthread_create.c:477\r\n        ret = <optimized out>\r\n        pd = <optimized out>\r\n        unwind_buf = {cancel_jmp_buf = {{jmp_buf = {281466655208940, 281474517841168, 281474517841166, 281473175642112, 281474517841167, 281466691852256,\r\n                281466655209680, 281466655207888, 281473175646208, 281466655207888, 281466655205808, 118832585594287181, 0, 118832583903213793, 0, 0, 0,\r\n                0, 0, 0, 0, 0}, mask_was_saved = 0}}, priv = {pad = {0x0, 0x0, 0x0, 0x0}, data = {prev = 0x0, cleanup = 0x0, canceltype = 0}}}\r\n        not_first_call = <optimized out>\r\n#2  0x0000ffff94b3562c in thread_start () at ../sysdeps/unix/sysv/linux/aarch64/clone.S:78\r\nNo locals.\r\n```\r\n\r\nThis error is quite difficult to reproduce. In addition to only observing this this particular issue with the pyarrow 17.0.0 release (the issue vanishes I downgrade to an earlier version) and only when testing on arm architectures, it is also highly sensitive to the exact order of prior operations. In my application I load multiple Python extension modules before importing pyarrow, and the order of those imports affects whether or not this issue manifests. The cases where the issue arises do manifest reliably, so it is not a flaky error, but simply adding an unrelated extra import or reordering unrelated imports is often sufficient to make the problem vanish. I attempted to rebuild libarrow.so using the same flags used to build the wheel (I can't be sure that I got them all right though, I based my compilation on the flags in https://github.com/apache/arrow/blob/main/ci/scripts/python_wheel_manylinux_build.sh). and then preload the library, but that too caused the segmentation fault to disappear, so it's also unlikely that I can get debug symbols into the build in any useful way. I am attempting to reduce this to an MWE in https://github.com/rapidsai/cudf/pull/17022, but I am not very hopeful in it being reduced all that far.\r\n\r\n### Component(s)\r\n\r\nPython",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2024-10-09T00:40:21Z",
+   "body": "Could you also share `thread apply all bt full` result?\r\n\r\nIs there any other Python extension module that also uses jemalloc?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-10-09T01:32:07Z",
+   "body": "The output is quite large, so I've attached it in a file.\r\n[gdb.txt](https://github.com/user-attachments/files/17300849/gdb.txt)\r\n\r\nNone of the extensions that I built use jemalloc, but it's possible that something else being loaded into the environment does (e.g. numpy or scipy)."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-10-09T02:20:40Z",
+   "body": "Thanks but sorry.\r\nI couldn't find any hints in the `thread apply all bt full` result..."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-10-09T14:07:22Z",
+   "body": "Hi @reporter , `jemalloc_bg_thd` is a jemalloc thread. When searching online, there seem to be issues with jemalloc on Linux aarch64, see https://github.com/jemalloc/jemalloc/issues/467 for example.\r\n\r\nI would recommend you switch to mimalloc instead of jemalloc, see https://arrow.apache.org/docs/cpp/memory.html#default-memory-pool\r\n\r\nNote that mimalloc becomes the default in 18.0.0 as well (see #43254).\r\n\r\nOn our side, perhaps we should simply disable jemalloc on Linux aarch64 wheels? @participant3 "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-10-09T20:51:36Z",
+   "body": "> Thanks but sorry.\r\nI couldn't find any hints in the thread apply all bt full result...\r\n\r\nNo problem @participant1, I know these kinds of issues can be a huge pain to track down, especially from this limited information.\r\n\r\nIf it helps, you can see the error in [this GHA run](https://github.com/rapidsai/cudf/actions/runs/11259806360/job/31313370630?pr=17022) on [this PR](https://github.com/rapidsai/cudf/pull/17022).\r\n\r\n> When searching online, there seem to be issues with jemalloc on Linux aarch64, see https://github.com/jemalloc/jemalloc/issues/467 for example.\r\n\r\n@participant2 thanks for finding that! That makes sense since it certainly seems like the underlying issue comes from jemalloc and is not arrow-specific.\r\n\r\n> I would recommend you switch to mimalloc instead of jemalloc\r\n\r\nGood idea, at least for testing. I'm testing that now in [this GH workflow](https://github.com/rapidsai/cudf/actions/runs/11262786032?pr=17022). The arm wheel-tests-cudf job is the one to look out for, let's see if using mimalloc bypasses the issue. That being said:\r\n\r\n> Note that mimalloc becomes the default in 18.0.0 as well (see https://github.com/apache/arrow/issues/43254). On our side, perhaps we should simply disable jemalloc on Linux aarch64 wheels?\r\n\r\nThis seems like the right long-term solution if your suggestion to try mimalloc works for me above. pyarrow is a common enough dependency that a user could end up having pyarrow loaded in their environment without even realizing it, and if the import alone is sufficient to trigger the seg fault it would be quite challenging for the average user to debug. Making mimalloc the default seems sufficient to me since IMHO it's reasonable to expect a user explicitly setting the allocator to recognize this as a potential cause, but I wouldn't be opposed to disabling jemalloc altogether on arm either."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-10-09T22:47:19Z",
+   "body": "Hmm, @participant2 I still see segfaults in the job that I linked above. Am I configuring the allocator in the correct way in https://github.com/rapidsai/cudf/pull/17022/commits/635b5e0eceeb63460bd28c1d3655b6bd83a49cc1? If so, that suggests that there is an issue with jemalloc that occurs by simply loading the relevant parts of the binary even if no allocation subroutine is invoked, in which case building aarch64 wheels without jemalloc is definitely the way to go because this is beyond the realm of user configuration."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-10-10T00:16:41Z",
+   "body": "It seems that the https://github.com/jemalloc/jemalloc/issues/467 problem was solved by https://github.com/apache/arrow/pull/10940 ."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-10-10T00:25:53Z",
+   "body": "Could you try nightly wheel that use mimalloc by default?\r\nhttps://arrow.apache.org/docs/developers/python.html#installing-nightly-packages"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-10-10T07:29:44Z",
+   "body": "> If so, that suggests that there is an issue with jemalloc that occurs by simply loading the relevant parts of the binary even if no allocation subroutine is invoked, in which case building aarch64 wheels without jemalloc is definitely the way to go because this is beyond the realm of user configuration.\r\n\r\nAh, that might be the case indeed, if the crash occurs right when importing PyArrow :("
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-10-10T15:25:38Z",
+   "body": "@reporter is there any way to validate the issue has gone away with the nightly wheels?\r\nhttps://anaconda.org/scientific-python-nightly-wheels/pyarrow/files"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-10-10T19:15:15Z",
+   "body": "I am happy to test out a nightly wheel, but unfortunately I'm not confident that it will tell us anything conclusive. As I mentioned above, in my use case I had a lot of difficulty constructing a true MWE because even small changes like defining a new variable, moving around my imports, or moving imports from one file into another but preserving the order (which still has some effect due to the logic for loading the importing module itself) were sufficient to change whether the error appeared or not, which suggests that some sort of process memory corruption is occurring when the DSO is loaded. As a result, since I assume the nightly wheels will have accumulated many changes since the 17.0.0 release, even if I don't observe the same error it may just be that the error is now simply being hidden by other changes. I can try a few different iterations with different modifications to my scripts to see what happens, though."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-10-10T19:18:23Z",
+   "body": "Er, are you telling us that it's not simply `import pyarrow` that triggers the crash?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-10-10T19:29:21Z",
+   "body": "If you're asking whether `python -c \"import pyarrow\"` will trigger the crash, then no, that does not crash for me. Quoting from above:\r\n\r\n> This error is quite difficult to reproduce. In addition to only observing this this particular issue with the pyarrow 17.0.0 release (the issue vanishes I downgrade to an earlier version) and only when testing on arm architectures, it is also highly sensitive to the exact order of prior operations. In my application I load multiple Python extension modules before importing pyarrow, and the order of those imports affects whether or not this issue manifests. The cases where the issue arises do manifest reliably, so it is not a flaky error, but simply adding an unrelated extra import or reordering unrelated imports is often sufficient to make the problem vanish.\r\n\r\nNone of the modules that I directly control do any sort of relevant stateful initialization on import, but I cannot guarantee that the same is true for the other modules, so it is entirely possible that something in the stack (e.g. scipy) is doing some sort of initialization of a memory pool that introduces conflicting jemalloc symbols, or some other similar problem (it wouldn't actually be a symbol collision since IIUC libarrow does not make any of its jemalloc symbols publicly visible, but that's illustrative of the class of problems I mean). So roughly speaking, I have\r\n```\r\nimport foo\r\nimport bar\r\n... # Other imports\r\nimport pyarrow # this seg faults\r\n```\r\nand changing the sequence of `import foo` and `import bar` can change whether the seg fault appears."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-10-10T19:31:01Z",
+   "body": "So, perhaps there's nothing particular that we should do in PyArrow?"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-10-10T19:32:31Z",
+   "body": "(at least if you could `git bisect` and find out when precisely the issue starts happening with PyArrow, that could perhaps give a clue)"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-10-10T23:41:47Z",
+   "body": "Well OK, to my (pleasant) surprise upgrading to the latest nightly did not make the error vanish (well I suppose not pleasant that I have a seg fault, but at least pleasant that there's something reproducible happening):\r\n```\r\nroot@participant8:/repo# python -c \"import cupy; import cudf;\"\r\nSegmentation fault (core dumped)\r\nroot@participant8:/repo# python\r\niPython 3.12.7 (main, Oct  4 2024, 15:35:43) [GCC 9.4.0] on linux\r\nType \"help\", \"copyright\", \"credits\" or \"license\" for more information.\r\n>>> import pyarrow\r\n>>> pyarrow.__version__\r\n'18.0.0.dev445'\r\n>>> \r\n```\r\n\r\nThe backtrace is the same, still in `jemalloc_bg_thd`.\r\n\r\n> So, perhaps there's nothing particular that we should do in PyArrow?\r\n\r\nI think compiling out jemalloc or recompiling using the appropriate page size for arm could still make sense. While I haven't been able to reduce my example much further yet, the fact that pyarrow < 17.0.0 works while 17.0.0 and 18 alphas both fail indicate that something meaningful has changed there in the pyarrow binary and anyone could hit it.\r\n\r\n> (at least if you could git bisect and find out when precisely the issue starts happening with PyArrow, that could perhaps give a clue)\r\n\r\nI would be happy to try that, but I would also need to be able to build pyarrow wheels that are equivalent to the build process you have. As I mentioned above\r\n\r\n>  attempted to rebuild libarrow.so using the same flags used to build the wheel (I can't be sure that I got them all right though, I based my compilation on the flags in https://github.com/apache/arrow/blob/main/ci/scripts/python_wheel_manylinux_build.sh). and then preload the library, but that too caused the segmentation fault to disappear\r\n\r\nSince the latest pyarrow nightlies fail for me, that suggests that I was indeed not compiling exactly equivalent C++ to what you produce (or perhaps I was but there's also something in the Python build that's relevant since I simply LD_PRELOADed libarrow.so). The nightly index linked above unfortunately doesn't go back far enough for me to install nightlies in between 16.1 and 17 to see where the issue might have arisen."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-10-11T04:00:00Z",
+   "body": "Could you try https://github.com/ursacomputing/crossbow/actions/runs/11285538259#artifacts (download the \"wheel\" artifact) that disables jemalloc? "
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-10-11T15:44:06Z",
+   "body": "Also, can you tell us which hardware exactly you're using, and what the default page size is?\r\n\r\nAnd it would be nice if you could try to disassemble at the point of the crash.\r\n"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-10-13T10:38:12Z",
+   "body": "I am re-running some CI jobs but this is currently the only blocker to create the initial Release Candidate for 18.0.0. Should we merge disabling jemalloc by default on ARM and create the first RC? Should I create the first RC and potentially add this as a patch release if it solves the issue? @participant1 @participant2 ?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-10-13T22:14:34Z",
+   "body": "Let's merge GH-44380 and create the first RC!"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-10-14T09:24:05Z",
+   "body": "Note that, for now, this is the only report about segfaults on Linux aarch64, so we're not sure if it's really a problem in general or specific to that use case. Ideally I would like answers to the questions in https://github.com/apache/arrow/issues/44342#issuecomment-2407679240 specifically :-)\r\n\r\nIt's probably ok to disable jemalloc at least for 18.0.0, though."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-10-14T10:58:05Z",
+   "body": "Issue resolved by pull request 44380\nhttps://github.com/apache/arrow/pull/44380"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-10-14T11:01:18Z",
+   "body": "I've merged disabling jemalloc by default on ARM to move 18.0.0 forward. We can re-open this issue once we get feedback or we can open a follow up one if necessary"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-10-14T16:50:47Z",
+   "body": "Installing the version with jemalloc disabled does seem to fix the problem. I installed the artifact from https://github.com/ursacomputing/crossbow/actions/runs/11286890348 (slightly different than the link posted above because I'm on Python 3.12) and tested it out, then downgraded again to be sure:\r\n```\r\nroot@participant8:/repo/new_wheel# pip install pyarrow-18.0.0.dev452-cp312-cp312-manylinux_2_28_aarch64.whl \r\nLooking in indexes: https://pypi.org/simple, https://<redacted-host>/rapidsai-wheels-nightly/simple, https://pypi.nvidia.com\r\nProcessing ./pyarrow-18.0.0.dev452-cp312-cp312-manylinux_2_28_aarch64.whl\r\nInstalling collected packages: pyarrow\r\n  Attempting uninstall: pyarrow\r\n    Found existing installation: pyarrow 17.0.0\r\n    Uninstalling pyarrow-17.0.0:\r\n      Successfully uninstalled pyarrow-17.0.0\r\nSuccessfully installed pyarrow-18.0.0.dev452\r\nWARNING: Running pip as the 'root' user can result in broken permissions and conflicting behaviour with the system package manager, possibly rendering your system unusable.It is recommended to use a virtual environment instead: https://<redacted-host>/warnings/venv. Use the --root-user-action option if you know what you are doing and want to suppress this warning.\r\nroot@participant8:/repo/new_wheel# cd ..\r\nroot@participant8:/repo# python -c \"import cupy; import cudf;\"\r\nroot@participant8:/repo# pip install pyarrow==17.0.0\r\nLooking in indexes: https://pypi.org/simple, https://<redacted-host>/rapidsai-wheels-nightly/simple, https://pypi.nvidia.com\r\nCollecting pyarrow==17.0.0\r\n  Using cached pyarrow-17.0.0-cp312-cp312-manylinux_2_28_aarch64.whl.metadata (3.3 kB)\r\nRequirement already satisfied: numpy>=1.16.6 in /pyenv/versions/3.12.7/lib/python3.12/site-packages (from pyarrow==17.0.0) (2.0.2)\r\nUsing cached pyarrow-17.0.0-cp312-cp312-manylinux_2_28_aarch64.whl (38.7 MB)\r\nInstalling collected packages: pyarrow\r\n  Attempting uninstall: pyarrow\r\n    Found existing installation: pyarrow 18.0.0.dev452\r\n    Uninstalling pyarrow-18.0.0.dev452:\r\n      Successfully uninstalled pyarrow-18.0.0.dev452\r\nSuccessfully installed pyarrow-17.0.0\r\nWARNING: Running pip as the 'root' user can result in broken permissions and conflicting behaviour with the system package manager, possibly rendering your system unusable.It is recommended to use a virtual environment instead: https://<redacted-host>/warnings/venv. Use the --root-user-action option if you know what you are doing and want to suppress this warning.\r\nroot@participant8:/repo# python -c \"import cupy; import cudf;\"\r\nSegmentation fault (core dumped)\r\n```\r\nSo that certainly seems promising. Once pyarrow 18 is released our CI will pick it up automatically, so we'll see if the problem recurs in any way in future builds."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-10-14T16:59:26Z",
+   "body": "> Also, can you tell us which hardware exactly you're using, and what the default page size is?\r\n\r\nHere is some information, let me know if you would like anything else. The page size is 4kb, so https://github.com/jemalloc/jemalloc/issues/467 doesn't immediately seem to be implicated to me, but I haven't done much more than skim that issue.\r\n```\r\nroot@participant8:/repo# lscpu\r\nArchitecture:                       aarch64\r\nCPU op-mode(s):                     32-bit, 64-bit\r\nByte Order:                         Little Endian\r\nCPU(s):                             80\r\nOn-line CPU(s) list:                0-79\r\nThread(s) per core:                 1\r\nCore(s) per socket:                 80\r\nSocket(s):                          1\r\nNUMA node(s):                       1\r\nVendor ID:                          ARM\r\nModel:                              1\r\nModel name:                         Neoverse-N1\r\nStepping:                           r3p1\r\nFrequency boost:                    disabled\r\nCPU max MHz:                        3000.0000\r\nCPU min MHz:                        1000.0000\r\nBogoMIPS:                           50.00\r\nL1d cache:                          5 MiB\r\nL1i cache:                          5 MiB\r\nL2 cache:                           80 MiB\r\nNUMA node0 CPU(s):                  0-79\r\nVulnerability Gather data sampling: Not affected\r\nVulnerability Itlb multihit:        Not affected\r\nVulnerability L1tf:                 Not affected\r\nVulnerability Mds:                  Not affected\r\nVulnerability Meltdown:             Not affected\r\nVulnerability Mmio stale data:      Not affected\r\nVulnerability Retbleed:             Not affected\r\nVulnerability Spec rstack overflow: Not affected\r\nVulnerability Spec store bypass:    Mitigation; Speculative Store Bypass disabled via prctl\r\nVulnerability Spectre v1:           Mitigation; __user pointer sanitization\r\nVulnerability Spectre v2:           Mitigation; CSV2, BHB\r\nVulnerability Srbds:                Not affected\r\nVulnerability Tsx async abort:      Not affected\r\nFlags:                              fp asimd evtstrm aes pmull sha1 sha2 crc32 atomics fphp asimdhp cpuid asimdrdm lrcpc dcpop asimddp ssbs\r\nroot@participant8:/repo# getconf PAGE_SIZE\r\n4096\r\n```\r\n \r\n> And it would be nice if you could try to disassemble at the point of the crash.\r\n\r\n[Here is the gdb disassembly output.](https://github.com/user-attachments/files/17367169/gdb.txt) I don't know enough about jemalloc to debug this without spending a bit more time to familiarize myself unfortunately, but perhaps it will be meaningful to you."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-10-14T17:24:46Z",
+   "body": "Hmm, I've tried to understand the disassembly output (not an expert, sorry). I think the crash is happening in this function:\r\nhttps://github.com/jemalloc/jemalloc/blob/02251c0070969e526cae3dde6d7b2610a4ed87ef/include/jemalloc/internal/tsd.h#L119-L135\r\n\r\nPerhaps you could try look for similar issues in the jemalloc issue tracker, and/or to open an issue there? Feel free to notify me."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-10-14T23:26:01Z",
+   "body": "I took a look through the issue tracker but didn't see any that really seemed quite right. I'll take another look tomorrow and if I can't find anything I will open a new issue, link here, and tag you."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-10-18T19:43:48Z",
+   "body": "I opened https://github.com/jemalloc/jemalloc/issues/2739 for further discussion on the jemalloc side."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-11-12T03:12:04Z",
+   "body": "Just stumbled over this. In conda-forge we build with\r\n```\r\nCMAKE_ARGS=\"${CMAKE_ARGS} -DARROW_JEMALLOC_LG_PAGE=16\"\r\n```\r\nand that seems to work fine? I remember @participant9 [mentioning](https://github.com/conda-forge/arrow-cpp-feedstock/issues/944#issuecomment-1407025640) that we cannot unvendor jemalloc in conda-forge due to \"special options\" being required. After reading some of the references here, I'm now assuming this is due to https://github.com/jemalloc/jemalloc/issues/467."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-11-13T14:03:40Z",
+   "body": "We already pass `ARROW_JEMALLOC_LG_PAGE=16` when building Aarch64 wheels, so I don't think that one is the explanation."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2025-01-17T10:30:57Z",
+   "body": "I think I'm actually hitting the same problem on x86 CPUs, but only some. I can reproduce on  `Intel(R) Xeon(R) Silver 4114` and `AMD EPYC 7V12` but not on `AMD Ryzen 9 5950X`. It also requires a very obscure set of dependencies to reproduce and I can reproduce on `pyarrow==17.0.0`, `pyarrow==18.0.0`, `pyarrow==18.1.0` and `pyarrow==19.0.0`.\n\n\nI'm fairly confident its the same issue because `gdb` looks almost the same as the original report.\n```\n[Detaching after vfork from child process 836479]\n[Detaching after vfork from child process 836480]\n[Detaching after vfork from child process 836484]\n[New Thread 0x7ff1761ff700 (LWP 836622)]\n--Type <RET> for more, q to quit, c to continue without paging--c\n\nThread 80 \"jemalloc_bg_thd\" received signal SIGSEGV, Segmentation fault.\n[Switching to Thread 0x7ff1761ff700 (LWP 836622)]\n0x00007ff178f06881 in background_thread_entry () from /<redacted>/pip-svc_pyarrow/site-packages/pyarrow/libarrow.so.1801\n(gdb) backtrace\n#0  0x00007ff178f06881 in background_thread_entry ()\n   from /<redacted>/pip-svc_pyarrow/site-packages/pyarrow/libarrow.so.1801\n#1  0x00007ff332f71609 in start_thread (arg=<optimized out>) at pthread_create.c:477\n#2  0x00007ff332d30353 in clone () at ../sysdeps/unix/sysv/linux/x86_64/clone.S:95\n(gdb) bt full\n#0  0x00007ff178f06881 in background_thread_entry ()\n   from /<redacted>/pip-svc_pyarrow/site-packages/pyarrow/libarrow.so.1801\nNo symbol table info available.\n#1  0x00007ff332f71609 in start_thread (arg=<optimized out>) at pthread_create.c:477\n        ret = <optimized out>\n        pd = <optimized out>\n        unwind_buf = {cancel_jmp_buf = {{jmp_buf = {140675045652224, 7270211746057996573, 140737080934526, \n                140737080934527, 140737080934528, 140675045650368, -7276102654996461283, -7277079231991199459}, \n              mask_was_saved = 0}}, priv = {pad = {0x0, 0x0, 0x0, 0x0}, data = {prev = 0x0, cleanup = 0x0, \n              canceltype = 0}}}\n        not_first_call = 0\n#2  0x00007ff332d30353 in clone () at ../sysdeps/unix/sysv/linux/x86_64/clone.S:95\nNo locals.\n(gdb) \n```\n\nBuilding the wheel with `jemalloc` disabled solves the problem. I'm also tempted to do a `git bisect` to try to determine exactly which commit started this problem. "
+  },
+  {
+   "author": "participant5",
+   "created_at": "2025-01-18T17:31:28Z",
+   "body": "I don't really know if its useful but bisect pointed to https://github.com/apache/arrow/pull/37822. I don't know if this is any kind of root cause though. My reproducers start failing here but it could be a prior change is the root cause and this just shuffled the dependencies so that the failures align with my reproducers."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-01-20T09:31:50Z",
+   "body": "@participant5 Can you disassemble using gdb at the crash point?"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-01-20T09:33:08Z",
+   "body": "Also, it would seem weird for https://github.com/apache/arrow/pull/37822 to have caused this, because it should only affect statically-linked builds and emscripten builds..."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2025-01-22T08:22:00Z",
+   "body": "> [@participant5](https://github.com/participant5) Can you disassemble using gdb at the crash point?\n\n[gdb_disassemble.txt](https://github.com/user-attachments/files/18502106/gdb_disassemble.txt)"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-01-29T16:21:19Z",
+   "body": "Ok, looking at the disassembly and especially at the crashing point:\n```\n   0x00007efbe44e2879 <+73>:    data16 data16 callq 0x7efbe26e6a60 <__tls_get_addr@participant10>\n=> 0x00007efbe44e2881 <+81>:    cmpb   $0x0,0x330(%rax)\n```\nit seems that it's another instance of thread-local storage (TLS)-related crash in jemalloc.\n\nA random guess of mine is that it might have to do with the fact that jemalloc uses a large TLS area (more than 2kB according to [this](https://github.com/jemalloc/jemalloc/issues/2472#issuecomment-2138481417)).\n\nIn any case, I suggest you report it on the [jemalloc issue tracker](https://github.com/jemalloc/jemalloc/).\n"
+  },
+  {
+   "author": "participant6",
+   "created_at": "2025-07-21T08:10:43Z",
+   "body": "very useful~~fixed:\n\npip uninstall -y pyarrow\npip install pyarrow==16.0.0"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2025-08-07T07:40:22Z",
+   "body": "I thought it was worth mentioning that this issue dissapeared for me on `pyarrow==21.0.0`"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-08-11T17:24:47Z",
+   "body": "Given that [jemalloc development has stopped](https://jasone.github.io/2025/06/12/jemalloc-postmortem/) and [the repo is archived](https://github.com/jemalloc/jemalloc) I don't think there's much left for arrow to do with this kind of bug. I can open a new issue to track potentially removing jemalloc support altogether, although I don't know what the plan/appetite for that is."
+  },
+  {
+   "author": "participant7",
+   "created_at": "2025-09-10T16:53:47Z",
+   "body": "@reporter @participant5 I met similar problem on x86 platform. And it disappeared with `pyarrow==21.0.0`, too. My coredumps also indicated that jemalloc `background_thread_entry` segfaults on the return of `__tls_get_addr`. My reproduce sample was also with very complicated dependencies. But it was related with a rust cdylib and once removed it from the environment, it works well. \n\nAnd finally I found that a simple rust cdylib with TLS variables is enough to lead to crash: That is, user `loads our simple rust cdylib -> loads other libs -> loads libarrow.so.2000 -> segfault`. @participant5  I don't know if your reproduce sample is related with rust cdylib dependancies. \n\nI know the issue won't be tracked. But I'm just curious about that, since it takes me a lot of time to struggle with it. :)\n\nIn fact I already found this issue several days ago, but I did not notice that you also met it on x86... I thought this issue was all related to arm64 :("
+  },
+  {
+   "author": "participant5",
+   "created_at": "2025-09-10T17:08:53Z",
+   "body": "> And finally I found that a simple rust cdylib with TLS variables is enough to lead to crash: That is, user loads our simple rust cdylib -> loads other libs -> loads libarrow.so.2000 -> segfault. @participant5 I don't know if your reproduce sample is related with rust cdylib dependancies.\n\nMy reproduce did not use `cdylib`, as far as I'm aware. It was in our monorepo with loads of python dependencies. I don't know exactly what all the python libraries were doing, but definitely there were plenty that weren't just python. "
+  },
+  {
+   "author": "participant7",
+   "created_at": "2025-09-11T01:54:25Z",
+   "body": "@participant5 Fine, and I found that in my case, when pyarrow is lower than v21.0.0, environment variable `JE_ARROW_MALLOC_CONF=\"background_thread:false\"` helps. Hope this helps you if you still have some instances with older pyarrow."
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "apache/arrow",
+  "default_branch": "main",
+  "commit_sha": "c50c4fa60d1a8bf6e7a80bccda92da942f122cbf",
+  "as_of": "2024-10-08T22:28:46Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_apache_arrow_44342"
+}

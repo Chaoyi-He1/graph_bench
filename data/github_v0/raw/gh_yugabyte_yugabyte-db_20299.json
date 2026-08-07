@@ -1,0 +1,124 @@
+{
+ "repo": "yugabyte/yugabyte-db",
+ "number": 20299,
+ "url": "https://github.com/yugabyte/yugabyte-db/issues/20299",
+ "title": "[DocDb] Increase in NewOrder latencies in the TPCC runs, after changing ami from centos to almalinux8.8",
+ "state": "closed",
+ "labels": [
+  "kind/bug",
+  "area/docdb",
+  "priority/medium",
+  "kind/perf"
+ ],
+ "reporter": "reporter",
+ "created_at": "2023-12-13T14:16:46Z",
+ "closed_at": "2024-10-28T21:57:08Z",
+ "body": "Jira Link: [DB-9265](https://<redacted-host>/browse/DB-9265)\r\n### Description\n\nAfter changing YB image ami from centos to almaLinux8.8, the latencies for NewOrder transactions in TPCC runs, have increased by more than 2x. The select latencies have increased from 2.5ms to 10ms.\r\nComparison report for [TPCC 1k Restore](http://<redacted-host>/report/view/W3sibmFtZSI6ImNlbnRvc19hbWkiLCJ0ZXN0X2lkIjoiMzY5OTIwMiIsImlzQmFzZWxpbmUiOnRydWV9LHsibmFtZSI6ImFsbWFMaW51eDgiLCJ0ZXN0X2lkIjoiMzc3NjQwMiIsImlzQmFzZWxpbmUiOmZhbHNlfV0=) (centos Vs almaLinux8)\n\n### Issue Type\n\nkind/bug\n\n### Warning: Please confirm that this issue does not contain any sensitive information\n\n- [X] I confirm this issue does not contain any sensitive information.\n\n[DB-9265]: https://<redacted-host>/browse/DB-9265?atlOrigin=eyJpIjoiNWRkNTljNzYxNjVmNDY3MDlhMDU5Y2ZhYzA5YTRkZjUiLCJwIjoiZ2l0aHViLWNvbS1KU1cifQ",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2023-12-18T17:40:39Z",
+   "body": "<img width=\"1323\" alt=\"image\" src=\"https://github.com/yugabyte/yugabyte-db/assets/552936/6cd62537-fc51-455b-acda-672d9837e4c3\">\r\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-12-18T20:20:40Z",
+   "body": "Trying to repro this with 100 warehouses:\r\n\r\nCentOS 7: https://gist.githubusercontent.com/participant1/f425493c66d597bde58ba06ae07a2401/raw\r\nAlmaLinux 8: https://gist.githubusercontent.com/participant1/1b08bb48826a636d339da6907fc28482/raw\r\n\r\n(the TPCC workload is running on one of the cluster nodes in this case)"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-12-18T20:27:10Z",
+   "body": "The version tested was 2.21.0.0-b315.\r\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-12-18T22:47:09Z",
+   "body": "Another run of 1000 warehouses on AlmaLinux 8.\r\n\r\n<img width=\"1658\" alt=\"image\" src=\"https://github.com/yugabyte/yugabyte-db/assets/552936/4c7dbd08-fb73-416d-afab-f3ca466a7ca7\">\r\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-12-21T06:23:22Z",
+   "body": "@participant3 suggested comparing statement statistics from the two runs.\r\n\r\nCentOS 7:\r\nhttps://gist.githubusercontent.com/participant1/9a0438acdb791052e3b62de0b2caf515/raw/8544528e0d9725ff2cf714dac8b40fa809048de7/centos7_statements.json\r\n\r\nAlma 8: https://gist.githubusercontent.com/participant1/7b21883bccdc1e443bfa6b2ecf139fc4/raw/055af9dba74adaf5890a3059dcb27de35a032e35/alma8_statements.json\r\n\r\nWhen comparing these two files using the script below \r\n```\r\n#!/usr/bin/env python3\r\n\r\nimport json\r\n\r\nfrom copy import deepcopy\r\n\r\nimport pprint\r\n\r\n\r\ndef read_json(name):\r\n    with open(name) as f:\r\n        return json.load(f)\r\n\r\n\r\ndef get_statements_map(m):\r\n    assert len(m) == 1\r\n    m = m[0]\r\n    result = {}\r\n    for s in m['statements']:\r\n        s_copy = deepcopy(s)\r\n        q = s['query']\r\n        del s_copy['query']\r\n        if not q.startswith('BACKFILL'):\r\n            result[q] = s_copy\r\n    return result\r\n\r\n\r\na = read_json('centos7_statements.json')\r\nb = read_json('alma8_statements.json')\r\n\r\nam = get_statements_map(a)\r\nbm = get_statements_map(b)\r\n\r\nnum_only_in_one = 0\r\nnum_common = 0\r\nquery_order = []\r\nfor k in am.keys() | bm.keys():\r\n    if not k in am or not k in bm:\r\n        num_only_in_one += 1\r\n        continue\r\n    num_common += 1\r\n    a_data = am[k]\r\n    b_data = bm[k]\r\n    query_order.append((k, b_data['mean_time'] / a_data['mean_time']))\r\n\r\nquery_order.sort(key=lambda t: t[1], reverse=True)\r\n\r\nfor k, ratio in query_order:\r\n    a_data = am[k]\r\n    b_data = bm[k]\r\n\r\n    print(k)\r\n    print(\"Alma 8 / CentOS 7 latency ratio: %.3f\" % ratio)\r\n    print(a_data)\r\n    print(b_data)\r\n    print(\"\\n\")\r\n\r\nprint(\"Num queries only in one run: %d\" % num_only_in_one)\r\nprint(\"Num queries only in both runs: %d\" % num_common)\r\n```\r\nI get this output: https://gist.githubusercontent.com/participant1/145f9387494acd79fb20a4982a888015/raw\r\n\r\nThe statement that is slowed down the most in Alma 8 compared to CentOS 7 (over 14x) is\r\n\r\n```\r\nSELECT S_W_ID, S_I_ID, S_QUANTITY, S_DATA, S_YTD, S_REMOTE_CNT, S_DIST_01, S_DIST_02, S_DIST_03, S_DIST_04, S_DIST_05, S_DIST_06, S_DIST_07, S_DIST_08, S_DIST_09, S_DIST_10 FROM STOCK WHERE S_W_ID = $1 AND S_I_ID IN ($2)\r\n```\r\n\r\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-12-21T08:02:18Z",
+   "body": "Here is the output of `sudo sysctl -a | sort` on CentOS 7:\r\n\r\nhttps://gist.githubusercontent.com/participant1/d3e8f91e8870ee92b480ebc0f3a90f93/raw\r\n\r\nWill provide that for Alma 8 as well."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-12-28T17:14:31Z",
+   "body": "Test results from @participant4 including CentOS 7, AlmaLinux 8, AlmaLinux 9, and Ubuntu 22.04.\r\n<img width=\"2399\" alt=\"image\" src=\"https://github.com/yugabyte/yugabyte-db/assets/552936/4b8840f4-b242-4e56-9a29-46152d4cf309\">\r\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-01-12T19:54:04Z",
+   "body": "Here is the comparison between outputs of `sysctl -a` on CentOS 7 vs. Alma 8.\r\n\r\nCentOS 7 : https://gist.githubusercontent.com/participant1/3b6603cb1c6ddf9a6fa5b92325a63270/raw\r\nAlma 8 : https://gist.githubusercontent.com/participant1/fb785d7983e93ca4ccde17553c6fcb1b/raw\r\nDiff (regular) : https://gist.githubusercontent.com/participant1/e4ba57af75f78410ef5b8be12f72a575/raw\r\nDiff (side by side) : https://gist.githubusercontent.com/participant1/9926e401f189929e407b57c70a0e55eb/raw\r\n(command used to generate side-by-side diff: `diff -t -W 200 -y <(expand -t8 sysctl_a_centos7.txt) <(expand -t8  sysctl_a_alma8.txt)`)"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-01-12T23:35:35Z",
+   "body": "I also see that the two OSes use different clock sources.\r\n\r\ncat /sys/devices/system/clocksource/clocksource0/current_clocksource\r\n\r\nshows the following\r\n\r\nAlmaLinux 8: `tsc`\r\nCentOS 7: `kvm-clock`\r\n\r\nFor reference, the kernel versions are:\r\n\r\nAlmaLinux 8: 4.18.0-477.15.1.el8_8.x86_64\r\nCentOS 7: 3.10.0-693.5.2.el7.x86_64\r\n\r\nThe following page has some useful instructions on fine-tuning RHEL 8 for latency-sensitive applications.\r\n\r\nhttps://access.redhat.com/documentation/en-us/red_hat_enterprise_linux_for_real_time/8/html/optimizing_rhel_8_for_real_time_for_low_latency_operation/managing-system-clocks-to-satisfy-application-needs_optimizing-rhel8-for-real-time-for-low-latency-operation\r\n\r\nIn particular, the clock source discussion is mentioned there.\r\n\r\nAnother article on changing the clock source: https://repost.aws/knowledge-center/manage-ec2-linux-clock-source\r\n\r\nVirtualization type is hvm and instance type is c5d.2xlarge.\r\nAccording to https://<redacted-host>/AWSEC2/latest/UserGuide/instance-types.html, c5d instance types use the Nitro hypervisor. And according to https://repost.aws/knowledge-center/manage-ec2-linux-clock-source\r\n> The recommended clock source for the AWS Nitro Hypervisor is kvm-clock.\r\n\r\nThe following clock_timing program \r\n\r\n```\r\n#include <time.h>\r\nvoid main()\r\n{\r\n\tint rc;\r\n\tlong i;\r\n\tstruct timespec ts;\r\n\r\n        for(i=0; i<10000000; i++) {\r\n\t\trc = clock_gettime(CLOCK_MONOTONIC, &ts);\r\n\t}\r\n}\r\n```\r\n\r\nproduces the following results:\r\n\r\nAlmaLinux 8: \r\n```\r\n$ time ./clock_timing\r\n\r\nreal\t0m0.214s\r\nuser\t0m0.210s\r\nsys\t0m0.002s\r\n```\r\n\r\nCentOS 7:\r\n\r\n```\r\n$ time ./clock_timing\r\n\r\nreal\t0m0.550s\r\nuser\t0m0.549s\r\nsys\t0m0.001s\r\n```\r\nSo the clock is in fact faster to read on AlmaLinux 8 compared to CentOS 7."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-01-12T23:40:35Z",
+   "body": "After changing the clock source to kvm-clock on AlmaLinux 8 the time that clock_timing takes increases to 0.259 sec but still remains well below the time reporetd for CentOS 7.\r\n\r\n```\r\n$ cat /sys/devices/system/clocksource/clocksource0/current_clocksource\r\nkvm-clock\r\n$ time ./clock_timing\r\n\r\nreal\t0m0.259s\r\nuser\t0m0.256s\r\nsys\t0m0.001s\r\n```"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-01-12T23:47:20Z",
+   "body": "Somewhat related discussion of clock sources: #13593"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-01-13T00:06:47Z",
+   "body": "The resolution of coarse monotonic clock is 1ms on both OSes.\r\n```\r\n#include <time.h>\r\n#include <stdio.h>\r\n\r\nint main()\r\n{\r\n    int ret;\r\n    struct  timespec res;\r\n\r\n    ret = clock_getres(CLOCK_MONOTONIC, &res);\r\n    if (0 != ret)\r\n        return ret;\r\n    printf(\"CLOCK_MONOTONIC resolution is: %ld sec, %ld nsec\\n\", (long)res.tv_sec, (long)res.tv_nsec);\r\n\r\n    ret = clock_getres(CLOCK_MONOTONIC_COARSE, &res);\r\n    if (0 != ret)\r\n        return ret;\r\n    printf(\"CLOCK_MONOTONIC_COARSE resolution is: %ld sec, %ld nsec\\n\", (long)res.tv_sec, (long)res.tv_nsec);\r\n\r\n    return 0;\r\n}\r\n```\r\nOutput:\r\n```\r\nCLOCK_MONOTONIC resolution is: 0 sec, 1 nsec\r\nCLOCK_MONOTONIC_COARSE resolution is: 0 sec, 1000000 nsec\r\n```"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-01-16T22:32:06Z",
+   "body": "Here is a snapshot for various metrics of a 1000 WH TPCC test on AlmaLinux 8 (x86_64):\r\n\r\n<img width=\"2214\" alt=\"image\" src=\"https://github.com/yugabyte/yugabyte-db/assets/552936/6e9e56d0-1121-4e9d-867a-bd5d5fc265db\">\r\n\r\n<img width=\"2994\" alt=\"image\" src=\"https://github.com/yugabyte/yugabyte-db/assets/552936/70cf6426-d7cd-4aef-9ca3-fe8cf080f37b\">\r\n\r\n<img width=\"2340\" alt=\"image\" src=\"https://github.com/yugabyte/yugabyte-db/assets/552936/7306d8db-3525-4fa3-be2c-c3187453366c\">"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-01-17T23:00:19Z",
+   "body": "Here is a snapshot of similar stats for CentOS 7.\r\n<img width=\"1977\" alt=\"image\" src=\"https://github.com/yugabyte/yugabyte-db/assets/552936/a1a257ab-2e27-4e73-b549-4acf3c530e57\">\r\n\r\n<img width=\"2348\" alt=\"image\" src=\"https://github.com/yugabyte/yugabyte-db/assets/552936/f2489b22-a0ba-4be7-be65-207ac52ac6f6\">\r\n\r\n<img width=\"2340\" alt=\"image\" src=\"https://github.com/yugabyte/yugabyte-db/assets/552936/4878883d-16e6-4d89-806b-4e9274fd3997\">\r\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-01-17T23:38:26Z",
+   "body": "Some details on the environment of the two universes that generated the metrics above. Both universes are 3-node AWS c5d.2xlarge, 8 cores, but somehow they get different CPUs and different amounts of RAM (I think this probably does not matter).\r\n\r\nCentOS 7 universe: CPU is `Intel(R) Xeon(R) Platinum 8275CL CPU @ 3.00GHz`, 15792100 KiB RAM\r\n\r\nAlmaLinux 8 universe: CPU is `Intel(R) Xeon(R) Platinum 8124M CPU @ 3.00GHz`, 15810720 KiB RAM\r\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-01-19T20:54:26Z",
+   "body": "@participant5 noticed that spinlock time is much higher in AlmaLinux 8 compared to CentOS 7.\r\n\r\nHere are stack traces of spinlock contention, sorted by decreasing total time, in both Alma 8 and CentOS 7:\r\nAlma 8: https://gist.githubusercontent.com/participant1/bbad608b3437aff4eefb655e949b08ac/raw\r\nTop stack:\r\n```\r\n7008416512\t1891 @ 00005626f6b9dd16 00005626f66d382f 00005626f66f07f4 00005626f66b9951 00005626f7c5b1b9 00005626f7c576e4 00007f38a15601ca 00007f38a17b1e73\r\n    @     0x5626f6b9dd15  base::SpinLock::SlowUnlock()\r\n    @     0x5626f66d382e  yb::consensus::PeerManager::SignalRequest()\r\n    @     0x5626f66f07f3  yb::consensus::RaftConsensus::UpdateMajorityReplicated()\r\n    @     0x5626f66b9950  yb::consensus::PeerMessageQueue::NotifyObserversOfMajorityReplOpChangeTask()\r\n    @     0x5626f7c5b1b8  yb::ThreadPool::DispatchThread()\r\n    @     0x5626f7c576e3  yb::Thread::SuperviseThread()\r\n    @     0x7f38a15601c9  start_thread\r\n    @     0x7f38a17b1e72  __GI___clone\r\n```\r\n\r\nCentOS 7: https://gist.githubusercontent.com/participant1/b059b1642f8898d82a7359779477166d/raw\r\nTop stack:\r\n```\r\n266574976\t22056 @ 000055a3b4881d16 000055a3b4395dc2 000055a3b438914a 000055a3b593f1b9 000055a3b593b6e4 00007faa3f088e25 00007faa3f39534d\r\n    @     0x55a3b4881d15  base::SpinLock::SlowUnlock()\r\n    @     0x55a3b4395dc1  yb::consensus::PeerMessageQueue::RequestForPeer()\r\n    @     0x55a3b4389149  yb::consensus::Peer::SendNextRequest()\r\n    @     0x55a3b593f1b8  yb::ThreadPool::DispatchThread()\r\n    @     0x55a3b593b6e3  yb::Thread::SuperviseThread()\r\n    @     0x7faa3f088e24  (/usr/lib64/libpthread-2.17.so;65a9afb8 (deleted)+0x7e24)\r\n    @     0x7faa3f39534c  (/usr/lib64/libc-2.17.so;65a9afb8 (deleted)+0xf834c)\r\n```"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-03-08T09:34:58Z",
+   "body": "Some details related to investigating the NewOrder latency increase in 2.20, where we never switched to non-Linuxbrew builds, but where the latencies increased nevertheless with the switch from CentOS 7 to AlmaLinux 8.\r\n\r\n<img width=\"1320\" alt=\"image\" src=\"https://github.com/yugabyte/yugabyte-db/assets/552936/65a2fdd2-ec2e-49f4-9d1b-94f94d97afe1\">\r\n\r\nTo evalute the effect of backporting 86ca54435a55dd3373700d6adbf1d5eac4981f0d ( [#20912] DocDB: Use rpc::Strand instead of thread pool token in PeerMessageQueue ), we executed the 1000 warehouse TPCC experiment 7 times and obtained the following latencies:\r\n\r\n68.46\r\n75.5\r\n71.56\r\n69.72\r\n69.16\r\n67.46\r\n70.36\r\n\r\nThe latencies shown in the right-hand side of the graph above (after the regression) are listed here: https://gist.githubusercontent.com/participant1/c7e044d19208ce5608f3163112b25005/raw\r\n(captured across different commits).\r\n\r\nComparing the latencies with the fix with the baseline using a 2-sided t-test, assuming the variance of the second sample is the same as the first (which is a stricter test in this case compared to assuming the variances are different -- the variance of the post-test sample is really low), we obtained a p-value of 0.02150551563, indicating that this is indeed a statistically significant improvement to the latency (77.64ms to 70.32ms). The t-test was performed using the T.TEST function in Google Spreadsheets with parameters (2, 2) -- 2 tails, the other 2 for assuming equal variances.\r\n\r\n"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-10-23T23:16:45Z",
+   "body": "@participant1 , can we close this?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-10-28T21:57:08Z",
+   "body": "Yes, closing this. Any further performance improvements can be done as separate projects."
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "yugabyte/yugabyte-db",
+  "default_branch": "master",
+  "commit_sha": "ab518355610fb4c95c88de7bceb0e7c5ae6a4bf5",
+  "as_of": "2023-12-13T14:16:46Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_yugabyte_yugabyte-db_20299"
+}

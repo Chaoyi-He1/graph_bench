@@ -1,0 +1,101 @@
+{
+ "repo": "dask/dask",
+ "number": 11713,
+ "url": "https://github.com/dask/dask/issues/11713",
+ "title": "`rechunk()` sometimes lead to arrays with non-regular chunks (`dask==2025.1.0`)",
+ "state": "closed",
+ "labels": [
+  "needs triage"
+ ],
+ "reporter": "reporter",
+ "created_at": "2025-02-04T17:53:53Z",
+ "closed_at": "2025-02-11T15:57:48Z",
+ "body": "**Describe the issue**:\n\nRechunking with `'auto'` sometimes lead to arrays whose chunks are not regular, making `dask.array.to_zarr()` fail (the validation `_check_regular_chunks()` from `dask.array.core` fails. This is shown in the example below. Passing explicit chunk dimensions instead of `'auto'` fixes the problem. Bug reproducible with `dask==2025.1.0`.\n\nRelated to: https://github.com/dask/dask/issues/11544. The bug was originally reported from @participant3 in the context of the [spatialdata package](https://github.com/scverse/spatialdata/issues/821). I kept the dimensionalities of the original bug report in the code example below.\n\n**Minimal Complete Verifiable Example**:\n```python\nimport dask.array as da\nfrom dask.array.core import _check_regular_chunks\nimport pytest\n\n\n# Function to create a lazy zero-filled dask array\ndef create_lazy_zeros(shape, chunks, dtype='uint16'):\n    return da.zeros(shape, chunks=chunks, dtype=dtype)\n\n\n# Create the mock array with lazy zeros\ndef create_mock_array():\n    # Define the shape and chunks for scale0\n    shape = (1, 25778, 35416)\n    chunks = (1, 4096, 4096)\n\n    # Create a lazy zero-filled dask array\n    data = create_lazy_zeros(shape, chunks)\n\n    return data\n\n\n# Create the mock array\nmock_array = create_mock_array()\n\n# Slice the array\nsliced_array = mock_array[:, :13000, 15000:35000]\nprint('Chunks before rechunking')\nprint(sliced_array.chunks)\n\n# Rechunk the array with 'auto'\nsliced_array_auto = sliced_array.rechunk('auto')\nprint('Chunks after rechunking with auto')\nprint(sliced_array_auto.chunks)\n\n# Check for regular chunks\nwith pytest.raises(AssertionError):\n    assert _check_regular_chunks(sliced_array_auto.chunks)\n\n# Rechunk the array with a fixed chunk size\nFIXED_CHUNK = 4096\nsliced_array_fixed = sliced_array.rechunk((1, FIXED_CHUNK, FIXED_CHUNK))\nprint(f'Chunks after rechunking with a fixed chunk size (FIXED_CHUNK)')\nprint(sliced_array_fixed.chunks)\n\n# Assert that chunks are regular\nassert _check_regular_chunks(sliced_array_fixed.chunks)\n```\n\n**Anything else we need to know?**:\n\n**Environment**:\n\n- Dask version: 2025.1.0\n- Python version: 3.11.0\n- Operating System: macOS 14.6.1\n- Install method (conda, pip, source): conda (`conda-forge`)\n",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2025-02-05T07:58:51Z",
+   "body": "hi @reporter i would like to work on this issue , please can you assign it to me.\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-02-06T18:22:28Z",
+   "body": "Hi @participant1, I am not a maintainer of `dask` so I do not have triaging rights. We need to wait for a maintainer. Thanks for the interest meanwhile! 😊 "
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-02-07T08:44:31Z",
+   "body": "@reporter thank you bro, for this information.....\n"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-02-10T14:27:25Z",
+   "body": "Deviating from regular chunks was an intentional decision to improve efficiency of computations. So that part works as expected. I agree though that the default experience when writing to zarr should be better and just work through injecting a rechunk to get the required chunking"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-02-10T14:32:39Z",
+   "body": "Thank you for your comment. What I find confusing is that calling `sliced_array.rechunk('auto')` seems to have no effects. I think it could be made cleared that the new default behavior for `'auto'` is to keep the chunks irregular."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-02-11T13:45:32Z",
+   "body": "Do you have a reproducer that is actually hitting this error?\n\n```\n        if not _check_regular_chunks(arr.chunks):\n            # We almost certainly get here because auto chunking has been used\n            # on irregular chunks. The max will then be smaller than auto, so using\n            # max is a safe choice\n            arr = arr.rechunk(tuple(map(max, arr.chunks)))\n```\n\nthis should protect against the problem you are seeing"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-02-11T13:59:29Z",
+   "body": "Yes, I implemented a workaround here https://github.com/scverse/spatialdata/pull/861/files, I could use the code you suggest instead. In this way I don't have to hardcode (or have the user decide): `CHUNK_SIZE = 1024`."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-02-11T14:01:41Z",
+   "body": "I tracked this task here https://github.com/scverse/spatialdata/issues/872 (not urgent). Meanwhile if you think your approach is enough, I think this issue can be closed. Thanks again!"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-02-11T14:01:57Z",
+   "body": "Yeah I saw this, but do you have a unit test or something similar that explains how you got to this exception? I'd like to fix this in Dask itself so that you don't have to handle this in your library "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-02-11T14:10:51Z",
+   "body": "Ah got it. The real code triggering this was case basically the one that I posted as first post, with the exception of replacing `_check_regular_chunks(sliced_array_auto.chunks)` with `sliced_array_auto.to_zarr()`.\n\nI'll make a snippet now, simplifying the code above."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-02-11T14:13:48Z",
+   "body": "Here is it:\n\n```python\nimport dask.array as da\nfrom tempfile import TemporaryDirectory\n\n\nshape = (1, 25778, 35416)\nchunks = (1, 4096, 4096)\nmock_array = da.zeros(shape, chunks=chunks, dtype=\"uint16\")\nsliced_array = mock_array[:, :13000, 15000:35000]\nsliced_array_auto = sliced_array.rechunk(\"auto\")\n\nwith TemporaryDirectory() as tmpdir:\n    sliced_array_auto.to_zarr(tmpdir)\n```"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-02-11T14:37:34Z",
+   "body": "This completes for me without raising because the rechunk we added in Dask hits and smoothes out the chunks. Does this raise for you? If yes, I'd be curious about the traceback"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-02-11T14:46:15Z",
+   "body": "Any chance you are on 2024.11.2? I think we had one release without this automatic rechunking functionality."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-02-11T15:18:39Z",
+   "body": "Good point! My first code snipped (the one using \n```python\nwith pytest.raises(AssertionError):\n    assert _check_regular_chunks(sliced_array_auto.chunks)\n```\nfails with `2025.1.0`. Instead, the one using `to_zarr()` works on `2025.1.0`. I could not try the real world example on `2025.1.0` because `spatialdata` does not support the latest `dask` (due to the `.attrs` missing).\n\nSo it seems that no further changes on the dask size for this bug are needed. Wdyt?"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-02-11T15:57:48Z",
+   "body": "Yes, correct. I think the bug has been fixed in 2024.12.0. I am closing this one"
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "dask/dask",
+  "default_branch": "main",
+  "commit_sha": "0ca33164a0ff8cf8e26eb3cc3134d66baab5366f",
+  "as_of": "2025-02-04T17:53:53Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_dask_dask_11713"
+}

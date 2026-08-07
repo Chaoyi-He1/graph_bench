@@ -1,0 +1,93 @@
+{
+ "repo": "dask/dask",
+ "number": 10226,
+ "url": "https://github.com/dask/dask/issues/10226",
+ "title": "Use heuristic to automatically decide between P2P- and task-based rechunking",
+ "state": "closed",
+ "labels": [
+  "array",
+  "needs attention",
+  "enhancement"
+ ],
+ "reporter": "reporter",
+ "created_at": "2023-04-26T14:11:42Z",
+ "closed_at": "2023-06-22T11:05:29Z",
+ "body": "**Problem**\r\nChoosing the correct rechunking algorithm significantly impacts the graph shape and the workload's performance. Whether a P2P- or task-based rechunk depends on the characteristic of the rechunk and how many input chunks contribute to each output chunk. For example, switching between rows and columns in a 2-dimensional array looks very different from combining neighboring chunks.\r\n\r\n**Solution**\r\n`dask.array` should automatically choose between P2P- and task-based shuffling without making grave mistakes. Several heuristics could be used here, for example:\r\n* Switching to P2P rechunking if we would use a multi-stage task-based rechunk instead.\r\n* Decide based on the number of edges between input and output chunks.",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2023-04-26T14:14:54Z",
+   "body": "> Switching to P2P rechunking if we would use a multi-stage task-based rechunk instead.\r\n\r\nMy gut reaction is to like this one.  Do we have benchmarks for rechunking that we can use to test these easily?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-04-26T14:19:23Z",
+   "body": "I think we mainly test the all-to-all approach in `coiled/benchmarks` at the moment because that is the worst-case for task-based rechunking. We should change that."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-04-26T14:56:35Z",
+   "body": "Cool.  My hope is that that's easy/cheap to do.\n\nOn Wed, Apr 26, 2023 at 7:19 AM Hendrik Makait ***@***.***>\nwrote:\n\n> I think we mainly test the all-to-all approach in coiled/benchmarks at\n> the moment because that is the worst-case for task-based rechunking. We\n> should change that.\n>\n> —\n> Reply to this email directly, view it on GitHub\n> <https://github.com/dask/dask/issues/10226#issuecomment-1523504200>, or\n> unsubscribe\n> <https://github.com/notifications/unsubscribe-auth/AACKZTAJEV6YURFIU5SY3Y3XDEVHNANCNFSM6AAAAAAXMQB7F4>\n> .\n> You are receiving this because you commented.Message ID:\n> ***@***.***>\n>\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-06-22T11:03:02Z",
+   "body": "When testing the performance of #10360, I realized how much the underlying hardware impacts P2P performance. On Coiled clusters running on `m6i.large` machines, it depends on the configured throughout of the attached `gp3` EBS whether or not P2P improves upon task-based rechunking in various scenarios.\r\n\r\nFor example, with \r\n```\r\ndef test_rechunk_swap_axes(small_client):\r\n    rng = da.random.default_rng()\r\n    x = rng.random((100_000, 100_000), chunks=(100_000, 100))\r\n    x.rechunk((100, 100_000)).sum().compute()  # ~76 MiB chunks\r\n```\r\nP2P and task-based rechunking achieve roughly the same runtime on a cluster of 10 machines with  the AWS default throughput of 125 MiB/s (https://github.com/coiled/benchmarks/actions/runs/5337623158). At 200 MiB/s, P2P's performance increases proportionally and it outperforms task-based rechunking by 25%.\r\n\r\nAs a result of the coupling between the underlying hardware and performance, I suggest not adding any heuristics. For now, it is best to let the user choose the appropriate rechunking algorithm explicitly. Instead, we should focus on optional/partial disk usage."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-06-22T12:32:38Z",
+   "body": "> As a result of the coupling between the underlying hardware and performance, I suggest not adding any heuristics. For now, it is best to let the user choose the appropriate rechunking algorithm explicitly. Instead, we should focus on optional/partial disk usage.\r\n\r\nMy guess is that there are some cases where the choice is very obvious, for example if the new chunks are highly aligned with the old chunks.  \r\n\r\nThe fact that there exist some ambiguous cases (or maybe even many ambiguous cases) shouldn't scare us away from this choice entirely I think.  90% of users will never know that they need to make this choice.  We'll be deciding something for them, even if we don't want to."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-06-22T14:18:10Z",
+   "body": "> My guess is that there are some cases where the choice is very obvious, for example if the new chunks are highly aligned with the old chunks.\r\n\r\nNote that the example above is the worst case for task-based rechunking as it requires all-to-all movement of the data. In https://github.com/coiled/benchmarks/actions/runs/5346187270, I have run the same test at different data sizes (actual scale is ${factor}^2$). We see that P2P performs strictly worse than task-based rechunking (`baseline`). (Take the test results with a grain of salt, at 1x P2P currently outperforms tasks in our benchmark suite.)\r\n\r\nSo from what I can tell, even in the case that would be best suited for P2P, it is limited by disk throughput and not a clear winner over tasks.\r\n\r\nSide note: I would've expected P2P to perform better with a dataset of ~4x the memory limit. This is something to look into in the future when dealing with P2P rechunking performance. Even then, task-based rechunking would still take the lead for any workload where it writes less data to disk."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-06-22T14:45:57Z",
+   "body": "> So from what I can tell, even in the case that would be best suited for P2P, it is limited by disk throughput and not a clear winner over tasks.\r\n\r\nIt wouldn't win in terms of performance, but probably would win in terms of memory usage though, correct?  I suspect that users would be comfortable with a 2x slowdown if they knew that memory issues would never occur."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-06-22T15:02:36Z",
+   "body": "cc @participant2 who I suspect has some thoughts on this. \r\n\r\n> It wouldn't win in terms of performance, but probably would win in terms of memory usage though, correct? I suspect that users would be comfortable with a 2x slowdown if they knew that memory issues would never occur.\r\n\r\nWhat memory issues are you referring to exactly? Spilling might feel like an annoyance, but it's more or less a reactive version of P2P's behavior. Its effect would be seen in the runtime measurements. Avoiding OOMkilled workers is a convincing argument, but I haven't seen those in the wild when running any rechunking workload."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-06-22T16:04:59Z",
+   "body": "We got much more robust to OOM situations over the last couple of months. I also haven't seen those when running shuffles recently"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-06-23T11:54:22Z",
+   "body": "I've stressed task-based rechunking a bit in order to create OOM situations but haven't been able to produce a situation that wouldn't also kill P2P rechunking. From what I saw, spilling and worker pausing are great ways of preventing worker death."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-06-23T11:58:34Z",
+   "body": "The feedback we've gotten about task-based rechunking is that ...\r\n\r\n1.  It sometimes has too many tasks\r\n2. It sometimes runs out of memory and grinds to a halt\r\n\r\nThis led to projects like rechunker.  This is also more-or-less the situation in dataframe shuffling.  My sense is that P2P was solving these problems.  \r\n\r\nWhat I'm hearing now is \"task-based is as good as P2P\" which makes me mildly concerned, because people were complaining about task-based earlier.  "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-06-23T12:27:35Z",
+   "body": "Both tasks and P2P OOM'ed when I used chunks of 1.5 GiB on workers with 8 GiB total memory, so failure was expected (2 threads copying the data once already results in 6 GiB memory usage).\r\n\r\nThe issue with the # of tasks should still be around. However, I think we should use a different heuristic in that scenario. If we wanted to prevent that, we should focus on the total graph size not so much on its shape. \r\n\r\nInterestingly, my latest benchmark showed that there's something off performance-wise with P2P rechunking for very large data and it's much slower than task-based rechunking. If we are able to fix this, I would expect P2P to be better than task-based rechunking in situations where we have data that largely exceeds memory size because we skip the intermediate steps of task-based rechunking and _should_ therefore require less disk I/O in total."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-06-23T12:30:23Z",
+   "body": "Also keep in mind that we have not focused on performance so far. Apart from making disk I/O optional, I suspect that we will find other opportunities for improvement that will change the performance characteristics and make P2P the preferred choice."
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "dask/dask",
+  "default_branch": "main",
+  "commit_sha": "e51cd327882d55ab918b27cbbddbcbd8f27d8f71",
+  "as_of": "2023-04-26T14:11:42Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_dask_dask_10226"
+}

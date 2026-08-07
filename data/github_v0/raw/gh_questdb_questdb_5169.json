@@ -1,0 +1,120 @@
+{
+ "repo": "questdb/questdb",
+ "number": 5169,
+ "url": "https://github.com/questdb/questdb/issues/5169",
+ "title": "Could not mmap and subsequent crash on simple query, more frequently with CTEs",
+ "state": "closed",
+ "labels": [],
+ "reporter": "reporter",
+ "created_at": "2024-11-15T21:07:29Z",
+ "closed_at": "2025-01-21T21:23:28Z",
+ "body": "### To reproduce\n\n1. Run a query:\n```sql\nSELECT\n  SUM(column_a) AS alias_a,\n  SUM(column_b) AS alias_b,\n  SUM(column_b):<nick> / SUM(column_a) AS alias_c,\n  SUM(column_b):<nick> / 30.2 AS alias_d,\n  1 - (\n    SUM(\n      CASE\n        WHEN column_c <= 29 THEN 1\n        ELSE 0\n      END\n    ):<nick> / DATEDIFF('h', '2024-08-01T07:00:00.000Z', '2024-08-15T07:00:00.000Z')\n  ) AS alias_e,\n  SUM(\n    CASE\n      WHEN column_c <= 29 THEN 1\n      ELSE 0\n    END\n  ) AS alias_f\nFROM table_name\nWHERE\n  timestamp >= '2024-08-01T07:00:00.000Z'\n  AND timestamp < '2024-08-15T07:00:00.000Z'\n  AND type = 'SITE';\n;\n```\nWith the above query, QuestDB will crash some of the time (I had to revise the below query with CTEs because QuestDB seemed to never be able to handle a query with multiple CTEs). However, with the below query with CTEs, we get a guaranteed crash:\n\n```sql\nWITH daily_energy AS (\n  SELECT \n    timestamp,\n    SUM(columnA) AS columnA,\n    SUM(columnB) AS columnB,\n    SUM(columnB):<nick> / 303261235.2 AS columnC\n  FROM table__name_ems__hourly\n  WHERE\n    id = 'Site'\n    AND category = 'BASE'\n  SAMPLE BY 1d \n    FROM dateadd('y', -1, '2024-08-31T23:59:59.000000') \n    TO '2024-08-31T23:59:59.000000' \n    FILL(NULL)\n  ALIGN TO CALENDAR TIME ZONE 'America/Los_Angeles'\n  ORDER BY timestamp ASC\n),\ndaily_availability AS (\n  SELECT \n    timestamp,\n    COALESCE(COUNT(id), 0) AS columnD\n  FROM table__name_ems__hourly\n  WHERE\n    id = 'Site'\n    AND category = 'BASE'\n    AND columnE <= 29\n  SAMPLE BY 1d \n    FROM dateadd('y', -1, '2024-08-31T23:59:59.000000') \n    TO '2024-08-31T23:59:59.000000' \n    FILL(NULL)\n  ALIGN TO CALENDAR TIME ZONE 'America/Los_Angeles'\n  ORDER BY timestamp ASC\n),\ndate_range_energy AS (\n  SELECT\n    SUM(columnA) AS range__columnA,\n    SUM(columnB) AS range__columnB,\n    SUM(columnB):<nick> / 303261235.2 AS range__columnC,\n    SUM(columnB) / SUM(columnA):<nick> AS range__columnD\n  FROM daily_energy\n  WHERE\n    timestamp BETWEEN '2024-08-21T00:00:00.000000' AND '2024-08-25T23:59:59.000000'\n),\ndate_range_availability AS (\n  SELECT\n    SUM(columnD) AS range__columnE,\n    1 - (SUM(columnD) / datediff('h', '2024-08-21T00:00:00.000000', '2024-08-26T00:00:00.000000'):<nick>) AS range__columnF\n  FROM daily_availability\n  WHERE\n    timestamp BETWEEN '2024-08-21T00:00:00.000000' AND '2024-08-25T23:59:59.000000'\n),\nmtd_energy AS (\n  SELECT\n    SUM(columnA) AS mtd__columnA,\n    SUM(columnB) AS mtd__columnB,\n    SUM(columnB):<nick> / 303261235.2 AS mtd__columnC,\n    SUM(columnB) / SUM(columnA):<nick> AS mtd__columnD\n  FROM daily_energy\n  WHERE\n    timestamp BETWEEN dateadd('M', -1, '2024-08-31T23:59:59.000000') AND '2024-08-31T23:59:59.000000'\n),\nmtd_availability AS (\n  SELECT\n    SUM(columnD) AS mtd__columnE,\n    1 - (SUM(columnD) / datediff('h', dateadd('M', -1, '2024-08-31T23:59:59.000000'), '2024-08-31T23:59:59.000000'):<nick>) AS mtd__columnF\n  FROM daily_availability\n  WHERE\n    timestamp BETWEEN dateadd('M', -1, '2024-08-31T23:59:59.000000') AND '2024-08-31T23:59:59.000000'\n),\nytd_energy AS (\n  SELECT\n    SUM(columnA) AS ytd__columnA,\n    SUM(columnB) AS ytd__columnB,\n    SUM(columnB):<nick> / 303261235.2 AS ytd__columnC,\n    SUM(columnB) / SUM(columnA):<nick> AS ytd__columnD\n  FROM daily_energy\n  WHERE\n    timestamp BETWEEN date_trunc('year', '2024-08-31T23:59:59.000000') AND '2024-08-31T23:59:59.000000'\n),\nytd_availability AS (\n  SELECT\n    SUM(columnD) AS ytd__columnE,\n    1 - (SUM(columnD) / datediff('h', date_trunc('year', '2024-08-31T23:59:59.000000'), '2024-08-31T23:59:59.000000'):<nick>) AS ytd__columnF\n  FROM daily_availability\n  WHERE\n    timestamp BETWEEN date_trunc('year', '2024-08-31T23:59:59.000000') AND '2024-08-31T23:59:59.000000'\n),\nytd_trend_365d AS (\n  SELECT \n    to_timezone(timestamp, 'America/Los_Angeles') AS timestamp,\n    SUM(columnA) OVER (\n      ORDER BY timestamp ASC\n      RANGE BETWEEN '365' DAY PRECEDING AND CURRENT ROW\n    ) AS ytd_sum__columnA,\n    SUM(columnB) OVER (\n      ORDER BY timestamp ASC\n      RANGE BETWEEN '365' DAY PRECEDING AND CURRENT ROW\n    ) AS ytd_sum__columnB,\n    AVG(columnA) OVER (\n      ORDER BY timestamp ASC\n      RANGE BETWEEN '365' DAY PRECEDING AND CURRENT ROW\n    ) AS ytd_avg__columnA,\n    AVG(columnB) OVER (\n      ORDER BY timestamp ASC\n      RANGE BETWEEN '365' DAY PRECEDING AND CURRENT ROW\n    ) AS ytd_avg__columnB,\n    AVG(columnC) OVER (\n      ORDER BY timestamp ASC\n      RANGE BETWEEN '365' DAY PRECEDING AND CURRENT ROW\n    ) AS ytd_avg__columnC\n  FROM daily_energy\n  ORDER BY timestamp DESC\n  LIMIT 1\n),\nytd_trend_15d AS (\n  SELECT\n    to_timezone(timestamp, 'America/Los_Angeles') AS timestamp,\n    SUM(columnA) OVER (\n      ORDER BY timestamp ASC\n      RANGE BETWEEN '15' DAY PRECEDING AND CURRENT ROW\n    ) AS ms_15d__columnA,\n    SUM(columnB) OVER (\n      ORDER BY timestamp ASC\n      RANGE BETWEEN '15' DAY PRECEDING AND CURRENT ROW\n    ) AS ms_15d__columnB,\n    AVG(columnA) OVER (\n      ORDER BY timestamp ASC\n      RANGE BETWEEN '15' DAY PRECEDING AND CURRENT ROW\n    ) AS ma_15d__columnA,\n    AVG(columnB) OVER (\n      ORDER BY timestamp ASC\n      RANGE BETWEEN '15' DAY PRECEDING AND CURRENT ROW\n    ) AS ma_15d__columnB,\n    AVG(columnC) OVER (\n      ORDER BY timestamp ASC\n      RANGE BETWEEN '15' DAY PRECEDING AND CURRENT ROW\n    ) AS ma_15d__columnC\n  FROM daily_energy\n  ORDER BY timestamp DESC\n  LIMIT 1\n)\n\nSELECT\n  ytd_trend_365d.timestamp,\n  date_range_energy.range__columnA,\n  mtd_energy.mtd__columnA,\n  ytd_energy.ytd__columnA\nFROM ytd_trend_365d\nCROSS JOIN ytd_energy\nCROSS JOIN date_range_energy\nCROSS JOIN mtd_energy\n;\n```\n\n2. Observe error `could not mmap  [size=1355328, offset=0, fd=4501795742419913, memUsed=1387729134912, fileLen=1355776]`, followed by the next query causing QuestDB to crash and restart.\n\n### QuestDB version:\n\n8.1.4\n\n### OS, in case of Docker specify Docker and the Host OS:\n\nDebian GNU/Linux 12 (bookworm)\nDefault helm chart (https://artifacthub.io/packages/helm/questdb/questdb)\n\n### File System, in case of Docker specify Host File System:\n\nAmazon EBS disk gp3 \n\n### Full Name:\n\nPeter Klingelhofer\n\n### Affiliation:\n\nEnergy Vault\n\n### Have you followed Linux, MacOs kernel configuration steps to increase Maximum open files and Maximum virtual memory areas limit?\n\n- [X] Yes, I have\n\n### Additional context\n\nAll columns being queried are DOUBLE in the schema. \n\nWe also occasionally see this error as well:\n`Error: could not open read-only [file=/var/lib/questdb/db/table__name_ems__hourly~8/2024-10-18.40666/hvac_temperature_status__mixed_air__c__mean.d.393]`\n`Error: [24]: could not open read-write with clean allocation [file=/var/lib/questdb/db/table__name_ems__hourly~8/_txn_scoreboard] undefined`\n\n\n\n```\n2024-11-18T15:31:16.515701245Z # A fatal error has been detected by the Java Runtime Environment:\n2024-11-18T15:31:16.515706286Z #\n2024-11-18T15:31:16.515709013Z #  SIGSEGV (0xb) at pc=0x00007f874fa617e2, pid=1, tid=95\n2024-11-18T15:31:16.515711397Z #\n# JRE version: OpenJDK Runtime Environment Corretto-17.0.11.9.1 (17.0.11+9) (build 17.0.11+9-LTS)\n2024-11-18T15:31:16.515718794Z # Java VM: OpenJDK 64-Bit Server VM Corretto-17.0.11.9.1 (17.0.11+9-LTS, mixed mode, tiered, compressed oops, compressed class ptrs, parallel gc, linux-amd64)\n2024-11-18T15:31:16.515721704Z # Problematic frame:\n2024-11-18T15:31:16.515726190Z # J 8690 c2 io.questdb.cairo.wal.WalTxnDetails.loadTransactionDetailsV1(Lio/questdb/std/str/Path;Lio/questdb/cairo/wal/seq/TransactionLogCursor;IJ)V io.questdb@8.1.4 (428 bytes) @ 0x00007f874fa617e2 [0x00007f874fa61000+0x00000000000007e2]\n2024-11-18T15:31:16.515729743Z #\n2024-11-18T15:31:16.515732511Z # Core dump will be written. Default location: /var/lib/questdb/core.1\n2024-11-18T15:31:16.515735431Z #\n# An error report file with more information is saved as:\n2024-11-18T15:31:16.515752778Z # /var/lib/questdb/db/hs_err_pid+1.log\n```\n\nFull crash log:\n[crash+28.log.zip](https://github.com/user-attachments/files/17803241/crash%2B28.log.zip)\n\nTable DDL:\n[tableDDL.csv.zip](https://github.com/user-attachments/files/17803304/tableDDL.csv.zip)\n\n",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2024-11-15T22:20:31Z",
+   "body": "hi Peter, thanks for the bug report - could you attach the crash file please? it is found in questdb root directory. Table DDL would also be great.\r\n\r\nIf you can please include full error log line, it includes OS errno, which is missing from your report."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-11-18T16:09:38Z",
+   "body": "Hi @participant1, thank you for your response. There is no OS errno in the error that is outputted. This is always the error I see, with no errno: `could not mmap  [size=1361328, offset=0, fd=4501469481859109, memUsed=1426245430260, fileLen=1363968]`:\r\n\r\nQuestDB will error, and then the next query will crash it completely, seems like Java heap is running out of memory? I've attached the fatal error and log file above in the issue description. Thank you.\r\n\r\nEDIT:\r\nWe do occasionally see these errors too:\r\n```\r\nError: could not open read-only [file=/var/lib/questdb/db/table__name_ems__hourly~8/2024-10-18.40666/hvac_temperature_status__mixed_air__c__mean.d.393]\r\n```"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-11-18T17:28:35Z",
+   "body": "hi Peter, thank you for the logs. We will try to repro asap. From the crash log you attached it looks like the crash originated in the \"writer\" process. It is possible that read and write are somehow connected, although not likely. I will keep you updated. Are you on slack by any chance?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-11-18T19:26:10Z",
+   "body": "Thanks so much. And yes, I'm on QuestDB's Slack, I just sent you a direct message."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-11-19T16:20:56Z",
+   "body": "It seems that doing multiple queries at once via `Promise.all` in TypeScript causes this, when we loop over each query and linearly await the response we don't see the above behavior as often. This was surprising because it seems that typically QuestDB supports high concurrency quite well."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-11-26T20:55:31Z",
+   "body": "I just attempted CTEs without the `Promise.all` (so running multiple queries in serial, waiting on the previous one to complete), and I'm still seeing `could not open read-only [file=/var/lib/questdb/db/table__name__hourly~8/2024-08-07.35302/aux_current_status__ac_current__a__ma.d.206` errors, so it seems that the `Promise.all` / parallel concurrency vs in serial wasn't the direct cause of the problem after all."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-01-16T17:51:33Z",
+   "body": "Hey, we had this happen again just now. Java out of memory. We're still using QuestDB 8.1.4. Any ideas as to how we can address this? I suspect its the same issue from before. We're giving our QuestDB pod 63G of memory, presumably Java isn't using all of it or there is a memory leak somewhere? (saw this issue: https://<redacted-host>/t/trouble-with-java-heap-fine-tuning/111/11)\n\nEDIT: Noticed JVM flags were added recently, so we're moving forward with adding a -Xmx##g flag with our deployments\n\n```sh\n#\n# There is insufficient memory for the Java Runtime Environment to continue.\n# Native memory allocation (mmap) failed to map 16384 bytes. Error detail: committing reserved memory.\n# Possible reasons:\n#   The system is out of physical RAM or swap space\n#   This process is running with CompressedOops enabled, and the Java Heap may be blocking the growth of the native heap\n# Possible solutions:\n#   Reduce memory load on the system\n#   Increase physical memory or swap space\n#   Check if swap backing store is full\n#   Decrease Java heap size (-Xmx/-Xms)\n#   Decrease number of Java threads\n#   Decrease Java thread stack sizes (-Xss)\n#   Set larger code cache with -XX:ReservedCodeCacheSize=\n#   JVM is running with Zero Based Compressed Oops mode in which the Java heap is\n#     placed in the first 32GB address space. The Java Heap base address is the\n#     maximum limit for the native heap growth. Please use -XX:HeapBaseMinAddress\n#     to set the Java Heap base and to place the Java Heap above 32GB virtual address.\n# This output file may be truncated or incomplete.\n#\n#  Out of Memory Error (os_linux.cpp:2838), pid=1, tid=179\n#\n# JRE version: OpenJDK Runtime Environment Corretto-17.0.11.9.1 (17.0.11+9) (build 17.0.11+9-LTS)\n# Java VM: OpenJDK 64-Bit Server VM Corretto-17.0.11.9.1 (17.0.11+9-LTS, mixed mode, tiered, compressed oops, compressed class ptrs, parallel gc, linux-amd64)\n# Core dump will be written. Default location: /var/lib/questdb/core.1\n#\n\n---------------  S U M M A R Y ------------\n\nCommand Line: -ea -Dnoebug -XX:+UseParallelGC -XX:ErrorFile=/var/lib/questdb/db/hs_err_pid+%p.log -Dout=/var/lib/questdb/conf/log.conf -Djdk.module.main=io.questdb io.questdb/io.questdb.ServerMain -d /var/lib/questdb -f\n\nHost: Intel(R) Xeon(R) Platinum 8259CL CPU @ 2.50GHz, 32 cores, 59G, Debian GNU/Linux 12 (bookworm)\nTime: Mon Nov 18 19:43:58 2024 UTC elapsed time: 1609.077342 seconds (0d 0h 26m 49s)\n\n---------------  T H R E A D  ---------------\n\nCurrent thread (0x00007f35ac3f1590):  JavaThread \"C2 CompilerThread1\" daemon [_thread_new, id=179, stack(0x00007f3506dd6000,0x00007f3506ed6000)]\n\nStack: [0x00007f3506dd6000,0x00007f3506ed6000],  sp=0x00007f3506ed48f0,  free space=1018k\nNative frames: (J=compiled Java code, j=interpreted, Vv=VM code, C=native code)\nV  [libjvm.so+0xf5bf61]  VMError::report_and_die(int, char const*, char const*, __va_list_tag*, Thread*, unsigned char*, void*, void*, char const*, int, unsigned long)+0x1a1\nV  [libjvm.so+0xf5cc0b]  VMError::report_and_die(Thread*, char const*, int, unsigned long, VMErrorType, char const*, __va_list_tag*)+0x2b\nV  [libjvm.so+0x625cb3]  report_vm_out_of_memory(char const*, int, unsigned long, VMErrorType, char const*, ...)+0xe3\nV  [libjvm.so+0xc4e1c8]  os::pd_commit_memory(char*, unsigned long, bool)+0x108\nV  [libjvm.so+0xc47ddd]  os::commit_memory(char*, unsigned long, bool)+0x1d\nV  [libjvm.so+0xc4efaf]  os::pd_create_stack_guard_pages(char*, unsigned long)+0x7f\nV  [libjvm.so+0xe0a087]  StackOverflow::create_stack_guard_pages()+0x47\nV  [libjvm.so+0xedc3fb]  JavaThread::run()+0x2b\nV  [libjvm.so+0xedf67f]  Thread::call_run()+0x9f\nV  [libjvm.so+0xc51751]  thread_native_entry(Thread*)+0xe1\n\n```"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-01-16T19:56:18Z",
+   "body": "<img width=\"1551\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/fe7c53d7-e072-4ac2-b67e-cc06691c0782\" />\n\nThis does look like a memory leak though. Will try disabling the Postgres cache (https://<redacted-host>/t/trouble-with-java-heap-fine-tuning/111/9)"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-01-16T19:58:41Z",
+   "body": "Hi @reporter \n\nAll of this could be happening due to insufficient mmap area kernel limit. Have you followed this doc section on your server machine? https://questdb.com/docs/deployment/capacity-planning/#os-configuration\n\nThe easiest way to check the current limits is taking a look at the server startup logs:\n```\n2025-01-16T19:57:48.588835Z A server-main fs.file-max checked [limit=1048576]\n2025-01-16T19:57:48.588942Z A server-main vm.max_map_count checked [limit=1048576]\n```"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-01-16T20:06:29Z",
+   "body": "@participant2 Unfortunately, not the case:\n\n```sh\n❯ kubectl exec -n am-questdb-am-dev am-questdb-market-0 -- cat /proc/sys/vm/max_map_count\nDefaulted container \"questdb\" out of: questdb, sysctl (init)\n1048576\n\n❯ kubectl exec -n am-questdb-am-dev am-questdb-market-0 -- cat /proc/sys/fs/file-max\nDefaulted container \"questdb\" out of: questdb, sysctl (init)\n1048576\n```\n\nWe're actually using the `initContainers` values (which you all graciously added to your helm chart after I asked) to set these on the initial deployment."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-01-16T20:10:03Z",
+   "body": "Have you also checked the server log? The limits sometimes don't apply to the server process as expected."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-01-16T20:12:49Z",
+   "body": "To be clear, after upgrading to a version of Quest, I remember seeing the warning that it wasn't set appropriately. After setting it, that warning disappeared, so I had _hoped_ it was indeed being set properly.\n\nSo on an initial QuestDB deployment, I see this:\n\n```\nFound on-demand JVM arguments: -Xmx16g, prepending to JVM args\nNo arguments found in the configuration, start with default arguments\nChecking data directory ownership\n2025-01-16T19:28:55.812940457Z chown: changing ownership of '/var/lib/questdb/conf/server.conf': Read-only file system\n2025-01-16T19:28:55.813718498Z chown: changing ownership of '/var/lib/questdb/conf/log.conf': Read-only file system\n2025-01-16T19:28:55.814562275Z Running as questdb user\n2025-01-16T19:28:56.139011451Z Log configuration loaded from: /var/lib/questdb/conf/log.conf\n```\n\nAre you saying that if I don't see logs looking like the ones you linked it's not actually taking the system limits?\n\nFor context, using a busybox to set this with sysctl on the initialized container in the QuestDB helm chart:\n\n```yaml\ninitContainers:\n  - name: sysctl\n    image: busybox:latest\n    command:\n      - sh\n      - -c\n      - |\n        sysctl -w vm.max_map_count=1048576 && sysctl -w fs.file-max=1048576\n    securityContext:\n      privileged: true\n    volumeMounts: []\n```"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-01-16T20:21:05Z",
+   "body": "> Are you saying that if I don't see logs looking like the ones you linked it's not actually taking the system limits?\n\nNo, those log messages are always printed. The lines above look like shell script logs, not QuestDB server logs."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-01-16T20:57:03Z",
+   "body": "Where are you expecting that log file? I don't have a log dir (typically when I go hunting for logs its in the crash files in `db`, looks like my dir does not match whats expected https://questdb.com/docs/troubleshooting/log/)\n\n```sh\nroot@participant3:/var/lib/questdb# ls \nconf  db  hello.txt  import  public\nroot@participant3:/var/lib/questdb# cd conf\nroot@participant3:/var/lib/questdb/conf# ls\nlog.conf  mime.types  server.conf\nroot@participant3:/var/lib/questdb/conf# cd ..\nroot@participant3:/var/lib/questdb# cd db\nroot@participant3:/var/lib/questdb/db# ls\n_tab_index.d    ercot_market~7                 sys.column_versions_purge_log.lock  sys.text_import_log       tables.d.lock   telemetry_config\n_upgrade.d      lost+found                     sys.telemetry_wal                   sys.text_import_log.lock  telemetry       telemetry_config.lock\ncaiso_market~6  sys.column_versions_purge_log  sys.telemetry_wal.lock              tables.d.0                telemetry.lock\nroot@participant3:/var/lib/questdb/db# cd ..\nroot@participant3:/var/lib/questdb# cd import\nroot@participant3:/var/lib/questdb/import# ls\nreadme.txt  trades.parquet\nroot@participant3:/var/lib/questdb/import# cd ..\nroot@participant3:/var/lib/questdb# cd public\nroot@participant3:/var/lib/questdb/public# ls\n573e9313e05d89f4acb5d005476c61bb.woff  7dafb1a4bab4938a38b2d68d9c4575a9.woff  d0b483ce9717b92b4bf815d5d4db597a.woff  qdb.444c1.css  vendor.6a451.css  vendor.6a451.js.LICENSE.txt\n6437d5f4c14e01aaf4801aef3909151b.woff  assets                                 index.html                             qdb.444c1.js   vendor.6a451.js   version.txt\n```"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-01-17T07:54:43Z",
+   "body": "AFAIR in our Docker image the logs are only printed to stdout by default. @participant4 please correct me if I'm wrong.\nhttps://questdb.com/docs/operations/logging-metrics/#docker-logging"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-01-21T16:28:41Z",
+   "body": "Ah nice, thank you for that link. Yep, confirmed this in the logs:\n\n```sh\n2025-01-21T16:27:00.379586Z A server-main fs.file-max checked [limit=1048576]\n2025-01-21T16:27:00.379733Z A server-main vm.max_map_count checked [limit=1048576]\n```\n\nOn Slack Nick recommended we upgrade from 8.1.4 to 8.2.1, as that may address this issue in case there was a memory leak of some sort. Will report back here if we still have problems on 8.2.1 (this unfortunately led to this error after upgrading, but I'm sure we can work through this: https://github.com/questdb/questdb/issues/5325)"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-01-21T19:00:55Z",
+   "body": "Thanks for the update! If you have many tables/partitions/columns, 1048576 limits may not be enough. Could you try setting them 4-8x larger along with the version upgrade? This hopefully improves your server stability."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-01-21T21:23:28Z",
+   "body": "Using `JVM_PREPEND: \"-Xmx16g\"` and fs.file-max and vm.max_map_count limits 4x larger that what the docs recommend for the initial setting, I can't reproduce the crash as of right now, so I'm going to close out this issue. Thanks so much for the troubleshooting help @participant2 and @participant1!"
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "questdb/questdb",
+  "default_branch": "master",
+  "commit_sha": "5f9e5ce764f42e1149a7bb2736749a97372dd8f7",
+  "as_of": "2024-11-15T21:07:29Z",
+  "method": "github_commits_until"
+ },
+ "images": [
+  {
+   "where": "c7",
+   "source_url": "https://github.com/user-attachments/assets/fe7c53d7-e072-4ac2-b67e-cc06691c0782",
+   "file": "gh_questdb_questdb_5169_img0.png"
+  }
+ ],
+ "slug": "gh_questdb_questdb_5169"
+}

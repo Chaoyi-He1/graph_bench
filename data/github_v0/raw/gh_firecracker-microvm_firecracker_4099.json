@@ -1,0 +1,157 @@
+{
+ "repo": "firecracker-microvm/firecracker",
+ "number": 4099,
+ "url": "https://github.com/firecracker-microvm/firecracker/issues/4099",
+ "title": "[Bug] Processes get stuck after resuming VM from snapshot",
+ "state": "closed",
+ "labels": [
+  "Type: Bug",
+  "Priority: High"
+ ],
+ "reporter": "reporter",
+ "created_at": "2023-09-10T19:46:49Z",
+ "closed_at": "2024-07-08T17:47:06Z",
+ "body": "# Describe the bug\r\n\r\nAfter resuming a VM from snapshot, processes occasionally get stuck. A minimal example is an `init` binary that just runs `while (true) { sleep 100ms ; print 'hello' }` - after resuming from snapshot, it only sometimes is able to resume the loop, and other times it gets stuck and does not print anything at all.\r\n\r\n## To Reproduce\r\n\r\n1. Clone the following repo, which has the minimal code needed to reproduce: https://github.com/reporter/firecracker-sleep-issue\r\n2. Make sure you have `make`, `cc` (C compiler, from `gcc` package), `glibc-static` (for statically linking the init binary), and `jq` (for parsing firecracker API output)\r\n3. Run `make test`\r\n\r\n`make test` is doing the following:\r\n- Fetches the firecracker v1.4.0 release binary from GitHub as well as vmlinux 4.14 from the https://github.com/firecracker-microvm/firecracker-demo repo\r\n- Runs firecracker with an initrd where the init binary just loops infinitely, printing \"running\" then sleeping for 100ms. \r\n- Streams the VM logs to the kernel (using `tail -f` in the background)\r\n- Every 1s, pauses the VM, takes a snapshot, then kills firecracker (SIGTERM), then restarts firecracker, resuming the VM from snapshot.\r\n\r\n## Expected behaviour\r\n\r\nWhen running `make test` in that repo, the init binary should print `running` several times after each resume. But on some resumes, it appears stuck, and does not print anything until the next resume.\r\n\r\nInteresting details:\r\n- The issue does NOT reproduce if I replace the `nanosleep` syscalls with an NOP loop of 1e9 iterations (`for (int i=0; i<1e9; i++) continue;`)\r\n- The issue seems specific to snapshotting, not just pausing and resuming the VM. I tried just doing pause/resume without taking a snapshot and then restarting the `firecracker` binary in between, but could not reproduce.\r\n- I could not reproduce this on an Intel CPU so far, only AMD (have tried 2 different Intel machines and 2 different AMD machines).\r\n\r\n## Environment\r\n\r\n- Firecracker v1.4.0\r\n- Host kernel v6.2.0 (Ubuntu 22.04)\r\n  - **UPDATE:** also reproduced on host kernel v5.10 - `m6a.metal` instance\r\n- Guest kernel 4.14.55-84.37.amzn2.x86_64, from https://github.com/firecracker-microvm/firecracker-demo\r\n  - Also tried compiling 5.10 using the recommended guest config - the issue still reproduces.\r\n- Rootfs: none (initrd only)\r\n- Architecture: x86_64 (AMD Ryzen CPU)\r\n  - **UPDATE:** Also reproduced with AMD EPYC (`m6a.metal` instance)\r\n- GLIBC 2.35 (for init binary)\r\n\r\n## Additional context\r\n\r\nThis repro above is a minimal example of a much more troublesome issue where we are having trouble reconnecting to microVMs after resuming them from snapshots. We are running a server inside the VM and are having trouble connecting to over vsock. I suspected that the guest process was \"stuck\" somehow since when running `sleep 1 && print('hello')` in a background loop, it sometimes doesn't print anything. I came up with this minimal reproducer for this behavior.\r\n\r\n## Checks\r\n\r\n- Have you searched the Firecracker Issues database for similar problems?\r\n  - https://github.com/firecracker-microvm/firecracker/issues/3020 - not sure if this is related, but it was closed without resolution. The final comment said to re-open if it could be reproduced with a supported kernel version\r\n- Have you read the existing relevant Firecracker documentation?\r\n  - I have read the FAQ about guest clock drift / NTP, but this appears more significant than just clock drift since I think nanosleep should work based on relative timing? I could be wrong, though.\r\n- Are you certain the bug being reported is a Firecracker issue?\r\n  - Not 100% certain, but given that it happens only when loading a snapshot, it seems like it could be Firecracker-related\r\n",
+ "comments": [
+  {
+   "author": "reporter",
+   "created_at": "2023-09-10T20:31:53Z",
+   "body": "I'm not sure if this helps, but I randomly discovered that the issue can no longer be reproduced if I set the `nolapic` kernel boot param. (I don't really understand what that param does, but I've read somewhere that it only allows the system to use 1 CPU, though I haven't verified this... so not sure yet if it's a real solution)\r\n\r\nAlso, I can't seem to reproduce this on an Intel machine (running host kernel v5.15). So maybe this issue is AMD-specific? I noticed my local AMD machine has a log line in the guest kernel showing `[Firmware Bug]: TSC doesn't count with P0 frequency!`, not sure if that could be related. Maybe https://github.com/firecracker-microvm/firecracker/issues/815 is also related somehow since I'm also using AMD.\r\n\r\nHere are the full kernel boot logs:\r\n\r\n<details>\r\n<summary>Logs</summary>\r\n<pre>\r\n[    0.000000] Linux version 4.14.55-84.37.amzn2.x86_64 (mockbuild@participant8) (gcc version 7.3.1 20180303 (Red Hat 7.3.1-5) (GCC)) #1 SMP Wed Jul 25 18:47:15 UTC 2018\r\n[    0.000000] Command line: ro console=ttyS0 reboot=k panic=1 pci=off nomodule random.trust_cpu=on i8042.noaux i8042.nomux i8042.nopnp i8042.dumbkbd tsc=reliable ipv6.disable=1\r\n[    0.000000] [Firmware Bug]: TSC doesn't count with P0 frequency!\r\n[    0.000000] x86/fpu: Supporting XSAVE feature 0x001: 'x87 floating point registers'\r\n[    0.000000] x86/fpu: Supporting XSAVE feature 0x002: 'SSE registers'\r\n[    0.000000] x86/fpu: Supporting XSAVE feature 0x004: 'AVX registers'\r\n[    0.000000] x86/fpu: Supporting XSAVE feature 0x020: 'AVX-512 opmask'\r\n[    0.000000] x86/fpu: Supporting XSAVE feature 0x040: 'AVX-512 Hi256'\r\n[    0.000000] x86/fpu: Supporting XSAVE feature 0x080: 'AVX-512 ZMM_Hi256'\r\n[    0.000000] x86/fpu: Supporting XSAVE feature 0x200: 'Protection Keys User registers'\r\n[    0.000000] x86/fpu: xstate_offset[2]:  576, xstate_sizes[2]:  256\r\n[    0.000000] x86/fpu: xstate_offset[5]:  832, xstate_sizes[5]:   64\r\n[    0.000000] x86/fpu: xstate_offset[6]:  896, xstate_sizes[6]:  512\r\n[    0.000000] x86/fpu: xstate_offset[7]: 1408, xstate_sizes[7]: 1024\r\n[    0.000000] x86/fpu: xstate_offset[9]: 2432, xstate_sizes[9]:    8\r\n[    0.000000] x86/fpu: Enabled xstate features 0x2e7, context size is 2440 bytes, using 'compacted' format.\r\n[    0.000000] e820: BIOS-provided physical RAM map:\r\n[    0.000000] BIOS-e820: [mem 0x0000000000000000-0x000000000009fbff] usable\r\n[    0.000000] BIOS-e820: [mem 0x0000000000100000-0x0000000007ffffff] usable\r\n[    0.000000] NX (Execute Disable) protection: active\r\n[    0.000000] DMI not present or invalid.\r\n[    0.000000] Hypervisor detected: KVM\r\n[    0.000000] tsc: Fast TSC calibration using PIT\r\n[    0.000000] e820: last_pfn = 0x8000 max_arch_pfn = 0x400000000\r\n[    0.000000] MTRR: Disabled\r\n[    0.000000] x86/PAT: MTRRs disabled, skipping PAT initialization too.\r\n[    0.000000] CPU MTRRs all blank - virtualized system.\r\n[    0.000000] x86/PAT: Configuration [0-7]: WB  WT  UC- UC  WB  WT  UC- UC  \r\n[    0.000000] found SMP MP-table at [mem 0x0009fc00-0x0009fc0f] mapped at [ffffffffff200c00]\r\n[    0.000000] Scanning 1 areas for low memory corruption\r\n[    0.000000] Using GB pages for direct mapping\r\n[    0.000000] RAMDISK: [mem 0x07f24000-0x07ffffff]\r\n[    0.000000] No NUMA configuration found\r\n[    0.000000] Faking a node at [mem 0x0000000000000000-0x0000000007ffffff]\r\n[    0.000000] NODE_DATA(0) allocated [mem 0x07f02000-0x07f23fff]\r\n[    0.000000] kvm-clock: Using msrs 4b564d01 and 4b564d00\r\n[    0.000000] kvm-clock: cpu 0, msr 0:7f00001, primary cpu clock\r\n[    0.000000] kvm-clock: using sched offset of 89597168 cycles\r\n[    0.000000] clocksource: kvm-clock: mask: 0xffffffffffffffff max_cycles: 0x1cd42e4dffb, max_idle_ns: 881590591483 ns\r\n[    0.000000] Zone ranges:\r\n[    0.000000]   DMA      [mem 0x0000000000001000-0x0000000000ffffff]\r\n[    0.000000]   DMA32    [mem 0x0000000001000000-0x0000000007ffffff]\r\n[    0.000000]   Normal   empty\r\n[    0.000000] Movable zone start for each node\r\n[    0.000000] Early memory node ranges\r\n[    0.000000]   node   0: [mem 0x0000000000001000-0x000000000009efff]\r\n[    0.000000]   node   0: [mem 0x0000000000100000-0x0000000007ffffff]\r\n[    0.000000] Initmem setup node 0 [mem 0x0000000000001000-0x0000000007ffffff]\r\n[    0.000000] Intel MultiProcessor Specification v1.4\r\n[    0.000000] MPTABLE: OEM ID: FC      \r\n[    0.000000] MPTABLE: Product ID: 000000000000\r\n[    0.000000] MPTABLE: APIC at: 0xFEE00000\r\n[    0.000000] Processor #0 (Bootup-CPU)\r\n[    0.000000] IOAPIC[0]: apic_id 2, version 17, address 0xfec00000, GSI 0-23\r\n[    0.000000] Processors: 1\r\n[    0.000000] smpboot: Allowing 1 CPUs, 0 hotplug CPUs\r\n[    0.000000] PM: Registered nosave memory: [mem 0x00000000-0x00000fff]\r\n[    0.000000] PM: Registered nosave memory: [mem 0x0009f000-0x000fffff]\r\n[    0.000000] e820: [mem 0x08000000-0xffffffff] available for PCI devices\r\n[    0.000000] Booting paravirtualized kernel on KVM\r\n[    0.000000] clocksource: refined-jiffies: mask: 0xffffffff max_cycles: 0xffffffff, max_idle_ns: 7645519600211568 ns\r\n[    0.000000] random: get_random_bytes called from start_kernel+0x94/0x486 with crng_init=0\r\n[    0.000000] setup_percpu: NR_CPUS:128 nr_cpumask_bits:128 nr_cpu_ids:1 nr_node_ids:1\r\n[    0.000000] percpu: Embedded 41 pages/cpu @participant9 s128728 r8192 d31016 u2097152\r\n[    0.000000] KVM setup async PF for cpu 0\r\n[    0.000000] kvm-stealtime: cpu 0, msr 7c15040\r\n[    0.000000] PV qspinlock hash table entries: 256 (order: 0, 4096 bytes)\r\n[    0.000000] Built 1 zonelists, mobility grouping on.  Total pages: 32137\r\n[    0.000000] Policy zone: DMA32\r\n[    0.000000] Kernel command line: ro console=ttyS0 reboot=k panic=1 pci=off nomodule random.trust_cpu=on i8042.noaux i8042.nomux i8042.nopnp i8042.dumbkbd tsc=reliable ipv6.disable=1\r\n[    0.000000] PID hash table entries: 512 (order: 0, 4096 bytes)\r\n[    0.000000] Memory: 110184K/130680K available (8204K kernel code, 622K rwdata, 1464K rodata, 1268K init, 2820K bss, 20496K reserved, 0K cma-reserved)\r\n[    0.000000] SLUB: HWalign=64, Order=0-3, MinObjects=0, CPUs=1, Nodes=1\r\n[    0.004000] Hierarchical RCU implementation.\r\n[    0.004000]  RCU restricting CPUs from NR_CPUS=128 to nr_cpu_ids=1.\r\n[    0.004000] RCU: Adjusting geometry for rcu_fanout_leaf=16, nr_cpu_ids=1\r\n[    0.004000] NR_IRQS: 4352, nr_irqs: 48, preallocated irqs: 16\r\n[    0.004000] Console: colour dummy device 80x25\r\n[    0.004000] console [ttyS0] enabled\r\n[    0.004000] tsc: Detected 4491.540 MHz processor\r\n[    0.004000] Calibrating delay loop (skipped) preset value.. 8983.08 BogoMIPS (lpj=17966160)\r\n[    0.004000] pid_max: default: 32768 minimum: 301\r\n[    0.004000] Security Framework initialized\r\n[    0.004000] SELinux:  Initializing.\r\n[    0.004000] Dentry cache hash table entries: 16384 (order: 5, 131072 bytes)\r\n[    0.004000] Inode-cache hash table entries: 8192 (order: 4, 65536 bytes)\r\n[    0.004000] Mount-cache hash table entries: 512 (order: 0, 4096 bytes)\r\n[    0.004000] Mountpoint-cache hash table entries: 512 (order: 0, 4096 bytes)\r\n[    0.004000] Last level iTLB entries: 4KB 512, 2MB 512, 4MB 256\r\n[    0.004000] Last level dTLB entries: 4KB 3072, 2MB 3072, 4MB 1536, 1GB 0\r\n[    0.004000] Spectre V2 : Mitigation: Full AMD retpoline\r\n[    0.004000] Spectre V2 : Spectre v2 mitigation: Enabling Indirect Branch Prediction Barrier\r\n[    0.004000] Spectre V2 : Enabling Restricted Speculation for firmware calls\r\n[    0.004000] Speculative Store Bypass: Mitigation: Speculative Store Bypass disabled via prctl and seccomp\r\n[    0.006983] Freeing SMP alternatives memory: 28K\r\n[    0.007832] smpboot: Max logical packages: 1\r\n[    0.008055] x2apic enabled\r\n[    0.008213] Switched APIC routing to physical x2apic.\r\n[    0.008780] ..TIMER: vector=0x30 apic1=0 pin1=0 apic2=-1 pin2=-1\r\n[    0.008980] smpboot: CPU0: AMD EPYC (family: 0x19, model: 0x61, stepping: 0x2)\r\n[    0.009245] Performance Events: \r\n[    0.009247] core perfctr but no constraints; unknown hardware!\r\n[    0.009528] no PMU driver, software events only.\r\n[    0.009711] Hierarchical SRCU implementation.\r\n[    0.011485] smp: Bringing up secondary CPUs ...\r\n[    0.011626] smp: Brought up 1 node, 1 CPU\r\n[    0.011752] smpboot: Total of 1 processors activated (8983.08 BogoMIPS)\r\n[    0.012000] devtmpfs: initialized\r\n[    0.012000] x86/mm: Memory block size: 128MB\r\n[    0.012000] clocksource: jiffies: mask: 0xffffffff max_cycles: 0xffffffff, max_idle_ns: 7645041785100000 ns\r\n[    0.012000] futex hash table entries: 256 (order: 2, 16384 bytes)\r\n[    0.012152] NET: Registered protocol family 16\r\n[    0.012359] cpuidle: using governor ladder\r\n[    0.012488] cpuidle: using governor menu\r\n[    0.014151] HugeTLB registered 1.00 GiB page size, pre-allocated 0 pages\r\n[    0.014359] HugeTLB registered 2.00 MiB page size, pre-allocated 0 pages\r\n[    0.014640] dmi: Firmware registration failed.\r\n[    0.014818] NetLabel: Initializing\r\n[    0.014924] NetLabel:  domain hash size = 128\r\n[    0.015059] NetLabel:  protocols = UNLABELED CIPSOv4 CALIPSO\r\n[    0.015241] NetLabel:  unlabeled traffic allowed by default\r\n[    0.015444] clocksource: Switched to clocksource kvm-clock\r\n[    0.015624] VFS: Disk quotas dquot_6.6.0\r\n[    0.015748] VFS: Dquot-cache hash table entries: 512 (order 0, 4096 bytes)\r\n[    0.016000] NET: Registered protocol family 2\r\n[    0.016000] TCP established hash table entries: 1024 (order: 1, 8192 bytes)\r\n[    0.016000] TCP bind hash table entries: 1024 (order: 2, 16384 bytes)\r\n[    0.016000] TCP: Hash tables configured (established 1024 bind 1024)\r\n[    0.016000] UDP hash table entries: 256 (order: 1, 8192 bytes)\r\n[    0.016000] UDP-Lite hash table entries: 256 (order: 1, 8192 bytes)\r\n[    0.016000] NET: Registered protocol family 1\r\n[    0.016000] Unpacking initramfs...\r\n[    0.016000] Freeing initrd memory: 880K\r\n[    0.016000] platform rtc_cmos: registered platform RTC device (no PNP device found)\r\n[    0.016000] Scanning for low memory corruption every 60 seconds\r\n[    0.016350] audit: initializing netlink subsys (disabled)\r\n[    0.016640] Initialise system trusted keyrings\r\n[    0.016780] Key type blacklist registered\r\n[    0.016921] audit: type=2000 audit(1694379250.871:1): state=initialized audit_enabled=0 res=1\r\n[    0.017192] workingset: timestamp_bits=36 max_order=15 bucket_order=0\r\n[    0.017793] squashfs: version 4.0 (2009/01/31) Phillip Lougher\r\n[    0.018927] Key type asymmetric registered\r\n[    0.019056] Asymmetric key parser 'x509' registered\r\n[    0.019214] Block layer SCSI generic (bsg) driver version 0.4 loaded (major 254)\r\n[    0.019452] io scheduler noop registered (default)\r\n[    0.019617] io scheduler cfq registered\r\n[    0.019764] Serial: 8250/16550 driver, 1 ports, IRQ sharing disabled\r\n[    0.040269] serial8250: ttyS0 at I/O 0x3f8 (irq = 4, base_baud = 115200) is a U6_16550A\r\n[    0.041195] loop: module loaded\r\n[    0.041300] tun: Universal TUN/TAP device driver, 1.6\r\n[    0.041472] hidraw: raw HID events driver (C) Jiri Kosina\r\n[    0.041657] nf_conntrack version 0.5.0 (1024 buckets, 4096 max)\r\n[    0.041893] ip_tables: (C) 2000-2006 Netfilter Core Team\r\n[    0.042070] Initializing XFRM netlink socket\r\n[    0.042206] IPv6: Loaded, but administratively disabled, reboot required to enable\r\n[    0.042438] NET: Registered protocol family 17\r\n[    0.042582] Bridge firewalling registered\r\n[    0.042810] sched_clock: Marking stable (40263980, 0)->(65107117, -24843137)\r\n[    0.043068] registered taskstats version 1\r\n[    0.043197] Loading compiled-in X.509 certificates\r\n[    0.043628] Loaded X.509 cert 'Build time autogenerated kernel key: 3472798b31ba23b86c1c5c7236c9c91723ae5ee9'\r\n[    0.043943] zswap: default zpool zbud not available\r\n[    0.044111] zswap: pool creation failed\r\n[    0.044354] Key type encrypted registered\r\n[    0.044957] Freeing unused kernel memory: 1268K\r\n[    0.052047] Write protecting the kernel read-only data: 12288k\r\n[    0.053097] Freeing unused kernel memory: 2016K\r\n[    0.053771] Freeing unused kernel memory: 584K\r\n</pre>\r\n</details>"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-09-11T13:17:50Z",
+   "body": "Thanks for reporting this. At the moment, firecracker officially supports host kernel 4.14 and 5.10 [[README.md]](https://github.com/firecracker-microvm/firecracker#tested-platforms) and will add host kernel 6.1 support. Are you able to reproduce it on host kernel 5.10 and 6.1, although we'll also try to reproduce the issue on our side?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-09-11T13:45:07Z",
+   "body": "I don't have easy access to an AMD machine with any of those kernel versions, but later this week I will try and see if I can get 5.10 or 6.1 working with my current setup.\r\n\r\nDoes Firecracker have any test suites that run against AMD machines? (I suspect this may be AMD-specific.) I would be happy to contribute a test that demonstrates the issue - that would be a lot easier for me than installing a different kernel version, and hopefully easier to find a fix as well once there's a failing test."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-09-11T13:47:32Z",
+   "body": "> Does Firecracker have any test suites that run against AMD machines? I would be happy to contribute a test that demonstrates the issue.\r\n\r\nYes. m6a.metal is AMD instance that firecracker is tested on. Thanks for your help and effort!"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-09-11T13:48:15Z",
+   "body": "Ah OK, I will actually just spin one of those up on AWS then :) Thanks"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-09-11T14:20:23Z",
+   "body": "I was able to reproduce this on an m6a.metal instance with Linux 5.10.\r\n\r\nI did `aws ec2 run-instances --image-id=ami-0f409bae3775dc8e5 --count=1 --instance-type=m6a.metal` then added an SSH rule in the security group settings so I could SSH to it.\r\n\r\nOnce SSH'd, `uname -a` shows:\r\n\r\n```\r\nLinux <redacted-host> 5.10.186-179.751.amzn2.x86_64 #1 SMP Tue Aug 1 20:51:38 UTC 2023 x86_64 x86_64 x86_64 GNU/Linux\r\n```\r\n\r\nIf it helps, I had to run `sudo yum install git make gcc glibc-static jq` in order for the `make test` command in my repro repository to work. I also ran `sudo yum groupinstall \"Developer Tools\"` but I'm not sure if that part was actually needed."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-09-11T14:22:28Z",
+   "body": "Here is what it looks like when running the repro on that EC2 instance - whenever it prints `--- Round <N>: Letting the VM run for a little while...` this means that it is resuming from snapshot, and I expect to see `init: running...` being printed several times (once per 100ms), but it appears to only get printed some of the time:\r\n\r\nhttps://github.com/firecracker-microvm/firecracker/assets/2414826/5f752b5e-e045-4204-b877-3f0476d967a1\r\n\r\n\r\nThe kernel logs on this m6a.metal instance show the same error message in the kernel logs:\r\n\r\n```\r\n[Firmware Bug]: TSC doesn't count with P0 frequency!\r\n```\r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-09-11T14:55:09Z",
+   "body": "I've tried codesandbox's fork of firecracker which includes this commit: https://github.com/codesandbox/firecracker/commit/41643714f571f281ac9777ff72254591856ea0da\r\n\r\nI am not sure if this is the \"right\" fix, but the issue no longer reproduces when using this commit. Any thoughts on whether this commit should be upstreamed?"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-09-15T14:11:26Z",
+   "body": "Not sure this is related, but our implementation of container snapshots backed by firecracker VMs using firecracker-containerd in vHive stumbles upon a similar problem: it seems like firecracker-containerd's in-VM agent stops responding and hangs after a VM snapshot is created and the VM is resumed (vhive-serverless/vhive#818).\r\n\r\nWe use a default setup suggested by firecracker-containerd."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-09-15T14:51:07Z",
+   "body": "@participant2 are you hitting this issue on an AMD CPU, or Intel? Also, could you try running the repro steps I posted in the issue description, and letting us know if you see the same problem that I described? This would be very helpful as an extra data point 🙏"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-09-15T15:11:23Z",
+   "body": "@reporter I am renting a node on CloudLab with an Intel CPU. I tried running the repro steps you posted, but after waiting for 100 rounds I didn't see any problems you described."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-09-15T19:50:01Z",
+   "body": "@participant2 thanks for running the repro steps! It is interesting that you couldn't repro the issue on an Intel machine. It seems increasingly likely that the original issue I reported is AMD-specific, since I couldn't reproduce it on Intel either.\r\n\r\nI think the issue that you are seeing is probably different than the one reported here, since the repro script doesn't exhibit the problematic behavior when you tried it. It may be worth reporting a new issue to the firecracker-containerd repo, with more details about your setup/environment and ideally a minimal reproducer."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-09-28T17:14:10Z",
+   "body": "Hi @reporter, thanks for providing the repro steps. We are working on this issue and to provide an update :\r\n- I was able to reproduce the issue on an AMD instance\r\n- I modified your steps to run 5 times instead of 100 and saved snapshots from each run. When tried manually to load the snapshots I am able to see the prints which were otherwise not seen through the script. This means the guest takes more time to start in the issue scenario but, the guest is always able to boot if tried manually.\r\n- In some cases I saw that the prints were seen if a sleep of 5 seconds was added instead of 1 but it was random.\r\nWe'll continue investigating this and let you know if we have an update."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-11-02T00:35:29Z",
+   "body": "Friendly ping, is this issue still on your radar? This is still a frequent pain point for us when using Firecracker on AMD machines, and has us effectively locked in to Intel which is not very desirable."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-11-06T10:53:59Z",
+   "body": "Hi @reporter, we are tracking this as one of our high priority task. We'll let you know as soon as we have an update on this."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2023-11-14T09:55:12Z",
+   "body": "Hi @reporter. We are still working on the root cause of this issue. We will update you as soon as possible."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2024-01-23T11:35:30Z",
+   "body": "Hi @reporter, I am currently looking at this. I found that passing `lapic=notscdeadline` in the kernel boot command line also seems to fix it, so I think that narrows it down a bit. I will continue investigating, but could you confirm?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-01-23T13:21:35Z",
+   "body": "@participant5 thank you for looking into this! I tried setting `lapic=notscdeadline` in my repro script above on my AMD machine, and confirmed that the issue stops reproducing afterwards. If you learn more, I'd be interested to hear why it stops reproducing with this flag, and whether this is the \"right\" solution or not :)"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-02-29T19:39:28Z",
+   "body": "hey @participant5, curious whether there are any leads on this that you can share? We would love to be able to run our Firecracker workloads on AMD machines, because they are much cheaper. Happy to help any way that I can - not much of an expert on virtualization but can maybe help try to find a more consistent repro, if that is part of what makes this tricky? (And thank you again for looking into this!)"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2024-03-18T12:00:37Z",
+   "body": "Hi @reporter,\r\n\r\nSorry for the delay, unfortunately we were not able to make progress regarding this issue. \r\nWe are still tracking the problem and will provide an update once we will have more data to share."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-03-26T21:26:04Z",
+   "body": "FYI, we started hitting this again, but on Intel this time (on GCP under nested virtualization), after GCP upgraded our nodes from kernel version `5.15.0-1036-gke` to `5.15.0-1052-gke`. We were seeing similar symptoms this time, but with some RCU stalls in the kernel logs. (I vaguely remember seeing RCU stalls on AMD too, so this might not be a new symptom.) The same repro script from the PR description also can reproduce the issue on the upgraded Intel nodes. Setting `lapic=notscdeadline` also seems to work in this case as a mitigation, though we don't fully understand the implications yet.\r\n\r\nWe never quite figured out how to map those GCP kernel versions to upstream kernel versions, or how to figure out which commits are included between those versions. Maybe someone with contacts at Google Cloud could help :<nick>: "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-03-26T23:03:33Z",
+   "body": "While investigating, we came across this kernel patch which seems possibly relevant: [KVM: x86: Fix lapic timer interrupt lost after loading a snapshot](https://lore.kernel.org/lkml/<email-scrubbed>/T/)\r\n\r\nHowever we did not get a chance to patch this into our host kernel to see if it works. That commit message says that the issue only exists in kernel v6.3-rc1+ and was introduced by 8e6ed96cdd50, but it's unclear whether that commit exists in the GKE kernel build we were using."
+  },
+  {
+   "author": "participant6",
+   "created_at": "2024-03-27T00:27:38Z",
+   "body": "Looks like this was merged into the linux kernel (https://github.com/kvm-x86/linux/commit/9cfec6d097c6) but won't get backported to 5.15 by default - I haven't confirmed whether `5.15.0-1052-gke` contains `8e6ed96cdd50` though."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2024-07-02T09:52:57Z",
+   "body": "Hi @reporter, first of all thanks for your patience. We are sorry that it is taking so long to root cause and the time between updates, and I wanted to reassure you that we take this issue seriously and we are still investigating a possible solution.\r\n\r\nRegarding the patch\r\n\r\n> While investigating, we came across this kernel patch which seems possibly relevant: [KVM: x86: Fix lapic timer interrupt lost after loading a snapshot](https://lore.kernel.org/lkml/<email-scrubbed>/T/)\r\n\r\nI was able to reproduce the issue on Ubuntu 24.04, which had a 6.8.0 kernel with that patch. I was also able to reproduce the issue with newer guest kernels and newer AMD CPUs like Genoa, so we can rule out something that is fixed in newer kernels or CPUs.\r\n\r\nAt this point we believe the issue is that we use TSC deadline feature in both Intel and AMD. Intel does support TSC deadline, so works fine. In the AMD CPUs we tested however, TSC deadline is not enabled but Firecracker still presents it to the guest via `CPUID`. In this case KVM emulates TSC deadline and during a snapshot resume this emulation seems to not work (this is the part we haven't figured out yet if it's Firecracker or KVM who is at fault here).\r\n\r\nWe have tried working around the issue in #4655 by only enabling TSC deadline if it's enabled on the host. This works fine, but creates a boot time regression of 40-50% in our tests. We are currently trying to understand where this time is going and if we can mitigate it.\r\n"
+  },
+  {
+   "author": "participant7",
+   "created_at": "2024-07-08T06:41:43Z",
+   "body": "Good morning @reporter,\r\nSorry again for taking so long for getting to the bottom of this. We believe to have found the root-cause of this issue and have a proposed fix in #4666. The problem was Firecracker not correctly taking into account dependencies between `MSR_IA32_TSC` and `MSR_IA32_TSC_DEADLINE`, which lead to `MSR_IA32_TSC_DEADLINE` being restored before `MSR_IA32_TSC`. However, since KVM relies on the guest TSC value (and thus `MSR_IA32_TSC`) for restoration of the deadline MSR, this lead to incorrect timer intialization. \r\n\r\nWith the commit from #4666, I am no longer able to reproduce the issue. Could you also give this a try? Thanks!\r\n\r\nTo follow up on some loose ends from @participant5's last update: The alternate fix of simply disabling the TSC_DEADLINE feature (either via CPUID or `lapic=notscdeadline` kernel boot argument) is equally valid. This forces the kernel to fall back onto the APIC timer's oneshot and period modes to setting up timer interrupts. The only difference is that periodic/one-shot modes of the APIC timer run at a different clock frequency than the TSC_DEADLINE time (which counts at the TSC frequency). Thus, the kernel needs to calibrate on startup to find out how to convert between nanoseconds and APIC timer clock cycles. This calibration takes 100ms (depending on kernel configuration), and is the reason why we were seeing a boottime regression with this option. This calibration cannot be avoided, as there is currently no way for a hypervisor to tell a Linux guest about the APIC timer frequency on AMD (funnily enough, there are CPUID leaves that KVM checks on Intel, but that's exactly the case where we don't have any problems...). Other than this initial calibration, there should be no impact on guest functionality though."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-07-15T22:31:37Z",
+   "body": "@participant7 Thank you so much for the fix! I verified on my AMD machine that the script is able to complete 100 iterations without getting stuck, without the `lapic=notscdeadline` workaround."
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "firecracker-microvm/firecracker",
+  "default_branch": "main",
+  "commit_sha": "78ffb8a87989e69754890690a977e9c15fd3633f",
+  "as_of": "2023-09-10T19:46:49Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_firecracker-microvm_firecracker_4099"
+}

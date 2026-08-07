@@ -1,0 +1,178 @@
+{
+ "repo": "pola-rs/polars",
+ "number": 9959,
+ "url": "https://github.com/pola-rs/polars/issues/9959",
+ "title": "Add `.cast` as DataFrame method",
+ "state": "closed",
+ "labels": [
+  "good first issue",
+  "enhancement",
+  "accepted"
+ ],
+ "reporter": "ion-elgreco",
+ "created_at": "2023-07-18T22:23:46Z",
+ "closed_at": "2023-08-17T14:19:38Z",
+ "body": "### Problem description\n\nIt would be useful to add .cast as a method on the dataframe class which takes a dictionary as input with full or partial schema and their polars dtypes. \r\n\r\nExample:\r\n\r\n```python\r\nschema = {\"foo\": pl.Uint64, \"bar\": pl.List}\r\n\r\ndf = df.cast(schema)\r\n\r\n```",
+ "comments": [
+  {
+   "author": "stinodego",
+   "created_at": "2023-07-19T11:22:06Z",
+   "body": "The implementation for this would be simple:\r\n\r\n```python\r\ndf = df.with_columns(pl.col(c).cast(dtype) for c, dtype in schema.items())\r\n```\r\n\r\nI'm not 100% convinced yet it's worth adding this as a DataFrame method."
+  },
+  {
+   "author": "ion-elgreco",
+   "created_at": "2023-07-19T11:40:58Z",
+   "body": "> The implementation for this would be simple:\r\n> \r\n> ```python\r\n> df = df.with_columns(pl.col(c).cast(dtype) for c, dtype in schema.items())\r\n> ```\r\n> \r\n> I'm not 100% convinced yet it's worth adding this as a DataFrame method.\r\n\r\nIt's rather some syntactic sugar and makes it slightly more readable. \r\n\r\nPyArrow also has the ability to do this on table level: https://arrow.apache.org/docs/python/generated/pyarrow.Table.html#pyarrow.Table.cast"
+  },
+  {
+   "author": "mcrumiller",
+   "created_at": "2023-07-19T17:40:06Z",
+   "body": "We already have this for `pl.struct` which works much the same way:\r\n\r\n```python\r\nimport polars as pl\r\n\r\ndf = pl.DataFrame({\r\n    'a': pl.Series([1, 2, 3], dtype=pl.Int32),\r\n    'b': pl.Series([1.0, 2.0, 3.0], dtype=pl.Float64)\r\n})\r\n\r\ndf2 = df.select(\r\n    pl.struct(schema={'a': pl.UInt8, 'b': pl.UInt16})\r\n).unnest('a')\r\n\r\nprint(df.dtypes)\r\nprint(df2.dtypes)\r\n```\r\n```\r\n[Int32, Float64]\r\n[UInt8, UInt16]\r\n```\r\n\r\nI like the idea of being able to apply a new schema onto an existing DataFrame, and I can see a lot of reasons where it could be useful: namely, where multiple processes are supplying you the same data, but may not know the intended schema. For example, you might get `UInt64` from some places and `Int32` from others, or `pl.Datetime` and `pl.Date`, etc. Having a simple `df.cast(schema)` using a predefined schema would make this code very clean.\r\n\r\nAlternatively we could have a `df.apply_schema` or some such, but I think `cast` is obvious enough."
+  },
+  {
+   "author": "mkleinbort-ic",
+   "created_at": "2023-07-20T10:07:54Z",
+   "body": "I have that implementation myself, I call it `astype` because that's the name I'm used to:\r\n\r\n```python\r\ndf.astype({'date':pl.Date(), 'userId':pl.Int64()})\r\n```\r\n\r\nThis is very useful when converting back and forth from pandas to polars, where the data type specifics can get lost.\r\n\r\n```python\r\n    # My implementation is a bit messy because it handles dates and datetimes to some extent\r\n\r\n    def _astype(df:pl.DataFrame, dtype_dict:dict[str,pl.DataType])->pl.DataFrame:      \r\n    \r\n        current_types = df.select(pl.col(list(dtype_dict.keys()))).schema\r\n        \r\n        type_tuples = {k: (current_types[k], dtype_dict[k]) for k in dtype_dict.keys()}\r\n        \r\n        conversion_dict = {col: pl.col(col).cast(dtype) \r\n                        \r\n                                if (dtype not in [pl.Date, pl.Datetime] or (cdtype != pl.Utf8())) else \r\n                        \r\n                                pl.col(col).str.strptime(dtype)     \r\n                                            \r\n                        for col, (cdtype, dtype) in type_tuples.items()}\r\n        \r\n        return df.with_columns(**conversion_dict)\r\n```"
+  },
+  {
+   "author": "stinodego",
+   "created_at": "2023-07-20T11:36:17Z",
+   "body": "Right, I think this makes sense. Could exist on both `DataFrame` and `LazyFrame`. I like the name `cast` for this.\r\n\r\nI guess we would accept as input a dictionary of `name -> dtype`, and partial schemas would also be accepted.\r\n\r\nSample test:\r\n\r\n```\r\nfrom datetime import date, datetime\r\n\r\nimport polars as pl\r\nfrom polars.testing import assert_frame_equal\r\n\r\n\r\ndef test_df_cast() -> None:\r\n    df = pl.DataFrame(\r\n        {\"a\": [1, 2], \"b\": [3.0, 4.0], \"c\": [date(2022, 1, 1), date(2022, 1, 2)]}\r\n    )\r\n    schema = {\"a\": pl.Int8, \"c\": pl.Datetime}\r\n\r\n    result = df.cast(schema)\r\n\r\n    expected = pl.DataFrame(\r\n        {\r\n            \"a\": [1, 2],\r\n            \"b\": [3.0, 4.0],\r\n            \"c\": [datetime(2022, 1, 1), datetime(2022, 1, 2)],\r\n        },\r\n        schema_overrides=schema,\r\n    )\r\n    assert_frame_equal(result, expected)\r\n```"
+  },
+  {
+   "author": "mkleinbort-ic",
+   "created_at": "2023-07-20T11:42:25Z",
+   "body": "I like this, though note that support for pl.UTF8 -> Date/Datetime would be a very good to have - a lot of APIs return dates as strings.\r\n\r\n```python\r\ndef test_df_cast() -> None:\r\n    df = pl.DataFrame({\r\n          \"a\": [1, 2], \r\n          \"b\": [3.0, 4.0], \r\n          \"c\": [date(2022, 1, 1), date(2022, 1, 2)], \r\n          \"d\": ['2022-01-01', '2022-01-02']\r\n        })\r\n\r\n    schema = {\"a\": pl.Int8, \"c\": pl.Datetime, \"d\": pl.Date}\r\n\r\n    result = df.cast(schema)\r\n\r\n    expected = pl.DataFrame(\r\n        {\r\n            \"a\": [1, 2],\r\n            \"b\": [3.0, 4.0],\r\n            \"c\": [datetime(2022, 1, 1), datetime(2022, 1, 2)],\r\n            \"d\": [pl.date(2022, 1, 1), pl.date(2022, 1, 2)],\r\n        },\r\n        schema_overrides=schema,\r\n    )\r\n    assert_frame_equal(result, expected)\r\n```"
+  },
+  {
+   "author": "stinodego",
+   "created_at": "2023-07-20T11:48:51Z",
+   "body": "`DataFrame.cast` should not do anything that `Expr.cast` does not also do. We can consider expanding `Expr.cast` to be able to cast strings to dates, but that's a different topic altogether."
+  },
+  {
+   "author": "mkleinbort-ic",
+   "created_at": "2023-07-20T11:51:22Z",
+   "body": "That makes sense to me. "
+  },
+  {
+   "author": "mcrumiller",
+   "created_at": "2023-07-20T11:55:59Z",
+   "body": "The strings to dates has been discussed a lot. I think @ritchie46 is pretty strongly against it. I think supporting ISO8601 strings as dates would make using dates in polars way easier."
+  },
+  {
+   "author": "alexander-beedie",
+   "created_at": "2023-07-20T11:56:19Z",
+   "body": "> I like this, though note that support for pl.UTF8 -> Date/Datetime would be a very good to have - a lot of APIs return dates as strings.\r\n\r\nThe problem there is there is no one string format to cast from - it's not really a cast, it's a parse/translation (eg: `strptime`) with all kinds of corner cases, ambiguous formats, etc.\r\n\r\n> The strings to dates has been discussed a lot. I think @ritchie46 is pretty strongly against it. I think supporting ISO8601 strings as dates would make using dates in polars way easier.\r\n\r\nI'm with @ritchie46 on this one... it sounds reasonable to start with, but it usually leads to a bad place and/or unnecessarily complex internals and \"guess what I mean\" functions, when the answer is just \"if you want to pass in dates, pass in dates\" :)"
+  },
+  {
+   "author": "mcrumiller",
+   "created_at": "2023-07-20T13:00:20Z",
+   "body": "> but it usually leads to a bad place and/or unnecessarily complex internals\r\n\r\nIf you require ISO8601 format, there is zero ambiguity and it's fairly easy. It does introduce a lot of `if str` when dealing with dates but it's not *that* bad, and it's such a common usage that I think we should support it. But I won't die on this hill."
+  },
+  {
+   "author": "stinodego",
+   "created_at": "2023-07-20T13:02:04Z",
+   "body": "Please move that discussion to the new issue opened by @mkleinbort-ic"
+  },
+  {
+   "author": "zundertj",
+   "created_at": "2023-07-20T19:54:19Z",
+   "body": "Given some of the use cases of this, like casting to a schema you already have from another dataframe, could we also add the ability to pass in a dataframe, i.e.\r\n\r\n```python\r\ndf1.cast(df2)\r\n```\r\nas short-hand for \r\n\r\n```python\r\ndf1.cast(df2.schema)\r\n```\r\n?\r\n\r\nI guess the only question is what you do if the column names dont match, but if we are flexible on doing a \"partial cast\" with passing a schema as a dict, it could be argued the same should apply for a dataframe input? That is, keep the same columns as the original, but only cast dtypes."
+  },
+  {
+   "author": "mcrumiller",
+   "created_at": "2023-07-20T20:01:46Z",
+   "body": "> could we also add the ability to pass in a dataframe\r\n\r\n@zundertj that's a good idea. I would recommend using the `like` keyword, as this is often used in other libraries when you want one thing to look like another.\r\n\r\n```python\r\ndf1.cast(like=df2)\r\n```"
+  },
+  {
+   "author": "stinodego",
+   "created_at": "2023-07-20T20:24:52Z",
+   "body": "I don't like that at all. Just be explicit and pass the schema.\r\n\r\n`df1.cast(like=df2)` isn't any shorter or more readable than `df1.cast(df2.schema)`.\r\n\r\nLet's not make things more complicated than they need to be."
+  },
+  {
+   "author": "itsakettle",
+   "created_at": "2023-08-04T10:41:25Z",
+   "body": "Hi there, could I have a go at this one?"
+  },
+  {
+   "author": "stinodego",
+   "created_at": "2023-08-04T10:49:08Z",
+   "body": "Sure, looking forward to the PR!"
+  },
+  {
+   "author": "itsakettle",
+   "created_at": "2023-08-14T15:12:47Z",
+   "body": "Hi again. First contribution for me, so I've been going through the relevant code bit by bit and making good progress I think. \r\n\r\nIn terms of this change I'm wondering is\r\n\r\n`def cast(self, new_dtypes: dict[str, pl.DataType]) -> DataFrame`\r\n\r\nmore descriptive than\r\n\r\n`def cast(self, schema: dict[str, pl.DataType]) -> DataFrame`\r\n\r\nIf `schema` is the argument name it might give the impression that we are applying a new schema to the df which, for example, could look something like this: \r\n\r\n```\r\n>>> df = pl.DataFrame(\r\n        ...     {\r\n        ...         \"apple\": [1, 2, 3],\r\n        ...         \"banana\": [6, 7, 8],\r\n        ...         \"orange\": [\"a\", \"b\", \"c\"],\r\n        ...     }\r\n        ... )\r\n>>> df\r\nshape: (3, 3)\r\n\r\n│ apple ┆ banana ┆ orange │\r\n│ i64   ┆ i64    ┆ str    │\r\n│ ---   ┆ ---    ┆ ---    │\r\n│ 1     ┆ 6      ┆ a      │\r\n│ 2     ┆ 7      ┆ b      │\r\n│ 3     ┆ 8      ┆ c      │\r\n\r\n>>> schema = {\"banana\": pl.String, \"pear\": pl.String}\r\n>>> df.cast(schema)\r\nshape: (3, 3)\r\n\r\n│ banana┆ pear   │\r\n│ str   ┆ str    │\r\n│ ---   ┆ ---    │\r\n│ 6     ┆ null   │\r\n│ 7     ┆ null   │\r\n│ 8     ┆ null   │\r\n\r\n```\r\n\r\nBut this isn't what we're proposing that df.cast will do. It will look more like this (per tests above):\r\n\r\n```\r\n>>> new_dtypes = {\"banana\": pl.String, \"pear\": pl.String}\r\n>>> df.cast(new_dtypes)\r\nshape: (3, 3)\r\n\r\n│ apple ┆ banana ┆ orange │\r\n│ i64   ┆ str    ┆ str    │\r\n│ ---   ┆ ---    ┆ ---    │\r\n│ 1     ┆ 6      ┆ a      │\r\n│ 2     ┆ 7      ┆ b      │\r\n│ 3     ┆ 8      ┆ c      │\r\n```\r\n\r\n\r\nSo here are my questions:\r\n* Does using `def cast(self, new_dtypes: dict[str, pl.DataType]) -> DataFrame` as the signature sound ok?\r\n* If there are columns that don't exist in `new_dtypes` do you think df.cast should error or just ignore them? (`pear` in the second example above is ignored)\r\n* If multiple columns in `new_dtypes` cause `expr.cast` to throw errors is it preferred to present these all to the user in one go so they can fix them in one go? Or should we do the easier thing and show them the first error, let them fix it, then show them the second and so on?\r\n\r\nHope that makes sense, thanks!"
+  },
+  {
+   "author": "mkleinbort-ic",
+   "created_at": "2023-08-14T15:27:04Z",
+   "body": "Thoughts:\r\n\r\n> Does using `def cast(self, new_dtypes: dict[str, pl.DataType]) -> DataFrame` as the signature sound ok?\r\n\r\nI don't love the argument name `new_dtypes` - I've never come across it and this feels unfamiliar. \r\nThe pandas `.astype` method uses the parameter `dtype` and so does the polars `pl.Expr.cast` method\r\n\r\nSee: \r\n- https://pandas.pydata.org/docs/reference/api/pandas.DataFrame.astype.html\r\n- https://pola-rs.github.io/polars/py-polars/html/reference/expressions/api/polars.Expr.cast.html#polars.Expr.cast\r\n\r\nI think the best implementation would be:\r\n`def cast(self, dtype: pl.DataType | dict[str, pl.DataType]) -> DataFrame`\r\nWhere if the argument is a dictionary it applies to the columns as specified. If the argument is just a `pl.DataType` then it applies to all columns.\r\n\r\n> If there are columns that don't exist in `new_dtypes` do you think `df.cast` should error or just ignore them? (pear in the second example above is ignored)\r\n\r\nNot all columns in `df` need to be referenced in the `.cast` input, but all columns referenced in the `.cast` MUST exist in `df`.\r\n\r\n> If multiple columns in `new_dtypes` cause `expr.cast` to throw errors is it preferred to present these all to the user in one go so they can fix them in one go? Or should we do the easier thing and show them the first error, let them fix it, then show them the second and so on?\r\n\r\nEither is fine, but I think one at a time will result in simpler internal code - otherwise you might find yourself pooling errors, etc...\r\nThere are also perverse cases where the errors would be supper annoying (imagine a 1,000 column dataframe that results in 1,000 identical errors).\r\n\r\n```python\r\npl.DataFrame({'x1': ['A'], 'x2': ['B'], ..., 'x1000':['ALL']}).cast(pl.Int64)\r\n```\r\n\r\nIn general I'd be afraid of any code that could result in arbitrarily long error messages. \r\n"
+  },
+  {
+   "author": "alexander-beedie",
+   "created_at": "2023-08-14T15:41:00Z",
+   "body": "> The pandas .astype method uses the parameter \"dtype\" and so does the polars pl.Expr.cast method\r\n\r\nI'd make a slight amendment here; the `Expr` version can only cast from _one_ dtype to another - this frame-level method will potentially cast to/from `n` dtypes, so I'd advocate keeping the parameter name both familiar (similar to the expression-level `cast`) but _also_ accurate by pluralising it as `dtypes`. (Looks pretty odd to declare a singular dtype as a dict that can contain _lots_ of dtypes). Can make a good case for either that or `schema`; I'm relatively neutral as to which ;)"
+  },
+  {
+   "author": "mkleinbort-ic",
+   "created_at": "2023-08-14T15:53:43Z",
+   "body": "@alexander-beedie - in your view should \"convert all to a given type\" inputs be supported:\r\n\r\nEg.\r\n```python\r\ndf = pl.DataFrame({'x1': [1], 'x2':[2.0], 'x3':['3']})\r\ndf.cast(pl.Float64) # Equivalent to df.select(pl.all().cast(pl.Float65))\r\n```"
+  },
+  {
+   "author": "mcrumiller",
+   "created_at": "2023-08-14T15:58:20Z",
+   "body": "@mkleinbort-ic I think yes, but continuing to use the parameter name `dtypes` works. The dtypes of all the columns will be \"`pl.Float65`\", whatever that is. I'd recommend using `pl.Float64` instead though :)"
+  },
+  {
+   "author": "mkleinbort-ic",
+   "created_at": "2023-08-14T15:59:51Z",
+   "body": "It's a secret Datatypo that makes the computation happen in the network card "
+  },
+  {
+   "author": "mkleinbort-ic",
+   "created_at": "2023-08-14T16:00:51Z",
+   "body": "pl.Float66 removes the Jedi overhead"
+  },
+  {
+   "author": "alexander-beedie",
+   "created_at": "2023-08-14T16:03:25Z",
+   "body": "> @mkleinbort-ic I think yes, but continuing to use the parameter name `dtypes` works. The dtypes of all the columns will be \"`pl.Float65`\", whatever that is. I'd recommend using `pl.Float64` instead though :)\r\n\r\nFloat65 [goes to 11](https://www.youtube.com/watch?v=hW008FcKr3Q) - what if you need that little extra?  ;)\r\n\r\n(But more seriously, yes, the param name `dtypes` still works in this case; I also think that it's a convenience shortcut worth supporting)."
+  },
+  {
+   "author": "alexander-beedie",
+   "created_at": "2023-08-14T20:14:33Z",
+   "body": "Landing a PR tomorrow - just finished a clean [implementation](https://github.com/alexander-beedie/polars/commit/5042f216480576072a71d5cd4bd9ff2075276be5) (including `selector` support), but still need to write some tests and it's late here. Will finish up tomorrow morning.\r\n\r\n**Examples**:\r\n* `df.cast( {\"foo\": pl.Float32, \"bar\": pl.UInt8} )`\r\n* `df.cast( {cs.numeric(): pl.UInt32}) `\r\n* `df.cast( pl.Utf8 )`"
+  },
+  {
+   "author": "itsakettle",
+   "created_at": "2023-08-14T21:09:01Z",
+   "body": "Ah I was too slow. I'll be quicker next time! Away with family and had less time than I thought. "
+  },
+  {
+   "author": "alexander-beedie",
+   "created_at": "2023-08-15T13:49:32Z",
+   "body": "> Ah I was too slow. I'll be quicker next time! Away with family and had less time than I thought.\r\n\r\nApologies! I joined in the discussion a bit late and somehow completely missed you offering to work on this one...😅"
+  },
+  {
+   "author": "itsakettle",
+   "created_at": "2023-08-15T21:08:54Z",
+   "body": "No worries, I'm in it for the learning and looking at your PR will give me lots of that. "
+  },
+  {
+   "author": "alexander-beedie",
+   "created_at": "2023-08-19T07:26:09Z",
+   "body": "> No worries, I'm in it for the learning and looking at your PR will give me lots of that.\r\n\r\nApparently I learned a few things too while refining it, haha... :))"
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "pola-rs/polars",
+  "default_branch": "main",
+  "commit_sha": "aea1d6f1388eac3aff864640aed401839e263868",
+  "as_of": "2023-07-18T22:23:46Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_pola-rs_polars_9959"
+}

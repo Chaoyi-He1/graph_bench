@@ -1,0 +1,200 @@
+{
+ "repo": "tmux/tmux",
+ "number": 4412,
+ "url": "https://github.com/tmux/tmux/issues/4412",
+ "title": "choose-tree format prints wrong values for external commands",
+ "state": "closed",
+ "labels": [],
+ "reporter": "reporter",
+ "created_at": "2025-03-17T10:46:20Z",
+ "closed_at": "2025-03-24T20:13:53Z",
+ "body": "### Issue description\n\nWhen the choose-tree format contains an invocation of an external command, the result of that command for the **last** choose-tree item is printed on **every** line in the choose tree. \n\nUsing only internal identifiers such as `pane_pid`, there is no problem. For example: \n\n`bind-key s choose-tree -sZ -O name -F #{pane_pid}\"`\n                                                                                                                                                       \n    (0)   + cURL-1: 506069                                                                                                                             \n    (1)   + cURL-2: 506104                                                                                                                             \n    (2)   + experimental-1: 506168                                                                                                                     \n    (3)   + fausec-1: 506235                                                                                                                           \n    (4)   + fausec-2: 506304                                                                                                                           \n    (5)   + logging-1: 506398                                                                                                                          \n    (6)   + logging-2: 506464                                                                                                                          \n    (7)   + mbedtls-1: 506581                                                                                                                          \n    (8)   + repo-1: 506665                                                                                                                             \n    (9)   + root-1: 506754                                                                                                                             \n    (M-a) + shell-1: 506823                                                                                                                            \n    (M-b) + shell-2: 506931                                                                                                                            \n    (M-c) + validator-1: 507027                                                                                                                        \n    (M-d) + vm-1: 507106                                                                                                                                \n                                                                                                                                                       \nBut if an external command such as `echo` is invoked in the choose-tree format, the **last line's value** for that command is applied to every line. For example\n\n`bind-key s choose-tree -sZ -O name -F \"#(echo #{pane_pid})\"`\n\n    (0)   + cURL-1: 507106                                                                                                                             \n    (1)   + cURL-2: 507106                                                                                                                             \n    (2)   + experimental-1: 507106                                                                                                                     \n    (3)   + fausec-1: 507106                                                                                                                           \n    (4)   + fausec-2: 507106                                                                                                                           \n    (5)   + logging-1: 507106                                                                                                                          \n    (6)   + logging-2: 507106                                                                                                                          \n    (7)   + mbedtls-1: 507106                                                                                                                          \n    (8)   + repo-1: 507106                                                                                                                             \n    (9)   + root-1: 507106                                                                                                                             \n    (M-a) + shell-1: 507106                                                                                                                            \n    (M-b) + shell-2: 507106                                                                                                                            \n    (M-c) + validator-1: 507106                                                                                                                        \n    (M-d) + vm-1: 507106                                                                                                \n                                                                                                                                                       \n### Required information\n\nPlease provide the following information:\n\n* tmux version 3.5a\n* Platform: Linux unknown (actually Fedora 41, specifically `Linux fedora 6.13.6-200.fc41.x86_64 #1 SMP PREEMPT_DYNAMIC Fri Mar  7 21:33:48 UTC 2025 x86_64 GNU/Linux`)\n* $TERM inside: tmux-256color\n* $TERM outside: xterm-256color\n",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2025-03-18T02:04:12Z",
+   "body": "This looks like it's by design.  The man page says this about `#()`:\n```\n     In addition, the last line of a shell command's output may be inserted using ‘#()’.  For example, ‘#(uptime)’ will\n     insert the system's uptime.  When constructing formats, tmux does not wait for ‘#()’ commands to finish; instead,\n     the previous result from running the same command is used, or a placeholder if the command has not been run before.\n     If the command hasn't exited, the most recent line of output will be used, but the status line will not be updated\n     more than once a second.  Commands are executed with the tmux global environment set (see the GLOBAL AND SESSION\n     ENVIRONMENT section).\n```\nThis makes it more obvious that this is happening:\n```\ntmux bind-key s choose-tree -sZ -O name -F \"#(shuf -i 1-10000 -n 1)\"\n```\nYou can see a new random value is chosen every few seconds and it's used for all the lines.  You can't count on that shell command being executed once per line of output in `choose-tree`."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-03-18T06:53:36Z",
+   "body": "IIIRC there is a way to pass the pane ID to `format_expand` to make tmux treat the same command as different for each pane (something like `FORMAT_PANE|wp->id`), it sounds like the tree it not doing this or it is not working? (Maybe compare how status.c does it with mode-tree.c.)"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-03-18T10:35:46Z",
+   "body": "Sounds like maybe this is more a feature request. Instead of running any specified shell commands while assembling the `choose-tree`, it would be sufficient to simply copy the exact string that last appeared on the session's `status-right`. With session status updated every N seconds, the user can decide how much cpu time to invest in keeping those current. For me, the cost is very low for 5 second updates, and even that is not really necessary. "
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-03-19T20:57:58Z",
+   "body": "I spent a bit of time tracing through the code in the debugger.  @participant2 I tried what you said but it didn't seem to help.  May not have done it in the right place though.  I tried to replaced the `FORMAT_NONE` with `FORMAT_PANE|wp->id` in the `format_create` call in `window_tree_get_key` and when that didn't help, I noticed that there were several other calls to `format_single`, which calls `format_create_defaults` which in turn calls `format_create`, so I changed it in there too after checking if wp!=NULL.  Nope, that didn't help either.  I am not sure what the `FORMAT_FORCE` flag does but I also tried adding that too.\n\nClearly I need to better understand the code more to figure out what's going on.  \n\n@reporter it sounds like what you want is a new format variable containg the session's `status-right` which might imply other variables as well.  Or perhaps a new format variable for just the pane's cpu_time, that's up to @participant2.  What I think you were trying to do when you ran across this was to use `#()` to execute some sort of shell cmd like `ps | grep #{pane_pid} | sed ...` or something to pick out the cpu time for the pid. "
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-03-19T21:06:03Z",
+   "body": "I think it'd be the one in `window_tree_build_pane`, did you try that one?\n\nThe tag should mean that two `#()` commands don't match unless they are also the same pane. But maybe something else is going on. You may need to add some logging :-)."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-03-20T00:06:58Z",
+   "body": "> a new format variable for just the pane's cpu_time\n\nThat isn't part of my request. This idea of cpu time, where did it come from? If there can be a `status-left` and `status-right` that simply copies the exact text off the pane--without any parsing, external calls, or other processing of any kind whatsoever--that would be ideal. It's always possible to walk through the panes and look at the status bar, one by one, but it takes a lot of time. Copying that text into the `choose-tree` would make it much easier!"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-03-20T07:02:28Z",
+   "body": "I don't think we want thst. Try making`status-right` a script that saves a copy of it itself, something like:\n~~~~\nx=$(tmux display -p '#{pane_id}')\ntmux set -g @copy_status_right \"$x\"\necho $x\n~~~~\n"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-03-20T07:07:15Z",
+   "body": "Well actually that won't work because you want a different one for each session. It may be possible by putting it in a user option called `@copy_status_right_#{session_id}` and then using `e` to get it out."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-03-20T19:24:08Z",
+   "body": "I have some progress, maybe I fixed this...\n\nFirst, using `FORMAT_PANE|wp->id` as the tag when wp!=NULL in format_create_defaults in format.c gets the pane_pid into the data. \n\nThen in `window_tree_build_window`:\n```\n          if (TAILQ_NEXT(wp, entry) == NULL) {\n                  if (!window_tree_filter_pane(s, wl, wp, filter))\n                          goto empty;\n                  return (1);\n          }\n```\n\nI removed the `return (1)` here and let the code continue.  If `TAILQ_NEXT` is true then there's exactly one item in the list and then if `window_tree_filter_pane` filters out that one item, it's empty, so the `goto empty` is appropriate.  But it seemed odd to return here even if there was only a single item.  Removing the return, I now I see the different PIDs from the echos:\n\n```\n(0) - 0: 206052\n(1) ├─> - 0: 206052\n(2) │   └─> 0: 206033\n(3) └─> - 1: 206052\n(4)     └─> 0: 206052 \n```\nThis looks reasonable to me.  Is this the expected tree output with the format `\"#(echo #{pane_pid})\"`?\n\nThis is what `pstree` shows:\n```\n/usr/bin/pstree -ap 206032\ntmux: server,206032\n  ├─bash,206033\n  └─bash,206052\n```\n\nDoes this fix the issue?  Is the above 5 line output the expected output?  It looks like it based on my stepping through the code.  If this is good, I'll do a PR this evening."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-03-20T19:26:35Z",
+   "body": "[diff-1.txt](https://github.com/user-attachments/files/19374295/diff-1.txt)\n\nthere's my current diff."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-03-20T21:51:41Z",
+   "body": "That looks like just what I need. Do you want me to try it with my script? Currently I just have the distro, so I'd have to set up a build. \n\nAs an aside, it would be interesting to know why `#{pane_path}` doesn't work in the `choose-tree`. Other pane properties seem to work."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-03-20T23:33:42Z",
+   "body": "Definitely try it if you can apply that patch and recompile.  I'll put together a PR.\n\nI can look at `#{pane_path}`.  Maybe Nic has an idea."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-03-21T00:12:47Z",
+   "body": "> Definitely try it if you can apply that patch and recompile\n\nPatch fails. Had to start with `dos2unix`, otherwise git rejects it as corrupt. Does it apply to `master`?\n\n     > git apply --summary choose-tree.patch --stat\n      format.c      |   10 ++++++++--\n      window-tree.c |    1 -\n      2 files changed, 8 insertions(+), 3 deletions(-)\n   \n    > git apply choose-tree.patch \n    error: patch failed: format.c:5104\n    error: format.c: patch does not apply\n    error: patch failed: window-tree.c:373\n    error: window-tree.c: patch does not apply\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-03-21T00:36:02Z",
+   "body": "Manually patched, builds fine, exited then `tmux kill-server`. But no change. Here's my `choose-tree`:\n\n    bind-key s choose-tree -sZ -O name -F \"#{window_name} in #(realpath /proc/#{pane_pid}/cwd)\"\n\nShows the last pane's path for all `choose-tree` items, just like before. "
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-03-21T00:38:26Z",
+   "body": "Hmm.  Does the simple echo produce what I got?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-03-21T00:40:42Z",
+   "body": "> Hmm. Does the simple echo produce what I got?\n\nOnly without `-Z`. At the top level of each root branch, it's always the same pid. But if I don't use `-Z`, then I can't see the whole tree, it's much too big, plus it is cluttered with incorrect paths for those level-1 items. \n\nThis may not actually be a problem for me, if I can figure out how to organize my tmux environment under a single tmux session (which I suppose is probably how it is intended to be used). Currently there is a set of singleton sessions. Never really thought about setting up any other way."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-03-21T01:42:18Z",
+   "body": "The root is the `session`, then the next level is the `window` then the third level is the `window_pane`.  There is a `choose-buffer` command but it doesn't work for me in master as I compiled it, but it does work for me in the older version on debian.  I will look at that later.\n\nYou are using `#pane_pid` in the format for each line and at each level, this is the pid of a pane which is associated with that level in the tree.  The `pane_pid` is that of the shell inside the pane.  The root session has the first window and the first window_pane and thus the pid is that of the shell in that pane.  The window child of the session, again, has a window_pane and the pane_pid is the pid of that same shell (the shell that started the windows).  The third level is the pane itself and again it's the pid of the shell but in this case each window pane has its own shell so the 3rd level is the level I see with unique pids.  Is this also what you see?\n\nYour example seems like it works with my fix but you're correct, it's messy with the session and window lines, but that does not appear to be a bug.\n\nWhat about `choose-buffer`?  Does it work for you?  Is it more like what you are looking for?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-03-21T01:47:15Z",
+   "body": "This is the tree I see with your choose-tree format:\n\n![Image](https://github.com/user-attachments/assets/c26d23ed-cfc4-49f6-bc3b-20bcbea16076)\n\nI have 2 windows, one of the windows is split into 2 panes.  I cd'ed to some different directories in each window."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-03-21T02:09:05Z",
+   "body": "One thing I just noticed is I think the ordering is wrong.  I'll look at that tomorrow as well.  But at least for me it's showing different things at the 3rd level which it wasn't for me before the patch."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-03-21T12:31:36Z",
+   "body": "> The third level is the pane itself and again it's the pid of the shell but in this case each window pane has its own shell so the 3rd level is the level I see with unique pids. Is this also what you see?\n\nYes, and actually, these are the only rows I would like to see. Is it possible for `choose-tree` to omit all window items that have only one pane, showing instead only the pane item? Then I could use a set of single-pane windows inside a single session, and the `choose-tree` would be compact. \n\nNothing happens when I issue command `choose-buffer` from inside tmux on its command line (or from a key binding). Also, nothing is printed for `tmux list-buffers` from outside tmux (or just `list-buffers` from the tmux command line).\n\nIn general, multi-pane windows are not practical for me because I connect to the same tmux from different machines that have different monitor configurations. It works much better to have a single pane in each window (or even a single window in each session), and organize the multiple-pane display using Tilix or just plain Gnome terminal instances. This also allows key bindings for pane focus change to be bound outside of tmux, which is essential when connecting to the same tmux server with different keyboards that have different modifier keys available.   \n\n"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-03-21T13:06:10Z",
+   "body": "The `#{pane_id}` for a window should be the pane ID of the active pane and for a session of the active pane in the current window, so I don't think this is fully correct.\n\nTry this, for example:\n~~~~\n$ tmux -Ltest new -d \\; neww \\; splitw \\; new -d \\; new -d\n$ tmux -Ltest lsp -aF '#{pane_id}'\n%0\n%1\n%2\n%3\n%4\n$ tmux -Ltest lsw -aF '#{pane_id}'\n%0\n%2\n%3\n%4\n$ tmux -Ltest ls -F '#{pane_id}'\n%2\n%3\n%4\n~~~~\nIf you attach and do `choose-tree -F '#{pane_id}'` you will see the labels match this. The `#{pane_id}` expansion in `#()` should also.\n"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-03-21T13:07:06Z",
+   "body": "You wanted `pane_pid` but it should have the same behaviour as `pane_id`. Two sessions should not have the same `pane_pid` or `pane_id`, unless they have the same current window. Two windows will never have the same because a pane cannot be in two windows."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-03-21T13:16:20Z",
+   "body": "This seems to work for me: [x.diff.txt](https://github.com/user-attachments/files/19389940/x.diff.txt)\n\n@participant1 did you try this, is there a problem I'm missing?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-03-21T13:28:35Z",
+   "body": "Yes, this is what I am currently testing.  I am just looking at your pid vs id stuff above.  I'm not yet convinced the bug(s) are fully fixed yet.  But let me do a PR so you can see things more easily."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-03-21T13:35:20Z",
+   "body": "Here's the PR: https://github.com/tmux/tmux/pull/4420 Issue 4412 choose tree format prints wrong values\n"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-03-21T13:38:46Z",
+   "body": "Did you look at the diff I posted? Does it not work? I don't know that this should be done for everything in `format.c`."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-03-21T13:47:30Z",
+   "body": "@reporter I think you want `choose-buffer`, but it doesn't seem to work at the moment.  I'll work on that in a separate issue, let me try to get this working as expected first, even if you don't ultimately end up using it, it's good this was spotted!  I know those extra lines are chaff but let's try to get it working as it's documented and I'll work on fixing `choose-buffer` which I think may be more useful to both of us.\n\nAs an aside, I myself have bound the function keys F9, F10, F11, and F12 to windows 0, 1, 2, and 3 like this:\n```\nbind-key -n F9 if 'tmux neww -t0' '' 'select-window -t0'\nbind-key -n F10 if 'tmux neww -t1' '' 'select-window -t1'\nbind-key -n F11 if 'tmux neww -t2' '' 'select-window -t2'\nbind-key -n F12 if 'tmux neww -t3 emacs' '' 'select-window -t3'\n```\nIt lets me flip between 4 window (3 shells and an emacs).  I chose F9-12 for my own reasons in that I use the other function keys for something else and only really need 3 shells but you could easily bind 12 windows like this if you wanted.  I too virtually never spllit windows like you.  I just flip between windows using those function keys.  So perhaps this might be useful to you."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-03-21T13:49:06Z",
+   "body": "@participant2 I missed _your_ diff, sorry!  let me look at this."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-03-21T14:24:45Z",
+   "body": "> The `#{pane_id}` for a window should be the pane ID of the active pane and for a session of the active pane in the current window\n\nIt's not really useful for me to have the `pane_id`, because nothing outside tmux is aware of that. However, `pane_pid` gives me a portal to nearly any information I could possibly want about the process in that pane.\n\n> so I don't think this is fully correct.\n\nSorry, not following at all. Referring to something that was said earlier? What specifically is not fully correct? \n\n> Try this, for example:\n\nIt's not really possible for me to experiment ad-hoc with tmux, because I currently have 24 windows open in it, and I am trying to do some actual work (the kind that I get paid for) in there. Maybe later I can try this at home where I have multiple desktops reachable from the same physical I/O.\n"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-03-21T14:42:17Z",
+   "body": "I was referring to @participant1's change.\n\nYou can test changes by running a new tmux server with `tmux -Ltest new`."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-03-22T03:07:14Z",
+   "body": "Ok I think I convinced myself your patch is better.  However, we still need to remove the `return (1)` or you don't get the 3 levels when there's only a single window, that's inconsistent.\n\nI understand now that the root line is the session and the pane_id is the active pane.  I thought it was something like the root window but that really has no meaning.  It's the active one.\n\nThe second level indent is the window, and again, the pane_id is the active pane.\n\nThe third level indent is the pane and its pane_id is its pane_id.\n\nI will move your stuff into my PR.  Thanks.  "
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-03-24T20:13:53Z",
+   "body": "I've applied this now, it will be in GitHub when it syncs in the next day or so. Please try again after that and report if it still doesn't work.  Thanks!"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-03-25T00:40:34Z",
+   "body": "Thanks, works great for me now."
+  },
+  {
+   "author": "github-actions[bot]",
+   "created_at": "2025-04-25T00:24:44Z",
+   "body": "This issue has been automatically locked since there has not been any recent activity after it was closed."
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "tmux/tmux",
+  "default_branch": "master",
+  "commit_sha": "d4b8635f50f997bf48764caa4972c4b5fc8802fd",
+  "as_of": "2025-03-17T10:46:20Z",
+  "method": "github_commits_until"
+ },
+ "images": [
+  {
+   "where": "c17",
+   "source_url": "https://github.com/user-attachments/assets/c26d23ed-cfc4-49f6-bc3b-20bcbea16076",
+   "file": "gh_tmux_tmux_4412_img0.png"
+  }
+ ],
+ "slug": "gh_tmux_tmux_4412"
+}

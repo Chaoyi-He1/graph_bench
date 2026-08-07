@@ -1,0 +1,225 @@
+{
+ "repo": "apache/superset",
+ "number": 25825,
+ "url": "https://github.com/apache/superset/issues/25825",
+ "title": "Kubernetes deployments only load example SQLite data into a single pod, causes \"no such table: main.FCC 2018 Survey\"",
+ "state": "closed",
+ "labels": [],
+ "reporter": "iamrohit07",
+ "created_at": "2023-11-01T18:15:28Z",
+ "closed_at": "2026-06-13T18:36:11Z",
+ "body": "I have deployed Apache Superset 3.0 using Helm charts. The Helm chart version is superset-0.10.11, and the app version is 3.0.1. I've configured Superset to load example data (loadExamples set to true), but I'm encountering an issue on the dashboard with the error message '**no such table: main.FCC 2018 Survey**' while opening one of the example charts.\r\nBelow is the stack strace from app pods.\r\n```\r\n2023-11-01 14:46:36,834:WARNING:superset.connectors.sqla.models:Query SELECT country_live AS country_live\r\nFROM main.\"FCC 2018 Survey\"\r\nGROUP BY country_live\r\nLIMIT 1000\r\nOFFSET 0 on schema main failed\r\nTraceback (most recent call last):\r\n  File \"/app/superset/connectors/sqla/models.py\", line 1214, in query\r\n    df = self.database.get_df(sql, self.schema, mutator=assign_column_label)\r\n  File \"/app/superset/models/core.py\", line 611, in get_df\r\n    self.db_engine_spec.execute(cursor, sqls[-1])\r\n  File \"/app/superset/db_engine_specs/base.py\", line 1535, in execute\r\n    raise cls.get_dbapi_mapped_exception(ex) from ex\r\n  File \"/app/superset/db_engine_specs/base.py\", line 1533, in execute\r\n    cursor.execute(query)\r\nsqlite3.OperationalError: no such table: main.FCC 2018 Survey\r\n```\r\n\r\n**How to reproduce the bug**\r\n- Install Apache Superset Helm chart with version 0.10.11 and set loadExamples to true\r\n- Login to Superset to app and open **FCC New Coder Survey 2018** chart\r\n\r\n**Expected results**\r\n- It should load chart data\r\n\r\n**Actual results**\r\n- It throws error - no such table: main.FCC 2018 Survey",
+ "comments": [
+  {
+   "author": "sergiimk",
+   "created_at": "2023-11-03T01:08:43Z",
+   "body": "I also hit this issue on latest chart `0.10.14`.\r\n\r\nIf you go to `Settings / Database connections` and do `Test connection` on `examples` database you will see an SQLite-related error saying it's not a secure source.\r\n\r\nPer #17551 I added the following into my `values.yaml`:\r\n```yaml\r\nconfigOverrides:\r\n  allow_sqlite_for_examples: |\r\n    PREVENT_UNSAFE_DB_CONNECTIONS = False\r\n```\r\n\r\nThis made connection test pass, however I was still getting `no such table` errors. \r\n\r\nWhen I exec into `superset` pod I see that `superset_home/examples.db` file has size of zero. I suspect that `superset-init-db` pod that according to logs seems to be setting up all the example tables is not writing to the same file superset pod is reading from..."
+  },
+  {
+   "author": "iamrohit07",
+   "created_at": "2023-11-03T12:55:55Z",
+   "body": "@sergiimk had PREVENT_UNSAFE_DB_CONNECTIONS  set to False. Where does the **superset-init-db** pod is writing the data then ? Because, after installing the chart, when I execute a command to enter the application pod, I noticed that the 'examples.db' file itself is not present in the following location - sqlite:////app/superset_home/examples.db. When I tried to access the chart it get's created at that time with zero size. This is bit weired."
+  },
+  {
+   "author": "sergiimk",
+   "created_at": "2023-11-03T20:31:50Z",
+   "body": "I think this is some regression in helm setup.\r\n\r\nThe `superset load_examples` command that populates `examples.db` is executed in `superset_init.sh` script which is only run by init job. Init job spawns `superset-init-db` which creates `examples.db` but only **in its own file system**, so the file dies with it as pod exits.\r\n\r\n**Workaround:** Manually exec into `superset` pod and run `superset load_examples` inside it to populate `examples.db`.\r\n\r\nI think the proper solution here is not to use SQLite in k8s setup at all and populate examples into Postgres (by reusing existing DB or creating a new one), but this is a bit beyond what I feel comfortable contributing."
+  },
+  {
+   "author": "sebastianliebscher",
+   "created_at": "2023-11-10T09:59:46Z",
+   "body": "I could replicate this issue with version `3.0.1` and on `master` using Docker. The Docker stack uses Postgres as meta database, so I don't think the issue relates to the Helm chart or SQLite.\r\n\r\nSteps to reproduce:\r\n- git clone and checkout `master` / `3.0.1`\r\n- `TAG=3.0.1 docker-compose -f docker-compose-non-dev.yml up`\r\n- navigate to Datasets / `FCC 2018 Survey` and click the `Samples` tab\r\n- get the error:\r\n\r\n```bash\r\nError: column \"rsrc_pluralsight\" does not exist\r\nLINE 122:        rsrc_pluralsight AS rsrc_pluralsight,\r\n                 ^\r\nHINT:  Perhaps you meant to reference the column \"FCC 2018 Survey.rsrc_pluralsght\".\r\n```\r\n\r\nLooks like a typo somewhere? Unfortunately, a full-text search for `rsrc_pluralsght` in the repo yields nothing.\r\n\r\npinging to get some eyes on the issue @rusackas, @sfirke, @john-bodley "
+  },
+  {
+   "author": "john-bodley",
+   "created_at": "2023-11-10T21:21:31Z",
+   "body": "@sebastianliebscher I think there's a typo from your full-text search, i.e., you're missing an `i` from `sight`:\r\n\r\n```\r\n$ git checkout 3.0\r\nSwitched to branch '3.0'\r\nYour branch is up to date with 'apache/3.0'.\r\n$ git grep rsrc_pluralsight\r\nsuperset/examples/configs/datasets/examples/FCC_2018_Survey.yaml:- column_name: rsrc_pluralsight"
+  },
+  {
+   "author": "john-bodley",
+   "created_at": "2023-11-10T21:23:29Z",
+   "body": "@craig-rueda do you have any insights with regards to the Helm charts issue?"
+  },
+  {
+   "author": "sebastianliebscher",
+   "created_at": "2023-11-11T07:17:50Z",
+   "body": "@john-bodley I intentionally full-text searched for `rsrc_pluralsght` (without the `i`) because that's what an unchanged/unconfigured Superset `3.0.1` / `master` out-of-the-box errors out when navigating to the `FCC 2018 Survey` dataset. I literally just git cloned and docker composed up Superset and got this error message with the typo."
+  },
+  {
+   "author": "iamrohit07",
+   "created_at": "2023-12-04T11:11:07Z",
+   "body": "@john-bodley @craig-rueda @sebastianliebscher Is there any update on this issue ?"
+  },
+  {
+   "author": "michael-s-molina",
+   "created_at": "2023-12-29T19:11:07Z",
+   "body": "https://github.com/apache/superset/pull/26380"
+  },
+  {
+   "author": "iamrohit07",
+   "created_at": "2024-02-01T13:51:35Z",
+   "body": "@michael-s-molina  I am still facing the the same issue. I have installed Superset 3.1.0 using helm chart superset-0.12.0. I am getting no such table error for all the charts. I went inside the superset pod to see examples.db file but it's not there. After running superset load_examples within pod I can see examples.db file and charts are getting loaded. Did we miss something while fixing this issue?"
+  },
+  {
+   "author": "tsndqst",
+   "created_at": "2024-02-01T14:17:43Z",
+   "body": "@iamrohit07 I think there ended up being two problems discussed in this issue.  I don't think anything has been done to address the missing examples database.  It seems that issue was introduced with this PR: https://github.com/apache/superset/pull/25003.\r\n\r\nI've been trying to configure the examples to load into the main database but it looks like the example loading code has some dependencies on specific schema names.  Hopefully someone with more knowledge of the code can help figure out how to get examples loaded into a database that isn't local to a container so they will work in environments like Kubernetes."
+  },
+  {
+   "author": "michael-s-molina",
+   "created_at": "2024-02-01T14:24:43Z",
+   "body": "Hi @iamrohit07. As @tsndqst correctly pointed out, this seems like a different issue than the original one `no such table: main.FCC 2018 Survey` which was fixed by https://github.com/apache/superset/pull/26380. Please open a new issue and tag @dpgaspar which was the author of https://github.com/apache/superset/pull/25003."
+  },
+  {
+   "author": "tsndqst",
+   "created_at": "2024-02-01T14:51:00Z",
+   "body": "> Hi @iamrohit07. As @tsndqst correctly pointed out, this seems like a different issue than the original one `no such table: main.FCC 2018 Survey` which was fixed by #26380. Please open a new issue and tag @dpgaspar which was the author of #25003.\r\n\r\nI think this issue correctly summarizes the symptoms of the issue.  #26380 may have fixed an existing issue but I think this issue is still valid.  In other words, if @iamrohit07 makes a new issue it will probably have the same summary as this one."
+  },
+  {
+   "author": "rusackas",
+   "created_at": "2024-02-01T15:23:47Z",
+   "body": "We're trying to get to a sustainable Issues backlog, and it's extremely helpful when Issues cover one reproducible bug, which would preferably be fixed by one PR. When issues contain two bugs and multiple PRs, it gets confusing, long discussion threads ensue, and tend not to get closed (we're currently tidying up antique issues and are seeing a lot of this)."
+  },
+  {
+   "author": "tsndqst",
+   "created_at": "2024-02-01T15:30:23Z",
+   "body": "I think one thing that would help with that is to confirm a PR fixes the issue before closing the issue."
+  },
+  {
+   "author": "michael-s-molina",
+   "created_at": "2024-02-01T15:43:07Z",
+   "body": "Re-opening the issue..."
+  },
+  {
+   "author": "iamrohit07",
+   "created_at": "2024-02-05T11:07:58Z",
+   "body": "@dpgaspar Could you please take a look at this. I am not able to access any of the charts and getting no such table error. When I exec into superset pod, I can see that superset_home/examples.db file has zero size. When I run superset load_examples within pod, examples.db file gets recreated and then I am able to access all the charts. "
+  },
+  {
+   "author": "AnhQKatalon",
+   "created_at": "2024-02-27T08:57:57Z",
+   "body": "I am getting precisely the same error with the most current Superset chart. I enabled loadExamples but all the Dashboards and Charts return `no such table` errors"
+  },
+  {
+   "author": "tomaszbozek",
+   "created_at": "2024-03-15T17:05:49Z",
+   "body": "> @dpgaspar Could you please take a look at this. I am not able to access any of the charts and getting no such table error. When I exec into superset pod, I can see that superset_home/examples.db file has zero size. When I run superset load_examples within pod, examples.db file gets recreated and then I am able to access all the charts.\r\n\r\nThis helped me. I cleaned superset: removed docker images, volumes and after running `docker-compose up` with fresh 3.1.1 version I logged into container using command `docker exec -it superset_app /bin/bash` and invoked command `superset load_examples`. \r\nThis recreated examples db."
+  },
+  {
+   "author": "tomaszbozek",
+   "created_at": "2024-03-15T17:30:36Z",
+   "body": "> @dpgaspar Could you please take a look at this. I am not able to access any of the charts and getting no such table error. When I exec into superset pod, I can see that superset_home/examples.db file has zero size. When I run superset load_examples within pod, examples.db file gets recreated and then I am able to access all the charts.\r\n\r\nIn my case the problem was with volumes. Both superset-app and superset-init have to have access to the same volume:\r\n`superset_home:/app/superset_home\r\n`\r\nIf not superset init populates examples db in separate space not under superset_app."
+  },
+  {
+   "author": "gioargyr",
+   "created_at": "2024-04-04T13:22:08Z",
+   "body": "I have the same problem \"Error: no such table\" since January.\r\nCurrently, I am deploying version `3.1.1` and it's the same behavior:\r\ninit-db job runs fine, and if I test the connection to DB is fine.\r\nIt seems that `init-db` loads all the examples in the postgresql instance, while the `superset` pod is loading from a local sqlite (which cannot find, because none created it).\r\nSo, yes, if I run `superset load_examples`, the local .db is created and superset can visualize the examples.\r\n\r\nCan you verify that this is how it works?\r\nIs it normal to function this way?"
+  },
+  {
+   "author": "tomaszbozek",
+   "created_at": "2024-04-04T14:21:24Z",
+   "body": "> I have the same problem \"Error: no such table\" since January. Currently, I am deploying version `3.1.1` and it's the same behavior: init-db job runs fine, and if I test the connection to DB is fine. It seems that `init-db` loads all the examples in the postgresql instance, while the `superset` pod is loading from a local sqlite (which cannot find, because none created it). So, yes, if I run `superset load_examples`, the local .db is created and superset can visualize the examples.\r\n> \r\n> Can you verify that this is how it works? Is it normal to function this way?\r\n\r\nIMHo both pod's should use same volume and same `superset_config.py` and what is value for `SQLALCHEMY_EXAMPLES_URI` - if its commented out then pod would use sqllite by default."
+  },
+  {
+   "author": "craig-rueda",
+   "created_at": "2024-04-04T14:53:05Z",
+   "body": "AFAIK the default examples uri should be set to the postgres included in the chart. The examples should be loading via the init pod, which could possibly be failing to run to completion. Check the logs there to see if there's a failure"
+  },
+  {
+   "author": "gioargyr",
+   "created_at": "2024-04-05T14:19:36Z",
+   "body": "> AFAIK the default examples uri should be set to the postgres included in the chart. The examples should be loading via the init pod, which could possibly be failing to run to completion. Check the logs there to see if there's a failure\r\n\r\nI guess you are referring to me.\r\nNo init pod is failing.\r\nHowever, I would like to try whatever your are proposing, but can you be more specific?\r\nWhat is the exact variable I need to define? `default examples uri should be set to the postgres included in the chart`\r\nAFAIK I changed nothing related to the postgres that comes by default and `superset` is able to connect to it."
+  },
+  {
+   "author": "rusackas",
+   "created_at": "2025-02-28T18:41:02Z",
+   "body": "Is anyone still facing this? I was tempted to close it as stale (it hasn't been touched in nearly a year) but it already got re-opened once :)"
+  },
+  {
+   "author": "MohamedRhimi25",
+   "created_at": "2025-03-05T15:55:41Z",
+   "body": "@rusackas Yes I'm still facing this. I've encountered this on v3.1.0 and today I upgraded to 4.1.1 and still facing it.\nAs the fellas above said, running superset load_examples directly on the pod used to fix the issue for me at v3.1.0. But on v4.1.1, this isn't a solution anymore.. Anyone encountering the same thing?"
+  },
+  {
+   "author": "gioargyr",
+   "created_at": "2025-04-07T11:40:28Z",
+   "body": "Hello!\nI am in version 4.0.1 and I still have the same problem and running `$ superset load_examples` still solves the problem.\n"
+  },
+  {
+   "author": "jklaise",
+   "created_at": "2025-05-30T13:31:28Z",
+   "body": "Can confirm that the issue still exists on the 0.14.2 chart (version 4.1.2) and running `superset load_examples` in the Superset node pod fixes this.\n\nAdditionally, I had to add @sergiimk config override to be able to connect to the database at all:\n```yaml\nconfigOverrides:\n  allow_sqlite_for_examples: |\n    PREVENT_UNSAFE_DB_CONNECTIONS = False\n```\n\n<img width=\"1092\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/d435849c-65b1-4695-a9cf-93a3fde40200\" />"
+  },
+  {
+   "author": "rusackas",
+   "created_at": "2025-05-30T17:28:48Z",
+   "body": "I think those errors are more good advice than a bug, if I'm not mistaken 😅 \n\nYou should not use SQLite in production (which Helm is geared toward) for your metadata database. See docs [here](https://superset.apache.org/docs/configuration/configuring-superset/#setting-up-a-production-metadata-database)."
+  },
+  {
+   "author": "jklaise",
+   "created_at": "2025-05-30T17:35:58Z",
+   "body": "True, I was just testing a specific flow that required a k8s setup and I just needed some sample data."
+  },
+  {
+   "author": "rusackas",
+   "created_at": "2025-06-09T22:10:29Z",
+   "body": "This feels like it's safe to close, but let me know if anyone feels otherwise, and how they suggest we might move forward if so :) "
+  },
+  {
+   "author": "gioargyr",
+   "created_at": "2025-06-13T07:03:48Z",
+   "body": "Hello,\n\nWhy should you close this issue? I do not think that anything is fixed.\n\nThe problem is that I deploy Superset in my Kubernetes cluster using the Helm repo/chart and I should get also the example-datasets.\nHowever, the examples are not loaded by default. This is **issue number 1**.\n\nThe workaround for loading the example-datasets is to run the command `$ superset load_examples` and the example-datasets are loaded. Even in this case they are downloaded and an sqlite db file is created locally. the first time that the `superset` Pod restarts the example-datasets are lost (since they were stored locally and not persistently) and I need to run `$ superset load_examples` again.\nThis is **issue number 2**.\n\nIs this how Superset is supposed to work?\nCan I do something in order to load the example-datasets in a persistent way?"
+  },
+  {
+   "author": "MohamedRhimi25",
+   "created_at": "2025-06-13T09:59:54Z",
+   "body": "Hello guys,\n\nI'm confirming what @gioargyr just said. \nThat's the exact case for me too.\n\nPlease re-open until this behaviour is fixed 🙏 \n\nBR."
+  },
+  {
+   "author": "tsndqst",
+   "created_at": "2025-06-13T11:18:54Z",
+   "body": "My suggestion is to load the examples into the metadata database instead of a SQLite database. By default the helm chart starts a Postgres DB instance so the data would be accessible by multiple pods at once. "
+  },
+  {
+   "author": "gioargyr",
+   "created_at": "2025-06-15T15:25:10Z",
+   "body": "Thanks for the advice @tsndqst \nI know there is a PostgreSQL instance serving Superset.\nHowever, I do not know how to do what you propose. Can you tell me the steps?"
+  },
+  {
+   "author": "tsndqst",
+   "created_at": "2025-06-15T15:30:25Z",
+   "body": "@gioargyr that message was meant for the maintainers. I tried using the PG database but ran into some problems so I moved on to other things.\n\nMy suggestion to the maintainers is to use the Postgres metadata DB instead of SQLite for the example data.  At least for kubernetes installation."
+  },
+  {
+   "author": "gioargyr",
+   "created_at": "2025-06-15T15:37:48Z",
+   "body": "Thanks @tsndqst  and sorry for the misunderstanding.\nLet's wait for the maintainers then... and until this issue is fixed, please keep it open."
+  },
+  {
+   "author": "rusackas",
+   "created_at": "2026-03-12T02:23:18Z",
+   "body": "This is a known limitation of the example data setup in Kubernetes/multi-pod deployments: example data is loaded into a local SQLite file, but each pod has its own filesystem, so pods that didn't run `load-examples` cannot access the SQLite data.\n\nThe most reliable workaround is to load examples into PostgreSQL instead of SQLite by configuring a separate SQLite-free example database, or by using a single-node setup for example data purposes.\n\nThis issue has not seen maintainer activity in approximately 9 months and the examples are primarily intended for development/demo purposes rather than production Kubernetes deployments. If anyone is interested in contributing a fix to load example data into the metadata PostgreSQL DB instead of SQLite in Helm deployments, a PR would be welcome. Otherwise, this issue may be closed as \"not planned\" in a future cleanup pass."
+  },
+  {
+   "author": "rusackas",
+   "created_at": "2026-06-13T18:36:11Z",
+   "body": "#26380 removed the bad columns from the FCC 2018 Survey dataset and merged, so closing. Ping me to reopen if the table still won't load."
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "apache/superset",
+  "default_branch": "master",
+  "commit_sha": "e1eb985aa82b95f5d8f0a907c3aa5d8ed0595c84",
+  "as_of": "2023-11-01T18:15:28Z",
+  "method": "github_commits_until"
+ },
+ "images": [
+  {
+   "where": "c27",
+   "source_url": "https://github.com/user-attachments/assets/d435849c-65b1-4695-a9cf-93a3fde40200",
+   "file": "gh_apache_superset_25825_img0.png"
+  }
+ ],
+ "slug": "gh_apache_superset_25825"
+}

@@ -1,0 +1,114 @@
+{
+ "repo": "questdb/questdb",
+ "number": 4231,
+ "url": "https://github.com/questdb/questdb/issues/4231",
+ "title": "First and Last Aggregate Function Optimization",
+ "state": "closed",
+ "labels": [
+  "New feature",
+  "SQL",
+  "Good first issue",
+  "Performance"
+ ],
+ "reporter": "reporter",
+ "created_at": "2024-02-22T20:08:13Z",
+ "closed_at": "2024-06-24T09:58:57Z",
+ "body": "### Is your feature request related to a problem?\n\nWhen first or last aggregate functions are used without a keyed group by, there is still a full scan or every row. This isn't necessary and can lead to suboptimal execution time.\n\n### Describe the solution you'd like.\n\nWhen first or last is used without keyed groups, there could be an alternate execution plan that utilizes something along the lines of an order by and limit to improve the overall execution time. \n\n### Describe alternatives you've considered.\n\n_No response_\n\n### Full Name:\n\nNicholas Guerra\n\n### Affiliation:\n\nKronus Engineering\n\n### Additional context\n\n### SELECT last(timestamp) FROM systemic\r\n```\r\nGroupBy vectorized: false\r\n  values: [last(timestamp)]\r\n    DataFrame\r\n      Row forward scan\r\n      Frame forward scan on: system_io\r\n```\r\n```\r\n1 row in 139ms\r\nExecute: 102.24ms\r\nNetwork: 36.76ms \r\nTotal: 139ms\r\n```\r\n\r\n### SELECT timestamp FROM system_io ORDER BY timestamp DESC LIMIT 1\r\n```\r\nLimit lo: 1\r\n  DataFrame\r\n    Row backward scan\r\n    Frame backward scan on: system_io\r\n```\r\n```\r\n1 row in 39ms\r\nExecute: 257.21μs\r\nNetwork: 38.74ms\r\nTotal: 39ms\r\n```",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2024-02-25T07:51:06Z",
+   "body": "Can I work on this issue ? ( disclaimer : I'm new to database and it can take longer )\r\n"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-02-27T16:22:49Z",
+   "body": "@participant1 sure thing. No one is working on it."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-05-06T19:07:11Z",
+   "body": "@reporter @participant2 need a bit of clarity on this..\r\ndoes **systemic** table store records in descending order of timestamp or ascending in each partition\r\nAsking this because :\r\nSuppose all partitions contain records in **ascending order** of timestamp\r\nThen \r\n- query plan for **SELECT last(timestamp) FROM systemic** shows it is doing row and frame forward scan which means if it is scanning all records from starting and reaching the needed record after scanning all rows, which is **not optimal**, but in case of **SELECT timestamp FROM system_io ORDER BY timestamp DESC LIMIT 1** while doing a row and frame backward scan it will be reading exactly one row (last row) which **is optimal**\r\n\r\nSuppose all partitions contain records in **descending order** of timestamp\r\n- query plan for **SELECT last(timestamp) FROM systemic**, will be **optimal** as the latest record will be first on the frame, but in the case of **SELECT timestamp FROM system_io ORDER BY timestamp DESC LIMIT 1**  it will scan through all the rows from lowest to highest which will **not be optimal**\r\n\r\nI am thinking along the lines of how clustered indexes work in Postgres, please correct me if I am wrong here\r\n\r\n"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-05-06T19:11:12Z",
+   "body": "@participant3 Partitions are clustered in ascending order. Backward scans are only applied in limited cases (only ordering by timestamp and no other columns), whereas it could instead apply any time the first column in the ordering clause is the designated timestamp.\r\n"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-05-06T22:09:48Z",
+   "body": "@participant4 Got it! can you point me to the classes which I can explore for this issue,\r\n I am new to the codebase and it is complex to understand the code flow\r\n\r\n Here are my findings in brief:\r\n1. Griffin package contains classes which are responsible for computing query execution results,  query plans\r\n2. Cutlass package contains classes   - **JsonQueryProcessorState** ,  **JsonQueryProcessor** which is responsible for parsing HttpResponse and returning to client\r\nPlease correct me if I am wrong here\r\n\r\n\r\n"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-05-06T22:44:08Z",
+   "body": "@participant3 https://github.com/questdb/questdb/blob/aa2af8ab3122e889353867edec5e9fba831e7178/core/src/main/java/io/questdb/griffin/SqlCodeGenerator.java#L5117-L5123\r\n\r\nThe `First` and `Last` functions in `io.questdb.griffin.engine.functions.groupby`.\r\n\r\nhttps://github.com/questdb/questdb/blob/aa2af8ab3122e889353867edec5e9fba831e7178/core/src/main/java/io/questdb/griffin/engine/functions/groupby/FirstTimestampGroupByFunctionFactory.java#L46-L48\r\n\r\nhttps://github.com/questdb/questdb/blob/aa2af8ab3122e889353867edec5e9fba831e7178/core/src/main/java/io/questdb/griffin/engine/functions/groupby/FirstTimestampGroupByFunction.java#L38"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2024-05-07T18:36:10Z",
+   "body": "For first functions maybe it's worth to just override function interface?\r\n```Java\r\n    @Override\r\n    public boolean isEarlyExitSupported() {\r\n        return true;\r\n    }\r\n\r\n    @Override\r\n    public boolean earlyExit(MapValue mapValue) {\r\n        return true;\r\n    }\r\n```\r\nI've checked, it doesn't change plan string but it does prevent iteration over records. Maybe it's worth to modify this part so it's visible for users?\r\n\r\nLastFunctions are iterating all rows and overriding MapValue on each iteration. If first function is modified then last function will return first row, which is correct as long it somehow gets backward cursor, I think SqlCodeGenerator snippet from @participant4 is particularly useful. \r\n\r\nIf you want to experiment with it I recommend to write some sample test in AggregateTests.Java.\r\nIf you use assertQuery method, you just need to prepare a table, query and expected outcome."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-06-01T13:29:54Z",
+   "body": "@participant4 @participant2 I did some code walkthrough basis information conveyed by you\r\nHere's what I did\r\n Created a table with a designated timestamp column and debugged both queries  \r\n\r\nObservations for query with **orderBy** on **Designated Timestamp** column\r\n1. There is a concept of **nestedModel** \r\n2. There is an attribute of query model which is called **orderByAdvice** , gives info about what column (token) to use for order by clause.\r\n3. Whether to go with FrameFwd Or Backward scan depends on this **orderByAdvice**, which is populated in **nestedModel** of baseModel (Code Ref :- https://github.com/questdb/questdb/blob/master/core/src/main/java/io/questdb/griffin/SqlOptimiser.java#L3109)\r\n4. **selectModelType** is _SELECT_MODEL_CHOOSE_\r\n\r\nObservations for query with **last** function on **Designated Timestamp** column\r\n1. **NestedModel** of this query doesn't contain **orderByAdvice** due to which it is doing FrameFwd scan\r\n2. **selectModelType** is _SELECT_MODEL_GROUP_BY_\r\n\r\nQuestions:\r\n1. What is meant by nestedModel?\r\n2. How should I approach solving this?"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-06-01T13:49:51Z",
+   "body": "@participant3 Looks like you've done some good investigating so far. I hope some of the following information is helpful as you dig deeper.\r\n\r\n1.\r\n\r\nWithin a QueryModel, you have the nestedModel field. Each nestedModel represents a lower part of the query. Sometimes this is an actual subquery, but other times not.\r\n\r\nYou can print out the QueryModel for debugging using `.toString0()`. Depending on what step you do this at in the SqlOptimiser, you will see different things.\r\n\r\nFor example, a `SELECT` statement with a `GROUP BY` will usually produce at least three models, which are set out something like this:\r\n\r\n`(select-choose (select-group-by (select-none))`.\r\n\r\n2.\r\n\r\nIn terms of solving this, there are several options.\r\n\r\nLet's look at the goal. In terms of result set, we would expect the following queries to be equivalent:\r\n\r\na) `SELECT last(timestamp) FROM trades` \r\nb) `SELECT timestamp FROM trades ORDER BY timestamp DESC LIMIT 1`\r\nc) `SELECT timestamp FROM trades LIMIT -1`\r\n\r\nThe reason that query a) is slow is because it becomes a GROUP BY with a forward scan over the whole table.\r\n\r\n![image](https://github.com/questdb/questdb/assets/29717167/3f00387c-a55c-465c-a062-7bc74494a004)\r\n\r\nWhereas for b) and c), you don't have a GROUP BY. Therefore the order by advice is pushed down, and since it is ordering by designated timestamp only, you get a backwards scan.\r\n\r\n![image](https://github.com/questdb/questdb/assets/29717167/31ccc028-eb38-48f0-9f67-880c9f62c7b7)\r\n\r\nThere are several ways to improve it. One possible route would be to add a function in SqlOptimiser (probably as a step before rewriteSelectClause) to identify queries like a). Then you would produce an output model like b).\r\n\r\nTo do that, you can breakpoint the code and look at the model when you run the query a) and then the model when you run with query b). Then when you identify query a), simply emit a new QueryModel that looks like query b).\r\n\r\n3.\r\n\r\nThere is a related issue. Currently, a backwards scan will only be implemented if you only provide the designated timestamp in ordering, and no other columns. For example, this query gives an optimal plan:\r\n\r\n`select timestamp, price from trades ORDER BY timestamp DESC LIMIT 1`\r\n\r\n![image](https://github.com/questdb/questdb/assets/29717167/06ec7b22-ca6d-470d-a98d-69edb143be72)\r\n\r\nHowever, if you introduce a second field in the order by, you will not generate a backward scan: \r\n\r\n`select timestamp, price from trades ORDER BY timestamp, price DESC LIMIT 1`\r\n\r\n![image](https://github.com/questdb/questdb/assets/29717167/3eb2fa62-8c34-41c1-8775-435604c56a05)\r\n\r\nThis is because of this function: https://github.com/questdb/questdb/blob/aa2af8ab3122e889353867edec5e9fba831e7178/core/src/main/java/io/questdb/griffin/SqlCodeGenerator.java#L4720\r\n\r\nA backwards scan should actually be generated any time the first column is the designated timestamp. Currently, it only works if there is the timestamp column on its own, and no other columns.\r\n\r\nIt may be worth fixing this at the same time.\r\n\r\n\r\n\r\n"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-06-05T19:33:34Z",
+   "body": "@participant4 current model for \r\n\r\n(i) SELECT last(timestamp) FROM trades \r\nlooks like : **select-group-by LAST(ts) LAST from (select [ts] from trades timestamp (ts))**\r\n\r\n(ii) select ts from trades order by ts desc limit 1\r\nlooks like: **select-choose ts from (select [ts] from trades timestamp (ts)) order by ts desc limit 1**\r\n\r\nI debugged the code further and looks like **select-choose** model is being converted to **select-group-by** model in **(i)** here: https://github.com/questdb/questdb/blob/master/core/src/main/java/io/questdb/griffin/SqlOptimiser.java#L4778\r\nbecause all **FunctionFactory** classes defined on Last Function return **isGroupBy** param **true**\r\nhere: https://github.com/questdb/questdb/blob/master/core/src/main/java/io/questdb/griffin/engine/functions/groupby/LastTimestampGroupByFunctionFactory.java#L42\r\n\r\n\r\nI still have to check which one is responsible for this particular query, so making it return **false** instead would change the model to select-choose, anyways I still have to check how to change inner model and add order by clause\r\n\r\nQuestions: \r\n1) Is it the correct approach? \r\n2) In query (ii) looks like nested model **(select [ts] from trades timestamp (ts)** doesn't contain any order by advice, but outer model does, as  **orderby** is outside nested query, but in code, its the nested model which has the **orderByAdvice**, is this correct observation? if yes , why is it designed that way? \r\n3) Should my target query model be exactly same as (ii) to get same query plan and execution time ? \r\n\r\n"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-06-07T06:41:00Z",
+   "body": "The simplest approach would be to write a method similar to `SqlOptimizer#rewriteCountDistinct()`. No need to change any other methods."
+  },
+  {
+   "author": "participant6",
+   "created_at": "2024-06-08T06:49:58Z",
+   "body": "##for last event \r\nSELECT timestamp FROM events ORDER BY timestamp DESC LIMIT 1;\r\n## for first event \r\nSELECT timestamp FROM events ORDER BY timestamp ASC LIMIT 1;\r\n"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-06-11T23:11:22Z",
+   "body": "@participant2 @participant4 I am writing a function like this to optimise aggregation function **LAST**\r\nThis will basically perform\r\n - Addition of limit expressionNode \r\n - Addition of order by to nested model \r\n - change of model from select-group-by to select-choose\r\n - change of aliases\r\n - Will call it before https://github.com/questdb/questdb/blob/master/core/src/main/java/io/questdb/griffin/SqlOptimiser.java#L5699\r\n\r\n Aim is to create all parameters of **nested and parent query models** same as what it looks in **ORDER BY DESC LIMIT 1**\r\n\r\nPseudo code:\r\n\r\n```\r\n private void optimiseAggregateFunctions(QueryModel parent){\r\n\r\n        if(parent== null || parent.getNestedModel() == null)\r\n          return;\r\n\r\n        QueryModel nestedModel = parent.getNestedModel();\r\n        CharSequence designatedTimestampColumn = null;\r\n        if(nestedModel!=null && nestedModel.getTimestamp()!= null)\r\n            designatedTimestampColumn =  nestedModel.getTimestamp().token;\r\n        else\r\n           return;\r\n\r\n        ObjList<QueryColumn> queryColumns = parent.getBottomUpColumns();\r\n        for(int i=0; i<parent.getColumns().size(); i++) {\r\n            QueryColumn column = queryColumns.get(i);\r\n            ExpressionNode node = column.getAst();\r\n\r\n            CharSequence token= null;\r\n            CharSequence rhs= null;\r\n            if(node != null) {\r\n                token = node.token;\r\n                 rhs = node.rhs == null ? null: node.rhs.token;\r\n            }\r\n            if ((\"LAST\").equals(token.toString()) && designatedTimestampColumn.toString().equals(rhs.toString())) {\r\n                //adding limit 1\r\n                ExpressionNode lowerLimitNode = expressionNodePool.next();\r\n                lowerLimitNode.token = \"1\";\r\n                lowerLimitNode.type = 2;\r\n                parent.setLimit(lowerLimitNode, null);\r\n\r\n                //change model type to select-choose\r\n                parent.setSelectModelType(1);\r\n\r\n                //change ast params\r\n                node.token = node.token.toString().equals(\"LAST\") ? rhs.toString() : node.token.toString();\r\n                node.paramCount = 0;\r\n                node.type = 4;\r\n\r\n                //adding order by\r\n                nestedModel.addOrderBy(nestedModel.getTimestamp(), QueryModel.ORDER_DIRECTION_DESCENDING);\r\n                break;\r\n            }\r\n        }\r\n        //call recursively for any inner models containing LAST\r\n        optimiseAggregateFunctions(nestedModel);\r\n\r\n        }\r\n```\r\nPS: this is just a roughly written code, will be refining it in final PR if approach looks good to you\r\n"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-06-12T13:18:04Z",
+   "body": "It would be much easier to discuss the code in a pull request, so feel free to open one."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-06-17T10:52:27Z",
+   "body": "It'd be great to also apply the same rewrite to `select min(designated_ts) from x;`/`select max(designated_ts) from x;`."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-06-17T15:36:46Z",
+   "body": "> It'd be great to also apply the same rewrite to `select min(designated_ts) from x;`/`select max(designated_ts) from x;`.\r\n\r\n@participant2 queries like \r\n**select min(designated_ts) from x;\r\nselect first(designated_ts) from x;**\r\nwould anyway do a row forward scan and frame forward scan which will be optimised for them, what other optimisations do we need for them"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-06-17T15:48:58Z",
+   "body": "> queries like\r\n> **select min(designated_ts) from x; select first(designated_ts) from x;**\r\n> would anyway do a row forward scan and frame forward scan which will be optimised for them, what other optimisations do we need for them\r\n\r\nThese queries can be rewritten into `select designated_ts from x limit 1;`"
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "questdb/questdb",
+  "default_branch": "master",
+  "commit_sha": "8c5bbde01cbd4ff44ee74bbfde436bb64902fed2",
+  "as_of": "2024-02-22T20:08:13Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_questdb_questdb_4231"
+}

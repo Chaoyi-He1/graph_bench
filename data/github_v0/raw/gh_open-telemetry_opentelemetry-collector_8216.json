@@ -1,0 +1,112 @@
+{
+ "repo": "open-telemetry/opentelemetry-collector",
+ "number": 8216,
+ "url": "https://github.com/open-telemetry/opentelemetry-collector/issues/8216",
+ "title": "Excessively high memory usage when using client-side zstd compression in confighttp",
+ "state": "closed",
+ "labels": [
+  "bug"
+ ],
+ "reporter": "reporter",
+ "created_at": "2023-08-10T11:29:15Z",
+ "closed_at": "2026-04-14T11:10:17Z",
+ "body": "**Describe the bug**\r\nWe've added zstd support to the server side of confighttp in #7927. I rolled this out for OTLP traffic between an agent and a gateway in a K8s environment and saw very significant increase in memory consumption on the client side.\r\n\r\n**Steps to reproduce**\r\nI have some memory profiles saved of this, and I'm planning to create a self-contained reproduction, ideally with just synthetic benchmarks.\r\n\r\n**What did you expect to see?**\r\nMemory consumption in the ballpark of what other compression methods use.\r\n\r\n**What did you see instead?**\r\nMemory consumption for otlphttp exporter using zstd more than 10x the amount for gzip.\r\n\r\n**What version did you use?**\r\nVersion: 0.82.0\r\n\r\n**What config did you use?**\r\nThe relevant part:\r\n```yaml\r\nexporters:\r\n  otlphttp:\r\n    endpoint: ...\r\n    compression: zstd\r\nprocessors:\r\n   batch:\r\n    send_batch_max_size: 2000\r\n    send_batch_size: 1000\r\n    timeout: 1s\r\n```\r\n\r\n**Environment**\r\nKubernetes 1.24, EKS to be precise.\r\n\r\n**Additional context**\r\n I'm reporting this as is so it doesn't get lost and to consolidate reports in case other users experience this. Will update with more data once I'm able to.\r\n",
+ "comments": [
+  {
+   "author": "reporter",
+   "created_at": "2023-09-26T15:39:43Z",
+   "body": "I managed to reproduce this in a test K8s cluster. I've also written some benchmarks which demonstrate the problem, although this is somewhat challenging for reasons which I'll elaborate upon.\r\n\r\n## Presentation\r\n\r\nThe test cluster had a synthetic workload generating 10k log lines per second running. The resource consumption as reported by `kubectl top` was, respectively:\r\n\r\n### With gzip compression\r\n\r\n```text\r\notelcol-logs-collector-5mdw2     593m         79Mi            \r\n```\r\n### With zstd compression\r\n\r\n```text\r\notelcol-logs-collector-4jc6b     526m         469Mi           \r\n```\r\n![zstd-profile-k8s-logs](https://github.com/open-telemetry/opentelemetry-collector/assets/93588780/649c34b8-744c-4fa2-a019-6ffd11bb71de)\r\n\r\nNothing about the code for confighttp indicates why there would be such a large difference, and why the zstd encoder would allocate so much memory.\r\n\r\n## Root cause\r\n\r\nI believe the root cause is a combination of the zstd encoder allocating a fair amount of memory by default, and our pooling mechanism for encoder just not working as expected. We put encoders in a `sync.Pool`, but in most practical circumstances, we don't make requests frequently enough to keep the pool hot. As a result, we create a new encoder for each request, and the zstd encoder handles this particularly poorly.\r\n\r\nI've sketched out and tested a solution using a different pooling mechanism here: https://github.com/open-telemetry/opentelemetry-collector/compare/main...reporter-sumo:opentelemetry-collector:fix/zstd-encoder-pooling. With this change, the memory usage is reasonable again. "
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-12-19T19:25:28Z",
+   "body": "Would you like to submit a PR to fix the issue?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-01-11T11:34:53Z",
+   "body": "@participant1 I'll try when I get the time. I still don't understand why the problem is as severe as it is. My fix is effective, so I must be roughly correct about the root cause, but I'd like to try to understand it better before submitting."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-03-06T21:27:19Z",
+   "body": "@participant5 @participant1 here are some of my findings on this. I deployed the otel collector on a k8s cluster today with atleast 50 nginx pods generating a new log every second. The difference seen in the memory usage with both the compression types is below:\r\n\r\n- gzip: `sumo-sumologic-otelcol-logs-collector-vqp5z      124m         74Mi`\r\n- zstd: `sumo-sumologic-otelcol-logs-collector-4r92s      138m         106Mi`\r\n\r\nThe difference in memory usage wasn't 10x as seen previously. I used `0.94.0` for testing. I let the collector run for atleast an hour.\r\n"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-03-07T18:15:09Z",
+   "body": "@participant5 @participant1 \r\n\r\nHere are more findings and results from tests\r\n\r\nv0.92.0\r\nzstd: `sumo-sumologic-otelcol-logs-collector-2lk4k      245m         250Mi`\r\ngzip: `sumo-sumologic-otelcol-logs-collector-x2wmp      291m         84Mi`\r\n\r\nv0.94.0\r\ngzip: `sumo-sumologic-otelcol-logs-collector-djwmz      199m         73Mi`\r\nzstd: `sumo-sumologic-otelcol-logs-collector-v8pjr      198m         118Mi`\r\n\r\nThere seems to be some improvement in `0.94.0` which used a later version (v0.17.5) of the `compress` library that has some `zstd` changes.\r\nhttps://github.com/klauspost/compress/releases/tag/v1.17.5\r\n\r\n\r\nApart from the above, there was a known memory leak with using `zstd` with a `sync.Pool` that was addressed in `v0.15.0` by adding the option to disable concurrency which does not allow spawning new goroutines as explained here\r\n- https://github.com/klauspost/compress/issues/264\r\n\r\nA possible change we could make here is to simply use `zstd.WithDecoderConcurrency(1)` as mentioned in this PR, which prevents goroutine leaks\r\nhttps://github.com/segmentio/kafka-go/pull/889\r\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-03-07T18:23:32Z",
+   "body": "Thank you for this inquiry and providing data, I appreciate it. Do we have appropriate benchmarks for zstd usage that we could use to test the simple change you mention?"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-03-07T20:48:56Z",
+   "body": "I can work on the benchmarks to test the zstd compression with and without concurrency enabled. I do want to emphasize that the `zstd` memory usage in `v1.17.5` of the `compress` package seems to be lesser than in `v0.17.4` from running tests on a k8s cluster."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-03-08T09:09:40Z",
+   "body": "Ideally we'd have a benchmark showing the difference, though from trying to create one myself, this may not be so easy to do. The behaviour is timing-sensitive due to the use of `sync.Pool`."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-03-12T21:50:24Z",
+   "body": "Created the following draft PR for this, to show the difference in memory allocation with concurrency disabled - https://github.com/open-telemetry/opentelemetry-collector/pull/9749"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-04-18T19:30:17Z",
+   "body": "Resolved in #9749 "
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-11-27T06:58:21Z",
+   "body": "Just to add: this issue appears to be still an issue in the latest version even with the above MR for _server side HTTP receivers_:\r\n![image](https://github.com/user-attachments/assets/fb38ed22-3d93-4505-a1fa-7b6900ae03c4)\r\n\r\nI'm seeing constant crash loops having zstd enabled with almost all memory associated with zstd codepaths."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-11-27T11:07:07Z",
+   "body": "@participant3 that's strange given that the server side appears to already have our client-side fix implemented. Can you open a new issue with your findings?"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-11-27T20:18:15Z",
+   "body": "Sure thing @reporter "
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-10-09T10:30:51Z",
+   "body": "> I'm seeing constant crash loops having zstd enabled with almost all memory associated with zstd codepaths.\n\nWe recently stumbled on a panic in `otlphttpconfig` when trying to process data with `zstd`.\n@participant6 traced it back to a bug in the usage of `sync.Pool`.\nHe is working on creating an issue for it and has done an excellent investigation that will lead to a PR fixing the bug.\n\n@participant3 is this the same stacktrace you're seeing in your crashes?\n\n```\npanic: runtime error: invalid memory address or nil pointer dereference\n[signal SIGSEGV: segmentation violation code=0x1 addr=0x18 pc=0xa68c0]\n\ngoroutine 2185 [running]:\nio.ReadAtLeast({0x0, 0x0}, {0x4006e6bab8, 0x3, 0x8}, 0x3)\n\tio/io.go:335 +0x70\nio.ReadFull(...)\n\tio/io.go:354\ngithub.com/klauspost/compress/zstd.(*readerWrapper).readSmall(0x4002e5a878?, 0x3)\n\tgithub.com/klauspost/compress@v1.18.0/zstd/bytebuf.go:86 +0x4c\ngithub.com/klauspost/compress/zstd.(*frameDec).reset(0x40066318c8, {0x4fbc1f8, 0x4006e6baa8})\n\tgithub.com/klauspost/compress@v1.18.0/zstd/framedec.go:82 +0xf0\ngithub.com/klauspost/compress/zstd.(*Decoder).nextBlockSync(0x4006e6ba00)\n\tgithub.com/klauspost/compress@v1.18.0/zstd/decoder.go:485 +0xb4\ngithub.com/klauspost/compress/zstd.(*Decoder).nextBlock(0x4006e6ba00, 0xc0?)\n\tgithub.com/klauspost/compress@v1.18.0/zstd/decoder.go:421 +0x3c\ngithub.com/klauspost/compress/zstd.(*Decoder).Read(0x4006e6ba00, {0x400891e000?, 0x4002e5aa58?, 0xa1300?})\n\tgithub.com/klauspost/compress@v1.18.0/zstd/decoder.go:145 +0x11c\n<redacted-host>/collector/config/confighttp.(*pooledZstdReadCloser).Read(0x3f83bc0?, {0x400891e000?, 0x1?, 0x400252a000?})\n\t<redacted-host>/collector/config/confighttp@v0.135.0/compression.go:56 +0x24\nnet/http.(*maxBytesReader).Read(0x4005e88ec0, {0x400891e000?, 0x40002f4330?, 0x1?})\n\tnet/http/request.go:1225 +0x60\nio.copyBuffer({0xfd24e8a4c648, 0x4004d301a0}, {0xfd24e8a4c480, 0x4005e88ec0}, {0x400891e000, 0x8000, 0x8000})\n\tio/io.go:429 +0x18c\nio.CopyBuffer({0xfd24e8a4c648?, 0x4004d301a0?}, {0xfd24e8a4c480?, 0x4005e88ec0?}, {0x400891e000?, 0x2ae0c?, 0x10?})\n\tio/io.go:402 +0x38\nnet/http.(*transferWriter).doBodyCopy(0x4008914460, {0xfd24e8a4c648, 0x4004d301a0}, {0xfd24e8a4c480, 0x4005e88ec0})\n\tnet/http/transfer.go:417 +0xac\nnet/http.(*transferWriter).writeBody(0x4008914460, {0x4f77ae0, 0x40094fef00})\n\tnet/http/transfer.go:361 +0x59c\nnet/http.(*Request).write(0x400198b900, {0x4f77ae0, 0x40094fef00}, 0x0, 0x0, 0x0)\n\tnet/http/request.go:762 +0x818\nnet/http.(*persistConn).writeLoop(0x40057e3200)\n\tnet/http/transport.go:2600 +0xf4\ncreated by net/http.(*Transport).dialConn in goroutine 2178\n\tnet/http/transport.go:1945 +0x1164\n```\n\n\n\n"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-10-09T16:34:35Z",
+   "body": "> [@participant6](https://github.com/participant6) traced it back to a bug in the usage of `sync.Pool`. He is working on creating an issue for it and has done an excellent investigation that will lead to a PR fixing the bug.\n\nIssue: https://github.com/open-telemetry/opentelemetry-collector/issues/13954\nPR: https://github.com/open-telemetry/opentelemetry-collector/pull/13955\n\n\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-04-14T11:10:17Z",
+   "body": "I'm closing this again until we get another credible report of this issue still being present."
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "open-telemetry/opentelemetry-collector",
+  "default_branch": "main",
+  "commit_sha": "9d7deb4098e51207ba6e3a95d76c0d3b152a8d11",
+  "as_of": "2023-08-10T11:29:15Z",
+  "method": "github_commits_until"
+ },
+ "images": [
+  {
+   "where": "c10",
+   "source_url": "https://github.com/user-attachments/assets/fb38ed22-3d93-4505-a1fa-7b6900ae03c4",
+   "file": "gh_open-telemetry_opentelemetry-collector_8216_img0.png"
+  }
+ ],
+ "slug": "gh_open-telemetry_opentelemetry-collector_8216"
+}

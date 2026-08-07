@@ -1,0 +1,109 @@
+{
+ "repo": "onnx/onnx",
+ "number": 6103,
+ "url": "https://github.com/onnx/onnx/issues/6103",
+ "title": "Spec for ReduceSumSquare is incorrect when noop_with_empty_axes == 1",
+ "state": "closed",
+ "labels": [
+  "bug",
+  "topic: documentation",
+  "topic: spec clarification",
+  "contributions welcome"
+ ],
+ "reporter": "reporter",
+ "created_at": "2024-04-29T02:43:06Z",
+ "closed_at": "2025-10-15T19:15:47Z",
+ "body": "# Bug Report\n\n### Is the issue related to model conversion?\n<!-- If the ONNX checker reports issues with this model then this is most probably related to the converter used to convert the original framework model to ONNX. Please create this bug in the appropriate converter's GitHub repo (pytorch, tensorflow-onnx, sklearn-onnx, keras-onnx, onnxmltools) to get the best help. -->\nNo\n\n### Describe the bug\nWhen noop_with_empty_axes == 1 & axes is empty, in ONNX spec, it will return input tensor directly.\nBut in reference in onnx, it is mismatch. it returned np.square of the input tensor\n\n![image](https://github.com/onnx/onnx/assets/30307463/0540e792-231c-4ae0-94d5-bc2446da6a79)\n\n\n### System information\n<!--\n- OS Platform and Distribution (*e.g. Linux Ubuntu 20.04*):\n- ONNX version (*e.g. 1.13*):\n- Python version:\n- GCC/Compiler version (if compiling from source):\n- CMake version:\n- Protobuf version:\n- Visual Studio version (if applicable):-->\n\n\n### Reproduction instructions\n<!--\n- Describe the code to reproduce the behavior.\n```\nimport onnx\nmodel = onnx.load('model.onnx')\n...\n```\n- Attach the ONNX model to the issue (where applicable)-->\n\n### Expected behavior\nreturn input tensor directly\n\n### Notes\n<!-- Any additional information -->\n\n@participant6 please fix exsisting definitions for ops ReduceSumSquare, ReduceLogSum and ReduceLogSumExp.",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2024-05-01T08:54:45Z",
+   "body": "https://github.com/onnx/onnx/blob/d6f87121ba256ac6cc4d1da0463c300c278339d2/docs/Changelog.md?plain=1#L22221-L22222\r\n\r\nThe expected behavior is mentioned here as well.\r\nCan I work on this? @participant2 "
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-05-01T17:26:03Z",
+   "body": "Absolutely. Contributions are welcome and appreciated "
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-05-02T17:10:14Z",
+   "body": "This is complicated. Agree that there is a mismatch, but is the bug in the specification or implementation?\r\n\r\nMy personal interpretation is that this is a bug in the specification, not implementation, for the following reason: the attributes serve to define the set of axes being reduced: specifically, it is a flag to allow the empty list to indicate that all axes must be reduced (or that no axes must be reduced). Now, even if zero axes are reduced, it makes sense to compute the square. ReduceSumSquare is not actually a reduction-op: it is a reduction-op Sum applied to the square of the input.\r\n\r\nI think the bug was in reusing the ReduceSum documentation for all ops ... it is correct for basic Reduction ops, but not ReduceSumSquare.\r\n\r\nOf course, we can test with other backends/implementations (like onnxruntime, or even pytorch/tensorflow etc. IF they have such an option).\r\n\r\n"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-05-08T14:59:51Z",
+   "body": "Following the discussion, I think it's reasonable to correct the spec. Out of curiosity, was there any reason you would expect the behavior to be different than the current one @reporter ?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-05-09T02:36:08Z",
+   "body": "I agree with below idea. So maybe we need to modify the spec of  ops like ReduceSumSquare(ReduceLogSum, ReduceLogSumExp).\r\n\r\n> This is complicated. Agree that there is a mismatch, but is the bug in the specification or implementation?\r\n> \r\n> My personal interpretation is that this is a bug in the specification, not implementation, for the following reason: the attributes serve to define the set of axes being reduced: specifically, it is a flag to allow the empty list to indicate that all axes must be reduced (or that no axes must be reduced). Now, even if zero axes are reduced, it makes sense to compute the square. ReduceSumSquare is not actually a reduction-op: it is a reduction-op Sum applied to the square of the input.\r\n> \r\n> I think the bug was in reusing the ReduceSum documentation for all ops ... it is correct for basic Reduction ops, but not ReduceSumSquare.\r\n> \r\n> Of course, we can test with other backends/implementations (like onnxruntime, or even pytorch/tensorflow etc. IF they have such an option).\r\n\r\n"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-03-17T18:25:56Z",
+   "body": "This is definitely a copy-and-paste spec bug for [`ReduceSumSquare`](https://onnx.ai/onnx/operators/onnx__ReduceSumSquare.html) and kin, which still incorrectly say \"When axes is empty and this attribute is set to true ...\":\n\n```diff\n- ...the output tensor would be equivalent to input tensor\"\n+ ...the output tensor would be equivalent to pow(input, 2)\"\n```\nIf you look at the [functional decomposition](https://participant4.github.io/MachineLearningOperators/OperatorFormulas.html) of each of these, you see the additional {exp, pow, log, sqrt, ...} operations occur *before* and *after* the reduction.\n\n```\nfunction reduceSumLog(input, axes, keepDimensions)\n    return log(reduceSum(input, axes, keepDimensions)) // logₑ(x[0] + x[1] + ... + x[n-1])\nendfunction\n\nfunction reduceExpSumLog(input, axes, keepDimensions)\n    return log(reduceSum(exp(input), axes, keepDimensions)) // logₑ(expₑ(x[0]) + expₑ(x[1]) + ... + expₑ(x[n-1]))\nendfunction\n\nfunction reduceSumSquare(input, axes, keepDimensions)\n    return reduceSum(pow(X, 2), axes, keepDimensions) // x[0]^2 + x[1]^2 + ... + x[n-1]^2\nendfunction\n\nfunction reduceL1(input, axes, keepDimensions)\n    return reduceSum(abs(input), axes, keepDimensions) // abs(x[0]) + abs(x[1]) + ... + abs(x[n-1])\nendfunction\n\nfunction reduceL2(input, axes, keepDimensions)\n    return sqrt(reduceSum(pow(X, 2), axes, keepDimensions)) // sqrt(x[0]^2 + x[1]^2 + ... + x[n-1]^2)\nendfunction\n```\n\nAnother way to rationalize it is to ask what result would you get with an input of shape `[1,1,1,1]` (since this flag effectively turns a multaxis operation into hundreds of individual scalar operations)? The answer is that the {pow, exp, log, sqrt} *still* apply. So [`ReduceSumSquare`](https://onnx.ai/onnx/operators/onnx__ReduceSumSquare.html) *should* say: \"When axes is empty and this attribute is set to true ... the output tensor would be equivalent to **the square of** the input tensor\""
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-03-17T18:29:58Z",
+   "body": "Any contributions to correct spec would be appreciated!"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-03-20T08:38:22Z",
+   "body": "> Any contributions to correct spec would be appreciated!\n\nThis is impeding Chromium's WebNN implementation atop ORT. So @participant7 is working around it for now by explicitly decomposing via emulation before calling ONNX. (I have a pending [branch here](https://github.com/onnx/onnx/compare/main...participant4:onnx:user/dwayner/ReduceEmptyAxisTypoFix?expand=1), but I'll need to figure out why PyTest yields \"Windows fatal exception: access violation\" another day ⌛...)"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-07-16T20:31:25Z",
+   "body": "@participant4 would you like to contribute the fix? We have a branch cut by the end of next week and it would be great to include this fix. Copilot doesn’t cover everything apparently. But it seems there is a fix to the function def that may be legitimate "
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-07-16T20:59:09Z",
+   "body": "I had trouble getting the Python tests to pass last time (even with a direct clean build of main, no local changes), but I can try again now. Reading the PR description from CoPilot, it's clearly confused, as the current reference behavior for `ReduceSum` is the correct behavior (`pow(X, 2)` : `x[0]^2 + x[1]^2 + ... + x[n-1]^2`), and it's the spec *wording* which is wrong (copy pasta). So it may be faster to just manually intervene than trying to iterate via prompts."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-07-16T21:19:23Z",
+   "body": "The PR description was wrong, but I was able to prompt it to update (parts of) the spec. You can navigate to files changed to see if they are useful?\n\nFeel free to also use CI for testing if that’s easier "
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-07-22T18:42:26Z",
+   "body": "@participant4 I merged the participant6 fixes, but I think the wording you have in your branch is better. (also missing was the changes to the ref impl you made). Would you like to create a PR?"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-10-14T06:10:09Z",
+   "body": "> [@participant4](https://github.com/participant4) I merged the participant6 fixes, but I think the wording you have in your branch is better. (also missing was the changes to the ref impl you made). Would you like to create a PR?\n\n@participant2 Your wording is fine :). Vote to close as completed by https://github.com/onnx/onnx/pull/7137."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-10-14T13:40:43Z",
+   "body": "Reading my previous comment: looks like we still need a change to the reference implementation "
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-10-14T13:41:26Z",
+   "body": "@participant5 would you be able to help? Thanks. "
+  },
+  {
+   "author": "participant5",
+   "created_at": "2025-10-14T16:04:53Z",
+   "body": "OK I will take a look."
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "onnx/onnx",
+  "default_branch": "main",
+  "commit_sha": "4e7289d05a08453b3f20efeb774d4590b5428903",
+  "as_of": "2024-04-29T02:43:06Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_onnx_onnx_6103"
+}

@@ -1,0 +1,245 @@
+{
+ "repo": "bevyengine/bevy",
+ "number": 14927,
+ "url": "https://github.com/bevyengine/bevy/issues/14927",
+ "title": "Support Removing Required Components at Runtime",
+ "state": "closed",
+ "labels": [
+  "C-Feature",
+  "S-Wontfix",
+  "A-ECS",
+  "A-Transform",
+  "X-Needs-SME"
+ ],
+ "reporter": "reporter",
+ "created_at": "2024-08-26T16:18:32Z",
+ "closed_at": "2024-10-06T14:02:42Z",
+ "body": "## What problem does this solve or what need does it fill?\r\n\r\nWe are adding the ability to [require components](https://github.com/bevyengine/bevy/pull/14791) in Bevy, this feature request asks for the ability to _override_ this behaviour when it prevents you from customizing third party code.\r\n\r\nFor example, suppose you're using some hypothetical Bevy provided components & systems:\r\n\r\nSuppose there are components:\r\n- `SpecialComponent` (which requires `Transform`),\r\n- `Transform` (which requires `GlobalTransform`), and\r\n- `GlobalTransform`.\r\n\r\nSuppose there is the system: `update_globaltransform_for_specialcomponents_with_transforms`.\r\n\r\nYou're having a great time, until you reach an edge case where your requirements deviate from Bevy's assumptions, so you try to swap out some types:\r\nYou create a new component: `BetterTransform`.\r\nYou create a new system: `update_globaltransform_for_specialcomponents_with_bettertransforms`.\r\n\r\nPre-\"Required Components\": you would be unable to use bundles that assumed `SpecialComponent` should use Transform, potentially defining your own new bundles for convenience, but you'd be able to move on and achieve your goals.\r\n\r\nIn a world with \"Required Components\": you cannot currently \"un-require\" `Transform` from `SpecialComponent` in 3rd party code (without forking), resulting in this situation:\r\n\r\nYour types end up with all of the components: `SpecialComponent` pulls in `Transform`, you add `BetterTransform`, `Transform` and `BetterTransform` pull in `GlobalTransform`.\r\nYou end up with two systems trying to compute the `GlobalTransform` for `SpecialComponents`:\r\n`update_globaltransform_for_specialcomponents_with_transforms`, and\r\n`update_globaltransform_for_specialcomponents_with_bettertransforms`.\r\n\r\n## What solution would you like?\r\n\r\nCurrently the required components are authored using an annotation. This feature request proposes that methods be added to Bevy's `App` type for customizing them dynamically, a hypothetical set of methods:\r\n\r\n* `app.add_requires::<DependantComponent, RequiredComponent>();`\r\n* `app.remove_requires::<DependantComponent, RequiredComponent>();`\r\n\r\n(Names bike-sheddable as always!).\r\n\r\nThese would, as the names hopefully suggest, dynamically (un)register the \"required components\" relationship between those two types. The annotations in the current implementation would just be a short-hand for automatically registering these relationships.\r\n\r\n## What alternative(s) have you considered?\r\n\r\nExtensive discussion in Discord (the Next Generation Scene/UI Working Group channel), including but not limited to:\r\n* Not having required components (because BSN might add good enough Nested Scenes to address the need)\r\n* A full-fledged \"provides\" system where instead of requiring a component you require some contract that other components provide\r\n* ???\r\n\r\nEffectively, Required Components are going in (soon? today? already?), so we're committed to experimenting with those and learning from it. This feature request effectively acts as a short-term solution to ensure the addition of Required Components doesn't cause a surge in use that prevents customizability.\r\n\r\n## Additional context\r\n\r\nN/A\r\n",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2024-08-26T16:21:09Z",
+   "body": "Great writeup, and I think this is an essential escape hatch. I think that the relatively straightforward \"just register / unregister required components\" is the right call for now."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-08-26T16:42:16Z",
+   "body": "Since @participant1 asked me to put my more detailed description of `provides` here:\r\n\r\nComponents can register theirselves as providing another component. If we want to add `Transform`, but the entity already has a component providing `Transform`, it does not need to be inserted. Alternatively this could be extended to a tuple of components providing another component, for example `(Position, Rotation)` could provide `Transform`.\r\n\r\nSome interesting usecases for this would be replacing things like `Transform` that still have a well-defined edge to write back to (`GlobalTransform` in this case), or systems working with trait queries that might `require` some default but allow you to overwrite it.\r\n\r\nThis feature could of course be extended in many ways (like making things mutually exclusive if we ever get archetype invariants), but for this usecase having it as a way to avoid required components inserting unwanted components would be enough.\r\n\r\n(This idea was originally brought up by @participant4, which in turn was inspired by another idea from Joy relating to plugin dependencies)"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-08-26T17:13:12Z",
+   "body": "Long-term, I think we're going to want both: `provides` is a good mechanism for plugin authors, but the simple override is more suitable for end users."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-08-26T19:39:15Z",
+   "body": "> Required Component Overrides\r\n\r\nIn general I think this is a pattern we should not be encouraging. If some third party `SpecialComponent` requires `Transform`, then that third party code (and _other_ third parties that depend on it) can and _should_ be written under the assumption that it will have a Transform.\r\n\r\nA developer choosing to break that assumption risks breaking third party code in unexpected and arbitrary ways. And as these dependencies update, they risk adding _new_ cases that also break.\r\n\r\nEncouraging the \"remove arbitrary upstream components\" pattern is abstraction-breaking and \"ecosystem stability\"-hostile.\r\n\r\nThe ability to remove a required component constraint is an \"unsafe escape hatch\". If we were to include it, I think we'd want to heavily discourage its use in 3rd party plugins.\r\n\r\nI also think we should heavily reconsider adding a global `app.remove_requires::<SpecialComponent, Transform>()`, as that is a blunt-force tool that could break things that rely on that behavior. I strongly suspect that anyone trying to do this wants to do it in _specific contexts_. Therefore, I think we should consider implementing this as an extension of the per-component `require` API:\r\n\r\n```rust\r\n#[derive(Component)]\r\n#[require(SpecialComponent)]\r\n#[remove_require(SpecialComponent, Transform)]\r\nstruct MySpecialComponent;\r\n```\r\n\r\nThis would mean that _existing_ uses of SpecialComponent do not break. This comes at the cost of needing to specify `MySpecialComponent` instead of (or in addition to) `SpecialComponent` during spawn. But it also means we aren't reaching in and invalidating existing upstream assumptions (which again, is pretty much never a good idea).\r\n\r\n> \"Provides\" API\r\n\r\nIn the context of a `provides`  API, given that the computation has to happen somewhere, how is `#[provides((Position, Rotation), Transform)]` any different from this? Why do we need a new abstraction?\r\n\r\n```rust\r\n#[derive(Component)]\r\n#[require(Transform)]\r\nstruct Position {\r\n  x: f32,\r\n  y: f32,\r\n  z: f32,\r\n}\r\n\r\n#[derive(Component, Default)]\r\n#[require(Transform)]\r\nstruct Rotation(Quat);\r\n\r\n#[derive(Component)]\r\n#[require(Transform)]\r\nstruct MyThing;\r\n\r\ncommands.spawn((\r\n  MyThing,\r\n  Position { x: 1.0, y: 0.0, z: 0.0 },\r\n  Rotation::default(),\r\n));\r\n\r\nfn sync_position_rotation(query: Query<(&Position, &Rotation, &mut Transform)>) {\r\n  // sync code here\r\n}\r\n```"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-08-26T19:49:23Z",
+   "body": "For more context, `Transform` is the only component that I've ever seen this sort of replacement requested for. Nothing else is similarly deeply integrated, and `Transform` itself has a number of limitations / frustrations that aren't ideal for all users. In particular:\r\n\r\n- no f64 support\r\n- no interpolation\r\n- difficulty controlling what properties get inherited\r\n- wasteful and unergonomic for 2D\r\n\r\nIt may be that the best solution here is to close this as Won't Fix (following Cart's points about abstraction breaking), but work harder to make sure that Transform can meet the needs of all of our users by solving some of these problems (or at least making more behavior configurable)."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-08-26T19:53:29Z",
+   "body": "This is the general idea of Provides, which seems really different from your example.\r\n```rust\r\n#[derive(Component)]\r\nstruct A;\r\n\r\n#[derive(Component)]\r\n#[provides(A)]\r\nstruct B;\r\n\r\n#[derive(Component)]\r\n#[requires(A)]\r\nstruct C;\r\n\r\ncommands.spawn((B, C)); // does not insert A\r\n```\r\nThe idea is that inserting `(Position, Rotation)` would opt-you-out of getting a `Transform`.\r\n\r\nWithout a mechanism like this it will quite difficult to alter the existing semantics of a component imported from a dependency. That dosn't seem very \"Modular: Use only what you need. Replace what you don't like\" to me."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-08-26T19:55:44Z",
+   "body": "The only way I can see this working in a way that doesn't break arbitrary upstream code is using dynamic dispatch, which for the case of per-frame-per-entity Transform code would not be ideal."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-08-26T20:01:25Z",
+   "body": "And if the goal is to remove a stored computed `Transform`, that would mean that every time a Transform is needed for an entity with `(Position, Rotation)`, we'd need to compute it on the spot / on demand. Each point of consumption would have a high cost. That, combined with dynamic dispatch makes the wins here pretty dubious relative to just making Position and Rotation drive the Transform component."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-08-26T20:03:56Z",
+   "body": "> The only way I can see this working in a way that doesn't break arbitrary upstream code is using dynamic dispatch, which for the case of per-frame-per-entity Transform code would not be ideal.\r\n\r\nBecause now we can output multiple archetypes? I can see how that might be an issue.\r\n\r\n> And if the goal is to remove a stored computed Transform, that would mean that every time a Transform is needed for an entity with (Position, Rotation), we'd need to compute it on the spot / on demand. Each point of consumption would have a high cost. That, combined with dynamic dispatch makes the wins here pretty dubious relative to just making Position and Rotation drive the Transform component.\r\n\r\nThe point is not to remove a stored computed Transform. The point is rather to, for example, allow users to replace the bevy built-in transform with their own `f64` bit version or what have you. Position and Rotation just happened to appear in your example, i don't know why they were chosen.\r\n\r\nProvides lets you say 'actually, I have my own `Transform`-like component, with it's own systems that update it. Everywhere that would usually take a `bevy::Transform` can use mine instead.' without still having unused bevy transforms floating around and complicating things."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-08-26T20:09:28Z",
+   "body": "> Provides lets you say 'actually, I have my own Transform-like component, with it's own systems that update it. Everywhere that would usually take a bevy::Transform can use mine instead.' without still having unused bevy transforms floating around and complicating things.\r\n\r\nCan you describe how this would be implemented functionally, if not in a way that:\r\n\r\n1. Computes a common Transform / Mat4 / whatever our chosen \"interface\" ends up being (not a component, just a rust type) at each point of consumption using some form of dynamic dispatch\r\n2. Computes a common Transform / Mat4 / whatever our chosen \"interface\" ends up being at a given point in the schedule, using a driver system.\r\n\r\nI'm having trouble understanding what your ideal system is."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-08-26T20:11:03Z",
+   "body": "Additionally, the \"common interface\" is going to need to select things like layout + precision, which will be opinionated in the same way that Transform is currently opinionated."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-08-26T20:13:50Z",
+   "body": "We're not talking about having these share traits, or have one component type actually provide an interface for another. I do not know where you are getting \"common interface\" from. The rule, as I originally framed it, is as follows:  if `X` provides `Y` then bevy acts exactly as if `Y` is provided for the purpose of required component resolution when spawning a bundle containing `X`. Thats it.\r\n\r\n```rust\r\n#[require(Transform)]\r\nstruct SpecialComponent;\r\n\r\n#[require(SpecialComponent)]\r\n#[remove_require(SpecialComponent, Transform)]\r\nstruct MySpecialComponent;\r\n\r\n// vs\r\n\r\n#[require(SpecialComponent)]\r\n#[provides(Transform)]\r\nstruct MySpecialComponent;\r\n```\r\nThe last two defs do the same thing."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-08-26T20:13:53Z",
+   "body": "I need time to digest Carts original response, but wanted to flag that this issue isn't intended to be about Transform replacement specifically, that was just the best thing I could come up with as an example for the original issue. I'd like people not to get too focussed on the specifics of Transforms."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-08-26T20:15:15Z",
+   "body": "> I'd like people not to get too focussed on the specifics of Transforms.\r\n\r\nI think its good to explore this usecase because:\r\n\r\n1. Its the only real-world use case we're currently aware of\r\n2. It could easily inform the design of this system"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-08-26T20:22:08Z",
+   "body": ">  if X provides Y then bevy acts exactly as if Y is provided for the purpose of required component resolution when spawning a bundle containing X. That it.\r\n\r\nGotcha. I was playing off of this  \"contract\" phrasing:\r\n\r\n> A full-fledged \"provides\" system where instead of requiring a component you require some contract that other components provide\r\n\r\nIn combination with stated desire to have something less flimsy than reaching in to replace a component with another component.\r\n\r\nI'm not really a fan of `provides` without static guarantees that it:\r\n\r\n1. Actually performs the same function\r\n2. Doesn't break arbitrary upstream code\r\n\r\nI don't see it as meaningfully better than in-place `remove_require` and `require`.\r\n"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-08-26T20:26:05Z",
+   "body": "Fair enough, I can agree with that. I do have thoughts about making transforms more modular, and you did ask some interesting questions I'd like to answer. But I view them as separate from this issue, and think they deserve a proper proposal to lay everything out."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-08-26T20:48:52Z",
+   "body": "I see a lot of mentions of \"breaking upstream assumptions\", but I don't think that's fully accurate. There's plenty of cases where a component might be registered as required but not actually necessary, many bundles in bevy currently include `Transform` despite only really needing `GlobalTransform`. We also aren't introducing a new problem, it's already possible to remove these components, it's just slower and annoying to do so, while if we add `add_require` (which has a lot more uses) also adding `remove_require` is a relatively \"cheap\" escape hatch until we have a more substanial solution for such replacements.\r\n\r\nI also think we should move away from insisting things (especially user code) shouldn't be able to break plugin assumptions, especially if those assumptions are completely unfounded because we do not in fact have anything like archetype invariants. I've seen people use the same argument to resist entity disabling, while in reality not having good solutions for such problems often causes far more problems than having them ever could."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-08-26T20:52:07Z",
+   "body": "I also don't see how `provides` and `#[remove_require]` are equivalent. Provides would allow `B` to replace `A` on any `T` that requires `A`, while `remove_require` only works if you replace every `T` with your own `MyT`, which would result in a situation where ultimately you miss one and end up having both `A` and `B`."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2024-08-26T20:55:24Z",
+   "body": "> In general I think this is a pattern we should not be encouraging. If some third party `SpecialComponent` requires `Transform`, then that third party code (and _other_ third parties that depend on it) can and _should_ be written under the assumption that it will have a Transform.\r\n\r\nI have two problems with this assertion:\r\n1. Requires are already being considered for _convenience_ in discussion, rather than as part of the invariants of the library. The example given was that adding `Button` to an entity should create a working button (for it to work, it would need a `Transform`, even though the code that implements Button likely would only need `GlobalTransform`). This is a conflict that cannot be resolved (we have no way to prevent requirements being used for convenience, and it seems like it's desired), and based on how people are discussing it, is a mistake that library authors will make. We already have an ecosystem of crates which have similar ergonomics issues for simple oversights (such as the inability to disable systems which are not public).\r\n2. Pretty much every way of accessing components on entities returns `Option<>` or `Result<>`. This is required anyway, since you might do any number of dynamic modifications to entities, and library code absolutely should not panic over issues such as missing components.\r\n\r\nFrom my point of view, required components are a standardised replacement for systems which would add required components, which avoid common developer pitfalls and improve performance. As such, in the same way that one can remove a system, one should be able to remove a requirement.\r\n\r\n> Encouraging the \"remove arbitrary upstream components\" pattern is abstraction-breaking and \"ecosystem stability\"-hostile.\r\n\r\nI would argue that not including the escape hatch is a big risk to the ecosystem also. My personal experience with bevy is that I constantly have to fork crates because they haven't followed good practice in a way which allows me to prevent them from misbehaving.\r\n\r\n> The ability to remove a required component constraint is an \"unsafe escape hatch\". If we were to include it, I think we'd want to heavily discourage its use in 3rd party plugins.\r\n\r\nThis I broadly agree with - I would really only expect this to be used at the root application level. I fully expect it to be a common occurrence though.\r\n\r\n\r\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-08-26T21:00:06Z",
+   "body": "> As such, in the same way that one can remove a system, one should be able to remove a requirement.\r\n\r\nNotably, we *can't* currently remove systems (although you can permanently disable them), and doing so requires exposing a public API for the system: either a system set or a public fn type. Cart's been consistent with the stance against reaching in and messing with plugin internals over the years, so the pushback here doesn't surprise me."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-08-26T21:02:57Z",
+   "body": "I can see the argument that if you don't want `Transform` semantics then don't add the transform plugin (in retrospect maybe thats a bad example). I guess my question would be, what does that look like with required components? Required components seem to 'harden' dependencies between plugins, where before you could just swap out the bundles now it's probably going to crash.\r\n\r\nBoth of these sides seem pretty reasonable to me, I'd be surprised if we can't come to some kind of common understanding here."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-08-26T21:11:05Z",
+   "body": "> reaching in and messing with plugin internals\r\n\r\nThis is ultimately something the end user can always do, it just requires a fork rather than a more managable and maintainable solution. Maintaining a fork is generally a fairly miserable experience so I don't think it would be beneficial to push people on that path purely to protect unfounded assumptions from plugin developers like \"`T` requires `A`, so `A` must exist on every entity with `T`\" which is an assumption we don't even support."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2024-08-26T21:11:27Z",
+   "body": "> Notably, we _can't_ currently remove systems (although you can permanently disable them), ...\r\n\r\nWhat about `World::remove_system`? :<nick>: To be honest, I was really just describing my stance. From my point of view, both should be possible or we increase the risk of having a cardboard cut-out of modular engine design. (An example of the failure in the ecosystem at the moment is when systems aren't exposed, and you need to ensure ordering in your app.)\r\n\r\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-08-26T21:15:40Z",
+   "body": "That's for one-shot systems only, not scheduled ones :) Regardless, I'm sympathetic to the argument that forks are miserable and we should have escape hatches for careful and standardized configuration of third-party code, per #2160."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-08-26T21:17:38Z",
+   "body": "Of course when bevy makes real guarantees to end users, with something like archetype invariants, we can't let other crates or end users mess with those, because unsafe code later might be built on those guarantees. It is however extremely unlikely we'd see something like \"Every archetype with `Handle<Mesh>` MUST also have `Transform`\"."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-08-26T21:19:27Z",
+   "body": "I haven't thought this through, but just to throw ideas at the wall: instead of adding and removing requirements, you could have variants of the `insert()` methods of the form `insert_without_required()` (name unimportant right now) to opt out when you know what you're doing? 🤔 "
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-08-26T21:30:37Z",
+   "body": "> insert_without_required()\r\n\r\nI'd imagine this would be very much possible, but I doubt it would very practically solve this problem. And at the same time you'd have to manually list out all the other requires, which could get quite annoying. I imagine there's basically two cases for removing a require:\r\n1. One specific component has a require you really don't want it to have, either globally or under specific conditions. This could be because of an upstream oversight or a \"convenience require\" that ends up being not so convenient.\r\n2. You have a component that can fully replace another component and don't want the old version to waste memory and do useless calculations only for it's output to be overwritten anyway\r\n\r\nMeanwhile adding a require could be the counterpart of reason 2, looser coupling to optional plugins in the same crate (\"`RigidBody` requires `SleepTimer` only if `SleepPlugin` is enabled\", convenience for the end user (\"I need every entity with X to also have Y for this system\")"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-08-26T21:40:01Z",
+   "body": "FYI, there's a pretty ergonomic (if inefficient) workaround for this using observers: listen for whenever a component of the undesired type is added, and then replace it with your own. Definitely wasteful, but foolproof and very easy to set up. You can even check within that observer if the entity meets some other condition."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-08-26T21:53:41Z",
+   "body": "From my point of view, the claimed pros/cons of required components are:\r\n\r\nPros:\r\n1. Dev experience: it's easier to remember what components to add\r\n2. WG Dependency: it is listed as a requirement for the new scenes/UI WG work\r\n3. Invariants: it helps with preserving invariants\r\n\r\nCons:\r\n1. People will have to fork 3rd party crates more often because people will overuse required components.\r\n\r\nI have concerns about the pros, though:\r\n\r\n1. Dev experience:\r\n   - We currently have bundles for that (although there are debates about how good those are)\r\n   - We are planning on adding BSN (etc.) to improve our ability to ergonomically abstract over entity [hierarchy + component] authoring\r\n   \r\n2. WG Dependency:\r\n   - It still isn't clear to me what the justification for this is:\r\n   - It seems to me like it's just a \"nice to have\" in order to reduce boilerplate in hand-written BSN assets.\r\n   - I presume that it doesn't have any real impact on boilerplate in `bsn!` macros because presumably we can use Rust to reduce boilerplate there.\r\n   \r\n3. Invariants:\r\n   - All systems currently have to be written robustly against those invariants not holding already because of the ECS API\r\n   - In an ECS you should be robust to components being added and removed, as that's the primary way users interact with your API\r\n\r\nSince Required Components are going ahead regardless we're going to have to just get on with it and learn together how this will go. This issue request is effectively just suggesting a mitigation for a downside of this new feature.\r\n\r\n---\r\n\r\nGot a bit over excited there, now having read Alice's comment: this means there is a known workaround to mitigate this. With that in place, it's now only really a question of what our stance is on the issue, this work isn't _required_ because a workaround exists.\r\n\r\nThis issue only really serves a purpose if we want a better workaround, or use this opportunity to brainstorm how we communicate the new required components feature. Are we going to encourage people to use it? For what? Are we going to _discourage_ people from using it? Are we going to document the pros/cons of using it?\r\n"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-08-26T22:19:53Z",
+   "body": "I think the pros of required components are actually:\r\n1. It's impossible to forget the components and end up in a \"why does it not work?\" moment\r\n2. All required components can be added in a single archetype move, this is massively more efficient than existing \"manual required component\" implementations\r\n3. It makes things a lot less verbose, even compared to bundles\r\n\r\nWhat it doesn't do is:\r\n1. Give any insurances about invariants\r\n\r\nAlice's workaround would work, but it feels counter to advantage 2. The `#[remove_require]` seems counter to 3, since you could end up with dozens of `MyT` variants just to avoid one component. Meanwhile not having a way to add/remove required components only harms the non-goal of required components being archetype invariants.\r\n\r\nAlso I think it's important to note that required components isn't a BSN requirement, BSN could probably work with bundles, it would just be clunky. The community however decided they'd rather see required components first"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-08-26T22:22:30Z",
+   "body": "Did the community pick to see required components first, or did they ask that the work Cart produced be delivered in small PRs, and the first one Cart offered as most foundational was required components? Genuine question, not trying to be pointed.\r\n\r\nEdit: nevermind, sorry, I'm letting this get off topic. I've distracted us.\r\n\r\nI raised concerns because required components seem like an anti-pattern to me. I don't think that's going to be changed, so I asked for a workaround, I've gotten a workaround specified.\r\n\r\nI would like to see how we're going to communicate this feature, because of my concerns, but ultimately by the letter of the contract I've gotten what I asked for in this issue :)"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-08-26T22:31:01Z",
+   "body": "More of the former actually :) It looked like the simplest one and something that would deliver immediate value. It's also the most disruptive, and needs the most care to make sure we land it appropriately. The next most anticipated work is the \"Requires\" work, to avoid having to pass in `Assets` everywhere, but that looked substantially more complex. Interestingly, the actual *scene* work is less awaited, since they're currently not particularly widely used due to how hard they are to author."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-08-26T23:11:34Z",
+   "body": "@participant2\r\n\r\n> many bundles in bevy currently include Transform despite only really needing GlobalTransform\r\n\r\nYeah we've discussed only requiring GlobalTransform in these contexts. However in cases where users are expected to position entities, we do really want to include a `Transform` by default to ensure that systems like this work as expected:\r\n\r\n```rust\r\nfn x(query: Query<&mut Transform, With<X>>) {\r\n}\r\n```\r\n\r\nFor a given `X` (ex: `Sprite)` we essentially always want _exactly_ one _specific_ and _predictable_ driver component to:\r\n\r\n1. Avoid every consuming system from needing to manually handle every possible permutation of driver component\r\n2. To ensure that plugins developed to interact with the transform of `X` will be able to\r\n3. To avoid logic breaking when a user fails to insert `Transform` manually\r\n\r\nI think the solution is to prefer `GlobalTransform` -only for \"intermediate\" Components that aren't really intended to be used on their own. Then require whatever driver makes sense for \"top level\" Components like `Sprite`.\r\n\r\n> We also aren't introducing a new problem, it's already possible to remove these components, \r\n\r\nDefinitely true, although I'll still assert that removing a component like Transform is unadvisable generally, given the unpredictable upstream effects. This argument applies to _all_ upstream components outside of the users control. Don't remove something unless it was _designed_ to be removed.\r\n\r\n> I also think we should move away from insisting things (especially user code) shouldn't be able to break plugin assumptions\r\n\r\nAllowing people to build solid abstractions is a critical piece of the \"modular ecosystem\" puzzle. See my reply below for thoughts on this.\r\n\r\n@participant5\r\n\r\n> Requires are already being considered for convenience in discussion, rather than as part of the invariants of the library.\r\n\r\nRequires are an actual, reliable invariant in that they guarantee that the components will exist at insertion time. Supporting `remove_require` allows people to reach in and break that guarantee. Ensuring components are _never_ removed is an _additional_ invariant we could add, but its not a desirable default and the existence of that potential invariant doesn't invalidate the value and use of \"required at spawn\".\r\n\r\nRequires _are not_ just a convenience from my perspective. They exist as a piece of the puzzle to build reliable abstractions. In this case, they exist to define a predictable / functional initial state of an entity.\r\n\r\n> I would argue that not including the escape hatch is a big risk to the ecosystem also.\r\n\r\nThe risk that providing an escape hatch poses is as high if not higher imo (see my next reply).\r\n\r\n> From my point of view, both should be possible or we increase the risk of having a cardboard cut-out of modular engine design. An example of the failure in the ecosystem at the moment is when systems aren't exposed, and you need to ensure ordering in your app.\r\n\r\nBeing able to build private, unaddressable abstractions that downstream users cannot depend on is an important tool for _enabling_ modularity actually. Making everything public/addressable/usable creates a world where people build on the details of an implementation that were not intentionally designed to be built on. An ecosystem where people are building on internal implementation details will chaotically break, making it hard to trust. An important part of making Bevy \"modular\" is intentional design of public APIs and intentional _hiding_ of implementation details."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-08-26T23:43:17Z",
+   "body": "> Definitely true, although I'll still assert that removing a component like Transform is unadvisable generally, given the unpredictable upstream effects.\r\n\r\nI definitely agree that doing this arbitrarily would be unadvisable. This is however an API you have to go out of your way to use, and it could have plenty of warnings included so people understand that if things break it's their fault.\r\n\r\n> Requires are an actual, reliable invariant in that they guarantee that the components will exist at insertion time.\r\n\r\nI guess that is indeed a guarantee, it is a bit limited in its scope but things like hooks and observers would still allow for this guarantee to be used. One possibility would be for \"add this for convenience\" and \"add this because I need the guarantee\" separate, but I'd imagine it would be hard to get right.\r\n\r\n> I think the solution is to prefer `GlobalTransform` -only for \"intermediate\" Components that aren't really intended to be used on their own. Then require whatever driver makes sense for \"top level\" Components like `Sprite`.\r\n\r\nOne option could be to have `add_require` in a plugin so `GlobalTransform` can require `Transform`, but only if the `TransformPlugin` is added to the app. This way if conevience requires ever pose a problem they could be thrown into an optional plugin or config, while the plugin developer still has control over what people can and can't unrequire. This gives us both a fully efficient solution that plugin developers can account for during development, with alice's solution (using observers to remove the offending component) as a fallback"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-08-26T23:56:18Z",
+   "body": "> One option could be to have add_require in a plugin so GlobalTransform can require Transform\r\n\r\nNot really an option on its own, as we're already living in a world where we don't want Transform for every GlobalTransform (ex: we're discussing Transform2d and removing Transform for UI Nodes)"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-08-27T00:20:59Z",
+   "body": "> we don't want Transform for every GlobalTransform\r\n\r\nYea I guess this specific case wouldn't work out once we split up `Transform`. You'd either have to express this as \"GlobalTransform requires a transform source\" (which creates a whole set of new problems), or have each transform register itself as requirements for relevant types if that plugin is added (which sounds like a coupling nightmare)"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2024-08-27T01:06:37Z",
+   "body": "> Definitely true, although I'll still assert that removing a component like Transform is unadvisable generally, given the unpredictable upstream effects. This argument applies to _all_ upstream components outside of the users control. Don't remove something unless it was _designed_ to be removed.\r\n\r\nI don't think I agree with this. To take it slightly ad absurdum, does this mean we should never destroy entities with components that shouldn't be removed (as destruction implies removal of all components)? Is this to protect against bugs in cleanup?\r\n\r\n> Allowing people to build solid abstractions is a critical piece of the \"modular ecosystem\" puzzle. See my reply below for thoughts on this.\r\n\r\nI absolutely agree with this, I think we're just considering the boundary of the abstractions to be in different places.\r\n\r\n> Requires are an actual, reliable invariant in that they guarantee that the components will exist at insertion time.\r\n\r\nIs this a desirable invariant? Is it even observable? If you remove the component with a hook as soon as it is added, technically the invariant has been upheld (the component was added at insertion time), but no library author could rely on this for anything.\r\n\r\n> Requires _are not_ just a convenience from my perspective. They exist as a piece of the puzzle to build reliable abstractions. In this case, they exist to define a predictable / functional initial state of an entity.\r\n\r\nI don't think that requires are at the right level to be useful for building abstractions. Since the components on an entity are inherently publicly exposed, any abstraction over which components are associated with an entity is going to be leaky. There's no way for a library to maintain its invariants between calls.\r\n\r\nYou can't have a functional initial state and multiple ways to structure an entity. If you have a `Text` component that could exist with either a `Transform` or `UiTransform`, what do you do?\r\n\r\n> Being able to build private, unaddressable abstractions that downstream users cannot depend on is an important tool for _enabling_ modularity actually. Making everything public/addressable/usable creates a world where people build on the details of an implementation that were not intentionally designed to be built on. An ecosystem where people are building on internal implementation details will chaotically break, making it hard to trust. An important part of making Bevy \"modular\" is intentional design of public APIs and intentional _hiding_ of implementation details.\r\n\r\nI think that it's already hard to reason about what needs to be exposed as part of the interface of a plugin crate. Systems being addressable (by system or exposing sets) so that ordering is part of the interface is a common oversight.\r\n\r\nAt the moment the reality is that Bevy plugins aren't all successful abstractions. If they were, we wouldn't have the integration issues we do.\r\n\r\nIf requires are going to be used to provide reasonable defaults, I definitely think that an escape hatch is justified (since that's well outside the remit of invariants), but even otherwise, I think it's far preferable to forking crates."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2024-10-06T11:35:32Z",
+   "body": "Is it possible to get some form of clarity on this issue before the 0.15 RC?\n\nIf I understand the current status-quo, once 0.15 is released, plugin authors will be encouraged to use requires, and in particular should be able to treat required component co-existence as invariant.\n\nThis says to me that using `unwrap` in systems on dependent components, or writing unsafe code which relies on this invariant should be fair game, which in turn means that removing components is effectively unsafe.\n\nAdditionally, requires will be recommended for sensible initial state and plugin authors will have to choose between making their plugins more flexible, or easy to use.\n\nThis situation makes me pretty uncomfortable.\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-10-06T13:18:50Z",
+   "body": "> This says to me that using unwrap in systems on dependent components, or writing unsafe code which relies on this invariant should be fair game, which in turn means that removing components is effectively unsafe.\n\nThis is not the case: please don't rely on dependent components existing! These aren't archetype invariants: it's only a guarantee at insertion time, not for the whole lifetime. Your plugin code should still try to be reasonably robust to these failing, especially if you expose public systems or other backdoors.\n\n"
+  },
+  {
+   "author": "participant6",
+   "created_at": "2024-10-06T13:29:12Z",
+   "body": "Alice already responded while I was writing my own message :p but leaving it here anyway:\n\n> This says to me that using `unwrap` in systems on dependent components, or writing unsafe code which relies on this invariant should be fair game, which in turn means that removing components is effectively unsafe.\n\nRequired components are primarily an insertion mechanism that ensures that components are initialized with all the other components that they need to function as expected. This can be thought of as a kind of invariant, but not one that is enforced at runtime. As a plugin author, I don't expect to be able to treat this as as an absolute, and to be able to use `unwrap` or unsafe code that just *assumes* the invariant to be held. That would need archetype invariants. Perhaps this should be stated more explicitly in the documentation however.\n\nAlso, this is already kind of the case with bundles. You could *assume* that users will always use `PbrBundle` instead of adding every component manually, but if users *don't* do that, or remove components at runtime, you'd end up with the same issues. Required components are essentially a more ergonomic and reliable replacement for bundles.\n\nAs for one of the other things raised in this issue, adding requirements at runtime, that was addressed by #15458. It also makes it technically possible to have optional requirements if they are added through plugins (just don't add the plugin). Arbitrarily *removing* requirements on the other hand I consider to be a non-goal for several reasons already discussed here."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-10-06T14:02:43Z",
+   "body": "I think we've exhausted this conversation. We can see how this plays out in practice and reopen this if there are ecosystem problems, but I'm going to mark \"removing required component constraints\" as won't fix."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2024-10-06T14:29:28Z",
+   "body": "@participant1,\n\n> This is not the case: please don't rely on dependent components existing! These aren't archetype invariants: it's only a guarantee at insertion time, not for the whole lifetime. Your plugin code should still try to be reasonably robust to these failing, especially if you expose public systems or other backdoors.\n\nI'm not planning to do this, or recommending it, I was just trying to summarise what the current stance is (though it looks like I'm still missing something). To quote @participant3:\n> If some third party SpecialComponent requires Transform, then that third party code (and other third parties that depend on it) can and should be written under the assumption that it will have a Transform.\n\nThis is what lead me to the conclusion I made above. The further comment about not removing components that are not designed to be removed seems in-line too.\n\n@participant6, I hope your interpretation is correct, but it seems to me that there's not a consensus in this particular issue.\n\nAnyway, my goal here wasn't to create more noise, as @participant1 says, we can see how this plays out. 🙂 \n\n"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-10-09T20:44:04Z",
+   "body": "> This is what lead me to the conclusion I made above. The further comment about not removing components that are not designed to be removed seems in-line too.\n\nI said this in the context of _removing requires defined by components you depend on_ (not _removing components brought in by a require_). With requires, the one invariant you should be able to rely on is \"this will exist at insertion time\". All other constraints about what you can remove are defined by the context of each component."
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "bevyengine/bevy",
+  "default_branch": "main",
+  "commit_sha": "1caa64d94820d7148fa4b9a04e5436d17098ab1b",
+  "as_of": "2024-08-26T16:18:32Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_bevyengine_bevy_14927"
+}

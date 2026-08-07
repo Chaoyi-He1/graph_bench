@@ -1,0 +1,103 @@
+{
+ "repo": "questdb/questdb",
+ "number": 5025,
+ "url": "https://github.com/questdb/questdb/issues/5025",
+ "title": "Avoid multiple SQL function compilations when preparing a parallel filter/GROUP BY query",
+ "state": "closed",
+ "labels": [
+  "Enhancement",
+  "SQL",
+  "Performance"
+ ],
+ "reporter": "reporter",
+ "created_at": "2024-10-07T08:31:35Z",
+ "closed_at": "2024-12-02T16:08:26Z",
+ "body": "### Is your feature request related to a problem?\n\nCurrently, when compiling a parallel filter/GROUP BY query we're compiling SQL functions from AST multiple times, once per the owner query thread and each shared worker thread. We could speed up the query compilation by compiling the functions only once and then cloning the functions per worker. This needs a new `deepClone()` method on the `Function` interface and proper implementations in all functions.\n\n### Describe the solution you'd like.\n\n_No response_\n\n### Describe alternatives you've considered.\n\n_No response_\n\n### Full Name:\n\nAndrei Pechkurov\n\n### Affiliation:\n\nQuestDB\n\n### Additional context\n\n_No response_",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2024-10-15T12:03:05Z",
+   "body": "Could you assign the issue to me ? I am interested in this issue and would like to propose some discussion about it.\r\nI will appreciate it if you provide some guidance.\r\n@reporter \r\n\r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-10-15T13:16:31Z",
+   "body": "@participant1 this one assumes a lot of code changes, so it's not the best choice for the first contribution. I suggest picking up one of `Good first issue` issues instead of this one:\r\nhttps://github.com/questdb/questdb/issues?q=is%3Aopen+is%3Aissue+label%3A%22Good+first+issue%22"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-10-15T16:23:15Z",
+   "body": "> @participant1 this one assumes a lot of code changes, so it's not the best choice for the first contribution. I suggest picking up one of `Good first issue` issues instead of this one: https://github.com/questdb/questdb/issues?q=is%3Aopen+is%3Aissue+label%3A%22Good+first+issue%22\r\n\r\n@reporter\r\nMay I start at `GroupByFunction`:\r\n```\r\n    private @Nullable ObjList<ObjList<GroupByFunction>> compileWorkerGroupByFunctionsConditionally(\r\n            SqlExecutionContext executionContext,\r\n            QueryModel model,\r\n            @participant2 ObjList<GroupByFunction> groupByFunctions,\r\n            int workerCount,\r\n            RecordMetadata metadata\r\n    ) throws SqlException {\r\n        boolean threadSafe = true;\r\n        for (int i = 0, n = groupByFunctions.size(); i < n; i++) {\r\n            if (!groupByFunctions.getQuick(i).isThreadSafe()) {\r\n                threadSafe = false;\r\n                break;\r\n            }\r\n        }\r\n        if (!threadSafe) {\r\n            ObjList<ObjList<GroupByFunction>> allWorkerGroupByFunctions = new ObjList<>();\r\n            for (int i = 0; i < workerCount; i++) {\r\n                ObjList<GroupByFunction> workerGroupByFunctions = new ObjList<>(groupByFunctions.size());\r\n                allWorkerGroupByFunctions.extendAndSet(i, workerGroupByFunctions);\r\n                GroupByUtils.prepareWorkerGroupByFunctions(\r\n                        model,\r\n                        metadata,\r\n                        functionParser,\r\n                        executionContext,\r\n                        groupByFunctions,\r\n                        workerGroupByFunctions\r\n                );\r\n            }\r\n            return allWorkerGroupByFunctions;\r\n        }\r\n        return null;\r\n    }\r\n```\r\n\r\nIn `compileWorkerGroupByFunctionsConditionally`, if has at least one `GroupByFunctions` is not thread safe, all `GroupByFunctions` need to recompile. We can enhance here by:\r\n- `GroupByFunctions` that  threadSafe need not recompile/deepClone, which can be \"shared\" between different workers;\r\n- `GroupByFunctions` that  not threadSafe need implement deepClone, but only need clone fields with conflict thread access, this means most of fields in GroupByFunctions objects can be shared(need not clone), like filed`arg` in `SumDoubleGroupByFunction` ;\r\n- This means `DeepClone` of `GroupByFunction` is not a common real clone function , May be its name  is `deepCloneInitStateIfNeed()` or add a construct function with same class object as arg (which do you think is better?);\r\n```\r\n   // an example of ApproxPercentileDoublePackedGroupByFunction construct function\r\n    public ApproxPercentileDoublePackedGroupByFunction(ApproxPercentileDoublePackedGroupByFunction self) {\r\n        assert self.precision >= 0 && self.precision <= 5;\r\n        this.exprFunc = self.exprFunc;\r\n        this.percentileFunc = self.percentileFunc;\r\n        this.precision = self.precision;\r\n        this.funcPosition = self.funcPosition;\r\n    }\r\n\r\n   // add newInstance function in FunctionFactory, \r\n    @Override\r\n    public Function newInstance(Function self) throws SqlException {\r\n        if(self instanceof ApproxPercentileDoublePackedGroupByFunction) {\r\n            return new ApproxPercentileDoublePackedGroupByFunction((ApproxPercentileDoublePackedGroupByFunction)self);\r\n        }\r\n        else if (self instanceof ApproxPercentileDoubleGroupByFunction) {\r\n            return new ApproxPercentileDoubleGroupByFunction((ApproxPercentileDoubleGroupByFunction)self);\r\n        } else {\r\n            throw SqlException.$(CLAZZ.valueOf(this.getClass().getSimpleName()), \"Unexpection class\");\r\n        }\r\n    }\r\n\r\n```\r\n- The fields in `GroupByFunction` need be shared between different objects's  lifeCycle should controlled by the owner query thread(`clear()` May be need not so complicated, we can simplely only clone fields that need clear -.-);\r\n- Find Every `GroupByFunction` not threadSafe fileds, clone it in `deepClone()`;\r\n\r\n\r\nAm I understand right ?\r\n\r\nBTW, The `Good first issue` seems have been exhausted and every has its owner -.-"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-10-15T17:57:47Z",
+   "body": "The problem is that a `GroupByFunction` may wrap a number of non-group by functions as its arguments and, when a `deepClone()` happens, it needs to clone them as well. So, due to that all `Function`s have to support `deepClone()`."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-10-16T03:00:41Z",
+   "body": "> The problem is that a `GroupByFunction` may wrap a number of non-group by functions as its arguments and, when a `deepClone()` happens, it needs to clone them as well. So, due to that all `Function`s have to support `deepClone()`.\r\n\r\nIn my humble option,  non-group by functions seems have no inner-state, which mean is thread-safe access, may  the `GroupByFunction`'s  non-group by functions arg need not Deepclone ? (Shared between different `GroupByFunction` objects by reference/pointer)"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-10-16T06:24:02Z",
+   "body": "Many non-group by functions have runtime state which makes them non-thread safe. E.g. if the query has `first(concat(str_col, 'foobar'))` as an aggregate, the `ConcatFunction` function will have a `StringSink` to accumulate the concatenated strings."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-10-16T07:36:59Z",
+   "body": "> Many non-group by functions have runtime state which makes them non-thread safe. E.g. if the query has `first(concat(str_col, 'foobar'))` as an aggregate, the `ConcatFunction` function will have a `StringSink` to accumulate the concatenated strings.\r\n\r\nOK，I checked  the `StrFunction` and most of are not thread-safe to reuse alloc memory.\r\nSo here `deepCloneIfNeed` can implement as:\r\n- if `isThreadSafe` return true, return `this` as pointer;\r\n- if `isThreadSafe` return false, only clone necessary fields that not thread-safe\r\n- if `isThreadSafe` depend on its warper child function, clone itself and then call its warper function recursive\r\n\r\nIs it ok to implement by this way?\r\nCan i work on this issue?\r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-10-16T08:13:52Z",
+   "body": "> Is it ok to implement by this way?\r\n> Can i work on this issue?\r\n\r\nI'd prefer cloning the functions unconditionally since this is less error-prone: it matches the current behavior when we recompile each function. As for working on the issue, sure please go ahead!"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-10-16T08:30:00Z",
+   "body": "> > Is it ok to implement by this way?\r\n> > Can i work on this issue?\r\n> \r\n> I'd prefer cloning the functions unconditionally since this is less error-prone: it matches the current behavior when we recompile each function. As for working on the issue, sure please go ahead!\r\n\r\nThanks for your advices and I will working for it!"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-10-16T13:22:29Z",
+   "body": "Thanks for the thoughtful approach and have fun with the contribution! Don't hesitate to ask any questions here or on our public [Slack](https://<redacted-host>/)."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-10-17T05:53:28Z",
+   "body": "> Thanks for the thoughtful approach and have fun with the contribution! Don't hesitate to ask any questions here or on our public [Slack](https://<redacted-host>/).\r\n\r\nI hava two possible options to implement `deepClone` for base classes of `Function`:\r\n1. Roughly implemet  `deepClone()` method for every base class.\r\nExample:\r\n```\r\n    private static class Func extends AbstractCastToStrFunction {\r\n        ......\r\n             @participant3\r\n             public Function deepClone() {\r\n                    return new Func();\r\n             }\r\n        ......\r\n    }\r\n```\r\n- Pros: Low runtime cost compare to opition 2\r\n- Cons: A large amount of repetitive code, need implement `deepClone()` from every add function in the future.\r\n\r\n2. Provide a default `deepClone()` method in interface/abstractClass which Use reflection to eliminate repetitive code.\r\nExample:\r\n```\r\n    @Override\r\n    default Function deepClone() {\r\n        try {\r\n            Class<? extends UnaryFunction> unaryFunctionClass = this.getClass();\r\n            Constructor<? extends UnaryFunction> unaryFunctionClassCons =\r\n                    unaryFunctionClass.getConstructor(Function.class);\r\n            return unaryFunctionClassCons.newInstance(this.getArg().deepClone());\r\n        } catch (NoSuchMethodException | IllegalAccessException |\r\n                 InstantiationException | InvocationTargetException ex) {\r\n            throw new IllegalArgumentException(ex);\r\n        }\r\n    }\r\n```\r\n- Pros: Effectively eliminate repetitive code(of cource also need override for 'special' function that not conform to this pattern)\r\n- Cons: A slight runtime performance loss due to use of reflection compare option 1. However, I think the performance loss is acceptable because function.deepClone not happen offen In the whole query/sql execution time.\r\n(I think  the reason of making this trade-off is that Java lacks ability of template-meta programming.)\r\n\r\nSo, I'd perfer option2 to implement. What do you think about the two options? Or have another good idea?\r\n@reporter \r\n\r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-10-17T15:36:39Z",
+   "body": "Sorry for the late reply. I'd try to go with option 2, but that might be tricky as signatures of function constructors vary a lot. Alternatively, we could add `newInstance` to UnaryFunction`/`BinaryFunction/... and have each class effectively expose its \"constructor\" (with a unified interface) though this function. Then in `UnaryFunction` the `deepClone()` impl would be simple:\r\n```java\r\n    default void deepClone() {\r\n        return newInstance(getArg().deepClone());\r\n    }\r\n```"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-10-17T16:32:20Z",
+   "body": "> Sorry for the late reply. I'd try to go with option 2, but that might be tricky as signatures of function constructors vary a lot. Alternatively, we could add `newInstance` to UnaryFunction`/`BinaryFunction/... and have each class effectively expose its \"constructor\" (with a unified interface) though this function. Then in `UnaryFunction` the `deepClone()` impl would be simple:\r\n> \r\n> ```java\r\n>     default void deepClone() {\r\n>         return newInstance(getArg().deepClone());\r\n>     }\r\n> ```\r\n\r\nThanks for your good idea. Everything is fine util tricky  `CursorFunction`, which stand by a `subquery` or `system function` or `storage scan interface`. The  `CursorFunction` 'contain' a RecordCursorFactory that hard to implement `deepClone`, nor `recordCursorFactory` is thread-safe. The siuation seems very difficult to handle. Can `GroupByFunction` has `CursorFunction` as its warpper function? If not so, we can now throw an exception for  `CursorFunction`'s clone and only support `GroupByFunction`. Or provide a `supportDeepClone` method(similar to `isThreadSafe`, default is true only `CursorFunction` return false ), will be called before `deepClone`."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-10-17T17:37:25Z",
+   "body": "ATM `CursorFunction` can be used only in `IN (<symbol sub-query>)` and `IN (<timestamp sub-query>)` expressions in WHERE clause. So, it doesn't need implementing `deepClone()`, but instead can throw an exception."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-12-02T16:08:27Z",
+   "body": "Closing this one, at least for now, as SQL compilation appears to be on-par or very close to reflection-based code."
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "questdb/questdb",
+  "default_branch": "master",
+  "commit_sha": "f5b0ff3331194700879ea6dc4835237828981d94",
+  "as_of": "2024-10-07T08:31:35Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_questdb_questdb_5025"
+}

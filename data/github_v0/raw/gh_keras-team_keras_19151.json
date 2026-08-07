@@ -1,0 +1,149 @@
+{
+ "repo": "keras-team/keras",
+ "number": 19151,
+ "url": "https://github.com/keras-team/keras/issues/19151",
+ "title": "loading layers with lambda in from .h5 files",
+ "state": "closed",
+ "labels": [
+  "stat:awaiting response from contributor",
+  "stat:awaiting keras-eng",
+  "stale",
+  "type:Bug"
+ ],
+ "reporter": "reporter",
+ "created_at": "2024-02-05T18:18:06Z",
+ "closed_at": "2025-02-14T02:01:32Z",
+ "body": "I have a large number of models trained using tensorflow.keras where the first layer is:\r\n\r\ns = Lambda(lambda x: x / 255) (inputs)\r\n\r\nWhen I try to load these in keras-core with pytorch backend I get the following error:\r\n\r\n```\r\n    new_model = keras.models.load_model('my_model.h5',compile=False)\r\n  File \"d:\\Python38\\lib\\site-packages\\keras_core\\src\\saving\\saving_api.py\", line 184, in load_model\r\n    return legacy_h5_format.load_model_from_hdf5(filepath)\r\n  File \"d:\\Python38\\lib\\site-packages\\keras_core\\src\\legacy\\saving\\legacy_h5_format.py\", line 156, in load_model_from_hdf5\r\n    **saving_utils.compile_args_from_training_config(\r\n  File \"d:\\Python38\\lib\\site-packages\\keras_core\\src\\legacy\\saving\\saving_utils.py\", line 145, in compile_args_from_training_config\r\n    loss = _resolve_compile_arguments_compat(loss, loss_config, losses)\r\n  File \"d:\\Python38\\lib\\site-packages\\keras_core\\src\\legacy\\saving\\saving_utils.py\", line 247, in _resolve_compile_arguments_compat\r\n    obj = module.get(obj_config[\"config\"][\"name\"])\r\nTypeError: string indices must be integers\r\n\r\n```\r\n\r\nThe offending function (in keras_core\\src\\legacy\\saving\\saving_utils.py) is:\r\n\r\n```\r\ndef _resolve_compile_arguments_compat(obj, obj_config, module):\r\n    \"\"\"Resolves backwards compatiblity issues with training config arguments.\r\n\r\n    This helper function accepts built-in Keras modules such as optimizers,\r\n    losses, and metrics to ensure an object being deserialized is compatible\r\n    with Keras Core built-ins. For legacy H5 files saved within Keras Core,\r\n    this does nothing.\r\n    \"\"\"\r\n    if isinstance(obj, str) and obj not in module.ALL_OBJECTS_DICT:\r\n        obj = module.get(obj_config[\"config\"][\"name\"])\r\n    return obj\r\n```\r\n\r\nDebugging `obj=<lambda>` and `obj_config=<lambda>`.\r\n\r\nI'm not sure why this is even being called, as I use compile=False, and so don't actually specify any optimizer, or loss at this stage. Other (.keras) models load fine. Thanks in advance!\r\n\r\nDerek ",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2024-02-07T21:35:17Z",
+   "body": "@participant9 , Could you please take a look into this. Thanks!"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-02-09T17:11:07Z",
+   "body": "Saving lambas in the ;keras format is not going to work. Lambdas can be arbitrary python code.\r\nPrefer using [layers.Rescaling](https://keras.io/api/layers/preprocessing_layers/image_preprocessing/rescaling/)"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-02-12T14:47:41Z",
+   "body": "I appreciate lambdas are a bad idea, and will definitely change the code for future models, but our customers have a lot of models with these layers in and it has worked fine in tf.keras for a long time loading and saving in h5 format (we even convert these to ONNX using tf2onnx and use them fine). In fact the conversion process to onnx removes these layers, which is fine by us as it's just a normalization layer at the beginning of the network. However surely the current behavior is not optimal ie.\r\n\r\n```\r\n    obj = module.get(obj_config[\"config\"][\"name\"])\r\n    TypeError: string indices must be integers\r\n```\r\n\r\nAt the very least it should print out an informative error:\r\n\r\n```\r\n        if obj== \"<lambda>\":\r\n        # print(\"Loading of Lambda layers is no longer supported by ...\"\r\n```\r\n\r\nMost usefully it would allow the model to be loaded (perhaps with a warning, perhaps removing these layers) as has always been the behavior in tf.keras. If this is not supported by the new .keras format, fair enough flag an error when trying to save to that format (I guess that is already implemented as the latest Keras still has Lambda layers). Not supporting loading legacy models in h5 format with lambda layers when it has always been supported in tf.keras means these older models cannot be used as the basis of further training in keras-core (which seems to be the future of Keras). A lot of people have put a lot of work (and GPU time) into training these models, and I'm sure there are others out there with such models in h5 format. In our use case the following change in keras allows the model to be loaded and used fine.\r\n\r\n```\r\nfrom keras_core.layers import Identity\r\n\r\ndef _resolve_compile_arguments_compat(obj, obj_config, module):\r\n    \"\"\"Resolves backwards compatiblity issues with training config arguments.\r\n\r\n    This helper function accepts built-in Keras modules such as optimizers,\r\n    losses, and metrics to ensure an object being deserialized is compatible\r\n    with Keras Core built-ins. For legacy H5 files saved within Keras Core,\r\n    this does nothing.\r\n    \"\"\"\r\n    if isinstance(obj, str) and obj not in module.ALL_OBJECTS_DICT:\r\n\r\n        if obj== \"<lambda>\":\r\n        # If obj is a string containing \"<lambda>\" it breaks this check, do something sensible\r\n            obj = Identity()\r\n        else:\r\n        # Initialise object using obj_config\r\n            obj = module.get(obj_config[\"config\"][\"name\"])\r\n    return obj\r\n```\r\n\r\nI appreciate if someone has used Lambdas for something more complex than us it may be harder, but at least they would get their models loaded and could fix them. Obviously in an ideal world it would have exactly the same behaviors as tf.keras, which is to load the lambda functions as Lambda layers (assuming no great changes in the python version). This would require changes elsewhere."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-04-03T22:23:33Z",
+   "body": "I'm having the same problem. Is there any solution?"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-04-04T05:44:07Z",
+   "body": "It looks like the load_model() function calls the legacy function without the compile argument. And compile is true by default.\r\n\r\n if str(filepath).endswith((\".h5\", \".hdf5\")):\r\n        return legacy_h5_format.load_model_from_hdf5(filepath)\r\n\r\nI guess that modifying this would allow the inference to work."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-04-04T08:23:27Z",
+   "body": "@participant4 Many thanks, I just tried that and it worked!\r\nI will create a PR.\r\n\r\n`.../keras/src/saving/saving_api.py`\r\n```python\r\n    if str(filepath).endswith((\".h5\", \".hdf5\")):\r\n        return legacy_h5_format.load_model_from_hdf5(filepath, custom_objects=None, compile=compile)\r\n```"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-04-09T13:19:36Z",
+   "body": "Now I have another model that's failing to load with `keras 3.2.0`.\r\n\r\nIt's a similar issue reported [here](https://stackoverflow.com/questions/78187204/trying-to-export-teachable-machine-model-but-returning-error)\r\n\r\nThe patch #19438 above did not solve this one.\r\nRunning `load_model()` from `keras 2.15` works fine, but `3.2.0` fails.\r\n\r\n```python\r\nimport keras_cv_attention_models  # needed for layer: 'beit>MultiHeadRelativePositionalEmbedding'\r\nfrom keras.models import load_model\r\n\r\nload_model(\"mymodel.h5\")\r\n\r\nTraceback (most recent call last):\r\n  File \"lib/python3.10/site-packages/keras/src/ops/operation.py\", line 208, in from_config\r\n    return cls(**config)\r\n  File \"lib/python3.10/site-packages/keras/src/layers/convolutional/depthwise_conv2d.py\", line 118, in __init__\r\n    super().__init__(\r\n  File \"lib/python3.10/site-packages/keras/src/layers/convolutional/base_depthwise_conv.py\", line 106, in __init__\r\n    super().__init__(\r\n  File \"lib/python3.10/site-packages/keras/src/layers/layer.py\", line 263, in __init__\r\n    raise ValueError(\r\nValueError: Unrecognized keyword arguments passed to DepthwiseConv2D: {'groups': 1}\r\n\r\nDuring handling of the above exception, another exception occurred:\r\n\r\nTraceback (most recent call last):\r\n  File \"debug.py\", line 5, in <module>\r\n    load_model(\"mymodel.h5\")\r\n  File \"lib/python3.10/site-packages/keras/src/saving/saving_api.py\", line 183, in load_model\r\n    return legacy_h5_format.load_model_from_hdf5(filepath, custom_objects=None, compile=compile)\r\n  File \"lib/python3.10/site-packages/keras/src/legacy/saving/legacy_h5_format.py\", line 133, in load_model_from_hdf5\r\n    model = saving_utils.model_from_config(\r\n  File \"lib/python3.10/site-packages/keras/src/legacy/saving/saving_utils.py\", line 85, in model_from_config\r\n    return serialization.deserialize_keras_object(\r\n  File \"lib/python3.10/site-packages/keras/src/legacy/saving/serialization.py\", line 495, in deserialize_keras_object\r\n    deserialized_obj = cls.from_config(\r\n  File \"lib/python3.10/site-packages/keras/src/models/model.py\", line 512, in from_config\r\n    return functional_from_config(\r\n  File \"lib/python3.10/site-packages/keras/src/models/functional.py\", line 510, in functional_from_config\r\n    process_layer(layer_data)\r\n  File \"lib/python3.10/site-packages/keras/src/models/functional.py\", line 490, in process_layer\r\n    layer = saving_utils.model_from_config(\r\n  File \"lib/python3.10/site-packages/keras/src/legacy/saving/saving_utils.py\", line 85, in model_from_config\r\n    return serialization.deserialize_keras_object(\r\n  File \"lib/python3.10/site-packages/keras/src/legacy/saving/serialization.py\", line 504, in deserialize_keras_object\r\n    deserialized_obj = cls.from_config(cls_config)\r\n  File \"lib/python3.10/site-packages/keras/src/ops/operation.py\", line 210, in from_config\r\n    raise TypeError(\r\nTypeError: Error when deserializing class 'DepthwiseConv2D' using config={'name': 'stack_1_block_1_MB_dw_conv', 'trainable': True, 'dtype': 'float32', 'kernel_size': [3, 3], 'strides': [2, 2], 'padding': 'valid', 'data_format': 'channels_last', 'dilation_rate': [1, 1], 'groups': 1, 'activation': 'linear', 'use_bias': False, 'bias_initializer': {'module': 'keras.initializers', 'class_name': 'Zeros', 'config': {}, 'registered_name': None}, 'bias_regularizer': None, 'activity_regularizer': None, 'bias_constraint': None, 'depth_multiplier': 1, 'depthwise_initializer': {'module': 'keras.initializers', 'class_name': 'GlorotUniform', 'config': {'seed': None}, 'registered_name': None}, 'depthwise_regularizer': None, 'depthwise_constraint': None}.\r\n\r\nException encountered: Unrecognized keyword arguments passed to DepthwiseConv2D: {'groups': 1}\r\n```\r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-04-09T14:22:52Z",
+   "body": "Alan, check out https://github.com/keras-team/keras/issues/19441"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-04-09T18:42:21Z",
+   "body": "@reporter , If you have saved the models using .keras format, could you please try to load it using `safe_mode=False ` some thing like `keras.saving.load_model(filepath, custom_objects=None, compile=True, safe_mode=False)`"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-04-09T20:25:23Z",
+   "body": "The problem I see is that if you look at `keras 2.15`:\r\nhttps://github.com/keras-team/keras/blob/r2.15/keras/layers/convolutional/base_conv.py\r\n\r\nIt has several references to `groups` but this is gone in the new implementation for `keras 3.x`: https://github.com/keras-team/keras/blob/master/keras/layers/convolutional/base_depthwise_conv.py\r\n\r\nSo, if `keras 3.x` does not need `groups` for `DepthwiseConv2D` (and possibly for several other classes), then @reporter hack to skip it is fine.\r\n\r\nI don't know much about what's done in keras, but if I want to keep compatibility with models built in keras 2.x I would use `try/catch` or a key check to skip the ones that are not needed anymore.\r\n\r\nI'm using ONNX in the end so I just build my \"convertor\" using `keras 2.15` as I need to move on."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-04-10T12:32:25Z",
+   "body": "@participant1 the old models are in .h5 format (not .keras). I tried adding safe_mode=False (both with compile=True, and compile=false) and the error is still there."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-04-11T15:34:15Z",
+   "body": "I just realised it's not the network that has a lambda layer in it (it seems we actually removed that layer some time ago, I should have checked), but the loss function which is a lambda (it's a custom loss with extra parameters that are passed via the lambda, which is necessary in tensorflow). At least that's where I think the lambda is."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2024-04-11T21:47:32Z",
+   "body": "Do we have a standalone code snippet to reproduce this?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-04-12T07:54:57Z",
+   "body": "I provided a model and code in https://github.com/keras-team/keras/issues/19441"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2024-04-12T16:55:39Z",
+   "body": "The code snippet in that other issue makes no reference to lambdas at all (it is also not reproducible since it refers to a file on disk). Do you have a snippet to reproduce the issue in this thread? Or is this thread purely a duplicate?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-04-12T18:00:48Z",
+   "body": "I provided the file further up the thread as a download link. The two threads have become a bit confused as @participant3 raised the DepthwiseConv2D issue here instead of starting a new thread. I pointed out there was already a thread relating to that issue (started by me). However, the example I provided demonstrates both issues. If I recall it first throws the lambda iissue, then if you fix that it throws the DepthwiseConv2D issue."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-04-12T18:01:45Z",
+   "body": "For convenience, the model here too:\r\n\r\nhttps://drive.google.com/file/d/1Jn9C4vTRVWgHCqAXnMfO_i-B3pK4c14I/view?usp=sharing"
+  },
+  {
+   "author": "participant6",
+   "created_at": "2024-06-13T07:11:03Z",
+   "body": "Hi,\r\n\r\nSorry, wasn't sure if I should open a new issue but just bumped into this one looking how to solve the same one. I am being shown this error no matter what I change in the load_model method:\r\n\r\n```python\r\nValueError: Sequential model 'model_4' has already been configured to use input shape (None, 7). You cannot build it with input_shape [None, 7]\r\n```\r\n\r\nI am updating an old model which has a Lambda input:\r\n\r\n```python\r\nmodel_4 = tf.keras.Sequential(\r\n    [\r\n        tf.keras.layers.Lambda(lambda x: tf.expand_dims(x, axis=1)),\r\n        tf.keras.layers.Conv1D(\r\n            filters=128, kernel_size=128, padding=\"causal\", activation=\"relu\"\r\n        ),\r\n        tf.keras.layers.Dense(units=HORIZON),\r\n    ],\r\n    name=\"model_4\",\r\n)\r\n```\r\n\r\nWhen saving it and reloading it in the new .keras format, I'm shown the error above. I have changed all the options within tf.keras.models.load_model(), but the error persists.\r\n\r\nThanks,\r\n\r\nBest"
+  },
+  {
+   "author": "participant7",
+   "created_at": "2024-08-05T17:22:00Z",
+   "body": "@participant3 this [gist](https://gist.github.com/participant7/180438367d4ca009e3672632247dac30) solves the *Conv2D keras 2->3 layer groups issue for me"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-08-06T15:05:08Z",
+   "body": "I gave a look again into my legacy models and found out that actually they are ok with Keras3 (after #19438).\r\n\r\nI've just found out that actually the issue now is elsewhere... and myself to blame now 🙂\r\n "
+  },
+  {
+   "author": "participant8",
+   "created_at": "2025-01-16T17:48:57Z",
+   "body": "Hi @reporter -\n\nAre you still able to reproduce this issue ?"
+  },
+  {
+   "author": "github-actions[bot]",
+   "created_at": "2025-01-31T02:00:17Z",
+   "body": "This issue is stale because it has been open for 14 days with no activity. It will be closed if no further activity occurs. Thank you."
+  },
+  {
+   "author": "github-actions[bot]",
+   "created_at": "2025-02-14T02:01:32Z",
+   "body": "This issue was closed because it has been inactive for 28 days. Please reopen if you'd like to work on this further."
+  },
+  {
+   "author": "google-ml-butler[bot]",
+   "created_at": "2025-02-14T02:01:34Z",
+   "body": "Are you satisfied with the resolution of your issue?\n<a href=\"https://docs.google.com/forms/d/e/1FAIpQLSdHag0RVFS7UXzZkKcsFCKOcX8raCupKK9RHSlYxp5U8lSJbQ/viewform?entry.492125872=Yes&entry.243948740=https://github.com/keras-team/keras/issues/19151\">Yes</a>\n<a href=\"https://docs.google.com/forms/d/e/1FAIpQLSdHag0RVFS7UXzZkKcsFCKOcX8raCupKK9RHSlYxp5U8lSJbQ/viewform?entry.492125872=No&entry.243948740=https://github.com/keras-team/keras/issues/19151\">No</a>\n"
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "keras-team/keras",
+  "default_branch": "master",
+  "commit_sha": "dda62ba594648792eaef5f5cace61ecd061e9a9b",
+  "as_of": "2024-02-05T18:18:06Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_keras-team_keras_19151"
+}

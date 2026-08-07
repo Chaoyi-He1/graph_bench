@@ -1,0 +1,139 @@
+{
+ "repo": "mlflow/mlflow",
+ "number": 17648,
+ "url": "https://github.com/mlflow/mlflow/issues/17648",
+ "title": "[BUG]copy_model_version fails",
+ "state": "closed",
+ "labels": [
+  "bug",
+  "area/model-registry",
+  "area/tracking",
+  "has-closing-pr"
+ ],
+ "reporter": "reporter",
+ "created_at": "2025-09-10T20:24:51Z",
+ "closed_at": "2025-09-30T10:05:30Z",
+ "body": "### Issues Policy acknowledgement\n\n- [x] I have read and agree to submit bug reports in accordance with the [issues policy](https://www.github.com/mlflow/mlflow/blob/master/ISSUE_POLICY.md)\n\n### Where did you encounter this bug?\n\nLocal machine\n\n### MLflow version\n\n- Client: 3.3.2\n- Tracking server: Unity Catalog\n\n\n### System information\n\n- **OS Platform and Distribution**: Windows 11 and Windows 2019\n- **Python version**: 3.12\n- **yarn version, if running the dev UI**: N/A\n- Databricks Unity Catalog Registered models\n\n\n### Describe the problem\n\nThe MLflowClient.copy_model_version() fails when running from a CI/CD pipeline with registered models in Databricks Unity Catalog. The expected behavior is the registered model in Unity Catalog is copied to the new location in Unity Catalog. \nThe actual behavior is the error:\nError: Failed to create model version copy. The current model registry backend may not yet support model version URI sources.\nError: Model 'm-28d8d0cf0327473284f3e0051c4e2afe' not found\n\nSee THE CAUSE below\n\n\n### Tracking information\n\n\n\n\n### Code to reproduce issue\n\n<!-- PLEASE KEEP BACKTICKS AND CHECK PREVIEW -->\nGiven this code **when running from a CI/CD pipeline (e.g. Azure DevOps)**\n```\nimport os\nimport mlflow\nfrom mlflow.tracking import MlflowClient\nfrom databricks.sdk import WorkspaceClient\n\ndef main():\n\n    print(f\"Mlflow version: {mlflow.__version__}\")\n    \n    os.environ[\"DATABRICKS_HOST\"] = \"https://<workspace>.<redacted-host>\"\n    os.environ[\"DATABRICKS_CLIENT_ID\"] = \"...\"\n    os.environ[\"DATABRICKS_CLIENT_SECRET\"] = \"...\"\n\n    source_model = \"source_catalog.source_schema.source_model\"\n    source_version = 1\n    destination_model = \"target_catalog.target_schema.target_model\"\n\n    # Initialize the client\n    w = WorkspaceClient()    \n    mlflow.set_registry_uri(\"databricks-uc\")\n\n    client = MlflowClient()\n\n    print(\"copying\")\n    # Copy the model version\n    copied_version = client.copy_model_version(\n        src_model_uri=f\"models:/{source_model}/{source_version}\",\n        dst_name=destination_model\n    )\n\n    print(\"All done\")\n\n\nif __name__ == \"__main__\":\n    main()\n\n```\n\n\n### Stack trace\n\n<!-- PLEASE KEEP BACKTICKS AND CHECK PREVIEW -->\nThere is no stack trace produced. This is the output from the run\n```\nDownloading artifacts:   0%|          | 0/14 [00:00<?, ?it/s]\nDownloading artifacts:   7%|7         | 1/14 [00:00<?, ?it/s]\nDownloading artifacts:  14%|#4        | 2/14 [00:00<?, ?it/s]\nDownloading artifacts:  21%|##1       | 3/14 [00:00<00:00, 300.54it/s]\nDownloading artifacts:  29%|##8       | 4/14 [00:00<00:00, 266.94it/s]\nDownloading artifacts:  36%|###5      | 5/14 [00:00<00:00, 181.82it/s]\nDownloading artifacts:  43%|####2     | 6/14 [00:00<00:00, 129.93it/s]\nDownloading artifacts:  50%|#####     | 7/14 [00:00<00:00, 87.72it/s] \nDownloading artifacts:  57%|#####7    | 8/14 [00:00<00:00, 55.97it/s]\nDownloading artifacts:  57%|#####7    | 8/14 [00:00<00:00, 55.97it/s]\nDownloading artifacts:  64%|######4   | 9/14 [00:00<00:00, 55.97it/s]\nDownloading artifacts:  71%|#######1  | 10/14 [00:00<00:00, 55.97it/s]\nDownloading artifacts:  79%|#######8  | 11/14 [00:00<00:00, 55.97it/s]\nDownloading artifacts:  86%|########5 | 12/14 [00:00<00:00, 55.97it/s]\nDownloading artifacts:  93%|#########2| 13/14 [00:00<00:00, 55.97it/s]\nDownloading artifacts: 100%|##########| 14/14 [00:00<00:00, 36.23it/s]\nDownloading artifacts: 100%|##########| 14/14 [00:00<00:00, 36.23it/s]\nDownloading artifacts: 100%|##########| 14/14 [00:00<00:00, 38.56it/s]\nError: Failed to create model version copy. The current model registry backend may not yet support model version URI sources.\nError: Model 'm-28d8d0cf0327473284f3e0051c4e2afe' not found\n\n```\n\n\n### Other info / logs\n\n<!-- PLEASE KEEP BACKTICKS AND CHECK PREVIEW -->\n### The CAUSE\nThe internal processing of the MLflowClient switches from using the rest_store to the file_store. As you can see from above, the model is downloaded from Unity Catalog. \nIn _unity_catalog\\registry\\rest_store.py, the UcModelRegistryStore.create_model_version downloads the model (via the _local_model_dir()) into a local temporary directory but then fails a few lines down in the call to get_feature_dependencies method. \n\n```python\ndef get_feature_dependencies(model_dir):\n    \"\"\"\n    Gets the features which a model depends on. This functionality is only implemented on\n    Databricks. In OSS mlflow, the dependencies are always empty (\"\").\n    \"\"\"\n    model = _load_model(model_dir)\n    model_info = model.get_model_info()\n    ...\n```\n\nThe cause is the model.get_model_info:\n```python \n    def get_model_info(self, logged_model: LoggedModel | None = None) -> ModelInfo:\n        \"\"\"\n        Create a :py:class:`ModelInfo <mlflow.models.model.ModelInfo>` instance that contains the\n        model metadata.\n        \"\"\"\n        if logged_model is None and self.model_id is not None:\n            logged_model = mlflow.get_logged_model(model_id=self.model_id)\n        ...\n```\nThe problem is that last line. We have a model instance already loaded but that 'if' block forces the process to try to reload it (logged_model is None). However, it's trying to load it via model_id. The downstream call flow has no idea where the model is. The file_store eventually gets leveraged and looks in the local working directory but the _local_model_dir dropped it into a temp directory.\n\nThe bug is that 'if' statement in the model.get_model_info. I have no idea why, from a design perspective, that when given an instance of a class it should try to load itself again.\n## Hack Fix\nA hack fix is to do this:\n\n```python\ndef get_feature_dependencies(model_dir):\n    \"\"\"\n    Gets the features which a model depends on. This functionality is only implemented on\n    Databricks. In OSS mlflow, the dependencies are always empty (\"\").\n    \"\"\"\n    model = _load_model(model_dir)\n    model_info = model.get_model_info(model) # HACK: pass the model to itself\n```\nThis same hack needs to be applied to the get_model_version_dependencies method as well.\n\n\n## Real Fix\nMake a smarter 'if' in the Model.get_model_info method.\n```python\n        if logged_model is None and self.model_id is not None:\n            logged_model = mlflow.get_logged_model(model_id=self.model_id)\n```\nAt a minimum, that should look to see if the rest of itself is populated (at least enough to return a ModelInfo) and not try to reload.\nIf a reload is required, there is deeper design flaw as the load needs to know where the download happened. \n\n### What component(s) does this bug affect?\n\n- [x] `area/tracking`: Tracking Service, tracking client APIs, autologging\n- [x] `area/model-registry`: Model Registry service, APIs, and the fluent client calls for Model Registry\n- [ ] `area/scoring`: MLflow model serving, deployment tools, Spark UDFs\n- [ ] `area/evaluation`: MLflow model evaluation features, evaluation metrics, and evaluation workflows\n- [ ] `area/prompt`: MLflow prompt engineering features, prompt templates, and prompt management\n- [ ] `area/tracing`: MLflow Tracing features, tracing APIs, and LLM tracing functionality\n- [ ] `area/gateway`: MLflow AI Gateway client APIs, server, and third-party integrations\n- [ ] `area/projects`: MLproject format, project running backends\n- [ ] `area/uiux`: Front-end, user experience, plotting\n- [ ] `area/docs`: MLflow documentation pages",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2025-09-11T08:57:34Z",
+   "body": "@reporter Thanks for reporting this and a great write-up. Does it work if `mlflow.set_tracking_uri(\"databricks\")` is run before `copy_model_version `?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-09-11T13:38:59Z",
+   "body": "I did try adding:\n```python\n  mlflow.set_tracking_uri(\"databricks\")\n```\nIt changes the error to:\nError: RESOURCE_DOES_NOT_EXIST: Node ID 527798313318634 does not exist.\n\nThe stack trace still runs thru the get_feature_dependencies as I described above.\n```python\nTraceback (most recent call last):\n  File \"C:\\Projects\\mlflow\\mlflow\\store\\model_registry\\abstract_store.py\", line 449, in copy_model_version\n    mv_copy = self.create_model_version(\n              ^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Projects\\mlflow\\mlflow\\store\\_unity_catalog\\registry\\rest_store.py\", line 956, in create_model_version\n    feature_deps = get_feature_dependencies(local_model_dir)\n                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Projects\\mlflow\\mlflow\\store\\_unity_catalog\\registry\\rest_store.py\", line 240, in get_feature_dependencies\n    model_info = model.get_model_info()   \n                 ^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Projects\\mlflow\\mlflow\\models\\model.py\", line 682, in get_model_info\n    logged_model = mlflow.get_logged_model(model_id=self.model_id)\n                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Projects\\mlflow\\mlflow\\tracking\\fluent.py\", line 2384, in get_logged_model\n    return MlflowClient().get_logged_model(model_id)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Projects\\mlflow\\mlflow\\tracking\\client.py\", line 5432, in get_logged_model\n    return self._tracking_client.get_logged_model(model_id)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Projects\\mlflow\\mlflow\\tracking\\_tracking_service\\client.py\", line 856, in get_logged_model\n    return self.store.get_logged_model(model_id)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Projects\\mlflow\\mlflow\\store\\tracking\\rest_store.py\", line 870, in get_logged_model\n    response_proto = self._call_endpoint(GetLoggedModel, endpoint=endpoint)\n                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Projects\\mlflow\\mlflow\\store\\tracking\\rest_store.py\", line 133, in _call_endpoint\n    return call_endpoint(\n           ^^^^^^^^^^^^^^\n  File \"C:\\Projects\\mlflow\\mlflow\\utils\\rest_utils.py\", line 549, in call_endpoint\n    response = verify_rest_response(response, endpoint)\n               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Projects\\mlflow\\mlflow\\utils\\rest_utils.py\", line 304, in verify_rest_response\n    raise RestException(json.loads(response.text))\nmlflow.exceptions.RestException: RESOURCE_DOES_NOT_EXIST: Node ID 527798313318634 does not exist.\n\nThe above exception was the direct cause of the following exception:\n\nTraceback (most recent call last):\n  File \"C:\\Projects\\mlflow\\debugtest.py\", line 165, in <module>\n    main()\n  File \"C:\\Projects\\mlflow\\debugtest.py\", line 158, in main\n    CopyModel(\"A.B.C\",4,\"X.Y.Z\")\n  File \"C:\\Projects\\mlflow\\debugtest.py\", line 70, in CopyModel\n    copied_version = client.copy_model_version(\n                     ^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Projects\\mlflow\\mlflow\\tracking\\client.py\", line 4379, in copy_model_version\n    return client.copy_model_version(src_mv=src_mv, dst_name=dst_name)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Projects\\mlflow\\mlflow\\tracking\\_model_registry\\client.py\", line 289, in copy_model_version\n    return self.store.copy_model_version(src_mv=src_mv, dst_name=dst_name)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Projects\\mlflow\\mlflow\\store\\model_registry\\abstract_store.py\", line 462, in copy_model_version\n    raise MlflowException(\nmlflow.exceptions.MlflowException: Failed to create model version copy. The current model registry backend may not yet support model version URI sources.\nError: RESOURCE_DOES_NOT_EXIST: Node ID 527798313318634 does not exist.\n```"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-09-16T02:16:47Z",
+   "body": "@reporter Thanks for the reply. Does directly running `mlflow.get_logged_model(\"m-28d8d0cf0327473284f3e0051c4e2afe\")` work or throw?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-09-16T14:55:14Z",
+   "body": "It throws. Same errors as above.\n```python\ndef load_model():\n    # Initialize the client\n    w = WorkspaceClient()    \n\n    \n    mlflow.set_tracking_uri(\"databricks\")\n    mlflow.set_registry_uri(\"databricks-uc\")\n\n    print(\"Trying to load\")\n    mlflow.get_logged_model(\"m-28d8d0cf0327473284f3e0051c4e2afe\")\n\n    print(\"Done\")\n```\n\nIf the set_tracking_uri is not set, the error is:\nmlflow.exceptions.MlflowException: Model 'm-28d8d0cf0327473284f3e0051c4e2afe' not found\n\nif the set_tracking_uri is set to \"databricks\", the error is:\nmlflow.exceptions.RestException: RESOURCE_DOES_NOT_EXIST: Node ID 527798313318634 does not exist.\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-09-16T15:40:03Z",
+   "body": "@reporter Thanks for checking.\n\n> If the set_tracking_uri is not set, the error is:\nmlflow.exceptions.MlflowException: Model 'm-28d8d0cf0327473284f3e0051c4e2afe' not found\n\nThis makes sense. The model is in Databricks, not in the local file system.\n\n> if the set_tracking_uri is set to \"databricks\", the error is:\nmlflow.exceptions.RestException: RESOURCE_DOES_NOT_EXIST: Node ID 527798313318634 does not exist.\n\nDoes the experiment the model belongs to still exist? A similar error occurs when we attempt to fetch a non-existing/deleted experiment."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-09-16T16:35:08Z",
+   "body": "Filed https://github.com/mlflow/mlflow/pull/17774 to see if suppressing the get_logged_model error can unblock model copy. The following command can install mlflow from the PR:\n\n\n```sh\n# mlflow\npip install git+https://github.com/mlflow/mlflow.git@refs/pull/17774/merge\n\n# mlflow-skinny\npip install git+https://github.com/mlflow/mlflow.git@refs/pull/17774/merge#subdirectory=libs/skinny\n```"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-09-16T18:09:38Z",
+   "body": "My simple test with that code worked. The test that works is running a cloned copy of the PR code locally in visual studio. \n\nbut another fails with the same error. Trying to figure out why.\n\nWhen run on the CI/CD server, it fails. I made it do a pip list before it runs. \n```\n\npytz                               2025.2\npywin32                            311\nPyYAML                             6.0.2\nreferencing                        0.36.2\nrequests                           2.32.5\nrfc3339-validator                  0.1.4\nrich                               14.1.0\nrich-rst                           1.3.1\nrpds-py                            0.27.1\nrsa                                4.9.1\nscikit-learn                       1.7.2\nscipy                              1.16.2\nsix                                1.17.0\nsmmap                              5.0.2\nsniffio                            1.3.1\nSQLAlchemy                         2.0.43\nsqlparse                           0.5.3\nsse-starlette                      3.0.2\nstarlette                          0.48.0\nthreadpoolctl                      3.6.0\ntyping_extensions                  4.15.0\ntyping-inspection                  0.4.1\ntzdata                             2025.2\nurllib3                            2.5.0\nuvicorn                            0.35.0\nwaitress                           3.0.2\nWerkzeug                           3.1.1\nzipp                               3.23.0\nPublishing model\n\nRegistered model 'published_models_platops.faker.sillymodel' already exists. Creating a new version of this model...\nError: Failed to create model version copy. The current model registry backend may not yet support model version URI sources.\nError: Model 'm-28d8d0cf0327473284f3e0051c4e2afe' not found\n```\n\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-09-17T03:05:02Z",
+   "body": "> Error: Model 'm-28d8d0cf0327473284f3e0051c4e2afe' not found\n\nDoes the model `m-28d8d0cf0327473284f3e0051c4e2afe` really exist?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-09-17T20:13:46Z",
+   "body": "The previous error was a bug in the venv setup. The model does exist.\n\nThe problem in trying to verify the fix is related to installing the PR code into the virtual env. The pip install git+http://... installs the package. pip list shows:\nmlflow-skinny                      3.4.1.dev0\n\nbut the script fails with:\n    import mlflow\nModuleNotFoundError: No module named 'mlflow'"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-09-17T21:53:41Z",
+   "body": "pip list and pip show mlflow-skinny both show the package. pkgutil.iter_modules() does not and the import fails. I assume there is something that doesn't get setup right when installing from the PR. \nI even did this approach and got the same result:\n```\n        git clone --depth 1 https://github.com/mlflow/mlflow.git\n        cd mlflow\n        git fetch origin pull/17774/head:pr-17774\n        git checkout pr-17774\n        cd libs/skinny\n        pip install .\n```\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-09-18T02:29:59Z",
+   "body": "Interesting. Where did you run into `ModuleNotFoundError: No module named 'mlflow'`? Your visual studio or CI?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-09-18T12:02:01Z",
+   "body": "CI. When using Visual Studio, I just cloned the repo locally and did an pip install -e. I'm convinced the fix works and what the CI is facing is some subtle install issue. Using a normal pip install mlflow-skinny or pip install mlflow works in the CI. "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-09-22T12:44:36Z",
+   "body": "Can you get that PR thru into the main release?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-09-22T15:41:44Z",
+   "body": "Yes, we can. I've updated the PR to get a better warning message. Would you mind verifying the patch again and checking what the warning message says?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-09-22T16:56:58Z",
+   "body": "it looks good."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-09-23T00:59:25Z",
+   "body": "@reporter The patch will be released in the upcoming release. Would you mind checking the following?\n\n1. What is the ID of the experiment that the model `m-28d8d0cf0327473284f3e0051c4e2afe` belongs to?\n2. Do you have an experiment with `experiment_id=527798313318634`?\n3. Can you reproduce the same error if you run the same code on a Databricks notebook?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-09-23T12:32:54Z",
+   "body": "1)\tThe ID of the experiment that model m-28d8d0cf0327473284f3e0051c4e2afe belongs to is 527798313318634\n2)\tThe experiment 527798313318634 is in databricks.\n3)\tThe error does not occur when running the same copy_model_version inside a notebook in databricks.\n\nTo be blunt, the core of the problem is that the MLflow SDK is very client side heavy. If it was service oriented, the actual copy would happen in the model registry service, which in this case would be running in databricks and therefore have full visibility of all the experiments, models, and storage.\n\nConsider the simple mlflow.artifacts.download_artifacts(). That method is complex client-side logic when, if implemented as a backend RESTful like service, could be handled by a simple http GET to the /catalog/schema/models/model_name/version url (i.e. via a curl call in a CI/CD pipeline).\n\nI realize it's easy to say and harder to move to but when there is an actual registry and tracking server, the logic should be done server side. "
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-09-23T14:08:27Z",
+   "body": "@reporter Thanks for the info and feedback. Just to confirm: does your service principal have read access to experiment 527798313318634?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-09-23T21:00:35Z",
+   "body": "I ran a bunch of test scenarios for completeness and my own sanity.\n\nThe databricks extras is required or nothing works. Thus pip install mlflow[databricks] or mlflow-skinny[databricks] is required. If you leave off the [databricks] extras, you'll get the error:\n```\nError: Unable to download model artifacts from source artifact location 'models:/catalog.schema.model/version' in order to upload them to Unity Catalog. Please ensure the source artifact location exists and that you can download from it via mlflow.artifacts.download_artifacts()\n```\n\nThat's a misleading error message as it shows databricks awareness but no indication of missing components.\n\nMy tests (all using version 3.3.2):\n\n\n|Scenario|mlflow|set_registry_uri|set_tracking_uri|SP Model Permissions|SP Experiment Permissions|Result|\n|----|----|----|----|-----|-----|-----|\n|1|mlflow[databricks]|databricks-uc|not set|All|None|Model downloaded. Error: Model 'm-28d8d0cf0327473284f3e0051c4e2afe' not found|\n|2|mlflow[databricks]|databricks-uc|databricks|All|None|Model downloaded. Error: RESOURCE_DOES_NOT_EXIST: Node ID 527798313318634 does not exist.|\n|3|mlflow[databricks]|databricks-uc|databricks|All|Read|Model downloaded. Model uploaded.|\n|4|mlflow-skinny[databricks]|databricks-uc|databricks|All|Read|Model downloaded. Model uploaded.|\n|5|mlflow-skinny[databricks]|databricks-uc|databricks|All|None|Model downloaded. Error: PERMISSION_DENIED: User 'a5cfd5fd-51fe-463e-a755-d7d693437e8c' does not have permission to 'View' experiment with id 527798313318634.|\n|6|mlflow-skinny[databricks]|databricks-uc|not set|All|None|Model downloaded. Error: Model 'm-28d8d0cf0327473284f3e0051c4e2afe' not found|\n\nNote the different error message between mlflow and mlflow-skinny on scenario's 2 and 5. My initial CI/CD pipeline was using mlflow. The mlflow error message is misleading both in referencing \"Node ID\" instead of \"Experiment ID\" and not giving the real reason for failure - access denied.\n\nThe mlflow-skinny error message makes the problem very clear but only if the tracking_uri is set to \"databricks\".\n\nIn summary, use mlflow-skinny[databricks], set the tracking uri and registry uri, and set the Service Principal permissions on the model and the experiment.\n\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-09-24T00:39:08Z",
+   "body": "Thanks for the thorough investigation.\n\n> Note the different error message between mlflow and mlflow-skinny on scenario's 2 and 5. My initial CI/CD pipeline was using mlflow.\n\nInteresting. I’ll try to reproduce this. mlflow and mlflow-skinny share the same code, but the extra dependencies in mlflow might lead to different behavior."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-09-30T08:41:08Z",
+   "body": "I did further investigation. I was able to reproduce `PERMISSION_DENIED` in both mlflow and mlflow-skinny with the following steps:\n\n1. Create an experiment and a SP.\n2. Grant the SP read permission.\n3. Remove the permission.\n4. Access the model while the permission update is in progress."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-09-30T10:05:30Z",
+   "body": "I'll follow up with my team on improve the error messages. Thanks for the patience and thorough investigation :)"
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "mlflow/mlflow",
+  "default_branch": "master",
+  "commit_sha": "9f8d3ce7575ce2aefb3a4685a73002c2e8a29707",
+  "as_of": "2025-09-10T20:24:51Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_mlflow_mlflow_17648"
+}

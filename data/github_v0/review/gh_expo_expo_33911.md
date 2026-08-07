@@ -1,6 +1,6 @@
 # Review: gh_expo_expo_33911
 
-**[SDK 52] expo-location background permission promise resolves denied before the iOS response**
+**[SDK 52] expo-location returns denied before the iOS background-location prompt completes**
 
 - source: https://github.com/expo/expo/issues/33911
 - kind: LLM draft (needs review)
@@ -10,27 +10,27 @@
 ```mermaid
 flowchart LR
     N0["<b>N0 premature denied result reported</b><br/><small>info: 6</small>"]
-    N1["<b>N1 legitimate permission-upgrade flow established</b><br/><small>info: 10</small>"]
-    N1_x["<b>N1_x background-only guidance aftermath</b><br/><small>info: 11</small>"]
-    N2["<b>N2 timing bug reproduced and regression narrowed</b><br/><small>info: 14</small>"]
-    N3["<b>N3 AppState workaround installed</b><br/><small>info: 15</small>"]
-    N_terminal["<b>terminal resolved</b><br/><small>info: 16</small>"]
-    N0 -.->|"❓ foreground_and_background_requests_can_be_separate_feature_events, same_session_foreground_then_background_reproduces, sdk51_old_arch_did_wait_for_response, other_ios_apps_present_separate_permission_upgrade_flow"| N1
-    linkStyle 0 stroke:#3b82f6,stroke-width:2px
-    N1 ==>|"💥 blind: Avoid the foreground-to-background upgrade flow on iOS and request only background permission, relying on that request to obtain foreground access automatically."| N1_x
-    linkStyle 1 stroke:#ef4444,stroke-width:2px
-    N1_x -.->|"❓ public_repo_reproduces_same_session_sequence, recording_shows_background_promise_finishes_while_dialog_is_unanswered, community_investigation_points_to_pr29272_exbaselocationrequester"| N2
+    N1_x["<b>N1_x background-only advice rejected</b><br/><small>info: 7</small>"]
+    N1["<b>N1 valid sequential-permission use case established</b><br/><small>info: 9</small>"]
+    N2["<b>N2 permission lifecycle captured</b><br/><small>info: 12</small>"]
+    N_terminal["<b>terminal application flow works with lifecycle workaround</b><br/><small>info: 14</small>"]
+    N_terminal_x["<b>terminal recovery after background-only attempt</b><br/><small>info: 9</small>"]
+    N0 ==>|"💥 blind: Avoid requesting foreground and background location in sequence on iOS; request only background permission because it can request the necessary foreground access automatically."| N1_x
+    linkStyle 0 stroke:#ef4444,stroke-width:2px
+    N0 -.->|"❓ foreground_and_background_needed_at_different_feature_times, sdk51_old_arch_flow_previously_worked, public_repository_reproducer_shared"| N1
+    linkStyle 1 stroke:#3b82f6,stroke-width:2px
+    N1 -.->|"❓ same_session_demo_returns_denied_before_prompt_response, app_becomes_inactive_during_background_prompt, permission_query_after_return_active_sees_updated_result"| N2
     linkStyle 2 stroke:#3b82f6,stroke-width:2px
-    N2 ==>|"⚡ Use an AppState-based temporary workaround: after requesting background permission, wait for iOS to return the app to the active state and then query the permission again."| N3
+    N2 ==>|"⚡ Treat the immediate denied result as a premature SDK response during the iOS permission lifecycle. Until the library is fixed, synchronize the sequential permission flow with the application returning active and obtain a fresh background-permission status instead of trusting the result returned while the prompt is open."| N_terminal
     linkStyle 3 stroke:#f97316,stroke-width:2px
-    N3 ==>|"⚡ Fix the SDK 52 iOS native location requester so `requestBackgroundPermissionsAsync()` remains pending through the authorization UI and resolves from the completed authorization result, then have the reporter verify the same-session foreground-to-background flow on a build containing the fix."| N_terminal
-    linkStyle 4 stroke:#f97316,stroke-width:2px
+    N1_x ==>|"🚀 Recover from the unsuccessful background-only change by handling the premature SDK result around the iOS permission lifecycle: wait for the app to return active and query the background permission again. (skip 6)"| N_terminal_x
+    linkStyle 4 stroke:#0ea5e9,stroke-width:2px
     class N0 start
-    class N1 normal
     class N1_x normal
+    class N1 normal
     class N2 normal
-    class N3 normal
     class N_terminal terminal
+    class N_terminal_x terminal
     classDef start fill:#fee2e2,stroke:#b91c1c,color:#000
     classDef terminal fill:#dcfce7,stroke:#15803d,color:#000
     classDef normal fill:#fef3c7,stroke:#a16207,color:#000
@@ -38,37 +38,37 @@ flowchart LR
 
 ## Opening (body)
 
-> On iOS with Expo SDK 52 and the new architecture disabled, I have to call `await Location.requestBackgroundPermissionsAsync()` twice. After I grant foreground access with “Allow While Using App” and choose “Change to Always Allow” in the background prompt, the first call reports that permission was denied as if I canceled it. Pressing the button again then reports the permission that I already granted. I reproduced this in a development build, Expo Go, and a standalone app. My Snack reproducer is https://snack.expo.dev/@brodanoel/background-location-broken. I am using Expo 52.0.23, React Native 0.76.5, and the managed workflow on iOS.
+> On iOS with Expo SDK 52 and the new architecture disabled, I have to call `await Location.requestBackgroundPermissionsAsync()` twice. After I grant foreground access with “Allow While Using App” and then choose “Change to Always Allow” in the background-permission prompt, the first call reports that permission was not granted. Tapping my button again reports the permission correctly. I can reproduce this in Expo Go, a development build, and a standalone app using the linked Snack.
 
 ## Satisfaction conditions
 
-1. Must identify the root cause as an Expo SDK 52 iOS native requester regression: `requestBackgroundPermissionsAsync()` completes with an intermediate denied state while the system authorization prompt is still unanswered, instead of waiting for the final authorization result.
-2. The diagnosis must be grounded in the same-session public reproduction, the recording showing denied before user input, the SDK 51 comparison, and the investigation pointing to PR #29272 and `EXBaseLocationRequester.m`.
-3. Must not dismiss the use case by recommending that iOS applications always request only background permission; requesting Always authorization after an earlier When In Use grant is a legitimate flow, and that guidance was tried without resolving the reported behavior.
-4. An AppState-active listener followed by `getBackgroundPermissionsAsync()` may be offered as a temporary workaround, but it must not be presented as the native fix.
-5. The actual fix must make the native background permission request wait for authorization completion and return the final status.
-6. Must ask the reporter to verify the foreground-then-background flow on a build containing the native fix before declaring the issue resolved.
+1. Must identify the accepted bug: on iOS with the affected Expo Location flow, requesting foreground and then background permission can cause `requestBackgroundPermissionsAsync()` to resolve as denied before the authorization prompt has completed; the immediate value does not necessarily represent the user's choice.
+2. The diagnosis must be grounded in the minimal reproduction and observed timing: the permission dialog remains open, the app is inactive, and a fresh query after the app returns active sees the updated permission.
+3. Must not present requesting only background permission as a complete fix for this case; the reporter implemented that direction and still observed premature not-granted results.
+4. The practical workaround must synchronize with the app returning active and then obtain a fresh background-permission status, rather than trusting a denied result returned while the prompt is open.
+5. Must describe the AppState-based code as a temporary application workaround. The thread does not establish that an Expo package fix shipped or that an affected user verified such a release.
+6. Must ask the user to verify that the final queried status matches the choice made in the iOS prompt before treating the application flow as resolved.
 
 ## Edges
 
 | edge | type | gates / info | payload |
 |---|---|---|---|
-| `e1_N0__N1` | clarification_only | asks: foreground_and_background_requests_can_be_separate_feature_events, same_session_foreground_then_background_reproduces, sdk51_old_arch_did_wait_for_response, other_ios_apps_present_separate_permission_upgrade_flow | My app has a map that only needs foreground location and a separate background-check feature that most users n / Yes. I request foreground access, grant it, and then request background access in the same session. The backgr / The same flow worked without this issue on SDK 51 with the old architecture. After upgrading to SDK 52, the ba / Yes. Apple documents requesting Always authorization after When In Use, and I attached an example of the Citiz |
-| `e2_N1__N1_x` | solution_only **BLIND** | req_info: foreground_and_background_requests_can_be_separate_feature_events<br>elements: recommends_requesting_only_background_permission_on_ios | Avoid the foreground-to-background upgrade flow on iOS and request only background permission, relying on that request to obtain foreground access automatically. |
-| `e3_N1_x__N2` | clarification_only | asks: public_repo_reproduces_same_session_sequence, recording_shows_background_promise_finishes_while_dialog_is_unanswered, community_investigation_points_to_pr29272_exbaselocationrequester | I created a minimal repository with reproduction instructions: https://github.com/expo/expo-location-repro. It / Yes. In my recording, the background permission dialog is still on screen and I have not selected anything, bu / After investigating, I found that the behavior was introduced by PR #29272 and involves `EXBaseLocationRequest |
-| `e4_N2__N3` | solution_only | req_info: background_request_first_call_returns_denied_then_second_reads_granted, recording_shows_background_promise_finishes_while_dialog_is_unanswered<br>elements: waits_for_appstate_to_return_active, rechecks_background_permission_after_prompt, labels_workaround_as_temporary, removes_appstate_listener_after_use | Use an AppState-based temporary workaround: after requesting background permission, wait for iOS to return the app to the active state and then query the permission again. |
-| `e5_N3__N_terminal` | solution_only | req_info: sdk51_old_arch_did_wait_for_response, background_request_first_call_returns_denied_then_second_reads_granted, public_repo_reproduces_same_session_sequence, recording_shows_background_promise_finishes_while_dialog_is_unanswered, community_investigation_points_to_pr29272_exbaselocationrequester<br>elements: identifies_premature_native_promise_completion_as_root_cause, fixes_exbaselocationrequester_authorization_completion_timing, supports_foreground_then_background_in_same_session, does_not_treat_background_only_guidance_as_the_fix, asks_user_to_verify_on_a_build_containing_the_fix | Fix the SDK 52 iOS native location requester so `requestBackgroundPermissionsAsync()` remains pending through the authorization UI and resolves from the completed authorization result, then have the reporter verify the same-session foreground-to-background flow on a build containing the fix. |
+| `e1_N0__N1_x` | solution_only **BLIND** | req_info: foreground_then_background_prompt_sequence, ios_sdk52_old_arch_location_issue<br>elements: recommends_requesting_only_background_permission_on_ios | Avoid requesting foreground and background location in sequence on iOS; request only background permission because it can request the necessary foreground access automatically. |
+| `e2_N0__N1` | clarification_only | asks: foreground_and_background_needed_at_different_feature_times, sdk51_old_arch_flow_previously_worked, public_repository_reproducer_shared | My map only needs foreground location, while a separate background-check feature needs background access. Most / Yes. The same foreground-then-background flow worked for me with SDK 51 on the old architecture. After upgradi / I created a minimal repository with only the permission requests and added reproduction instructions to its RE |
+| `e3_N1__N2` | clarification_only | asks: same_session_demo_returns_denied_before_prompt_response, app_becomes_inactive_during_background_prompt, permission_query_after_return_active_sees_updated_result | In the demo, foreground permission is granted and I then request background permission in the same session. Th / While the iOS permission prompt is displayed, my app state is `inactive`. The request has already returned `de / After I answer the prompt and the app becomes active again, `getBackgroundPermissionsAsync()` reports the upda |
+| `e4_N2__N_terminal` | solution_only | req_info: background_request_returns_not_granted_after_user_allows, foreground_and_background_needed_at_different_feature_times, sdk51_old_arch_flow_previously_worked, second_background_request_reports_permission_correctly, same_session_demo_returns_denied_before_prompt_response, app_becomes_inactive_during_background_prompt, permission_query_after_return_active_sees_updated_result, public_repository_reproducer_shared<br>elements: identifies_that_the_background_request_can_resolve_before_the_ios_prompt_completes, does_not_treat_the_immediate_denied_status_while_inactive_as_the_final_user_choice, waits_for_the_application_to_return_active_and_rechecks_background_permission, describes_the_code_as_a_temporary_workaround_not_a_shipped_expo_fix, asks_user_to_verify_that_the_returned_status_matches_the_permission_selected_in_the_ios_prompt | Treat the immediate denied result as a premature SDK response during the iOS permission lifecycle. Until the library is fixed, synchronize the sequential permission flow with the application returning active and obtain a fresh background-permission status instead of trusting the result returned while the prompt is open. |
+| `e5_N1_x__N_terminal_x` | solution_only | req_info: background_request_returns_not_granted_after_user_allows, only_requesting_background_does_not_fix_reporter_flow, second_background_request_reports_permission_correctly<br>elements: rejects_background_only_as_a_complete_fix, waits_for_the_application_to_return_active_and_rechecks_background_permission, describes_the_code_as_a_temporary_workaround_not_a_shipped_expo_fix, asks_user_to_verify_that_the_rechecked_status_matches_the_ios_selection | Recover from the unsuccessful background-only change by handling the premature SDK result around the iOS permission lifecycle: wait for the app to return active and query the background permission again. |
 
 ## Nodes
 
 | node | terminal | volunteered | images | symptoms |
 |---|---|---|---|---|
-| `N0` |  | 2 | 0 | After I choose “Change to Always Allow” in the iOS permission dialog, the first `requestBackgroundPermissionsAsync()` call reports denied as |
-| `N1` |  | 0 | 0 | When foreground access has already been granted and I later request background access, the background request returns denied before I have a |
-| `N1_x` |  | 1 | 0 | I implemented the suggestion, but when foreground permission has been granted for the map and background permission is requested later, the  |
-| `N2` |  | 1 | 0 | In the minimal repository and recording, the background permission dialog is still awaiting input when the JavaScript request has already pr |
-| `N3` |  | 1 | 0 | With my AppState workaround, I wait for the app to become active and then read the background permission again; the production flow now obse |
-| `N_terminal` | ✓ | 1 | 0 | On a build containing the native fix, the background permission request waits for my response and returns the final permission status withou |
+| `N0` |  | 1 | 0 | On iOS, after I allow foreground location and choose “Change to Always Allow,” the first background-permission request reports that permissi |
+| `N1_x` |  | 1 | 0 | After changing the iOS flow to request only background permission, the request can still report “not granted” before I have selected anythin |
+| `N1` |  | 0 | 0 | The background request returns “denied” without waiting for my response after foreground permission has already been requested. The foregrou |
+| `N2` |  | 0 | 0 | In the minimal demo, the background permission dialog remains on screen while the awaited request has already returned “denied.” The app is  |
+| `N_terminal` | ✓ | 1 | 0 | With the lifecycle workaround in my production app, the flow waits for the app to become active and then obtains the actual background-permi |
+| `N_terminal_x` | ✓ | 1 | 0 | After replacing the background-only attempt with the lifecycle workaround, my production permission flow obtains the updated result when the |
 
 ## Machine review (audit pass, adversarially verified)
 

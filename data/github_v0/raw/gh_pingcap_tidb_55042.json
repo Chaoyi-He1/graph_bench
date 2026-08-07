@@ -1,0 +1,131 @@
+{
+ "repo": "pingcap/tidb",
+ "number": 55042,
+ "url": "https://github.com/pingcap/tidb/issues/55042",
+ "title": "query stuck when trying to kill it because of OOM",
+ "state": "closed",
+ "labels": [
+  "type/bug",
+  "sig/execution",
+  "severity/major",
+  "affects-5.4",
+  "affects-6.1",
+  "affects-6.5",
+  "affects-7.1",
+  "affects-7.5",
+  "affects-8.1",
+  "impact/oom"
+ ],
+ "reporter": "reporter",
+ "created_at": "2024-07-30T06:00:05Z",
+ "closed_at": "2024-08-01T10:55:22Z",
+ "body": "## Bug Report\r\n\r\nPlease answer these questions before submitting your issue. Thanks!\r\n\r\n### 1. Minimal reproduce step (Required)\r\n\r\n<!-- a step by step guide for reproducing the bug. -->\r\n1. hack tidb code, delete following code, so we can set `tidb_mem_quota_query` a very small value to help reproduce this bug   https://github.com/pingcap/tidb/blob/199bf90c2a6e914d05733bc6dacd9ed2dea77b7f/pkg/sessionctx/variable/sysvar.go#L1127-L1130 \r\n2. build tidb and start tiup playround\r\n3. download [10-tidb-slow.log](https://github.com/user-attachments/files/16422699/10-tidb-slow.log) and `set @@tidb_slow_query_file = '/home/<user>/10-tidb-slow.log';` (remember to change the slow query file path)\r\n4. `set @@tidb_mem_quota_query = 10;`\r\n5. run `select time,host host_ip,Query_time as exec_max_time,parse_time,compile_time,Query as sql_text,Digest as sql_id,is_internal,succ, Plan as plan_text,mem_max as mem_max,User as parse_user,DB as database_name,total_keys,request_count,process_time,process_keys from information_schema.SLOW_QUERY order by time desc;`\r\n### 2. What did you expect to see? (Required)\r\nquery is canceled\r\n### 3. What did you see instead (Required)\r\nquery is stucked\r\n### 4. What is your TiDB version? (Required)\r\nmaster 560e92ed721f9c64d22e2c5e4ff35518310cf48e\r\n<!-- Paste the output of SELECT tidb_version() -->\r\n\r\n",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2024-07-31T02:43:38Z",
+   "body": "/assign @participant1 "
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-07-31T02:47:56Z",
+   "body": "Selecting plan from slow_query table without limit restriction is not recommanded behavior. And this is a long existing issue. Down to major."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-07-31T02:48:35Z",
+   "body": "/remove severity-critical"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-07-31T02:49:05Z",
+   "body": "/remove-severity critical"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-07-31T02:49:22Z",
+   "body": "/severity major"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-07-31T04:47:10Z",
+   "body": "For version 6.5, 7.5, the query met illegal nil pointer: ERROR 1105 (HY000): runtime error: invalid memory address or nil pointer dereference"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-07-31T04:49:06Z",
+   "body": "v8.1.0 stuck also"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-08-01T03:16:52Z",
+   "body": "The plan is  Sort <=== Projection <==== MemTableReader\r\nAfter debug, located the goroutine that get stuck:\r\nFirst Projection executor tries to alloc memory:\r\nhttps://github.com/pingcap/tidb/blob/a187e9d63e87f5fad8c54e28938c572444722eb6/pkg/executor/projection.go#L289\r\nThen, it triggers the memory action panic: \r\nhttps://github.com/pingcap/tidb/blob/a187e9d63e87f5fad8c54e28938c572444722eb6/pkg/util/memory/action.go#L173\r\nAfter it enters runtime.gopanic, and it invokes the recover function in executor::Next:\r\nhttps://github.com/pingcap/tidb/blob/a187e9d63e87f5fad8c54e28938c572444722eb6/pkg/executor/internal/exec/executor.go#L435\r\nFinally, it got stuck when invokes runtime mcall(recovery)"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-08-01T04:46:40Z",
+   "body": "> The plan is Sort <=== Projection <==== MemTableReader After debug, located the goroutine that get stuck: First Projection executor tries to alloc memory:\r\n> \r\n> https://github.com/pingcap/tidb/blob/a187e9d63e87f5fad8c54e28938c572444722eb6/pkg/executor/projection.go#L289\r\n> \r\n> \r\n> Then, it triggers the memory action panic:\r\n> https://github.com/pingcap/tidb/blob/a187e9d63e87f5fad8c54e28938c572444722eb6/pkg/util/memory/action.go#L173\r\n> \r\n> \r\n> After it enters runtime.gopanic, and it invokes the recover function in executor::Next:\r\n> https://github.com/pingcap/tidb/blob/a187e9d63e87f5fad8c54e28938c572444722eb6/pkg/executor/internal/exec/executor.go#L435\r\n> \r\n> \r\n> Finally, it got stuck when invokes runtime mcall(recovery)\r\n\r\nIt turned out to be debug only stuck on mac OS, the real stuck happen on the following stack:\r\n![img_v3_02db_22a7a4bf-a3fb-4d28-b340-a6a3567f0c4g](https://github.com/user-attachments/assets/8a821fa6-6875-424e-85fc-29d8afb49401)\r\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-08-01T04:47:40Z",
+   "body": "And check the source code, found the unlock may not be invoked:\r\nhttps://github.com/pingcap/tidb/blob/a187e9d63e87f5fad8c54e28938c572444722eb6/pkg/util/execdetails/execdetails.go#L1303"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-08-01T04:51:27Z",
+   "body": "After fix this, the stuck disappeared, still not know what's actually happening when the panic happen."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-08-01T05:03:22Z",
+   "body": "/label affects-8.1"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-08-01T05:03:35Z",
+   "body": "/label affects-7.5"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-08-01T05:03:43Z",
+   "body": "/label affects-7.1"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-08-01T05:03:51Z",
+   "body": "/label affects-6.5"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-08-01T05:03:58Z",
+   "body": "/label affects-6.1"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-08-01T05:04:24Z",
+   "body": "/remove-impact leak"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-08-01T05:04:43Z",
+   "body": "/label affects-5.4"
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "pingcap/tidb",
+  "default_branch": "master",
+  "commit_sha": "199bf90c2a6e914d05733bc6dacd9ed2dea77b7f",
+  "as_of": "2024-07-30T06:00:05Z",
+  "method": "github_commits_until"
+ },
+ "images": [
+  {
+   "where": "c8",
+   "source_url": "https://github.com/user-attachments/assets/8a821fa6-6875-424e-85fc-29d8afb49401",
+   "file": "gh_pingcap_tidb_55042_img0.jpg"
+  }
+ ],
+ "slug": "gh_pingcap_tidb_55042"
+}

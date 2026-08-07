@@ -1,0 +1,200 @@
+{
+ "repo": "apache/arrow",
+ "number": 44855,
+ "url": "https://github.com/apache/arrow/issues/44855",
+ "title": "[Python][Packaging] Microsoft visual studio C++ redistributable version 14.28.29334.0 causes failure of any other python packaged built with later MSVC versions",
+ "state": "closed",
+ "labels": [
+  "Type: bug",
+  "Component: Python",
+  "Component: Packaging",
+  "Priority: Blocker"
+ ],
+ "reporter": "reporter",
+ "created_at": "2024-11-26T07:49:16Z",
+ "closed_at": "2025-01-04T09:55:41Z",
+ "body": "### Describe the bug, including details regarding any error messages, version, and platform.\n\nThe visual studio runtime distributed with pyArrow is not compatible with the latest C++ redistributables (14.40... and newer), due to changes in the mutex's constructor (see https://github.com/microsoft/STL/issues/4730). This means that loading any other python libraries that make use of newer C++ redistributables **after** loading pyarrow fails. See https://github.com/OpenMS/OpenMS/issues/7691 for an example of this behavior. Loading libraries packaged with a newer version of the redistributable and then loading pyarrow works fine. \r\n\r\nSuggested fix: update the C++ redistributable version.\n\n### Component(s)\n\nPython",
+ "comments": [
+  {
+   "author": "reporter",
+   "created_at": "2024-11-26T09:34:58Z",
+   "body": "I've checked abrarov/msvc-2019:latest, and it still only has 14.29.30133 included in the image so the DLL would either need to be pulled down manually, or potentially omitted (since recent cpython installations include the redistributable)."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-11-26T10:27:54Z",
+   "body": "I can see other projects like pytorch just letting the user know that those are required, see:\r\nhttps://github.com/pytorch/pytorch/blob/2d3d6f9d057322a68547be1d6dee32eb65ac3895/torch/__init__.py#L111-L117\r\n\r\n@participant2 @participant8 I am no expert on this area but I can't seem to find other projects nowadays shipping it with the wheels? Should we just not ship it and potentially validating is present as what others do?\r\n\r\nhttps://github.com/apache/arrow/blob/f545b90748d5196af547abcec19d63a7b14e4daa/ci/scripts/python_wheel_windows_build.bat#L124-L125"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-11-26T10:35:48Z",
+   "body": "Hmm, I'm not sure. @participant4 would you mind giving advice on this? Should we ship the VC++ redistributable as part of the PyArrow wheels, or let users figure it out for themselves?"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-11-26T14:01:21Z",
+   "body": "In our internal discussion we also saw that current versions of python seem to ship with the VC++ redistributable dlls as well, and when we deleted the dlls in both projects (pyarrow and pyopenms in this case) both of them worked fine, falling back to the dlls in the python directory (instead of the ones shipped in the wheels which end up in the site-packages folders).\r\n\r\nI am not sure though if this something defined in a PEP and therefore something to be able to rely on.\r\n\r\n(Also, one would need to hope/make sure that the dlls that come with python are compatible with how your own dlls were built)."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-11-26T16:32:34Z",
+   "body": "If you can, I would statically link the C++ redistributables but not the C ones. CPython includes the C runtime (`vcruntime140.dll`), and there are important reasons to share state there, but we don't include any C++ runtime (`msvcp140.dll` and some others), which means if you bundle these DLLs, you're going to have to share with whichever other packages have installed them.\r\n\r\nMatplotlib made their build change here: https://github.com/matplotlib/matplotlib/pull/28687/files\r\n\r\nIt doesn't really get much shorter than their PR, but the short version is that you compile with `/MT` to tell the compiler you want everything statically linked, and then use `/nodefaultlib:` to exclude the C runtime and add the dynamically linked ones explicitly. This results in statically linked C++ runtime code.\r\n\r\nAs far as I'm aware, the C++ runtime is stateless, so if two extensions have different C++ runtimes statically linked then it won't matter. (It _might_ matter if they're sharing C++ objects, but then there are other reasons they'd need to be built with the same compiler version anyway, so you just need to coordinate on that kind of thing.) The C runtime uses a couple of global variables for state, so if you have multiple copies loaded, they won't be in sync and you can get into trouble."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-11-26T16:34:02Z",
+   "body": "> you're going to have to share with whichever other packages have installed them.\r\n\r\nAnd just to be clear, this bit is usually the problem. If you're the only extension with `msvcp140.dll`, and there's no system-wide install, then there's no problem. As soon as there are two, it's a risk.\r\n\r\nAlso, FWIW, for Conda builds there'll be a central copy installed and you'll want to use that. I don't know how that impacts your build system, but if you add the options I described above, you might need to make them optional somehow."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-11-26T17:32:06Z",
+   "body": "Thanks for the insight @participant4 !\r\n\r\n> If you can, I would statically link the C++ redistributables but not the C ones.\r\n\r\nSo, given we have multiple extension modules in PyArrow, it would mean multiple copies of the C++ library. We should check that the impact on wheel size remains small.\r\n\r\n> Also, FWIW, for Conda builds there'll be a central copy installed and you'll want to use that. I don't know how that impacts your build system, but if you add the options I described above, you might need to make them optional somehow.\r\n\r\nWe would certainly use different compile/link options for wheel builds, then.\r\n"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-11-26T17:33:13Z",
+   "body": "Also cc @participant9 "
+  },
+  {
+   "author": "participant5",
+   "created_at": "2024-12-02T03:30:29Z",
+   "body": "> So, given we have multiple extension modules in PyArrow, it would mean multiple copies of the C++ library. We should check that the impact on wheel size remains small.\r\n\r\nFWIW, in Matplotlib, we have multiple extensions and the total size went _down_."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-12-02T12:20:00Z",
+   "body": "Yes, the static library will only link the functions that are actually used, and if your code is relying on templates then most of it is being generated statically already. I believe Matplotlib only referenced a small handful of functions _in total_ from the C++ runtime."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-12-02T15:15:18Z",
+   "body": "I've submitted https://github.com/apache/arrow/pull/44902 out of curiosity but I'm quite sure it won't work. If it doesn't indeed, then not shipping the C++ redistributable is the simplest solution for us."
+  },
+  {
+   "author": "participant6",
+   "created_at": "2024-12-02T21:33:43Z",
+   "body": "I'm sure if you don't ship the C++ redistributable this will solve the issue, however, it would be useful if the error handling when any of these components fails are pushed up the stack in a more user friendly way.\r\n\r\ne. g.  I had this non sensible error message at the top of the stack, and it took me a while to trace it to arrow and this library component right at the bottom of the application stack! \r\n![image](https://github.com/user-attachments/assets/d42381e1-7dc3-490d-a63e-145d08a622d3)\r\n"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-12-02T21:42:16Z",
+   "body": "Yes, we'll probably do something like this snippet:\r\n\r\n> I can see other projects like pytorch just letting the user know that those are required, see:\r\n> https://github.com/pytorch/pytorch/blob/2d3d6f9d057322a68547be1d6dee32eb65ac3895/torch/__init__.py#L111-L117\r\n\r\n"
+  },
+  {
+   "author": "participant7",
+   "created_at": "2024-12-18T08:34:57Z",
+   "body": "> I can't seem to find other projects nowadays shipping it with the wheels? \r\n\r\nFWIW both numpy and pandas still seem to include msvcp140.dll in their wheels (just checked those two based on the latest wheels on PyPI)"
+  },
+  {
+   "author": "participant7",
+   "created_at": "2024-12-18T08:37:16Z",
+   "body": "Moving my question on the PR here:\r\n\r\n\r\n> we let the user install it themselves in the (relatively unlikely) case it is not already available on the system.\r\n\r\nDo we have some idea about when this happens? Does it come generally pre-installed? Or will it generally already be installed because of installing other things? \r\nI am asking because _if_ you have to install that, it is not that trivial (for an experienced developer maybe yes, but not for a newcomer to programming. For example just the page we link to is quite complex, you have to understand visual studio versions, which architecture you have, etc)"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-12-18T09:12:15Z",
+   "body": "> I am asking because _if_ you have to install that, it is not that trivial (for an experienced developer maybe yes, but not for a newcomer to programming. For example just the page we link to is quite complex, you have to understand visual studio versions, which architecture you have, etc)\r\n\r\nThat's a good question. Perhaps we can instead give the direct download link for the system's architecture (x86, x64, arm64)."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-12-18T09:13:28Z",
+   "body": "> > we let the user install it themselves in the (relatively unlikely) case it is not already available on the system.\r\n> \r\n> Do we have some idea about when this happens? Does it come generally pre-installed? Or will it generally already be installed because of installing other things?\r\n\r\nI have no idea how likely it is for `msvcp140.dll` to be already available on the system. @participant4 Would you happen to know?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-12-18T09:14:34Z",
+   "body": "> Moving my question on the PR here:\r\n> \r\n> > we let the user install it themselves in the (relatively unlikely) case it is not already available on the system.\r\n> \r\n> Do we have some idea about when this happens? Does it come generally pre-installed? Or will it generally already be installed because of installing other things? I am asking because _if_ you have to install that, it is not that trivial (for an experienced developer maybe yes, but not for a newcomer to programming. For example just the page we link to is quite complex, you have to understand visual studio versions, which architecture you have, etc)\r\n\r\nSince python 3.5 cpythons python installer checks for, and prompt installation of the MSVC (https://docs.python.org/3.5/using/windows.html#installation-steps). They explicitly state that it is NOT included in embedded distribution. And I can't speak to other methods for getting python, but I would imagine that the majority of casual users will have it installed."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-12-18T09:34:50Z",
+   "body": "At one point we discussed to use [delvewheel](https://github.com/adang1345/delvewheel) to add those. From their README:\r\n\r\n> delvewheel is a command-line tool for creating Python wheel packages for Windows that have DLL dependencies that may not be present on the target system. It is functionally similar to [auditwheel](https://github.com/pypa/auditwheel) (for Linux) and [delocate](https://github.com/matthew-brett/delocate) (for macOS).\r\n>\r\n> Suppose that you have built a Python wheel for Windows containing an extension module, but the wheel depends on DLLs that are present in the build environment but may not be present on the end user's machine. This tool determines which DLLs a wheel depends on (aside from system libraries) and copies those DLLs into the wheel.\r\n\r\nFrom the discussion it seems that using this approach is discouraged and the approach should be:\r\n- statically link\r\n- independent installation\r\n\r\nI'll close:\r\n- https://github.com/apache/arrow/issues/33981\r\n"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-12-18T10:02:27Z",
+   "body": "> Since python 3.5 cpythons python installer checks for, and prompt installation of the MSVC\r\n\r\nI've just looked at a Python 3.12 install on a Windows VM: it contains private copies of `vcruntime140`, but it does not seem to have installed `msvcp140.dll`."
+  },
+  {
+   "author": "participant7",
+   "created_at": "2024-12-18T10:04:52Z",
+   "body": "> From the discussion it seems that using this approach is discouraged and the approach should be:\r\n\r\nI think the usage of delvewheel or not is unrelated to this discussion (there are other DLLs that we definitely need to include in the wheels), but will further comment on the relevant issue.\r\n\r\n> Since python 3.5 cpythons python installer checks for, and prompt installation of the MSVC (https://docs.python.org/3.5/using/windows.html#installation-steps).\r\n\r\nI don't have a Windows directly available to test, so certainly will believe you saying so :), but just to point out that the link you provided about the installation steps does not actually say anything about that this will happen AFAIU? (I interpreted providing the link as \"here it says it will do that\")\r\n"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-12-18T10:16:21Z",
+   "body": "Ok, here is a standard Python 3.12 install on a Windows VM:\r\n```pycon\r\nPython 3.12.5 (tags/v3.12.5:ff3bc82, Aug  6 2024, 20:45:27) [MSC v.1940 64 bit (AMD64)] on win32\r\nType \"help\", \"copyright\", \"credits\" or \"license\" for more information.\r\n>>> import ctypes\r\n>>> ctypes.CDLL('msvcp140.dll')\r\nTraceback (most recent call last):\r\n  File \"<stdin>\", line 1, in <module>\r\n  File \"C:\\Python312\\Lib\\ctypes\\__init__.py\", line 379, in __init__\r\n    self._handle = _dlopen(self._name, mode)\r\n                   ^^^^^^^^^^^^^^^^^^^^^^^^^\r\nFileNotFoundError: Could not find module 'msvcp140.dll' (or one of its dependencies). Try using the full path with constructor syntax.\r\n```"
+  },
+  {
+   "author": "participant8",
+   "created_at": "2024-12-18T10:26:27Z",
+   "body": "FWIW scikit-learn [bundles it](https://github.com/scikit-learn/scikit-learn/blob/main/build_tools/github/vendor.py#L12) since spicy decided to exclude it from the wheels.\r\n\r\nMaybe we should chase the static linking approach? "
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-12-18T10:27:36Z",
+   "body": "> Maybe we should chase the static linking approach?\r\n\r\nWe could, do you want to try doing that?\r\n\r\nIn the meantime, however, we should solve our issue of shipping an outdated DLL."
+  },
+  {
+   "author": "participant8",
+   "created_at": "2024-12-18T11:26:32Z",
+   "body": "> We could, do you want to try doing that?\r\n\r\nWell, someone with an amd64 windows machine could be better suited :)\r\n\r\n\r\n"
+  },
+  {
+   "author": "participant7",
+   "created_at": "2024-12-18T12:45:27Z",
+   "body": "> FWIW scikit-learn [bundles it](https://github.com/scikit-learn/scikit-learn/blob/main/build_tools/github/vendor.py#L12) since spicy decided to exclude it from the wheels.\r\n\r\nPotentially relevant comment from one of the scikit-learn issues about this: https://github.com/scikit-learn/scikit-learn/issues/24612#issuecomment-1275128616 (this also mentions \"All versions of Python currently supported should already have `msvcp140.dll`, which seems at odds with the observation of Antoine ..)"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-12-18T13:46:46Z",
+   "body": "> Potentially relevant comment from one of the scikit-learn issues about this: [scikit-learn/scikit-learn#24612 (comment)](https://github.com/scikit-learn/scikit-learn/issues/24612#issuecomment-1275128616) (this also mentions \"All versions of Python currently supported should already have `msvcp140.dll`, which seems at odds with the observation of Antoine ..)\r\n\r\nLet's ping @participant10 as the author of [the original comment](https://github.com/scipy/oldest-supported-numpy/issues/45#issuecomment-1101489918), then.\r\n\r\nI've now installed both 3.10.11 and 3.12.5 using the official python.org installers, neither ships `msvcp140.dll`."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-12-18T13:48:12Z",
+   "body": "> FWIW both numpy and pandas still seem to include msvcp140.dll in their wheels (just checked those two based on the latest wheels on PyPI)\r\n\r\nAt least for NumPy, the DLL is renamed in the wheel (I suppose thanks to `delvewheel`): I have\r\n`C:\\Python312\\Lib\\site-packages\\numpy.libs\\msvcp140-d64049c6e3865410a7dda6a7e9f0c575.dll`.\r\n"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-12-18T15:16:17Z",
+   "body": "CPython doesn't ever include msvcp140.dll, or any other C++-only DLLs, and never has. If it's on the system, it's because something else installed it. And if something else has installed it, the only ways you're getting your own copy is to keep it alongside your extension module, put it alongside python.exe (please don't), or rename it and rewrite your module's import tables (like delvewheel does, IIUC).\r\n\r\nThe download page at https://aka.ms/vcredist lists direct download links - e.g. https://aka.ms/vs/17/release/vc_redist.x64.exe for an Intel 64-bit OS. You can display these directly if you prefer, based on `platform.machine()`'s result.\r\n\r\nUsing a renamed msvcp140.dll is likely to be okay provided that your module doesn't leak any C++ (objects or exceptions) into others. If everything is handled cleanly at Python boundaries, you should be equally fine with a renamed C++ runtime or static linking. As far as I'm aware, the msvcp140.dll is stateless, and all state is managed by vcruntime140.dll (which _is_ included with Python, and you should try and rely on the same instance).\r\n\r\nOverall, my recommendation for extension modules is to statically link the C++ runtime, and try to avoid sharing C++ objects with other libraries, except through your own APIs (they can handle a pointer and pass it back to you, but that's probably about it)."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-12-18T15:35:09Z",
+   "body": "> Using a renamed msvcp140.dll is likely to be okay provided that your module doesn't leak any C++ (objects or exceptions) into others. If everything is handled cleanly at Python boundaries, you should be equally fine with a renamed C++ runtime or static linking.\r\n\r\nOk, I think it may be easier for us to use a renamed `msvcp140.dll`, then to get our build chain to enable static linking of this specific library.\r\n\r\n**Edit:** also, it would probably be better to bundle an *up-to-date* version of the DLL :)"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2024-12-19T01:28:36Z",
+   "body": "> > FWIW scikit-learn [bundles it](https://github.com/scikit-learn/scikit-learn/blob/main/build_tools/github/vendor.py#L12) since spicy decided to exclude it from the wheels.\r\n> \r\n> Potentially relevant comment from one of the scikit-learn issues about this: [scikit-learn/scikit-learn#24612 (comment)](https://github.com/scikit-learn/scikit-learn/issues/24612#issuecomment-1275128616) (this also mentions \"All versions of Python currently supported should already have `msvcp140.dll`, which seems at odds with the observation of Antoine ..)\r\n\r\nThis seems to be an error; if you follow through to @participant10's PR to cibuildwheel, pypa/cibuildwheel#1093, it's actually about `vcruntime140.dll` and `vcruntime140_1.dll`."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-12-19T08:56:54Z",
+   "body": "Does someone know how it fails? on the original issue I can see:\r\n> This means that loading any other python libraries that make use of newer C++ redistributables after loading pyarrow fails\r\n\r\nI am just trying to understand if the issues mentioned could be related."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-12-19T09:22:28Z",
+   "body": "> Does someone know how it fails?\r\n\r\nThere's an example `ImportError` in this issue: https://github.com/OpenMS/OpenMS/issues/7691#issue-2682711128\r\n\r\nBut, depending on the import order, perhaps it can also crash. Who knows?"
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "apache/arrow",
+  "default_branch": "main",
+  "commit_sha": "2e6fe1a4ccfc4ffc63e5d0dc09f972ebbca12426",
+  "as_of": "2024-11-26T07:49:16Z",
+  "method": "github_commits_until"
+ },
+ "images": [
+  {
+   "where": "c11",
+   "source_url": "https://github.com/user-attachments/assets/d42381e1-7dc3-490d-a63e-145d08a622d3",
+   "file": "gh_apache_arrow_44855_img0.png"
+  }
+ ],
+ "slug": "gh_apache_arrow_44855"
+}

@@ -1,0 +1,178 @@
+{
+ "repo": "keras-team/keras",
+ "number": 21954,
+ "url": "https://github.com/keras-team/keras/issues/21954",
+ "title": "Usages of Keras Augmentaiton Layers",
+ "state": "closed",
+ "labels": [
+  "stat:contributions welcome",
+  "type:feature"
+ ],
+ "reporter": "reporter",
+ "created_at": "2025-12-25T20:57:20Z",
+ "closed_at": "2026-07-10T13:12:26Z",
+ "body": "I was trying to use RandomRotation in a custom class based setup with tf.data API.\n\n```python\nclass RandRotateKeras3D:\n    def __init__(self, keys, factor=0.1, prob=0.8, fill_value=0.0):\n        self.keys = keys\n        self.prob = prob\n        self.fill_value = fill_value\n        self.seed_val = np.random.randint(0, 10**6)\n\n        self.img_rotate = layers.RandomRotation(\n            factor=factor, \n            fill_mode=\"constant\",\n            interpolation=\"bilinear\", \n            fill_value=fill_value,\n            seed=self.seed_val\n        )\n        \n        self.label_rotate = layers.RandomRotation(\n            factor=factor, \n            fill_mode=\"constant\",\n            interpolation=\"nearest\",\n            fill_value=0.0,\n            seed=self.seed_val\n        )\n        \n    def __call__(self, inputs):\n        image_key, label_key = self.keys\n        img = inputs.data[image_key]\n        lbl = inputs.data[label_key]\n        \n        img_shape = tf.shape(img)\n        D, H, W = img_shape[0], img_shape[1], img_shape[2]\n\n        # Padding\n        pad_h, pad_w = H // 2, W // 2\n        img_padded = tf.pad(\n            img, \n            [[0, 0], [pad_h, pad_h], [pad_w, pad_w], [0, 0]], \n            constant_values=tf.cast(self.fill_value, img.dtype)\n        )\n        lbl_padded = tf.pad(\n            lbl, \n            [[0, 0], [pad_h, pad_h], [pad_w, pad_w], [0, 0]], \n            constant_values=tf.cast(0, lbl.dtype)\n        )\n\n        # Transpose to (Batch=1, H, W, Channels=D)\n        img_trans = tf.transpose(img_padded, [3, 1, 2, 0]) \n        lbl_trans = tf.transpose(lbl_padded, [3, 1, 2, 0])\n\n        img_rot = self.img_rotate(img_trans)\n        lbl_rot = self.label_rotate(lbl_trans)\n\n        # Transpose back and crop\n        img_final = tf.transpose(img_rot, [3, 1, 2, 0])\n        lbl_final = tf.transpose(lbl_rot, [3, 1, 2, 0])\n        \n        img_final = tf.image.resize_with_crop_or_pad(img_final, H, W)\n        lbl_final = tf.image.resize_with_crop_or_pad(lbl_final, H, W)\n\n        return ...\n```\nI got\n\n```bash\nValueError: in user code:\n\n    File \"/tmp/ipykernel_47/2758838664.py\", line 48, in train_transformation  *\n        result = pipeline(data)\n    File \"/usr/local/lib/python3.11/dist-packages/medicai/transforms/base.py\", line 53, in __call__  *\n        x = transform(x)\n    File \"/tmp/ipykernel_47/285916447.py\", line 138, in __call__  *\n        img_rot = self.img_rotate(img_trans)\n    File \"/usr/local/lib/python3.11/dist-packages/keras/src/layers/preprocessing/data_layer.py\", line 119, in __call__  **\n        outputs = super().__call__(inputs, **kwargs)\n    File \"/usr/local/lib/python3.11/dist-packages/keras/src/utils/traceback_utils.py\", line 122, in error_handler\n        raise e.with_traceback(filtered_tb) from None\n\n    ValueError: Exception encountered when calling RandomRotation.call().\n    \n    tf.function only supports singleton tf.Variables created on the first call. Make sure the tf.Variable is only created once or created outside tf.function. See https://<redacted-host>/guide/function#creating_tfvariables for more information.\n    \n    Arguments received by RandomRotation.call():\n      • data=<tf.Tensor 'transpose:0' shape=(1, None, None, None) dtype=float32>\n      • training=True\n```\n\n## Queries\n\n1. In the setup described above, is it considered invalid or discouraged to instantiate random augmentation layers once and invoke them inside the call method, particularly when used within a `tf.data` pipeline or `tf.function`? I tested the code outside the tf.data and it works well. Furthermore, while checking out the output, I noticed that, due to rotation, some border effect was obvious. To remedy that, would it be nice to add `cropping` after the rotation, i.e. see the following output (`A` is not desired but `B`) - taken from [here](https://github.com/kobiso/Image-Rotation-and-Cropping-tensorflow/tree/master).\n\n<img width=\"1089\" height=\"414\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/909efff4-0bcd-46a8-9ac9-ce07a93e2d34\" />\n\n2. I aimed to implement a custom random-rotation layer. However, at present, there is no equivalent operation in Keras 3 to `tfa.image.rotate`. It would be highly beneficial if such a stateless, low-level rotation primitive were available natively in Keras 3. Hopefully, it will behave nicely in tf.data API regardless of the backend.\n3. Regarding the existing [Keras image augmentation layers](https://keras.io/api/layers/preprocessing_layers/image_augmentation/):     - These layers do not expose a probability (**prob**) argument to explicitly control whether a random transformation is applied. What is the motivation behind omitting such a parameter, given that probabilistic control is closely tied to augmentation behavior and is important for analyzing experimental impact? I thought it was added in `keras-cv` with `rate` flag, not sure if it is still true.\n     - The current API is designed to operate on a single input tensor, which is appropriate for image classification. However, for segmentation tasks, how is one expected to reliably ensure that identical random transformations are applied to both the input image and its corresponding label or mask? Additionally, since labels are discrete, even minor geometric distortions can introduce spatial noise—how is this concern intended to be addressed within the current design?\n     - Lastly, the official documentation for several Keras augmentation layers does not provide concrete code examples. For instance, layers such as [RandomShear](https://keras.io/api/layers/preprocessing_layers/image_augmentation/random_shear/) and [RandomTranslation](https://keras.io/api/layers/preprocessing_layers/image_augmentation/random_translation/) are described only at the API level, without minimal, runnable examples demonstrating their usage, inputs, and expected outputs. This makes the behavior of these layers unintuitive to understand. Including simple, illustrative examples would significantly improve usability, user engagement, and confidence in these APIs.\n\n\n",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2025-12-27T01:52:33Z",
+   "body": "@reporter \n\n1.\n    a. I believe this is simply because you're overriding `__call__` instead of `call`, which leads to weird errors. Do `def call(self, inputs):` instead.\n\n    b. That is a gap indeed. We could augment the API by adding `fill_mode=\"crop\"`.\n\n2. You can use [`keras.ops.image.affine_transform`](https://keras.io/api/ops/image/#affinetransform-function). The missing part is that you have to create the affine transform matrix. The code is here: https://github.com/keras-team/keras/blob/master/keras/src/layers/preprocessing/image_preprocessing/base_image_preprocessing_layer.py#L320-L337\n\n3.\n    a. Well it's not a question whether the transform is applied or not, the whole point is that you always apply some rotation so that the training never sees the same image again. The control you have is the `factor` argument of `RandomRotation` which controls how much you rotate at most. Then, for each image a random angle is picked and applied.\n\n    b. You're supposed to pass the following structure (any of `\"bounding_boxes\"`, `\"labels\"`, `\"segmentation_masks\"` can be missing):\n    ```\n    {\n      \"images\": images,\n      \"bounding_boxes\": bounding_boxes,\n      \"labels\": labels,\n      \"segmentation_masks\": segmentation_masks,\n    } \n    ```\n    Then everything is rotated the same way. The truth is that this may not be documented.\n\n    c. It does look like there isn't a thorough example for this indeed. Were you thinking in the docstring of the API or as an example on keras.io?\n\n"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2026-01-02T02:26:58Z",
+   "body": "Going by @reporter's thumbs up I think we are in agreement here. Sounds like the missing things here are...\n\n* Add `fill_mode=\"crop\"` to `RandomRotation`.\n* Add better documentation of the dict inputs supported by Keras preprocessing layer for bounding boxes and masks.\n* Add code examples in preprocessing layer class docstrings (and possibly add a keras.io example/guide).\n\nI think that's all open for contributions so I'll mark the issue as such."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2026-01-04T07:27:28Z",
+   "body": "Thanks for outlining the expectations here.\n\nI’ve implemented the items you listed:\n\n- Added `fill_mode=\"crop\"` support to `RandomRotation`, using a **pad → rotate → center-crop** pipeline with correct rotation geometry around the padded image center.\n- Expanded the docstring to better document structured dict inputs  \n  (`{\"images\", \"segmentation_masks\", \"bounding_boxes\", \"labels\"}`) and how they are transformed in a synchronized way.\n- Added multiple runnable code examples in the layer docstring covering:\n  - basic crop usage\n  - images + segmentation masks\n  - images + bounding boxes\n  - a comparison of `fill_mode=\"constant\"` vs `fill_mode=\"crop\"`\n\nPlease let me know if there’s anything else you’d like adjusted or clarified.\n\ncc @participant2  @reporter  @participant1 "
+  },
+  {
+   "author": "participant4",
+   "created_at": "2026-01-04T15:15:43Z",
+   "body": "Hi @participant1, @participant2 and @reporter\n\nas per the issue mentioned , i have added code examples in the  preprocessing layer class docstrings via #21978 "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-01-04T17:27:12Z",
+   "body": "@participant3 @participant4\nThank you both for taking this up.\n\n@participant3\nWould it be possible to share a Colab gist demonstrating how random rotation behaves, especially for segmentation tasks? In particular, it would be helpful to visually inspect the effect on segmentation masks. As you know, due to border effects, the boundary regions can be sensitive in segmentation, where newly introduced border pixels (typically black) may be treated as the background class, which might not be desirable. I’m not entirely sure whether this behavior is acceptable in practice, so a visual example would be very useful.\n\n@participant4 @participant3\nAdding code-level documentation would be a great improvement. That said, when users first evaluate an API, they typically rely on the API documentation rather than diving into the source code. Currently, as seen [here](https://keras.io/api/layers/preprocessing_layers/image_augmentation/), most APIs lack visual demonstrations. Providing component-level examples or a global usage guide with visual demonstrations would be extremely helpful and effective. You might find inspiration from the PyTorch documentation in this regard.\n\n@participant2\nIs there a benchmark script available to evaluate the inference speed of the Keras augmentation layers?\n\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-01-04T17:51:07Z",
+   "body": "FYI, some effort were made, but didn't get support enough. \n\nhttps://github.com/keras-team/keras-cv/issues/1801\n\n<img width=\"1817\" height=\"863\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/c6a57ef6-59fa-4462-941e-322456ca181f\" />\n\n<img width=\"1819\" height=\"802\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/bf40ddc0-a0a7-4792-b024-37b21717f95c\" />\n\ncc. @participant8 @participant9"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2026-01-05T17:27:32Z",
+   "body": "@reporter I don't know of a benchmark script for Keras preprocessing layers right now, would be good to have!"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2026-01-05T19:03:00Z",
+   "body": "> [@participant3](https://github.com/participant3) [@participant4](https://github.com/participant4) Thank you both for taking this up.\n> \n> [@participant3](https://github.com/participant3) Would it be possible to share a Colab gist demonstrating how random rotation behaves, especially for segmentation tasks? In particular, it would be helpful to visually inspect the effect on segmentation masks. As you know, due to border effects, the boundary regions can be sensitive in segmentation, where newly introduced border pixels (typically black) may be treated as the background class, which might not be desirable. I’m not entirely sure whether this behavior is acceptable in practice, so a visual example would be very useful.\n> \n> [@participant4](https://github.com/participant4) [@participant3](https://github.com/participant3) Adding code-level documentation would be a great improvement. That said, when users first evaluate an API, they typically rely on the API documentation rather than diving into the source code. Currently, as seen [here](https://keras.io/api/layers/preprocessing_layers/image_augmentation/), most APIs lack visual demonstrations. Providing component-level examples or a global usage guide with visual demonstrations would be extremely helpful and effective. You might find inspiration from the PyTorch documentation in this regard.\n> \n> [@participant2](https://github.com/participant2) Is there a benchmark script available to evaluate the inference speed of the Keras augmentation layers?\n\n@reporter \nThanks for the suggestion — I’ve added a Colab notebook demonstrating how `RandomRotation` behaves on segmentation inputs.\n\nThe notebook provides a side-by-side visual comparison of `fill_mode=\"constant\"` and `fill_mode=\"crop\"` for both images and segmentation masks, focusing on visual inspection of border behavior and mask integrity. In many cases the outputs may look similar, which is expected.\n\n**Colab link:**  \nhttps://colab.research.google.com/drive/1HqnU8er0HRBYZnMlNQNJQ-4l-dTpLAI4\n\nHappy to adjust or expand the example if helpful."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-01-05T20:27:06Z",
+   "body": "<img width=\"776\" height=\"521\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/2e1ae333-3192-4018-bff9-617026f015c0\" />\n\nCropped out should not contain fill value. See the above image, [here](https://github.com/keras-team/keras/issues/21954#issue-3762355234). I used this rotaiton crop technique for 3D cases, you may check [this](https://github.com/reporter/medic-ai/blob/b1754cca2ab7016c4c74e644040bb71b0da30a39/medicai/transforms/random_rotation.py#L195). ( Now, I also used resizing logic [here](https://github.com/reporter/medic-ai/blob/b1754cca2ab7016c4c74e644040bb71b0da30a39/medicai/transforms/random_rotation.py#L209-L213), which I felt a bit off, so I was thinking better way. )"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-01-05T20:38:29Z",
+   "body": "Here is another cases on 3D data.\n\nOriginal\n\n<img width=\"1571\" height=\"512\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/b4e439b0-b352-4e71-ab75-d5f86b724210\" />\n\nrotation (factor 0.4) - fill mode zero\n\n<img width=\"1579\" height=\"506\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/a04c4ef6-946a-461f-9329-b36b1e10ca68\" />\n\nrotation (factor 0.4) - fill mode crop\n\n<img width=\"1566\" height=\"499\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/7d2c60ff-f7a1-4541-b689-b048effbcc8f\" />"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-01-05T20:52:08Z",
+   "body": "I've just found this interesting discussion https://stackoverflow.com/questions/16702966/rotate-image-and-crop-out-black-borders"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2026-01-06T13:42:36Z",
+   "body": "Hi @participant2,\n\nI’d like to work on a benchmark script for Keras preprocessing layers, focusing on RandomRotation performance inside tf.data (eager vs tf.function / pipeline).\n\nPlease let me know if that aligns with expectations.\n"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2026-01-06T19:24:32Z",
+   "body": "Hi @reporter,\n\nI've implemented `fill_mode=\"crop\"` for `keras.layers.RandomRotation` and would like your feedback on the approach before finalizing.\n\n**Key idea**\n\n- For `fill_mode=\"crop\"`, the layer:\n  1. Pads the input to the diagonal size (`ceil(sqrt(H^2 + W^2))`) so any rotation fits.\n  2. Applies the rotation on the padded canvas with `fill_mode=\"constant\", fill_value=0.0`.\n  3. Applies a conservative center crop (`~1/sqrt(2)` of original H,W) that is guaranteed to remove all border/canvas artifacts for any rotation angle, while staying backend‑friendly and batched.\n\nThis is less aggressive than full angle‑dependent LRR math, but guarantees that the cropped region contains **no fill pixels**, which matches your \"cropped out should not contain fill value\" requirement.\n\n**Visual result** (using Colab demo script):\n<img width=\"1916\" height=\"945\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/ba662a1e-6430-41d0-97da-84e94bd7b0c1\" />\n\n**Code sketch**\n\n```\ndef _apply_rotation_with_crop(self, images, transformation, interpolation):\n    orig_h = transformation[\"image_height\"]\n    orig_w = transformation[\"image_width\"]\n\n    padded = self._pad_for_crop(images, orig_h, orig_w)\n    padded_h, padded_w = self._get_hw(padded)\n\n    padded_rotation_matrix = self._compute_affine_matrix(\n        center_x=0.5,\n        center_y=0.5,\n        angle=transformation[\"angle\"],\n        translate_x=ops.numpy.zeros([transformation[\"batch_size\"]]),\n        translate_y=ops.numpy.zeros([transformation[\"batch_size\"]]),\n        scale=ops.numpy.ones([transformation[\"batch_size\"]]),\n        shear_x=ops.numpy.zeros([transformation[\"batch_size\"]]),\n        shear_y=ops.numpy.zeros([transformation[\"batch_size\"]]),\n        height=padded_h,\n        width=padded_w,\n    )\n\n    rotated = self._apply_affine(\n        images=padded,\n        rotation_matrix=padded_rotation_matrix,\n        interpolation=interpolation,\n        fill_mode=\"constant\",\n        fill_value=0.0,\n    )\n    return self._conservative_inner_crop(rotated, orig_h, orig_w)\n\ndef _conservative_inner_crop(self, images, orig_h, orig_w):\n    factor = ops.cast(0.70710678, \"float32\")\n\n    orig_h = ops.cast(orig_h, \"float32\")\n    orig_w = ops.cast(orig_w, \"float32\")\n\n    crop_h = ops.cast(orig_h * factor, \"int32\")\n    crop_w = ops.cast(orig_w * factor, \"int32\")\n\n    shape = ops.shape(images)\n\n    if self.data_format == \"channels_last\":\n        curr_h = shape[1]\n        curr_w = shape[2]\n        channels = shape[3]\n\n        offset_h = (curr_h - crop_h) // 2\n        offset_w = (curr_w - crop_w) // 2\n\n        cropped = ops.slice(\n            images,\n            start_indices=[0, offset_h, offset_w, 0],\n            shape=[shape[0], crop_h, crop_w, channels],\n        )\n    else:\n        curr_h = shape[2]\n        curr_w = shape[3]\n        channels = shape[1]\n\n        offset_h = (curr_h - crop_h) // 2\n        offset_w = (curr_w - crop_w) // 2\n\n        cropped = ops.slice(\n            images,\n            start_indices=[0, 0, offset_h, offset_w],\n            shape=[shape[0], channels, crop_h, crop_w],\n        )\n\n    return cropped\n```"
+  },
+  {
+   "author": "participant6",
+   "created_at": "2026-01-14T19:54:58Z",
+   "body": "Hi @participant3 \n\nDoes the rotated and cropped image have the same size as the original image? Do we want to have something like a `resize_to_original` flag to resize it to the original size if true?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-01-14T20:05:52Z",
+   "body": "@participant3 \nThat sounds fine.\n\n@participant6 \n>  Do we want to have something like a resize_to_original flag to resize it to the original size if true?\n\nI think that wouldn't be necessary with the latest suggestion made by @participant3 , right?"
+  },
+  {
+   "author": "participant6",
+   "created_at": "2026-01-14T21:45:39Z",
+   "body": "> I think that wouldn't be necessary with the latest suggestion made by [@participant3](https://github.com/participant3) , right?\n\nMaybe I'm missing something, but if the original image is 1000 by 1000 wouldn't the final cropped image here be approximately 707 by 707 (because of the `factor = ops.cast(0.70710678, \"float32\")` multiplied by the dimensions)? \n"
+  },
+  {
+   "author": "participant7",
+   "created_at": "2026-01-15T09:01:59Z",
+   "body": "I'm interested to contribute"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2026-01-15T09:03:18Z",
+   "body": "Hi maintainers,\nI’ve been following this discussion and noticed that visual examples and benchmarks are still missing.\nI’d like to contribute by adding:\n\na minimal visual example for segmentation masks (fill_mode constant vs crop)\n\nor a simple benchmark script for augmentation layers\n\nPlease let me know which direction would be most helpful."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-01-15T09:28:22Z",
+   "body": "@participant6 \nMaybe. I assumed the padding might addressed that, not sure. \n\n@participant5 \nIf you're open, you can create a guide in keras-io regarding the usage of augmentation layers. However, I think, instead of guide, an example for per augmentation to each of its own page would be more beneficial. For example, [albumentaitonx](https://albumentations.ai/docs/3-basic-usage/bounding-boxes-augmentations/)\n"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2026-01-18T17:58:00Z",
+   "body": "Thanks for the questions @participant6 and @reporter !\n\nTo clarify the current implementation in the PR:\n\n- `fill_mode=\"crop\"` does **not** shrink the image permanently.\n- The layer:\n  1. Pads to the diagonal size.\n  2. Rotates on the padded canvas.\n  3. Uses `_center_crop_to(rotated, orig_h, orig_w)` to center‑crop back to the original height/width.\n\nSo for an input of 1000×1000, the final output is also 1000×1000; only the padded border wedges are removed. Because of this, a separate `resize_to_original` flag is not necessary — the behavior is shape‑preserving and consistent with the existing `RandomRotation` API.\n\nHappy to adjust anything if needed."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2026-01-21T21:54:42Z",
+   "body": "@participant3 \n\n> 3\\. Applies a conservative center crop (`~1/sqrt(2)` of original H,W) that is guaranteed to remove all border/canvas artifacts for any rotation angle, while staying backend‑friendly and batched.\n> \n> This is less aggressive than full angle‑dependent LRR math, but guarantees that the cropped region contains **no fill pixels**, which matches your \"cropped out should not contain fill value\" requirement.\n\nI feel like this removes too much of the image, much more than it needs to for small angles (which is probably how this layer is used).\n\nCan you add the math to compute the exact zoom factor needed for each angle so that cropping gives you exactly a rectangle that touches the original border of the image in 4 points while keeping the output size the same?\nSo for a square image for instance, as the angle increases from 0 to 45 degrees, the zoom factor increase from 1 to √2."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2026-01-22T17:58:04Z",
+   "body": "Thanks @participant1 for the detailed feedback!\nUpdated to use exact angle-dependent LRR math as suggested (effective zoom scales from ~1 at 0° to ~√2 at 45° for square inputs, adapting per angle to avoid over-cropping at small rotations).\nRotation is applied on the original canvas with constant fill, followed by angle-dependent crop + resize to preserve shape.\n\nColab gist (visual demo):\nhttps://colab.research.google.com/drive/1qymnDOJ8ku2vXfwzSMrOFLtu12b7-A9F\n\nLet me know if anything should be adjusted further."
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "keras-team/keras",
+  "default_branch": "master",
+  "commit_sha": "7660ee3261e88c560a60af5eaa1b026dd54935b2",
+  "as_of": "2025-12-25T20:57:20Z",
+  "method": "github_commits_until"
+ },
+ "images": [
+  {
+   "where": "opening",
+   "source_url": "https://github.com/user-attachments/assets/909efff4-0bcd-46a8-9ac9-ce07a93e2d34",
+   "file": "gh_keras-team_keras_21954_img0.png"
+  },
+  {
+   "where": "c5",
+   "source_url": "https://github.com/user-attachments/assets/c6a57ef6-59fa-4462-941e-322456ca181f",
+   "file": "gh_keras-team_keras_21954_img1.png"
+  },
+  {
+   "where": "c5",
+   "source_url": "https://github.com/user-attachments/assets/bf40ddc0-a0a7-4792-b024-37b21717f95c",
+   "file": "gh_keras-team_keras_21954_img2.png"
+  },
+  {
+   "where": "c8",
+   "source_url": "https://github.com/user-attachments/assets/2e1ae333-3192-4018-bff9-617026f015c0",
+   "file": "gh_keras-team_keras_21954_img3.png"
+  },
+  {
+   "where": "c9",
+   "source_url": "https://github.com/user-attachments/assets/b4e439b0-b352-4e71-ab75-d5f86b724210",
+   "file": "gh_keras-team_keras_21954_img4.png"
+  },
+  {
+   "where": "c9",
+   "source_url": "https://github.com/user-attachments/assets/a04c4ef6-946a-461f-9329-b36b1e10ca68",
+   "file": "gh_keras-team_keras_21954_img5.png"
+  },
+  {
+   "where": "c9",
+   "source_url": "https://github.com/user-attachments/assets/7d2c60ff-f7a1-4541-b689-b048effbcc8f",
+   "file": "gh_keras-team_keras_21954_img6.png"
+  },
+  {
+   "where": "c12",
+   "source_url": "https://github.com/user-attachments/assets/ba662a1e-6430-41d0-97da-84e94bd7b0c1",
+   "file": "gh_keras-team_keras_21954_img7.png"
+  }
+ ],
+ "slug": "gh_keras-team_keras_21954"
+}

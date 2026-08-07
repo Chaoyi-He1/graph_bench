@@ -1,0 +1,123 @@
+{
+ "repo": "vitessio/vitess",
+ "number": 13041,
+ "url": "https://github.com/vitessio/vitess/issues/13041",
+ "title": "RFC: surface warnings and/or errors for unknown vindex params",
+ "state": "closed",
+ "labels": [
+  "Type: Enhancement",
+  "Component: Query Serving",
+  "Type: RFC"
+ ],
+ "reporter": "reporter",
+ "created_at": "2023-05-08T16:36:59Z",
+ "closed_at": "2023-12-29T12:46:53Z",
+ "body": "# Introduction\r\n\r\nVindexes allow Vindex-specific parameters to be passed via the `params` field. For example:\r\n\r\n```\r\n{\r\n  \"type\": \"lookup\",\r\n  \"params\": {\r\n    \"autocommit\": \"true\",\r\n    \"read_lock\": \"none\"\r\n  }\r\n}\r\n```\r\n\r\nCurrently it is the responsibility of each Vindex to validate its own params. Some Vindexes do strict validation of params, while other Vindexes do very little param validation. All Vindexes happily accept unknown params.\r\n\r\n# Problem\r\n\r\nFor the most part, there aren't any problems with this. If a user forgets to pass in a _required_ param, the Vindex will complain or fail, and the user will know about it.\r\n\r\nHowever, if the user passes in an optional param, but makes a typo in the param name, most Vindexes will happily accept the typo param, and do nothing with it.\r\n\r\nIn some cases that silent ignore can be a problem. For example, the `lookup` Vindex family supports a number of performance-impacting parameters, such as `read_lock`. If a user tries to set `raed_lock` (notice typo) to `none`, expecting that this will reduce lock contention, they will be in for an unpleasant surprise during the next traffic spike.\r\n\r\n# Proposal\r\n\r\nThis RFC proposes updating Vitess to warn users when they pass in unknown parameters to the Vindexes. The warnings can be surfaced to users via logs and metrics. \r\n\r\nImportantly, warnings will be backwards-compatible, and it will be the responsibility of users to monitor logs and metrics for these warnings, and take additional corrective actions.\r\n\r\nOptionally, a user can opt in to stricter param validation via a flag such as `--vschema-strict`, which will escalate these warnings to errors. A user might choose to opt in to `--vschema-strict` in development and staging environments, but leave the default behavior on in production.\r\n\r\n## Options\r\n\r\nSome ways this could be implemented.\r\n\r\n### Have vindexes optionally report warnings\r\n\r\nIntroduce a `ParamValidating` interface like:\r\n\r\n```\r\n+ type ParamValidating interface {\r\n+   UnknownParams() []string\r\n+ }\r\n```\r\n\r\nThen update the logic of individual Vindexes to return non-empty `UnknownParams()` when any parameters passed to the Vindex during Vindex creation was unknown.\r\n\r\nUpdate various parts of Vitess codebase to look for unknown params in Vindexes, and emit logs and metrics. For example:\r\n\r\n * Update `vtgate.(*VschemaStats)` to export warnings in its HTTP output.\r\n * Log warnings and increment a `vtgate_vschema_vindex_unknown_param_count` stat from `vtgate.(*VSchemaManager)`.\r\n * Update `ApplyVSchema` to return warnings in response, while continuing to accept the input if there aren't any errors.\r\n\r\n#### Pros\r\n\r\n * Is not a breaking change.\r\n * Does not require any future deprecations or removals.\r\n * Does not add any complexity to upgrades.\r\n * Does not require users to change their VSchemas.\r\n * Gives users soft warnings (metrics, logs) by default with the option of opting in to hard errors.\r\n\r\n#### Cons\r\n\r\n * Requires more code changes compared to the other options.\r\n * Potentially difficult to maintain: any time we add or remove a supported param from a Vindex, we need to update both the validation code as well as the code that actually uses that param.\r\n\r\n### Add per-Vindex VSchema params\r\n\r\nCurrently all Vindexes that accept parameters do so via the `params` field, which is not really strongly typed.\r\n\r\nWe can introduce stronger typing by having each Vindex which declares params register strongly typed params in the VSchema protobuf definition.\r\n\r\nHow this might look in the protobuf definition.\r\n\r\n```\r\n// Vindex is the vindex info for a Keyspace.\r\nmessage Vindex {\r\n+  message LookupVindexParams {\r\n+    enum ReadLock {\r\n+      READ_LOCK_EXCLUSIVE = 0;\r\n+      READ_LOCK_SHARED = 1;\r\n+      READ_LOCK_NONE = 2;\r\n+    }\r\n+  } \r\n+\r\n+   bool autocommit = 1;\r\n+   ReadLock read_lock = 2;\r\n+ }\r\n  // The type must match one of the predefined\r\n  // (or plugged in) vindex names.\r\n  string type = 1;\r\n  // params is a map of attribute value pairs\r\n  // that must be defined as required by the\r\n  // vindex constructors. The values can only\r\n  // be strings.\r\n  map<string, string> params = 2;\r\n  // A lookup vindex can have an owner table defined.\r\n  // If so, rows in the lookup table are created or\r\n  // deleted in sync with corresponding rows in the\r\n  // owner table.\r\n  string owner = 3;\r\n\r\n+  // Params specific to \"lookup\" Vindex. \r\n+  LookupVindexParams lookup_params;\r\n}\r\n```\r\n\r\nA user could opt in to stronger Vindex param validation by specifying `lookup_params` in the VSchema:\r\n\r\n```\r\n{\r\n  \"type\": \"lookup\",\r\n  \"lookup_params\": {\r\n     \"autocommit\": true,\r\n     \"read_lock\": \"none\" \r\n  }\r\n}\r\n```\r\n\r\nNotice how in the VSchema above `autocommit` is a boolean, instead of a string with the word `\"true\"`.\r\n\r\nInitially we would support both `params` as well as `lookup_params`. `lookup_params` would take precedence when present, and fall back to `params` when null.\r\n\r\nWe could choose to support both `params` as well as `{type}_params` indefinitely, or else eventually deprecate and remove `params`. The former would give users to option of choosing between loose param validation or strict param validation by using either `params` or `{type}_params`.\r\n\r\n#### Pros\r\n\r\n * Does not require a lot of code relative to the other options. Protobuf parsing will do all the heavy lifting of parsing and validating params.\r\n * Allows users to opt into strict validation at their own pace, one Vindex at a time.\r\n\r\n#### Cons\r\n\r\n * If we eventually deprecate and remove `params` in favor of `{type}_params`, that would be a big  change to force on the community.\r\n * If we support both `params` and `{type}_params` indefinitely, that is a burden for maintainers to support.\r\n * Is probably a non-starter for out-of-tree Vindex plugins; we would need to support the loosely typed `params` field indefinitely for those out-of-tree plugins.\r\n * Could make upgrades more difficult to execute. For example, if we ever removed the `read_lock` field from the protobuf definition, in order to upgrade users would need to first remove this field from their VSchema, and then upgrade their VT* components.\r\n\r\n## Recommendation\r\n\r\nI really like that option 2 would add strong typing for Vindex params, but I think the main challenge is that out-of-tree Vindex plugins won't be able to take advantage of that.\r\n\r\nI recommend option 1 because:\r\n\r\n * It does not require users to change their VSchemas in order to opt in to soft warnings.\r\n * Users can choose to ignore warnings, monitor them, or treat them as errors via `--vschema-strict`.\r\n * It does not create any breaking changes in code.\r\n * It gives out-of-tree Vindex plugins the ability to issue their own warnings.\r\n\r\n# Decision\r\n\r\nI like the [RAPID](https://asana.com/resources/rapid-decision-making?utm_campaign=NB--NAMER--EN--Catch-All--All-Device--DSA&utm_source=google&utm_medium=pd_cpc_nb&gclid=Cj0KCQiAm5ycBhCXARIsAPldzoXWIxku961kpYsmawdaHMyAg58cgeiX65NQbHaBy7HzxjpYxevvZlcaAl9PEALw_wcB&gclsrc=aw.ds) model for decision making. \r\n\r\nRecommend: @reporter \r\nAgree: @participant3 @participant4 \r\nPerform: @reporter\r\nInput: community\r\nDecide: @participant1: \"I think Option 1 is good as it does not change user behaviour and gives the option to log warnings to indicate the issue with the vindex setup.\"\r\n\r\n# Tasks\r\n\r\n * [x] Create and implement `vindexes.ParamValidating` interface, via #12951 .\r\n * [x] Expose unknown params via logs and metrics.\r\n   * [x] Expose VTGate metric, via #13322.\r\n   * [x] Report warnings from `vtctl` `ApplyVSchema` CLI command, via #13322.\r\n   * [x] Report warnings from `ApplyVSchemaResponse` gRPC response.\r\n * [ ] Opt into strict validation via flag.",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2023-05-09T11:10:10Z",
+   "body": "Regarding Vindex Warnings.\r\nTill now any addition is done using an interface so that it does not change the vindex creation syntax and implementing the interface is opt-in.\r\nThis way any custom implementation does not have to change anything.\r\n\r\n```go\r\ntype VindexWarning interface {\r\n    func VindexWarnings() []string\r\n}\r\n```\r\n\r\nIf I have understood correctly, regarding supporting feature https://github.com/vitessio/vitess/issues/12413. I think we can change the params from `map[string]string` to `map[string]any` and the type checking will be performed by the vindex itself with json unmarshal."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-05-09T14:10:26Z",
+   "body": "Hey @participant1 \r\n\r\n> Till now any addition is done using an interface so that it does not change the vindex creation syntax and implementing the interface is opt-in.\r\n\r\nOK that makes sense! I'll rework option 1 to do that.\r\n\r\n> If I have understood correctly, regarding supporting feature https://github.com/vitessio/vitess/issues/12413.\r\n\r\nYeah using `map[string]any` is another way to solve #12413. Overall I think I am muddying the RFC by talking about that feature request, so I'm going to remove discussion of that from option 2."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-05-09T21:09:36Z",
+   "body": "@participant1 made those updates"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-05-18T09:07:57Z",
+   "body": "I think Option 1 is good as it does not change user behaviour and gives the option to log warnings to indicate the issue with the vindex setup."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-05-18T14:03:49Z",
+   "body": "@participant1 great,  I'll get started on updating the PR to match option 1.\r\n\r\nOne thing about option 1 is that it will require Vindexes to store their either their input params or their warnings, e.g.:\r\n\r\n```\r\ntype binary struct {\r\n  warnings []error\r\n}\r\n\r\ntype (b *binary) Warnings() []error {\r\n  return b.warnings\r\n}\r\n```\r\n\r\nIn theory this will increase the amount of memory used by Vindexes compared to if they just returned warnings during Vindex creation phase.\r\n\r\nI assume you already thought of this and are not concerned, but just adding this comment in case you or anyone else would have concerns about that."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-05-18T15:35:19Z",
+   "body": "You can check and return at that point in time as this is not something will be used repeatedly "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-05-18T15:41:19Z",
+   "body": "@participant1 even if this is not used repeatedly, Vindexes will be carrying extra memory from holding param errors:\r\n\r\n```\r\ntype binary struct {\r\n  warnings []error\r\n}\r\n\r\ntype (b *binary) Warnings() []error {\r\n  return b.warnings\r\n}\r\n\r\nfunc newBinary(name string, params map[string]string) (Vindex, error) {\r\n  return &binary{name: name, warnings: validateParams(params)}\r\n}\r\n```\r\n\r\nWe can't check and return an error in `newBinary` that would be a breaking change. We have to store any warnings that were found directly in the Vindex, so that they can be checked by callers. If a caller chooses not to check the warnings, that means the warnings will be held in memory for the lifetime of the VTGate."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-05-18T16:35:35Z",
+   "body": "I say we do not need to store the warnings , we already have the passed in params.\r\nWhen vtgate ask for vindex warnings using `Warnings() []error` at that point, vindex will analyze the passed in params and return the `[] error`"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-05-18T17:02:30Z",
+   "body": "Hey @participant1 I can do that but I think that is likely to use more memory than storing the warnings. If we pass in 10 params and they are all valid, then no warnings are generated and storing the params on the Vindex is just wasted memory. If we store the warnings, if all the passed in params are valid then we will use less memory."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-05-18T17:27:39Z",
+   "body": "We are already storing the parameters. The only way to make vindex know what to do with the passed in params."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-05-18T17:32:49Z",
+   "body": "I see what you mean, we use the parameters and store transformed values.\r\n\r\n Today we store any issue with a keyspace in \r\n```\r\ntype KeyspaceSchema struct {\r\n\tKeyspace *Keyspace\r\n\tTables   map[string]*Table\r\n\tVindexes map[string]Vindex\r\n\tViews    map[string]sqlparser.SelectStatement\r\n\t>>> Error    error <<<\r\n}\r\n```\r\n\r\nshould we continue to use this and add warnings here?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-05-18T17:34:28Z",
+   "body": "Also, do we really need []error store or a single aggregated error is enough?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-05-18T18:10:33Z",
+   "body": "Hey @participant1 even before we think about storing values on `KeyspaceSchema` we need to store new values on the Vindex itself. Otherwise the Vindex won't be able to report whether params passed to it during creation were invalid or not. Those new values will take up memory, and the only question is do we want to take up more (if we store `map[string]string` or less (if we store `[]VindexWarning`) memory.\r\n\r\nIn terms of what we store on `KeyspaceSchem`, I don't think it makes sense to re-use `Error`, since that will potentially cause unexpected errors for users. The idea behind having warnings is that we can emit logs and metrics, and maybe in a future PR let users opt in to stricter validation with `--vschema-strict` or something like that.\r\n\r\nIf you think that it makes more sense to store errors in `KeyspaceSchema.Error`, then I think we can forget about the `WarningReporter` interface entirely and just return warnings in the error return value of `CreateVindex`. But it will potentially break things for users who are currently passing in unknown params into their VSchemas.\r\n\r\n> Also, do we really need []error store or a single aggregated error is enough?\r\n\r\nI think it would be more useful to store these as separate `[]error`, that way we can increment a warning metric by `len(errors)`. However I don't feel too strongly about it.\r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-05-19T02:39:24Z",
+   "body": "> Also, do we really need []error store or a single aggregated error is enough?\r\n\r\nAlternately the interface could be something like:\r\n\r\n```\r\ntype ParamValidating interface {\r\n    // UnknownParams returns a slice of params that were passed to the Vindex\r\n    // at creation time but ignored because they were not known.\r\n    UnknownParams() []string\r\n}\r\n```\r\n\r\nAnd let callers decide whether they qualify as errors or not."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-05-19T04:52:19Z",
+   "body": "This sounds reasonable. We can store the unknown parameters at the vindex level. The memory will increase only if there are unknown parameters passed so this is acceptable."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-05-19T13:02:45Z",
+   "body": "@participant1 OK have updated the RFC to incorporate the convo up to this point and updated https://github.com/vitessio/vitess/pull/12951 to match."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-07-20T19:51:47Z",
+   "body": "@reporter It's great to see these changes. I noticed that https://github.com/vitessio/vitess/pull/13322 added warnings to the Vtctl `ApplyVSchema` output. Are you planning to add something similar to the `ApplyVSchema` gRPC? (I'm not sure what that would look like. Maybe warning messages in the `ApplyVSchemaResponse`?)"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-07-20T19:55:22Z",
+   "body": "@participant2 good idea! Added to the task list in the issue description. I'll take a crack at it if someone else doesn't beat me to it."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-12-21T13:25:59Z",
+   "body": "Oops, didn't mean to close this, one item left.\r\n\r\n> Opt into strict validation via flag.\r\n\r\n@participant2 the `ApplyVSchema` gRPC response now includes warnings for unknown params, both with and without `--dry-run`."
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "vitessio/vitess",
+  "default_branch": "main",
+  "commit_sha": "7f1b1f313662a3c6abac88793f72f50f22153d9a",
+  "as_of": "2023-05-08T16:36:59Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_vitessio_vitess_13041"
+}

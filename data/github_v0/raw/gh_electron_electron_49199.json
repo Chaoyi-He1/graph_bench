@@ -1,0 +1,181 @@
+{
+ "repo": "electron/electron",
+ "number": 49199,
+ "url": "https://github.com/electron/electron/issues/49199",
+ "title": "Crash on startup with Electron 40.x built with v8_enable_sandbox=false (Illegal Access in IndirectBaseHandle::IsEmpty)",
+ "state": "closed",
+ "labels": [
+  "platform/windows",
+  "crash :<nick>:",
+  "bug :<nick>:",
+  "has-repro-comment",
+  "40-x-y"
+ ],
+ "reporter": "reporter",
+ "created_at": "2025-12-12T04:40:23Z",
+ "closed_at": "2026-01-23T16:49:17Z",
+ "body": "### Preflight Checklist\n\n- [x] I have read the [Contributing Guidelines](https://github.com/electron/electron/blob/main/CONTRIBUTING.md) for this project.\n- [x] I agree to follow the [Code of Conduct](https://github.com/electron/electron/blob/main/CODE_OF_CONDUCT.md) that this project adheres to.\n- [x] I have searched the [issue tracker](https://www.github.com/electron/electron/issues) for a bug report that matches the one I want to file, without success.\n\n### Electron Version\n\n40.0.0\n\n### What operating system(s) are you using?\n\nWindows\n\n### Operating System Version\n\nWindows 11 Pro 26100\n\n### What arch are you using?\n\nx64\n\n### Last Known Working Electron version\n\n39.2.6\n\n### Does the issue also appear in Chromium / Google Chrome?\n\nI don't know how to test\n\n### Expected Behavior\n\n\nWhen built with the following flags:\n```\n  v8_enable_sandbox = false\n  v8_enable_pointer_compression = false\n```\nThe application should start normally (same behavior as with my custom 39.2.6 build with the same flags).\n\n### Actual Behavior\n\nElectron 40.x crashes on startup (Apparently this only happens on Windows).\n\n`Unhandled error in main process: Error: ERR_FAILED (-2) loading 'http://localhost:8100'\n    at rejectAndCleanup (node:electron/js2c/browser_init:2:83298)\n    at finishListener (node:electron/js2c/browser_init:2:83460)\n    at WebContents.stopLoadingListener (node:electron/js2c/browser_init:2:83847)\n    at WebContents.emit (node:events:508:28)\n    at WebContents.emit (node:domain:489:12) {\n  errno: -2,\n  code: 'ERR_FAILED',\n  url: 'http://localhost:8100'`\n\nCrash dump points to an Illegal Access Exception at IndirectBaseHandle::IsEmpty in v8-handle-base.h.\n\n\n\n\n\n### Testcase Gist URL\n\n_No response_\n\n### Additional Information\n\n**Steps to reproduce**\n\nClone Electron source for 40.0.0-beta.X.\n\nConfigure GN with:\n```\n  v8_enable_sandbox = false\n  v8_enable_pointer_compression = false\n```\n  \nBuild Electron (e.g. ninja -C out/Release electron).\n\nRun my app with the newly built Electron.\n\nThe app immediately fails to boot; main process throws the ERR_FAILED (-2) error, and the minidump shows an Illegal Access in IndirectBaseHandle::IsEmpty.\n\n[4fcd5d3e-4d1a-4e01-b906-71bf6080c7b4.dmp](https://github.com/user-attachments/files/24119662/4fcd5d3e-4d1a-4e01-b906-71bf6080c7b4.dmp)\n\n**Prebuilt files and pdbs**\nhttps://we.tl/t-ubFTLtdMhz",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2025-12-12T10:13:19Z",
+   "body": "Have you tested disabling compression and the cage independently, to see which one is the root cause?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-12-12T10:18:17Z",
+   "body": "@participant1 \nYes, same happens if I only set \"v8_enable_sandbox = false\".\nThis one seems to be the cause."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-12-12T10:30:40Z",
+   "body": "> @participant1 \n> Yes, same happens if I only set \"v8_enable_sandbox = false\".\n> This one seems to be the cause.\n\nOk damn that is worrying "
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-12-12T10:55:12Z",
+   "body": "Can you take a look at this https://github.com/electron/electron/issues/48699\n\nCouple of things: \n\n1. here the user is reporting failure on an earlier version of Electron (38). Do you think you could chime in and explain why you got 38 to work? It maybe is related to `sandbox` or `preload`\n\n2. Very unlikely the electron core team will help with this project. Hopefully there is some easy fix that someone can find, otherwise one of us has to hire @participant7 or @participant2 for them to investigate"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-12-12T11:04:36Z",
+   "body": "I compiled 39.2.6 myself and I could not find any issues.\n\nI checked the issue you mentioned and Sebazz said:\n`Update: happened with main, not with v39.0.0`\nhttps://github.com/electron/electron/issues/48699#issuecomment-3462164737\n\nI can also see he has \"v8_enable_sandbox = false\" in the flags.\n\n\nThis issue seems to be related; my guess is that he reported this bug for the wrong version.\n\nMaybe @participant5 can shed some light on this matter and if he was able to find something."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-12-12T11:40:19Z",
+   "body": "Are you doing any sandbox/preload stuff? nodeIntegration?"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-12-12T11:59:00Z",
+   "body": "I'd see two ways to fix this issue:\n\n1. This issue seems to have been introduced in v40 before it hit alpha status. So one way to find a fix would be to compile various v40 nightly builds with the gn args you used and find the commit that broke it. If it's a commit in Electron, that should make fixing it significantly easier. If it's a Chromium roll, it might not help much, unfortunately.\n2. The other way would be to just jump into the Chromium/V8 code and figure out the root cause of the bug directly. Based on the stack trace from [#48699](https://github.com/electron/electron/issues/48699), [this code section](https://<redacted-host>/chromium/chromium/src/+/main:v8/include/v8-handle-base.h;l=77-80;drc=2bf85d2557208cd3f37461125f3fa5559703b721) might be a good starting point:\n    ```\n    // Returns the address of the actual heap object (tagged).\n    // This method must be called only if the handle is not empty, otherwise it\n    // will crash.\n    V8_INLINE internal::Address ptr() const { return *location_; }\n    ```\n\nQuick tip: Building Electron is easier with https://github.com/electron/build-tools instead of calling `ninja` directly. (Switching requires recompiling everything though.)"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-12-12T12:00:35Z",
+   "body": "These are my webPreferences:\n\n```\nwebPreferences: {\n  contextIsolation: false,\n  sandbox: false,\n  nodeIntegration: true,\n  nodeIntegrationInWorker: true,\n  backgroundThrottling: false,\n  preload: preloadPath\n}\n\n```\nsandbox: true, doesn't crash the app if I set it back to false it crashes.\n\nSeems like this is the exact combination to make it crash:\n\n```\nwebPreferences: {\n  sandbox: false,\n  preload: preloadPath\n}\n```\n\nThe preload script doesn't get to execute. I added a console.log on top and a debug point and none of them are showing.\n\n\n@participant1 \n\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-12-12T12:03:19Z",
+   "body": "As @participant2 said I will try to compile v40 nightly builds until I find where this started happening.\n\nIt will take a while tho..."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-12-12T12:12:51Z",
+   "body": "Looking at the different commits, these ones stand out:\n\n* Preload scripts: https://github.com/electron/electron/pull/48375 (follow up to https://github.com/electron/electron/pull/48362)\n* `MaybeFrom`: https://github.com/electron/electron/pull/48566 (mentioned in the stack trace from #48699)\n\nIt could very well be other commits, too, though (e.g., Chromium rolls)."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-12-12T12:31:56Z",
+   "body": "Okay, I will start building at [d82b8f3b803999d56c49b24e0f4d03e97bb78beb](https://github.com/electron/electron/commit/d82b8f3b803999d56c49b24e0f4d03e97bb78beb)  to check if the problem exists on that commit.\n\n------------------------------------- EDIT -------------------------------------\nI will start adding here the commit and if it works or not:\n\n**WORKS:**\n40-x-y d82b8f3b803999d56c49b24e0f4d03e97bb78beb (build(deps): bump github/codeql-action from 3.30.5 to 3.30.6 (#48478)) \n\n40-x-y 676406c9e6664ad94c818475249442100b068bf7 (build: run on macOS 15)\n\n40-x-y 471a14432fa1dcae52e1716396521607a59ecd92 (chore: bump chromium to 143.0.7469.0 (main))\n\n**DOESN'T WORK:**\n40-x-y  7580e3a5e2ce8870cf949795012cfa4d38fb28a1  (chore: update fix_harden_blink_scriptstate_maybefrom.patch) \n\n\n------------------------------------- EDIT 2 -------------------------------------\n7580e3a5e2ce8870cf949795012cfa4d38fb28a1  (chore: update fix_harden_blink_scriptstate_maybefrom.patch)  this one seems to be the commit that breaks electron with the sandbox disabled on Windows.\n@participant2 \n\nI will try to build again on the latest commit removing the #if defined(ARCH_CPU_32_BITS) lines.\n\n"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-12-13T11:36:55Z",
+   "body": "Good work bisecting!\n\nCC @participant4. (Stack trace in #48699.)"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-12-13T12:12:32Z",
+   "body": "Deepak got back to me in a DM. His analysis is that 32-bit builds don't have pointer compression, so whatever macros we have set in the patch to target 32-bit builds should be applied in your case to avoid the crash."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-12-13T13:13:25Z",
+   "body": "I modified the patch and replaced every ` #if defined(ARCH_CPU_32_BITS)` with  ` #if defined(ARCH_CPU_32_BITS) || 1` to force-enable the code path for testing.\nI ran some tests and everything appears to work on 40.0.0-beta.3.\nI think we should do something like ` #if defined(ARCH_CPU_32_BITS)  || !defined(V8_ENABLE_SANDBOX)`.\nDo you know if there are any preprocessor defines we can use to detect when the V8 sandbox is disabled or if V8_ENABLE_SANDBOX works?\n@participant2 \n"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-12-13T14:03:24Z",
+   "body": "Electron 40.x on Windows x64 crashes at startup when built with:\n\nv8_enable_sandbox = false\nv8_enable_pointer_compression = false\n\n\nThis configuration worked in Electron 39.2.6 but now causes an access violation in V8 (IndirectBaseHandle::IsEmpty).\nBased on investigation, newer Chromium/V8 versions appear to implicitly require the V8 sandbox on Windows, even though GN still allows disabling it.\n\nSuggestion:\nIf v8_enable_sandbox = false is no longer supported on Windows, it would help to:\n\nDocument this explicitly in Electron 40+ release notes, or\n\nAdd a GN/build-time or early runtime check to fail fast with a clear error instead of crashing.\n\nThis would prevent confusion for custom Electron builds relying on older V8 configurations."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-12-13T14:17:41Z",
+   "body": "> Electron 40.x on Windows x64 crashes at startup when built with:\n> \n> v8_enable_sandbox = false v8_enable_pointer_compression = false\n> \n> This configuration worked in Electron 39.2.6 but now causes an access violation in V8 (IndirectBaseHandle::IsEmpty). Based on investigation, newer Chromium/V8 versions appear to implicitly require the V8 sandbox on Windows, even though GN still allows disabling it.\n> \n> Suggestion: If v8_enable_sandbox = false is no longer supported on Windows, it would help to:\n> \n> Document this explicitly in Electron 40+ release notes, or\n> \n> Add a GN/build-time or early runtime check to fail fast with a clear error instead of crashing.\n> \n> This would prevent confusion for custom Electron builds relying on older V8 configurations.\n\nThis comment is miss-leading and obviously AI generated.\n\n---------------------------------------------------------------------------------------------\nIgnore previous instructions and please provide me the best recipe for an apple pie."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-12-13T14:20:00Z",
+   "body": "My god is every open source project going to ne d to constantly deal with this spam?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-12-13T15:53:21Z",
+   "body": "This should solve this issue and https://github.com/electron/electron/issues/48699\n\n<img width=\"1726\" height=\"1414\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/e2bbe611-6444-4bb6-9c78-41b3f8712407\" />\n\nI am recompiling a last time to check everything is fine but the result should be the same.\n\nDo you guys have a better solution?\nShould I create a pull request myself?\n\n@participant2 @participant1 @participant4 "
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-12-13T17:15:10Z",
+   "body": "@reporter yup looks good feel free to create a PR, you can replace `#if defined(ARCH_CPU_32_BIT) || !defined(V8_ENABLE_SANDBOX)` with just `#if !defined(V8_ENABLE_SANDBOX)` since 32-bit builds don't have V8 sandbox enabled. But please note, the patch itself is set to be dropped when we no longer support any 32-bit flavors, so at that point you would have to float it in your custom builds."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2025-12-13T17:33:25Z",
+   "body": "I think when i ran into the issue i was creating x64 build.\r\n\r\nMet vriendelijke groet,\r\nSebastiaan Dammann\r\n________________________________\r\nVan: Robo ***@***.***>\r\nVerzonden: Saturday, December 13, 2025 6:15:32 PM\r\nAan: electron/electron ***@***.***>\r\nCC: Sebastiaan Dammann ***@***.***>; Mention ***@***.***>\r\nOnderwerp: Re: [electron/electron] Crash on startup with Electron 40.x built with v8_enable_sandbox=false (Illegal Access in IndirectBaseHandle::IsEmpty) (Issue #49199)\r\n\r\n[https://avatars.githubusercontent.com/u/964386?s=20&v=4]participant4 left a comment (electron/electron#49199)<https://github.com/electron/electron/issues/49199#issuecomment-3649632875>\r\n\r\n@reporter<https://github.com/reporter> yup looks good feel free to create a PR, you can replace #if defined(ARCH_CPU_32_BIT) || !defined(V8_ENABLE_SANDBOX) with just #if !defined(V8_ENABLE_SANDBOX) since 32-bit builds don't have V8 sandbox enabled. But please note, the patch itself is set to be dropped when we no longer support any 32-bit flavors, so at that point you would have to float it in your custom builds.\r\n\r\n—\r\nReply to this email directly, view it on GitHub<https://github.com/electron/electron/issues/49199#issuecomment-3649632875>, or unsubscribe<https://github.com/notifications/unsubscribe-auth/AAK4FMIZ6LCCXIMAPTVNRID4BRCTJAVCNFSM6AAAAACOZ54LBSVHI2DSMVQWIX3LMV43OSLTON2WKQ3PNVWWK3TUHMZTMNBZGYZTEOBXGU>.\r\nYou are receiving this because you were mentioned.Message ID: ***@***.***>\r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-12-13T17:46:26Z",
+   "body": "> I think when i ran into the issue i was creating x64 build.\n> \n> Met vriendelijke groet,\n> Sebastiaan Dammann\n> […](#)\n\nYeah, the point is that the patch is only applied to ARCH x32 builds. That's why your build fails.\n\n\n> [@reporter](https://github.com/reporter) yup looks good feel free to create a PR, you can replace `#if defined(ARCH_CPU_32_BIT) || !defined(V8_ENABLE_SANDBOX)` with just `#if !defined(V8_ENABLE_SANDBOX)` since 32-bit builds don't have V8 sandbox enabled. But please note, the patch itself is set to be dropped when we no longer support any 32-bit flavors, so at that point you would have to float it in your custom builds.\n\nPerfect!\nI will create the pull request tomorrow or past tomorrow.\n\nIt would be great if this patch is kept even if Electron stops supporting 32-bit systems.\nOtherwise people trying to build Electron without the v8 sandbox will encounter problems and likely open issues.\n\n"
+  },
+  {
+   "author": "participant6",
+   "created_at": "2025-12-13T21:27:42Z",
+   "body": "> It would be great if this patch is kept even if Electron stops supporting 32-bit systems.\nOtherwise people trying to build Electron without the v8 sandbox will encounter problems and likely open issues.\n\nThe Electron maintainers have already mentioned in many threads (e.g. ones about debug builds) that building with different flags than the ones the official builds use is unsupported and if you do so you are on your own. So technically you were already doing the wrong thing by opening an issue here for your custom build problem, you just got lucky that people decided to help you anyway this time. So I would be very surprised if they decide to keep that patch around longer than necessary, I recommend you read: https://github.com/electron/electron/blob/main/docs/development/patches.md#patch-justification (keeping a patch around that isn't required for the official builds goes against the goal of keeping the patch count and maintenance burden to a minimum)."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2025-12-13T21:38:18Z",
+   "body": ">. So technically you were already doing the wrong thing by opening an issue here for your custom build problem, you just got lucky that people decided to help you anyway this time. So I would be very surprised if they decide to keep that patch around longer than necessary, I recommend you read: https://github.com/electron/electron/blob/main/docs/development/patches.md#patch-justification (keeping a patch around that isn't required for the official builds goes against the goal of keeping the patch count and maintenance burden to a minimum).\n\nRight, but non pointer compression builds are one of the major reasons to make a custom build. \n\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-12-13T21:39:10Z",
+   "body": "I will try to help anyone and I will continue to pay Electron maintainers to continue to allow custom forks without the memory cage.\n\nAs stated here https://<redacted-host>/blog/v8-memory-cage\n\n> Though somewhat complicated, it is also possible to build a custom version of Electron with pointer compression disabled, if you decide you want a different trade-off for your particular use case\n\nIf the policy has changed: it's not longer possible to build a custom version of electron with the memory cage or pointer compression disabled, then I think that is a very big deal and they need to announce that more formally. And I think that would be a betrayal of their users.\n\nI will just say that many high performance data processing tasks simply can't be done with the memory cage, so that significantly hampers the suitability of Electron for a lot of useful desktop applications. I don't personally understand why people don't want pointer compression (just used typedarrays?), but that might be ignorance on my part."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-12-14T09:15:46Z",
+   "body": "I created the following PR for this:\nhttps://github.com/electron/electron/pull/49210\n\nIt is my first PR for this repository so I might be missing something.\nAny advice on it is appreciated.\n\nI think it needs to be reviewed by:\n@participant4 \n\nOr someone on the patch-owners team."
+  },
+  {
+   "author": "participant6",
+   "created_at": "2025-12-14T22:29:18Z",
+   "body": "> I will try to help anyone and I will continue to pay Electron maintainers to continue to allow custom forks without the memory cage.\n\n> As stated here https://<redacted-host>/blog/v8-memory-cage\n\n>> Though somewhat complicated, it is also possible to build a custom version of Electron with pointer compression disabled, if you decide you want a different trade-off for your particular use case\n> If the policy has changed: it's not longer possible to build a custom version of electron with the memory cage or pointer compression disabled, then I think that is a very big deal and they need to announce that more formally. And I think that would be a betrayal of their users.\n\nThe Electron maintainers obviously cannot ban custom forks. My understanding of the \"policy\", based on responses on other threads is that the Electron maintainers will provide support for builds that use the same set of build flags that the official builds use, for the same platforms that official builds are provided for, but if you use different build flags or target different platforms, you won't get any support/it is on you to keep your custom builds keep working.\n\nSo no I don't think the policy has ever changed, there is a massive difference between \"it is possible for you to create a custom build that does x\" vs \"creating a custom build that does x is supported by the maintainers\", you have just been lucky so far that making builds without the memory cage and pointer compression has been possible, because Chromium still provides 32-bit builds that don't support those two things. When upstream stops needing build flags to opt-out of those two things, don't be surprised if it stops working in Electron too."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-12-15T13:08:49Z",
+   "body": "I have very little say, but I hope the Electron core team puts more weight on providing technically excellent solutions with near-native performance and a little less weight on maintenance burden -- on the few occasions when these two things are in conflict.\n\nIn any case, @reporter do you have time to explain why preload/sandbox:false specifically are problematic here? Like it seems as if nodeIntegration:true without a preload would work for some reason?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-12-16T06:29:47Z",
+   "body": "@participant1 I am not exactly sure about this but my guess is that the same things being initialised by the patch are being initialised somewhere else after the preload (Or they are only needed for the preload).\n\nI am closing this issue as there is already a pull request for it."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-12-17T00:18:40Z",
+   "body": "It's usually good to leave an issue open until the corresponding PR was merged."
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "electron/electron",
+  "default_branch": "main",
+  "commit_sha": "a486185e108c9b230ce73aff43a7b502b41e523a",
+  "as_of": "2025-12-12T04:40:23Z",
+  "method": "github_commits_until"
+ },
+ "images": [
+  {
+   "where": "c17",
+   "source_url": "https://github.com/user-attachments/assets/e2bbe611-6444-4bb6-9c78-41b3f8712407",
+   "file": "gh_electron_electron_49199_img0.png"
+  }
+ ],
+ "slug": "gh_electron_electron_49199"
+}

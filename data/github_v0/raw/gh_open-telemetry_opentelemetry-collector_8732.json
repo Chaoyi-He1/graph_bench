@@ -1,0 +1,101 @@
+{
+ "repo": "open-telemetry/opentelemetry-collector",
+ "number": 8732,
+ "url": "https://github.com/open-telemetry/opentelemetry-collector/issues/8732",
+ "title": "Start order of extensions is not guaranteed?",
+ "state": "closed",
+ "labels": [
+  "bug"
+ ],
+ "reporter": "reporter",
+ "created_at": "2023-10-24T01:49:11Z",
+ "closed_at": "2023-11-02T04:08:27Z",
+ "body": "**Describe the bug**\r\nMaybe I am misreading the situation, but this code iterates over map when starting extensions, so it cannot guarantee in which order they are started: https://github.com/open-telemetry/opentelemetry-collector/blob/e97ceca47f9eacf50688a5b2e40c0ad22261579b/service/extensions/extensions.go#L34\r\n\r\nEven though the documentation implies that the order is define by the declaration order: https://github.com/open-telemetry/opentelemetry-collector/blob/e97ceca47f9eacf50688a5b2e40c0ad22261579b/docs/service-extensions.md?plain=1#L63-L66\r\n\r\nI observed some spontaneous failures in my experiments with JaegerV2 which declares extensions with an order expectation: `extensions: [jaeger_storage, jaeger_query]` but the logs show differently:\r\n```\r\n2023-10-24T01:17:01.143Z\tinfo\textensions/extensions.go:33\tStarting extensions...\r\n2023-10-24T01:17:01.143Z\tinfo\textensions/extensions.go:36\tExtension is starting...\t{\"kind\": \"extension\", \"name\": \"jaeger_query\"}\r\n```\r\n\r\n**Steps to reproduce**\r\nIt's random behavior, hard to reproduce reliably.\r\n\r\n**What did you expect to see?**\r\nExtensions should be starting in the order defined in the config.\r\n\r\n**What did you see instead?**\r\nSeeing different order.\r\n\r\n**What version did you use?**\r\nVersion: `v0.87.0`\r\n\r\n**What config did you use?**\r\nhttps://github.com/jaegertracing/jaeger/blob/28520b31471b36d9e949de4ffaa016c2640a3be7/cmd/jaeger-v2/internal/all-in-one.yaml#L1\r\n\r\n**Environment**\r\nOS: MacOS, Linux\r\nCompiler(if manually compiled): go 1.20.x\r\n",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2023-10-24T03:16:37Z",
+   "body": "I'd be happy to work on this one."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-10-25T00:41:29Z",
+   "body": "I'm not sure this is a bug. I think this was implemented intentionally. All extensions that we have in core and contrib do not depend on each other. This assumption is used in some discussions around config grouping/merging, e.g.: https://github.com/open-telemetry/opentelemetry-collector-contrib/issues/18509 and https://github.com/open-telemetry/opentelemetry-collector/issues/8394.\r\n\r\nI think we need a strong argument to introduce this behavior.\r\n\r\n@reporter do you have an extension that depends on another extension? Can you please let us know why it's needed in your use case?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-10-25T01:49:13Z",
+   "body": "The use case is explained here: https://docs.google.com/document/d/1s4_6VgAS7qAVp6iEm5KYvpiGw3h2Ja5T5HpKo29iv00/view#heading=h.1ded8prqa1xm\r\n\r\n```mermaid\r\nflowchart LR\r\n    E[Exporter] -->|Get storage| S(StorageExtension)\r\n    Q[Jaeger-Query extension] -->|Get storage| S(StorageExtension)\r\n```\r\n  \r\nI believe this may also be required by the Encoding extensions (#6272), which is a similar use case.\r\n\r\nThe alternative to declaration order would be allowing to express dependencies explicitly and then building a dependency graph to control the initialization order."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-10-25T02:00:24Z",
+   "body": "@participant3 You mentioned service graph in https://github.com/open-telemetry/opentelemetry-collector-contrib/issues/18509#issuecomment-1728512827, is there a way to declare dependencies between extensions into that graph?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-10-25T05:50:47Z",
+   "body": "> I believe this may also be required by the Encoding extensions (https://github.com/open-telemetry/opentelemetry-collector-contrib/issues/28686), which is a similar use case.\r\n\r\nThe encoding extensions don't do much with their lifecycle, since the plan is just to cast them to marshaler/unmarshaler types.\r\n\r\nI'm more worried that our current documentation is making a promise it is not keeping. I don't really see the harm in being deterministic in the start/shutdown order, it might pay off to have the pprof extension load before others for example."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-10-25T06:03:33Z",
+   "body": "> The encoding extensions don't do much with their lifecycle, since the plan is just to cast them to marshaler/unmarshaler types.\r\n\r\nit's not about their lifecycle, but about other components that depend on them, some of which may also be extensions."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-10-25T06:05:51Z",
+   "body": "> I don't really see the harm in being deterministic in the start/shutdown order, it might pay off to have the pprof extension load before others for example.\r\n\r\nI agree. Current non-determinism leads to difficult to troubleshoot bugs - it took me a while to realize that this was the root cause of the failures I encountered."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-10-25T15:00:27Z",
+   "body": "> @participant3 You mentioned service graph in [open-telemetry/opentelemetry-collector-contrib#18509 (comment)](https://github.com/open-telemetry/opentelemetry-collector-contrib/issues/18509#issuecomment-1728512827), is there a way to declare dependencies between extensions into that graph?\r\n\r\nNot currently. The relationships between pipeline components are very rigidly defined, but the way extensions are used by pipeline components is more of a convention. e.g. the component defines a parameter called `storage` and expects to find an extension with that ID. We could in theory formalize this but it would be quite some work and it's not clear to me that it's necessary.\r\n\r\nI agree extensions should be started deterministically. Since the current behavior is non-deterministic, users already must implicitly accept that extensions may start in any order, including the order we would choose deterministically.\r\n\r\nWould it be sufficient to start extensions in order, then start pipeline components as we do now? Stopping would be the opposite - pipeline components, then extensions in reverse order."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-10-25T15:22:52Z",
+   "body": "> Would it be sufficient to start extensions in order, then start pipeline components as we do now? Stopping would be the opposite - pipeline components, then extensions in reverse order.\r\n\r\nThat would work for me, and what the open PR is doing."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-10-25T21:30:16Z",
+   "body": "> Just to hold off until discussion in open-telemetry/opentelemetry-collector#8732 is resolved\r\n\r\n@participant2 since you blocked the PR, could you explain what form of resolution you expect to happen?"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-10-26T21:24:50Z",
+   "body": "> The use case is explained here: https://docs.google.com/document/d/1s4_6VgAS7qAVp6iEm5KYvpiGw3h2Ja5T5HpKo29iv00/view#heading=h.1ded8prqa1xm\r\n\r\nIf users would have to point the jaeger_query extension and the exporter to the same storage extension, maybe it can be just one extension (jaeger_query or any other name) implementing both serving the query path and the storage interface that exporters can use. The storage part of the extension can be configurable to use any storage under the hood and provide it to the exporter via the storage interface. I believe, that way, we would avoid users misconfiguring exporter and the jaeger_query extension to use different storages. WDYT?\r\n\r\n> I agree. Current non-determinism leads to difficult to troubleshoot bugs - it took me a while to realize that this was the root cause of the failures I encountered.\r\n\r\nI'm just worried that by introducing this behavior, we limit possible options for grouping/extending configs which are currently being discussed in different issues. Also, if we accept this change and decide to integrate the extensions into the pipeline graph later, it'll be a breaking change for the users expecting the order of initialization according to the config definition. And given that that order is currently not applicable to receivers and exporters, this change doesn't bring any consistency."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-10-26T21:57:47Z",
+   "body": "> maybe it can be just one extension\r\n\r\nThat doesn't work well. First, traditional `jaeger-collector` binary has no UI parts, and the intent is to be able to replicate it with jaeger-v2 by configuring the binary without the UI. Being forced into using only one extension means we have to bundle a lot of functionality into a single monolith module. That's rather antithetical to the OTel Collector modular design.\r\n\r\n> And given that that order is currently not applicable to receivers and exporters\r\n\r\nWhat about processors, isn't their order enforced?"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-10-26T22:06:25Z",
+   "body": "> First, traditional jaeger-collector binary has no UI parts, and the intent is to be able to replicate it with jaeger-v2 by configuring the binary without the UI. Being forced into using only one extension means we have to bundle a lot of functionality into a single monolith module. That's rather antithetical to the OTel Collector modular design.\r\n\r\nI was talking only about embedding storage extension interface into the jaeger_query extension. It doesn't require bringing UI, right? They still should be different Go modules, but do they need to be exposed to the end users as different components?\r\n\r\n> What about processors, isn't their order enforced?\r\n\r\nIt is, but as part of the pipeline graph. Extensions are not part of the graph."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-10-26T23:44:56Z",
+   "body": "> I was talking only about embedding storage extension interface into the jaeger_query extension.\r\n\r\n`jaeger_query` and UI are the same thing, in practice. If they weren't, we'd again have a dependency of one extension on another, because neither of those can be expressed as another component type.\r\n\r\n> > What about processors, isn't their order enforced?\r\n> It is, but as part of the pipeline graph. Extensions are not part of the graph.\r\n\r\nWhat I mean is - isn't the order of processors also determined by their declaration order in the config? afaik there is no other way to declare dependencies between processors.\r\n\r\nFrankly, having a graph-based mechanism of ordering would definitely be more preferable for extensions than config-based. When constructing an extension I would specify that it depends on another extension and the runtime would make sure they are started in the correct order (I think it's fine to create them in any order)."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-10-27T16:39:19Z",
+   "body": "I just wanted to confirm that exposing the extensions as different components in the configuration interface is useful for Jaeger end-users. If it is, I'm ok with merging the PR. Sooner or later, we eventually might run into other extensions with interdependencies."
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "open-telemetry/opentelemetry-collector",
+  "default_branch": "main",
+  "commit_sha": "e97ceca47f9eacf50688a5b2e40c0ad22261579b",
+  "as_of": "2023-10-24T01:49:11Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_open-telemetry_opentelemetry-collector_8732"
+}

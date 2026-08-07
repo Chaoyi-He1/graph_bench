@@ -1,0 +1,183 @@
+{
+ "repo": "jaegertracing/jaeger",
+ "number": 6065,
+ "url": "https://github.com/jaegertracing/jaeger/issues/6065",
+ "title": "Phase out the distinction between primary and archive storage",
+ "state": "closed",
+ "labels": [
+  "help wanted",
+  "area/storage",
+  "storage/elasticsearch"
+ ],
+ "reporter": "reporter",
+ "created_at": "2024-10-06T20:41:28Z",
+ "closed_at": "2025-01-27T00:18:43Z",
+ "body": "Update Jan 7 2025: the intention of this issue is to do away with awareness in the code of the differences between primary and archive storage. The two implementations are generally identical, have identical reader/writer API, with only minor changes in behavior that can be managed with more explicit parameters instead if a hardcoded `isArchive` flag. For example, in the \"legacy\" mode the ES primary storage uses manual rotation of indices, e.g. by creating a new index name every rollover period, whereas archive storage always uses a fixed index name. The latter behavior can be reproduced by setting `use_aliases` flag instead of having an explicit understanding of `isArchive` mode.\n\nThis unification becomes especially important in Jaeger-v2 where storage backends are already declared uniformly in the `jaeger_storage` extension without any knowledge of primary/archive distinction. The distinction only appears once `jaegerquery` extension retrieves a specific backend by name and uses it as either primary or archive backend, by which point the backend itself is already initialized. The intent is to expose required configuration options to the user such that they can customize the behavior of the backend used for archive as they see fit, e.g. if they still want to rotate the ES indices, they can do so.\n\n---\nThis thread https://github.com/jaegertracing/jaeger/pull/6060#discussion_r1789236653",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2024-10-17T02:34:01Z",
+   "body": "@reporter dug into this a little bit while redoing the configurations and here's what I found \n- The factory creates a primary and archive namespace for each provided configuration (https://github.com/jaegertracing/jaeger/blob/f411b3c49ccf5fb54abe3a024e772db28e4fc5b2/plugin/storage/es/factory.go#L88-L95\n- `CreateArchiveSpanReader` and `CreateArchiveSpanWriter` are called by `InitArchiveStorage` in v1's query service (https://github.com/jaegertracing/jaeger/blob/main/cmd/query/app/querysvc/query_service.go#L130)\n- The `InitArchiveStorage` method is called by the v2 jaeger query extension (https://github.com/jaegertracing/jaeger/blob/main/cmd/jaeger/internal/extension/jaegerquery/server.go#L137)\n\nSo I believe that this is working as expected. Let me know if there's anything I'm missing here. \n\nOne other thing to note is that in v1, the additional namespaces need to be explictly enabled (https://github.com/jaegertracing/jaeger/blob/main/plugin/storage/es/options.go#L110) but the archive namespace is enabled by default in v2 (https://github.com/jaegertracing/jaeger/blob/main/plugin/storage/es/options.go#L437). "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-10-17T14:16:12Z",
+   "body": "@participant1 In v1 the workflow is:\n  1. the binary creates a Factory\n  2. asks factory to initialize itself from CLI flags\n  3. creates main storage implementations via `CreateSpanWriter`\n  4. optionally calls `CreateArchiveSpanWriter `\n\nThe key observation here is that the distinction between primary and archive is handled inside the Factory because the caller clearly indicates the intent by calling `InitArchiveStorage` and `CreateArchiveSpanWriter`. in other words, the caller delegates the specific initialization required for archive storage to the Factory - a single Factory that manages both primary and archive.\n\nIn contrast, in v2 the workflow is _supposed_ to be different\n  * the **user** designates a configuration as primary or archive, but the configuration otherwise is the same and each configuration is represented by a unique Factory object\n  * when initializing query service the v2 extension is **supposed** to call `CreateSpanWriter` on the primary factory, and also call `CreateSpanWriter` on the archive factory (calling the **same** API)\n  * instead, v2 extension still falls back onto calling two different APIs due to invoking `InitArchiveStorage`\n\nSo v2 is serendipitously working right now, but not as expected. We can see it in how Memory storage is handled - when I configured all-in-one with primary and archive storage, originally it did not work for me because Memory storage factory  never implemented the Archive sub-API, so I had to add it (and the side effect of it is that archive for memory cannot be turned off now). But that was exactly the opposite of what I wanted to happen - I wanted the config to be able to configure two storages and designate each as primary / archive, so that the v2 extension would only interact with the factories via `CreateSpanWriter`.\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-10-19T02:25:06Z",
+   "body": "@reporter Thanks so much for the helpful context. Do you have any thoughts on how we should proceed here? Do we want to make changes to the query extension to not use `InitArchiveStorage`? "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-10-19T16:51:04Z",
+   "body": "Yes that would be ideal. It may need refactoring of query service, eg perhaps it should be taking a separate archive factory instead of using a different interface on the main factory. "
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-10-19T21:47:50Z",
+   "body": "@reporter just looking for a bit of clarification \n\nso today, we're doing the following: \n```go\n\tf, err := jaegerstorage.GetStorageFactory(s.config.Storage.TracesArchive, host)\n\tif err != nil {\n\t\treturn fmt.Errorf(\"cannot find archive storage factory: %w\", err)\n\t}\n\n\tif !opts.InitArchiveStorage(f, s.telset.Logger) {\n\t\ts.telset.Logger.Info(\"Archive storage not initialized\")\n\t}\n```\n\nIs the goal to be able to just do the following? Why do we need to introduce a new archive factory? \n```go\n\tf, err := jaegerstorage.GetStorageFactory(s.config.Storage.TracesArchive, host)\n\tif err != nil {\n\t\treturn fmt.Errorf(\"cannot find archive storage factory: %w\", err)\n\t}\n\n\tspanReader, err := f.CreateSpanReader()\n\tif err != nil {\n\t\treturn fmt.Errorf(\"cannot create span reader: %w\", err)\n\t}\n        opts.ArchiveSpanReader = f.spanReader\n```"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-10-19T23:33:37Z",
+   "body": "yes"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-10-19T23:54:09Z",
+   "body": "@reporter do we still need a separate interface to do the above? One other question I had was, will simply calling `CreateSpanReader` behave the same way as `CreateArchiveSpanReader` does? How would there be a differentiation between normal storage logic and archive storage logic?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-10-20T17:18:18Z",
+   "body": "That is a good question, but if you look at all implementations of GetArchiveSomething they are no different from regular method. I think the only difference is in ES implementation which needs the isArchive flag. We can expose that flag as part of the ES config - not ideal because the user has to remember to set it, otherwise they might get limited look back. But I think in ES the archive storage requires separate settings anyway, eg you may not want to rollover index every day. "
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-10-20T17:52:08Z",
+   "body": "@reporter How would it work if we add the `is_archive` flag to the ES config? We're currently storing separate configs in the ES factory as follows so we have no way of knowing if `CreateSpanSomething` is being called for the regular config or the archive config. \n```\n\tprimaryConfig *config.Configuration\n\tarchiveConfig *config.Configuration\n```"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-10-20T18:02:33Z",
+   "body": "Do we want to refactor the ES factory to only only hold one config/client and then propagate the isArchive flag to it?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-10-20T18:48:12Z",
+   "body": "In v2 we have two independent factories. I'd say yes, we want to refactor the factories to represent just one kind of storage. It will require changes to query service. I think only Cassandra and ES factories are storing two different namespaces. "
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-10-20T18:53:28Z",
+   "body": "@reporter Got it! I'll get started on that. Thanks!"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-10-22T19:31:39Z",
+   "body": "This is not blocking for v2 GA, I confirmed that a proper code path is being invoked, e.g. by introducing a panic in CreateArchiveSpanReader:\n```\n$ go run ./cmd/jaeger --config ./cmd/jaeger/config-elasticsearch.yaml\n...\npanic: archive reader not implemented\n\ngoroutine 1 [running]:\ngithub.com/jaegertracing/jaeger/plugin/storage/es.(*Factory).CreateArchiveSpanReader(0x107fe3c80?)\n\t/Users/<user>/dev/jaegertracing/jaeger/plugin/storage/es/factory.go:201 +0x54\ngithub.com/jaegertracing/jaeger/cmd/query/app/querysvc.(*QueryServiceOptions).InitArchiveStorage(0x14000a8ef60, {0x106ad1898?, 0x14000eb6e00}, 0x14000eb8980)\n\t/Users/<user>/dev/jaegertracing/jaeger/cmd/query/app/querysvc/query_service.go:136 +0x64\ngithub.com/jaegertracing/jaeger/cmd/jaeger/internal/extension/jaegerquery.(*server).addArchiveStorage(0x14000ea5c20, 0x14000a8ef60, {0x106ab6d20?, 0x14000a45760?})\n\t/Users/<user>/dev/jaegertracing/jaeger/cmd/jaeger/internal/extension/jaegerquery/server.go:137 +0x98\ngithub.com/jaegertracing/jaeger/cmd/jaeger/internal/extension/jaegerquery.(*server).Start(0x14000ea5c20, {0x14000ec6030?, 0x14000f711d0?}, {0x106ab6d20, 0x14000a45760})\n\t/Users/<user>/dev/jaegertracing/jaeger/cmd/jaeger/internal/extension/jaegerquery/server.go:76 +0x204\n```"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-10-29T01:36:13Z",
+   "body": "@reporter just wanted to walk through the plan for this refactoring with a couple of questions\n\n1. Should the archive storage now also conform to `storage.Factory`?\n```go\ntype Factory interface {\n\t// Initialize performs internal initialization of the factory, such as opening connections to the backend store.\n\t// It is called after all configuration of the factory itself has been done.\n\tInitialize(metricsFactory metrics.Factory, logger *zap.Logger) error\n\n\t// CreateSpanReader creates a spanstore.Reader.\n\tCreateSpanReader() (spanstore.Reader, error)\n\n\t// CreateSpanWriter creates a spanstore.Writer.\n\tCreateSpanWriter() (spanstore.Writer, error)\n\n\t// CreateDependencyReader creates a dependencystore.Reader.\n\tCreateDependencyReader() (dependencystore.Reader, error)\n}\n```\n2. It looks like for each ES storage configuration, we configure both a primary store and an archive store with the same config. As a result, do we need to expose an `isArchive` flag? "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-10-29T02:14:22Z",
+   "body": "(1) Yes on the first point. I'd say this is more of a question to the binaries using the factory to create readers/writers, right now those binaries cast the Factory to ArchiveFactory, and it will need to change.\n\n(2) It's not from the same config, primary/archive have their own configs (but the latter is derived from the former for defaults, so that people don't need to duplicate CLI flags - we don't plan to support such reuse in v2 config). The `isArchive` flag only exists in ES storage because it affects how the storage queries the index. We could probably reuse the MaxSpanAge parameter for that."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-10-29T02:23:36Z",
+   "body": "@reporter Following up on (2) - do primary/archive have their own configs in v2 as well? Or is this just in v1? \n\nAnother question I had was the jaegerquery extension initializes the ES storage as follows:\n```go\n\t\tcase cfg.Elasticsearch != nil:\n\t\t\tfactory, err = es.NewFactoryWithConfig(*cfg.Elasticsearch, mf, s.telset.Logger)\n```\nHow would it work if we changed the factory to only initialize one config (primary or archive) instead of having both in the same configuration?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-10-29T02:40:52Z",
+   "body": "> do primary/archive have their own configs in v2 as well?\n\nThey do. In v2 config we already make no distinction - you declare a storage with some name X of some backend type (e.g. Elastic). Then the query extension has two foreign key fields, PrimaryStore and ArchiveStore. In theory they could point to the same name X (but then the data will be written to the same db), but if they point to different names then you have different configs.\n\n> How would it work if we changed the factory to only initialize one config (primary or archive) instead of having both in the same configuration?\n\nThe caller is supposed to use different factories for different purposes."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-10-29T02:47:42Z",
+   "body": "> > do primary/archive have their own configs in v2 as well?\n> \n> They do. In v2 config we already make no distinction - you declare a storage with some name X of some backend type (e.g. Elastic). Then the query extension has two foreign key fields, PrimaryStore and ArchiveStore. In theory they could point to the same name X (but then the data will be written to the same db), but if they point to different names then you have different configs.\n> \n\nI see. But from the user's perspective in v2 - wouldn't they just define one config and they would get the archive storage out of the box with same configurations? \n\n> > How would it work if we changed the factory to only initialize one config (primary or archive) instead of having both in the same configuration?\n> \n> The caller is supposed to use different factories for different purposes.\n\nGot it. But what would the factory get set to in this case? Would the `Start` function set both the primary and the archive configuration? \n\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-10-29T02:50:28Z",
+   "body": "factory is not supposed to know if it's used for primary or archive storage, that's the point."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-11-02T02:39:04Z",
+   "body": "@reporter Sorry my question was actually about the extension (https://github.com/jaegertracing/jaeger/blob/main/cmd/jaeger/internal/extension/jaegerstorage/extension.go#L133). Currently, this part here will initialize both the primary and archive config. If we refactor `es.NewFactoryWithConfig` to only initialize one storage type, how would the query extension deal with that to ensure both are initialized? "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-11-02T03:33:06Z",
+   "body": "`storageextension` doesn't care about primary/archive. `queryservice` does, and it creates to different factories, e.g. https://github.com/jaegertracing/jaeger/blob/b64470149546c78280086fcaaf42e89ebe935b78/cmd/jaeger/internal/extension/jaegerquery/server.go#L132"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-11-02T13:39:27Z",
+   "body": "@reporter Got it. So when creating the factory using `es.NewFactoryWithConfig`, how do we specify that the config is primary/archive? Do we have the factory hold an `isArchive` flag that is passed in through the constructor? You mentioned earlier that it might also be something we expose to the user through the configuration - do we want to take that route and if so, how would that work? "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-11-02T18:41:54Z",
+   "body": "We discussed elsewhere if we even need this flag, or if the same effect can be achieved by tweaking the existing parameters. "
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-11-02T18:49:08Z",
+   "body": "@reporter I think I'm a bit confused about how the config is laid out. For ES, we have a config like the following:\n```yaml\n     some_storage:\n        elasticsearch:\n          indices:\n            index_prefix: \"jaeger-main\"\n            spans:\n              date_layout: \"2006-01-02\"\n              rollover_frequency: \"day\"\n              shards: 5\n              replicas: 1\n            services:\n              date_layout: \"2006-01-02\"\n              rollover_frequency: \"day\"\n              shards: 5\n              replicas: 1\n            dependencies:\n              date_layout: \"2006-01-02\"\n              rollover_frequency: \"day\"\n              shards: 5\n              replicas: 1\n            sampling:\n              date_layout: \"2006-01-02\"\n              rollover_frequency: \"day\"\n              shards: 5\n              replicas: 1\n      another_storage:\n        elasticsearch:\n          indices:\n            index_prefix: \"jaeger-archive\"\n```\n\nHow does each config get \"chosen\" as the primary or the archive configuration? Is it because of this delegation here?\n```yaml\n  jaeger_query:\n    storage:\n      traces: some_storage\n      traces_archive: another_storage\n```"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-11-02T18:51:46Z",
+   "body": "> We discussed elsewhere if we even need this flag, or if the same effect can be achieved by tweaking the existing parameters.\n\nYep - that discussion was in https://github.com/jaegertracing/jaeger/issues/6065#issuecomment-2443024273. How would we use maxspanage to decide if we should set isArchive or not? "
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-11-02T22:55:12Z",
+   "body": "@reporter Another question I had was related to the setup of the config. Currently, the `Options` config is held in the factory which looks like [this](https://github.com/jaegertracing/jaeger/blob/main/plugin/storage/es/options.go#L86-L90). Do we want to remove this struct and have everything be tied to `namespaceConfig` or even `Configuration`? I'm not entirely sure if that's possible given that `Options` is tied to the initialization for v1 storage."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-11-03T05:19:28Z",
+   "body": "The namespace configs should go away, they were a mechanism for a single factory to represent multiple storages, which is what we're trying to move away from. One factory, one storage namespace, one role (primary/archive)."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-11-03T05:20:30Z",
+   "body": "> How would we use maxspanage to decide if we should set isArchive or not?\n\nit's used for both reading and writing, by affecting which index names are utilized. We need to inspect that logic to see if the same selections can be made based on existing parameters."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-01-10T02:20:54Z",
+   "body": "@reporter If we don't want to change the behaviour of the archive storage for v1, then can we still upgrade the v2 storages in place? If we update the storages to the v2 interface in place and get rid of the v1 implementation, we'll lose the `CreateArchiveSpanReader` and `CreateArchiveSpanWriter` functions in the process."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-01-27T00:00:38Z",
+   "body": "@reporter Anything else we want to address as part of this issue?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-01-27T00:18:43Z",
+   "body": "I think we can close, I can't anything high priority."
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "jaegertracing/jaeger",
+  "default_branch": "main",
+  "commit_sha": "f411b3c49ccf5fb54abe3a024e772db28e4fc5b2",
+  "as_of": "2024-10-06T20:41:28Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_jaegertracing_jaeger_6065"
+}

@@ -1,0 +1,99 @@
+{
+ "repo": "Lightning-AI/pytorch-lightning",
+ "number": 18254,
+ "url": "https://github.com/Lightning-AI/pytorch-lightning/issues/18254",
+ "title": "\"element 0 of tensors does not require grad and does not have a grad_fn\" when using AdamW from Hugging Face",
+ "state": "closed",
+ "labels": [
+  "bug",
+  "3rd party",
+  "optimization",
+  "ver: 2.0.x"
+ ],
+ "reporter": "reporter",
+ "created_at": "2023-08-08T07:23:22Z",
+ "closed_at": "2023-08-10T20:58:30Z",
+ "body": "### Bug description\n\nWhen attempting to migrate my current model to Lightning, I encountered an error while using the AdamW optimizer provided by Hugging Face's Transformers library during training: \"RuntimeError: element 0 of tensors does not require grad and does not have a grad_fn.\"\n\n### What version are you seeing the problem on?\n\nv2.0\n\n### How to reproduce the bug\n\n```python\nimport torch\r\nfrom torch.utils.data import DataLoader, Dataset\r\nfrom transformers import AdamW\r\nfrom lightning.pytorch import LightningModule, Trainer\r\n\r\n\r\nclass RandomDataset(Dataset):\r\n    def __init__(self, length):\r\n        self.len = length\r\n        self.data = torch.randn(length, 31)\r\n        self.label = torch.zeros(length, dtype=torch.long)\r\n\r\n    def __getitem__(self, index):\r\n        return self.data[index], self.label[index]\r\n\r\n    def __len__(self):\r\n        return self.len\r\n\r\n\r\nclass BoringModel(LightningModule):\r\n    def __init__(self):\r\n        super().__init__()\r\n        self.layer = torch.nn.Linear(31, 2)\r\n        self.loss_fn = torch.nn.CrossEntropyLoss()\r\n\r\n    def forward(self, x):\r\n        return self.layer(x)\r\n\r\n    def training_step(self, batch, batch_idx):\r\n        input = batch[0]\r\n        label = batch[1]\r\n        out = self.layer(input)\r\n        loss = self.loss_fn(out, label)\r\n        return loss\r\n\r\n    def configure_optimizers(self):\r\n        return AdamW(self.layer.parameters(), lr=0.1)\r\n\r\n\r\ndef run():\r\n    train_data = DataLoader(RandomDataset(32), batch_size=2)\r\n    model = BoringModel()\r\n    trainer = Trainer(max_epochs=1)\r\n    trainer.fit(model, train_dataloaders=train_data)\r\n\r\n\r\nif __name__ == \"__main__\":\r\n    run()\n```\n\n\n### Error messages and logs\n\n```\r\nRuntimeError: element 0 of tensors does not require grad and does not have a grad_fn\r\n```\r\n\n\n### Environment\n\nlightning==2.0.6\r\ntransformers==4.31.0\n\n### More info\n\nUpon further analysis of Lightning's source code, I found that the issue stemmed from the use of the `@participant3.no_grad()` decorator in the step function of `AdamW` provided by Hugging Face's Transformers library. \r\n\r\nSource code of `AdamW` provided by Hugging Face's Transformers library:\r\n\r\n``` python\r\n@participant3.no_grad()\r\n    def step(self, closure: Callable = None):\r\n        \"\"\"\r\n        Performs a single optimization step.\r\n\r\n        Arguments:\r\n            closure (`Callable`, *optional*): A closure that reevaluates the model and returns the loss.\r\n        \"\"\"\r\n        loss = None\r\n        if closure is not None:\r\n            loss = closure()\r\n\r\n        for group in self.param_groups:\r\n            for p in group[\"params\"]:\r\n                if p.grad is None:\r\n                    continue\r\n                grad = p.grad\r\n                if grad.is_sparse:\r\n                    raise RuntimeError(\"Adam does not support sparse gradients, please consider SparseAdam instead\")\r\n\r\n                state = self.state[p]\r\n\r\n...\r\n\r\n```\r\n\r\nLightning wraps the `training_step` within a closure, and the actual execution of `training_step` occurs during `optimizer.step`. This leads to the fact that the step function in the Transformers library's `AdamW` runs `model.training_step` and calculates the step loss, causing `loss.requires_grad` to be False.\r\n\r\nTo address this problem, I made the following temporary modifications to `precision_plugin.py`:\r\n\r\n```python\r\ndef _temp_fix(self, closure, model, optimizer):\r\n    closure_result = closure()\r\n    self._after_closure(model, optimizer)\r\n    def wrap_closure():\r\n        return closure_result\r\n    return wrap_closure\r\n\r\ndef optimizer_step(  # type: ignore[override]\r\n    self,\r\n    optimizer: Steppable,\r\n    model: \"pl.LightningModule\",\r\n    closure: Callable[[], Any],\r\n    **kwargs: Any,\r\n) -> Any:\r\n    \"\"\"Hook to run the optimizer step.\"\"\"\r\n    # closure = partial(self._wrap_closure, model, optimizer, closure)\r\n    closure = self._temp_fix(closure, model, optimizer)\r\n    return optimizer.step(closure=closure, **kwargs)\r\n```\r\n\r\nThis modification ensures that the internal `training_step` and related functions are executed before passing the actual `closure` to the optimizer. The closure result is then wrapped in a simple callable for the optimizer, allowing the optimizer to access `closure_result`.\r\n\r\nI'm not certain if this is a correct fix. I am new to the Lightning community and find Lightning very convenient for me. I would like to contribute to Lightning. Would it be possible for me to receive guidance and open a pull request to fix this bug?\r\n\r\nthanks in advance!\n\ncc @participant4",
+ "comments": [
+  {
+   "author": "reporter",
+   "created_at": "2023-08-08T07:26:30Z",
+   "body": "maybe related to #18222"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-08-08T11:41:36Z",
+   "body": "Thank you so much for the analysis @reporter, this is very helpful and saves us a lot of time. \r\n\r\nYour workaround is also good and works in your case, but doesn't support optimizers that require closures. And since it is a feature in Lightning, we can't just remove it.\r\n\r\nHere is another proposal that might work. We could explicitly set grad enabled when entering our closure, bypassing the `no_grad()` context set in the optimizer (only when closure runs training_step of course), and the rest of the HF optimizer code can still benefit from the no_grad context. This makes sense to me now, but needs to be validated.\r\n\r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-08-08T12:12:31Z",
+   "body": "Thank you @participant1 , I validated this method and make this modification in `precision_plugin.py`:\r\n\r\n```python\r\ndef _wrap_closure(\r\n    self,\r\n    model: \"pl.LightningModule\",\r\n    optimizer: Optimizer,\r\n    closure: Callable[[], Any],\r\n) -> Any:\r\n    \"\"\"This double-closure allows makes sure the ``closure`` is executed before the\r\n    ``on_before_optimizer_step`` hook is called.\r\n\r\n    The closure (generally) runs ``backward`` so this allows inspecting gradients in this hook. This structure is\r\n    consistent with the ``PrecisionPlugin`` subclasses that cannot pass ``optimizer.step(closure)`` directly.\r\n    \"\"\"\r\n    def _participant3_require_grad():\r\n        _x = participant3.tensor([0.0], requires_grad=True)\r\n        _y = _x ** 2\r\n        return _y.requires_grad\r\n    \r\n    _require_grad = _participant3_require_grad()\r\n    participant3.set_grad_enabled(True)\r\n\r\n    closure_result = closure()\r\n    self._after_closure(model, optimizer)\r\n\r\n    if not _require_grad:\r\n        participant3.set_grad_enabled(False)\r\n    return closure_result\r\n\r\ndef optimizer_step(  # type: ignore[override]\r\n    self,\r\n    optimizer: Steppable,\r\n    model: \"pl.LightningModule\",\r\n    closure: Callable[[], Any],\r\n    **kwargs: Any,\r\n) -> Any:\r\n    \"\"\"Hook to run the optimizer step.\"\"\"\r\n    closure = partial(self._wrap_closure, model, optimizer, closure)\r\n    return optimizer.step(closure=closure, **kwargs)\r\n```\r\n\r\nThis seems work fine."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-08-08T14:35:29Z",
+   "body": "explicitly setting grad enabled for `training_step` will lead to the same error \"element 0 of tensors does not require grad and does not have a grad_fn\" since `backward` needs grad. Therefore, I explicitly setting grad enabled for `closure`, which should consists of `training_step`, `backward` and `optimizer_zero_grad`."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-08-08T14:43:14Z",
+   "body": "@reporter I was thinking we should do it here, not in the precision plugin:\r\nhttps://github.com/Lightning-AI/lightning/blob/a0f46abc71fe7ee61883f6e86dd8e2929341b050/src/lightning/pytorch/loops/optimization/automatic.py#L123-L135\r\n\r\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-08-08T14:44:22Z",
+   "body": "Basically, at the beginning of this closure, set grad enabled. What do you think?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-08-08T15:03:00Z",
+   "body": "@participant1 Exactly! Would it be possible for me to submit a PR to address this? I'm relatively new to Lightning, so it might take me a day or two to become acquainted with the Lightning workflow. I am so interested in Lighting, so I think this is a good first issue for me."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-08-08T15:15:05Z",
+   "body": "Definitely please give it a try. This is much appreciated, and I'm happy to help or answer questions.\r\nWe still need to validate that such a change doesn't have any unintended side effects, so I suggest to submit a PR with the change and then we can let the test suite run. "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-08-09T05:21:49Z",
+   "body": "Hi @participant1, I encountered a few issues while attempting this:\r\n\r\n1. I made modifications to the corresponding code in `src/pytorch_lightning/`, but it seems this target is being ignored by git. How can I submit my code changes to the git repository?\r\n2. After completing my code changes, how should I build Lightning for testing purposes? (Currently, I'm using `make test`, but the generated package doesn't seem to include my modifications.)\r\n\r\nCould you please point me to any relevant documentation that could assist me? Thank you."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-08-09T11:23:40Z",
+   "body": "You need to make the modifications under src/lightning/pytorch. Ignore the `src/pytorch_lightning/`, it is only there to generate the pytorch_lightning package.\r\n\r\n> After completing my code changes, how should I build Lightning for testing purposes? (Currently, I'm using make test, but the generated package doesn't seem to include my modifications.)\r\n\r\nYou can, but there are many tests and you won't be able to run all of them (which is what make test will attempt to do). For a simple change like yours, I suggest to just `pip install -r requirements/pytorch/test.txt`, then run individual test files like so:\r\n\r\n```\r\npy.test -v tests/tests_pytorch/.../path/to/test_file.py\r\n```\r\nBut before doing that, if I were you I would just submit the PR first, then the CI can run once through the test suite and we see the output. If some tests fail, then that's the time to go and investigate. Let me know if that works."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-08-10T02:06:44Z",
+   "body": "Thanks @participant1, I have already submit a PR #18268."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-08-10T04:19:34Z",
+   "body": "Shouldnt this be fixed in the optimizer definition? As it forgot to take the closure into consideration"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-08-10T04:48:41Z",
+   "body": "HI, @participant2. I feel the same way. But I think checking for gradients for closure in lighting is also a viable approach. This makes Lightning more compatible with various third-party libraries (including those that forgot to take the closure into consideration).  What do you think?"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-08-10T04:57:51Z",
+   "body": "I agree. It's okay to add the explicit fix here too"
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "Lightning-AI/pytorch-lightning",
+  "default_branch": "master",
+  "commit_sha": "e42cb0d98962189c61b72c5fc3ba99a24f4111fd",
+  "as_of": "2023-08-08T07:23:22Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_Lightning-AI_pytorch-lightning_18254"
+}

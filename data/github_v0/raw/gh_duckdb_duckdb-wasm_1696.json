@@ -1,0 +1,189 @@
+{
+ "repo": "duckdb/duckdb-wasm",
+ "number": 1696,
+ "url": "https://github.com/duckdb/duckdb-wasm/issues/1696",
+ "title": "INTERVAL bug (wrong endian?)",
+ "state": "closed",
+ "labels": [],
+ "reporter": "david542542",
+ "created_at": "2024-04-09T16:52:38Z",
+ "closed_at": "2024-06-17T19:23:28Z",
+ "body": "### What happens?\r\n\r\nRunning `SELECT INTERVAL '2 year'` (or really any other `INTERVAL`) produces the wrong output in the wasm shell. It seems like  it has to do with endianness: 2 years is 24 months and here 24 is put  into fractional seconds, i.e at the other end of the number.\r\n\r\n<img width=\"536\" alt=\"image\" src=\"https://github.com/duckdb/duckdb/assets/909771/b483b7f0-1aa7-4af3-9fb1-e073773c00e4\">\r\n\r\n\r\n### To Reproduce\r\n\r\nYou can run this query [here](https://shell.duckdb.org/#queries=v0,select-interval-'2-year'~) (click to open in wasm shell). \r\n\r\n`SELECT INTERVAL '2 day'`\r\n\r\n### OS:\r\n\r\nMac > Chrome > DuckDB Wasm Shell\r\n\r\n### DuckDB Version:\r\n\r\nv0.10.1\r\n\r\n### DuckDB Client:\r\n\r\nWasm\r\n\r\n### Full Name:\r\n\r\nDavid Litwin\r\n\r\n### Affiliation:\r\n\r\nNone\r\n\r\n### Have you tried this on the latest [nightly build](https://duckdb.org/docs/installation/?version=main)?\r\n\r\nI have tested with a nightly build\r\n\r\n### Have you tried the steps to reproduce? Do they include all relevant data and configuration? Does the issue you report still appear there?\r\n\r\n- [X] Yes, I have",
+ "comments": [
+  {
+   "author": "Mause",
+   "created_at": "2024-04-09T17:57:50Z",
+   "body": "@Mytherin I think this is actually an issue with DuckDB core's arrow layer, as I see the same issue with duckdb-rs. I did briefly discuss this with @Maxxen as well"
+  },
+  {
+   "author": "Mytherin",
+   "created_at": "2024-04-09T18:31:24Z",
+   "body": "Why does the problem then not occur in Python?\r\n\r\n```py\r\n>>> import duckdb\r\n>>> duckdb.sql(\"SELECT INTERVAL '2 year'\").arrow()\r\n# pyarrow.Table\r\n# CAST('2 year' AS INTERVAL): month_day_nano_interval\r\n# ----\r\n# CAST('2 year' AS INTERVAL): [[24M0d0ns]]\r\n\r\n```"
+  },
+  {
+   "author": "Mytherin",
+   "created_at": "2024-04-09T18:34:51Z",
+   "body": "Actually since both `duckdb-rs` and `duckdb-wasm` use the Rust arrow library, is it perhaps possible the problem is in the Rust Arrow library?"
+  },
+  {
+   "author": "Mause",
+   "created_at": "2024-04-09T18:52:02Z",
+   "body": "That's possible yeah, I'd assumed that wasm used arrow-js, but it does seem to use arrow-rs yes\r\n\r\nMax commented in Discord:\r\n>  Sounds like a lifetime issue with the arrow return values then, might be some arrow array destructor we set too early or something. Will have a look\r\n"
+  },
+  {
+   "author": "Mause",
+   "created_at": "2024-04-09T18:55:54Z",
+   "body": "Looks like they did have issues here at one point too: https://github.com/apache/arrow-rs/pull/2235/files"
+  },
+  {
+   "author": "Mytherin",
+   "created_at": "2024-04-09T18:55:59Z",
+   "body": "While possible a lifetime issue seems unlikely to me here - the problem here seems to be that 24 months are interpreted as 24 seconds, and the issue appears to be consistent. "
+  },
+  {
+   "author": "david542542",
+   "created_at": "2024-04-09T18:58:30Z",
+   "body": "Seems like it is wrong for all time units. See [here](https://shell.duckdb.org/#queries=v0,select-interval-1-'year~,select-interval-'-1-year'~,select-interval-'-1-month'~,select-interval-'-1-day'~,select-interval-'-1-hour'~,select-interval-'-1-minute'~,select-interval-'1-second'~).\r\n\r\n<img width=\"806\" alt=\"image\" src=\"https://github.com/duckdb/duckdb-wasm/assets/909771/496b9154-f6eb-4b81-9148-34188d7c60e6\">\r\n"
+  },
+  {
+   "author": "Mytherin",
+   "created_at": "2024-04-09T18:59:21Z",
+   "body": "Looks like wasm uses a [very old version of arrow-rs](https://github.com/duckdb/duckdb-wasm/blob/main/packages/duckdb-wasm-shell/crate/Cargo.toml#L42). @carlopi perhaps we can try to upgrade this?"
+  },
+  {
+   "author": "carlopi",
+   "created_at": "2024-04-09T18:59:46Z",
+   "body": "Using arrow-js (basically when not using the shell infrastructure but passing arrow results directly to JS) the results are correctly parsed generated.\r\n\r\nI will look at bumping arrow-rs."
+  },
+  {
+   "author": "Maxxen",
+   "created_at": "2024-04-09T20:30:33Z",
+   "body": "Sorry, I said I was going to look into this but then went on vacation and been distracted with other things to get in before the release since I got back. Ill investigate more tomorrow."
+  },
+  {
+   "author": "Maxxen",
+   "created_at": "2024-04-10T07:38:42Z",
+   "body": "This occurs in the rust client as well, even with latest `arrow`."
+  },
+  {
+   "author": "Mytherin",
+   "created_at": "2024-04-10T07:40:52Z",
+   "body": "My guess at this point is that this is a bug within `arrow-rs` related to ingestion of intervals through the Arrow C API. Perhaps we can try to create a minimal example and file an issue in their repo?"
+  },
+  {
+   "author": "carlopi",
+   "created_at": "2024-04-10T07:44:58Z",
+   "body": "If @Maxxen would be up to it, I think given duckdb-rs is easier to test in isolation (also for the arrow people) and it's simpler to trust since there are less layers of things going wrong wrt duckdb-wasm's shell, I think that would work better as reproducer (and it's not on me!)."
+  },
+  {
+   "author": "Maxxen",
+   "created_at": "2024-04-10T08:51:57Z",
+   "body": "Actually, I think we might be in the wrong here.\r\nArrow stores the interval in a 128bit integer, interpreted as multiple fields;\r\n```\r\n┌──────────────────────────────┬─────────────┬──────────────┐\r\n│            Nanos             │    Days     │    Months    │\r\n│          (64 bits)           │ (32 bits)   │  (32 bits)   │\r\n└──────────────────────────────┴─────────────┴──────────────┘\r\n  0                            63            95           127 bit offset\r\n  ```\r\n  \r\n But our `ArrowInterval` type looks like this:\r\n ```\r\nstruct ArrowInterval {\r\n\tint32_t months;\r\n\tint32_t days;\r\n\tint64_t nanoseconds;\r\n}\r\n ```\r\n Which we just reinterpret straight up when writing out the arrow buffer.\r\n \r\n ```\r\n   68                                   continue;\r\n   69                           }\r\n   70                           result_data[result_idx] = OP::template Operation<TGT, SRC>(data[source_idx]);\r\n   71                   }\r\n   72                   append_data.row_count += size;\r\n   73           }\r\n   74   };\r\n(lldb) p result_data[result_idx]\r\n(duckdb::ArrowInterval)  (months = 24, days = 0, nanoseconds = 0)\r\n```\r\nBut thats not the right order when reinterpreting as a i128 (which is what rust is doing on the other side)\r\n```\r\n(lldb) p *(__int128*)&result_data[result_idx]\r\n(__int128) 24\r\n```\r\n```rust\r\n    pub fn to_parts(\r\n        i: <IntervalMonthDayNanoType as ArrowPrimitiveType>::Native,\r\n    ) -> (i32, i32, i64) {\r\n        let months = (i >> 96) as i32;\r\n        let days = (i >> 64) as i32;\r\n        let nanos = i as i64;\r\n        (months, days, nanos)\r\n    }\r\n```\r\n\r\nIm not sure why this works in python though...\r\n"
+  },
+  {
+   "author": "Mytherin",
+   "created_at": "2024-04-10T09:30:15Z",
+   "body": "The rust code looks wrong to me. The definition is in little-endian. `i >> 96` means we take the most significant bits for the month, when it should be the least-significant bits. Here are some other definitions in the official Arrow project:\r\n\r\n* [Go](https://github.com/apache/arrow/blob/433ceef8a292932b31ddb3127f95eeb85ae41df5/go/arrow/datatype_fixedwidth.go#L656)\r\n* [C/C++](https://github.com/apache/arrow/blob/433ceef8a292932b31ddb3127f95eeb85ae41df5/cpp/src/arrow/type.h#L1775)\r\n\r\nIt also doesn't really make sense for the Rust driver to be correct when it is the one that disagrees with everything else. Either all DuckDB, Arrow-C++, Arrow-Python, Arrow-Go, Arrow-R and Arrow-JS are wrong, or Arrow-RS is wrong. The latter seems more logical to me."
+  },
+  {
+   "author": "Mause",
+   "created_at": "2024-04-10T09:33:46Z",
+   "body": "Are you saying it was correct before this change? https://github.com/apache/arrow-rs/pull/2235"
+  },
+  {
+   "author": "Mause",
+   "created_at": "2024-04-10T09:37:04Z",
+   "body": "~~Where's this diagram from @Maxxen ?~~\r\n\r\n```\r\n┌──────────────────────────────┬────────────┬──────────────┐\r\n│            Nanos             │    Days     │    Months    │\r\n│          (64 bits)           │ (32 bits)   │  (32 bits)   │\r\n└──────────────────────────────┴────────────┴──────────────┘\r\n  0                            63            95           127 bit offset\r\n```\r\n\r\nEDIT: Disregard, it's the same as https://github.com/apache/arrow-rs/pull/2235/files#diff-c47b2e57ea72cdad6427c3149de134be3437e403984d367e3604cd0943a9a963R288, just backwards \n\n> All integers in the types below are stored in the endianness indicated by the schema."
+  },
+  {
+   "author": "Maxxen",
+   "created_at": "2024-04-10T10:41:44Z",
+   "body": "@Mause The diagram is from here: https://github.com/apache/arrow-rs/blob/36a6e515f99866eae5332dfc887c6cb5f8135064/arrow-array/src/types.rs#L265-L269\r\n\r\nI agree seems like the rust def is wrong. So what now?"
+  },
+  {
+   "author": "Mytherin",
+   "created_at": "2024-04-10T11:11:13Z",
+   "body": "I would say we should double-check that the rust version is wrong and try to create a reproducer separate from DuckDB, then file a bug report in the arrow-rs repository."
+  },
+  {
+   "author": "Mytherin",
+   "created_at": "2024-04-10T11:23:10Z",
+   "body": "Here's a stand-alone C++ program showcasing the problem:\r\n\r\n```cpp\r\n#include <stdint.h>\r\n#include <stdio.h>\r\n\r\nusing uint128_t = __uint128_t;\r\n\r\nstruct MonthDayNanos {\r\n    int32_t months;\r\n    int32_t days;\r\n    int64_t nanoseconds;\r\n};\r\n\r\nint main() {\r\n\tMonthDayNanos ival;\r\n\tival.months = 32;\r\n\tival.days = 64;\r\n\tival.nanoseconds = 128;\r\n\r\n\tuint128_t u128val = *reinterpret_cast<uint128_t *>(&ival);\r\n\r\n\tprintf(\"Rust code (incorrect)\\n\");\r\n\tprintf(\"months %u\\n\", uint32_t(u128val >> 96));\r\n\tprintf(\"days %u\\n\", uint32_t(u128val >> 64));\r\n\tprintf(\"nanos %llu\\n\", uint64_t(u128val));\r\n\r\n\tprintf(\"\\n\");\r\n\r\n\tprintf(\"Correct shifts\\n\");\r\n\tprintf(\"months %u\\n\", uint32_t(u128val));\r\n\tprintf(\"days %u\\n\", uint32_t(u128val >> 32));\r\n\tprintf(\"nanos %llu\\n\", uint64_t(u128val >> 64));\r\n}\r\n\r\n```\r\n\r\nPrints:\r\n\r\n```\r\nRust code (incorrect)\r\nmonths 0\r\ndays 128\r\nnanos 274877906976\r\n\r\nCorrect shifts\r\nmonths 32\r\ndays 64\r\nnanos 128\r\n```"
+  },
+  {
+   "author": "david542542",
+   "created_at": "2024-04-16T19:05:29Z",
+   "body": "Hi, is there any update on this? Should I file a bug report in arrow-rs, or what is necessary in getting this resolved?\r\n"
+  },
+  {
+   "author": "pitrou",
+   "created_at": "2024-04-17T09:40:32Z",
+   "body": "Arrow C++ has https://github.com/apache/arrow/blob/7003e90c113cec58a620deddf56af71eb305af2a/cpp/src/arrow/type.h#L1775-L1784\r\n\r\nArrow Java uses the same layout: https://github.com/apache/arrow/blob/7003e90c113cec58a620deddf56af71eb305af2a/java/vector/src/main/java/org/apache/arrow/vector/IntervalMonthDayNanoVector.java#L171-L181\r\n"
+  },
+  {
+   "author": "Mytherin",
+   "created_at": "2024-04-17T10:46:40Z",
+   "body": "> Arrow C++ has https://github.com/apache/arrow/blob/7003e90c113cec58a620deddf56af71eb305af2a/cpp/src/arrow/type.h#L1775-L1784\r\n> \r\n> Arrow Java uses the same layout: https://github.com/apache/arrow/blob/7003e90c113cec58a620deddf56af71eb305af2a/java/vector/src/main/java/org/apache/arrow/vector/IntervalMonthDayNanoVector.java#L171-L181\r\n\r\nThat's mentioned above, the Arrow C++ layout is:\r\n\r\n```cpp\r\nstruct MonthDayNanos {\r\n    int32_t months;\r\n    int32_t days;\r\n    int64_t nanoseconds;\r\n};\r\n```\r\n\r\nThe Rust code for parsing that as a `uint128_t` is as follows:\r\n\r\n```rust\r\n    pub fn to_parts(\r\n        i: <IntervalMonthDayNanoType as ArrowPrimitiveType>::Native,\r\n    ) -> (i32, i32, i64) {\r\n        let months = (i >> 96) as i32;\r\n        let days = (i >> 64) as i32;\r\n        let nanos = i as i64;\r\n        (months, days, nanos)\r\n    }\r\n```\r\n\r\nAs shown in my stand-alone program here - https://github.com/duckdb/duckdb-wasm/issues/1696#issuecomment-2047272977 - those shifts produce the wrong results given the Arrow C++ layout.\r\n\r\n\r\n"
+  },
+  {
+   "author": "Mytherin",
+   "created_at": "2024-04-17T10:50:27Z",
+   "body": "I noticed the integration tests linked involve files - perhaps the byte order for Arrow files is different from the in-memory byte order (big-endian vs little-endian)?"
+  },
+  {
+   "author": "pitrou",
+   "created_at": "2024-04-17T10:51:31Z",
+   "body": "Yes, sorry, I was just posting this for reference."
+  },
+  {
+   "author": "pitrou",
+   "created_at": "2024-04-17T10:52:20Z",
+   "body": "> I noticed the integration tests linked involve files - perhaps the byte order for Arrow files is different from the in-memory byte order (big-endian vs little-endian)?\r\n\r\nNo, it's probably just that arrow-rs has the same misinterpretation bug in all code paths. So when you ask it to roundtrip the data from JSON to IPC, for example, it will produce the intended IPC results."
+  },
+  {
+   "author": "Mytherin",
+   "created_at": "2024-04-17T10:53:25Z",
+   "body": "Makes sense, thanks for picking this up!"
+  },
+  {
+   "author": "pitrou",
+   "created_at": "2024-04-17T10:57:47Z",
+   "body": "Well, you'll have to thank @tustvold for that :-)"
+  },
+  {
+   "author": "david542542",
+   "created_at": "2024-05-13T20:23:51Z",
+   "body": "@Mytherin brief update, about ~two weeks away: https://github.com/apache/arrow-rs/issues/5654#issuecomment-2108732883"
+  },
+  {
+   "author": "Maxxen",
+   "created_at": "2024-05-13T20:26:25Z",
+   "body": "Thanks for driving this @david542542!"
+  },
+  {
+   "author": "david542542",
+   "created_at": "2024-06-03T18:40:25Z",
+   "body": "Hi @Mytherin + @Maxxen,\r\n\r\nIt looks like this has been released (or awaiting release): https://github.com/apache/arrow-rs/issues/5688.\r\n\r\nAre we able to add that item into the upcoming DuckDB bug-fix release?\r\n\r\n"
+  },
+  {
+   "author": "carlopi",
+   "created_at": "2024-06-03T19:05:51Z",
+   "body": "Thanks everyone for pushing forward on this.\r\n\r\nI have a local branch that bumps arrow-rs version, will need to double check a few things, but ideally this can be soon fixed uptream."
+  },
+  {
+   "author": "david542542",
+   "created_at": "2024-06-13T20:01:47Z",
+   "body": "@carlopi cool, will this be in the next DuckDB release (1.1.0), or when will this fix be added in?"
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "duckdb/duckdb-wasm",
+  "default_branch": "main",
+  "commit_sha": "91335e0e11703a4f7857c9384e3daca74a11b430",
+  "as_of": "2024-04-09T16:52:38Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_duckdb_duckdb-wasm_1696"
+}

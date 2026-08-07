@@ -1,0 +1,234 @@
+{
+ "repo": "dbt-labs/dbt-core",
+ "number": 7442,
+ "url": "https://github.com/dbt-labs/dbt-core/issues/7442",
+ "title": "[CT-2468] [Feature] For versioned models, automatically create view/clone of latest version in unsuffixed database location",
+ "state": "closed",
+ "labels": [
+  "type:feature",
+  "type:docs",
+  "multi_project",
+  "model_versions"
+ ],
+ "reporter": "jtcohen6",
+ "created_at": "2023-04-24T08:41:31Z",
+ "closed_at": "2026-05-15T10:58:56Z",
+ "body": "_Thanks @dbeatty10 @joellabes for working through this with me!_\r\n\r\nAs the producer of a versioned model, I want the unsuffixed database relation (`<db>.<schema>.<model_name>`) to always point to the latest version of that model. This provides downstream consumers with the same optionality that's available to `ref`: \"pin\" to a specific version (suffix), or \"unpin\" (no suffix) and always get the latest.\r\n\r\ndbt should handle this for me, by creating an additional \"pointer\" view (`select * from <latest>`) or table clone (depending on the relation type and data platform support) whenever I run the latest version of my model.\r\n\r\n### Implementation options\r\n\r\nI'm not in love with any of these options:\r\n1. Create a new node in the manifest with this logic, materialized as a view (or clone?). Not sure if/how we'd be able to set configurations on that additional node/object (e.g. persisting descriptions).\r\n2. Update the view, table, and incremental materializations to produce an additional relation, if the model is versioned (and this is the latest version)\r\n3. Provide users with a macro that they can \"set and forget\" as a model `post-hook`\r\n\r\nOf those, (3) is the least magical, and it's what we'll propose to users in the short term (v1.5). We still don't like:\r\n- Hooks in general, and especially hooks that run DDL to create database objects\r\n- Lacking the robustness of an actual materialization\r\n- Requiring users to copy-paste a macro and update their project, when this is the Right Behavior that should just happen out of the box\r\n- Making the proposed logic for [schema management](https://github.com/dbt-labs/dbt-core/pull/5392) more complicated",
+ "comments": [
+  {
+   "author": "jtcohen6",
+   "created_at": "2023-06-09T16:22:21Z",
+   "body": "We have three implementation options. Each has trade-offs around user limitations and complexity of implementation.\r\n\r\nNext step: Let's spike each of the options, and make a call."
+  },
+  {
+   "author": "nicohein",
+   "created_at": "2023-06-10T15:43:35Z",
+   "body": "Hi All, \r\n\r\nI would like to propose a fourth option, that is a little bit more verbose but adds flexibility:\r\n\r\n## Option 4 \r\n\r\nThe main model itself remains unchanged. It is expected to be implemented in `dim_customers.sql`. The materialization with the version number of the main model becomes optional. If you want to have this materialization, then you create an item in the versions.\r\n\r\n```\r\n- models:\r\n  - name: dim_customers\r\n     # it essentially becomes obsolete to specify the main/latest version\r\n    config:\r\n      materialized: table\r\n      meta:\r\n        key: value\r\n    columns:\r\n      - name: customer_id\r\n        description: This is the primary key\r\n        data_type: int\r\n      - name: ...\r\n    versions:\r\n      - version: 1\r\n        implemented_in: dim_customers_OLD\r\n        deprecation_date: '2022-01-01'\r\n        config:\r\n          meta: {} #remove the meta from v2\r\n        columns:\r\n          include: ...\r\n          exclude: ...\r\n      - version: 2\r\n        implemented_in: dim_customers\r\n      - version: 3\r\n        description: A dramatic reimagining of our customers model with no column overlap? What are they thinking?!\r\n        implemented_in: dim_customers_NEW_BUT_NOT_READY\r\n        # deprecation_date is optional and not included for this version\r\n        columns:\r\n          - name: totally_new_column_1\r\n          - name: totally_new_column_2\r\n          - name: totally_new_column_3\r\n          ...\r\n```\r\n\r\nThis would result in a second table being created called  `dim_customers_v2`. If the developer instead choses to materialize `_v2` as a view thats possible by instead writing:\r\n\r\n```\r\n      - version: 2\r\n        # implemented_in: dim_customers_v2   # expected default \r\n```\r\n\r\nAnd adding the corresponding `.sql` file: \r\n\r\n```\r\n{{ config(materialized=\"view\") }}\r\n\r\nselect * from {{ ref('dim_customers') }}\r\n``` \r\n\r\nIf a team decides to have `_v2` materialized as a table and define `dim_customers` as a view, that is now equally possible.\r\n\r\nOne remaining challenge I can think of is that a developer could introduce a drift between the main model and `v2` because there is simply no guarantee of those models being equal. I regard this risk as low because whoever will make use of models, will put some thought behind the versioning model."
+  },
+  {
+   "author": "Spince",
+   "created_at": "2023-06-14T16:59:04Z",
+   "body": "this is concerning to me.. the whole purpose of versioning an api is to NOT introduce breaking changes. unless every model is postfixed with `_v1` from the beginning the proposed solutions would cause breaking changes. ie- dim_customers was created but is now being modified, the above solution places a view where dim_customers \"v1\" originally existed\r\n\r\ni need to give it more thought but it seems like the pointer object that routes a query to the latest version should instead be postfixed with `_latest`. i think this needs to be considered in terms of implemention on an existing project that's been around for years rather than a clean slate project that's perfectly configured according to dbt features and standards that weren't even discussed or codified until years after the original dim_customers table was created."
+  },
+  {
+   "author": "nicohein",
+   "created_at": "2023-06-15T01:42:07Z",
+   "body": "I think I still would expect dim_customers to behave just like like dim_customers_latest. Nevertheless would the proposal for option 4 handle different ways of implementation:\r\n\r\n### dim_customers unchanged & latest materialized as table\r\n\r\n```\r\n- models:\r\n  - name: dim_customers\r\n    config:\r\n      materialized: table\r\n      meta:\r\n        key: value\r\n    columns:\r\n       ...\r\n    versions:\r\n      - version: latest  # just like a tag in docker \r\n        implemented_in: dim_customers_v2\r\n        alias: dim_customers_latest  # just in case default behavior results in dim_customers_vlatest\r\n      ...\r\n      - version: 2\r\n        # implemented_in: dim_customers_v2  \r\n      ...\r\n```\r\n\r\n### dim_customers unchanged & latest as view\r\n\r\n```\r\n- models:\r\n  - name: dim_customers\r\n    config:\r\n      materialized: table\r\n      meta:\r\n        key: value\r\n    columns:\r\n       ...\r\n    versions:\r\n      - version: latest\r\n        alias: dim_customers_latest\r\n      ...\r\n      - version: 2\r\n        # implemented_in: dim_customers_v2\r\n      ...\r\n```\r\n\r\nand `dim_customers_latest.sql`:\r\n\r\n```\r\n{{ config(materialized=\"view\") }}\r\n\r\nselect * from {{ ref('dim_customers', version=\"2\") }}\r\n```\r\n\r\n### dim_customers like latest & v2 + latest as view\r\n\r\n\r\n```\r\n- models:\r\n  - name: dim_customers\r\n    config:\r\n      materialized: table\r\n      meta:\r\n        key: value\r\n    columns:\r\n       ...\r\n    versions:\r\n      - version: latest\r\n        alias: dim_customers_latest\r\n      - version: 2\r\n        implemented_in: dim_customers_latest\r\n     ...\r\n```\r\n\r\nand `dim_customers_latest.sql`:\r\n\r\n```\r\n{{ config(materialized=\"view\") }}\r\n\r\nselect * from {{ ref('dim_customers') }}\r\n```\r\n\r\nHappy to clarify any questions around this idea and receive some more feedback."
+  },
+  {
+   "author": "Spince",
+   "created_at": "2023-06-15T21:05:18Z",
+   "body": "@nicohein I guess I should have been more specific. I don't agree with `I want the unsuffixed database relation (<db>.<schema>.<model_name>) to always point to the latest version of that model` from the original comment here.. if I was implementing such a feature I would not do it that way. "
+  },
+  {
+   "author": "jtcohen6",
+   "created_at": "2023-07-18T08:01:37Z",
+   "body": "From discussion yesterday:\r\n- We're unlikely to move forward with option 1. Adding this as a new node to the manifest doesn't feel quite right, even if it would in a similar case for [`metricflow_time_spine`](https://github.com/dbt-labs/dbt-core/issues/7938)\r\n- While this makes sense as a default/common pattern, we think enough users will want a way to opt out of or modify this pattern, that the explicitness of option 3 is appealing. For example, there might not be a need for this behavior if you're defining a versioned model with a single version, as for the use case described in https://github.com/dbt-labs/dbt-core/issues/8028#issuecomment-1622649555\r\n- Whether we move forward with option 2 (implicit) or option 3 (explicit), the thing to figure out is what code we'd be calling (whether in our materialization/task or in the users' hook). Now that there's a `clone` materialization, which abstracts over DWH support for table clones and the object relation type to produce a clone or \"pointer view\" accordingly — can we call that as a macro in a hook, in a way that's cleaner than [the code we currently have documented](https://docs.getdbt.com/docs/collaborate/govern/model-versions#configuring-database-location-with-alias)?\r\n\r\nNext step:\r\n- https://github.com/dbt-labs/dbt-core/issues/8126"
+  },
+  {
+   "author": "joellabes",
+   "created_at": "2023-07-18T10:45:45Z",
+   "body": "My preference is Option 2.5, where it happens automatically but the logic is implemented in an overridable macro in the vein of `generate_alias_name` so that you can modify it if you want to. You could even do something like \r\n\r\n```yml\r\nmodels:\r\n  - name: some_model\r\n     versions: \r\n       - v: 1\r\n         ...\r\n       - v: 2\r\n         config: \r\n           generate_pointer_view: false\r\n```\r\n\r\nif you wanted model-by-model control, right? "
+  },
+  {
+   "author": "alison985",
+   "created_at": "2023-08-17T18:25:22Z",
+   "body": "Link to a Slack message with the way I think about this. https://getdbt.slack.com/archives/C2JRRQDTL/p1692185439979629?thread_ts=1692185332.030239&cid=C2JRRQDTL Specifically:\r\n\r\n> Rename foobar to foobar_v1\r\nCreate foobar as view (it should know that foobar in after is not the same as foobar in before)\r\nCreate foobar_v2\r\n\r\nI also have to make sure foobar(view/MV), foobar_v1(table/MV), and foobar(table/MV) are _all_ getting refreshed data. Assume there are some objects that I could be maintaining 3 versions of at the same time for months.\r\n\r\n@Spince **is :100: correct - you can't have an object name change version.** 1 object name == 1 version == 1 model.  If I'm reading correctly, I think that means that Option 4 from @nicohein with @Spince's requirements is the closest thinking. I'm not sure I understand @joellabes's latest comment.\r\n\r\nRight now, I'm handling this in naming convention as opposed to anything in dbt syntax because I need explicit control and dbt doesn't support `ALTER`s and changing materialization type of an object. (I haven't thought through incremental models for this yet, but I'm sure there's interesting cases there.) If you have the benefit of starting a code base from scratch everything has a `_v1` suffix, `_v2` suffix, and so on. Sometimes I put the version on the schema, sometimes on the individual model. When you don't have that luxury, the non-suffixed version is `_v1` implicitly.\r\n\r\nThink of this like API version control. I have to give downstream(e.g. BI) a chance to update. The downstream customer is pinned to a version, it's just a matter if they know that explicitly(`vX` suffix) or not(no `_vX` suffix). The version append suffixes are _important for organizational expectations and communications_.\r\n\r\nIf I want to have `dim_customers_latest`, that can be an optional object creation so people can choose to be on the bleeding edge that might break at anytime(e.g. a developer release). "
+  },
+  {
+   "author": "jtcohen6",
+   "created_at": "2023-09-20T07:03:12Z",
+   "body": "@Spince @nicohein @alison985 Thank you for the feedback on this! We've been working on the technical spiking that might make this mechanism possible. I'm coming back around to the questions about the desirable product / end user experience.\r\n\r\nAfter reading through the comments above, this is what I'd propose:\r\n- This \"latest\" pointer view/clone should have a suffix `_latest`, creating a database object named `<modelname>_latest`.\r\n- This will be a pointer view / clone of whichever version the dbt model's maintainer has specified via `latest_version`, or the default if not specified.\r\n- This is _instead of_ having an unsuffixed representation (`<modelname>`) by default.\r\n- dbt _should_ automatically create this view/clone for all versioned models.\r\n- It should be possible to **disable** dbt's automatic creation of the \"latest\" view/clone.\r\n- If disabled, you could then recreate the \"latest\" view/clone, using all your own custom configs, as @nicohein was showing above:\r\n```yaml\r\nversions:\r\n  - v: latest  # this is an actual version of the model called 'latest'\r\n    defined_in: dim_customers_latest  # it needs a custom definition\r\n    config:\r\n      alias: dim_customers_latest  # instead of default, which would be '_vlatest'\r\n```\r\nIn this case, we are defining another real version of the model — not just a pointer to an existing (latest) version. It has all the same flexibility as any other model version.\r\n\r\n---\r\n\r\nHow should users **disable** dbt's automatic creation of the \"latest\" view/clone? Ideas:\r\n- By passing an additional config, as @joellabes suggested (`generate_pointer_view: false`), to the top-level model definition\r\n- By creating a `v: latest` and explicitly disabling it — though this doesn't feel quite right to me:\r\n```yaml\r\nmodels:\r\n  - name: dim_customers\r\n    versions:\r\n      - v: latest\r\n        config: {enabled: false}\r\n```\r\n\r\nI will give that last piece a bit more thought - but I'm curious to hear how this lands overall!"
+  },
+  {
+   "author": "alison985",
+   "created_at": "2023-09-23T00:10:15Z",
+   "body": "<!--p-->\r\nSounds right to me. I would vote for disabling via configuration as @joellabes suggested, but I don't think it can be specified at the version level(see below).\r\n\r\nNew item: you're repeatedly saying \"view/clone\" instead of just view. But I don't see a proposed spec on where to define which it is in YML. I learned about `dbt clone` today and I don't want to use it, but presumably others will. Also, since it's a choice, I removed \"view\" from the keyword being proposed. I propose the following, Option A:\r\n\r\n```yaml\r\nmodels:\r\n  - name: some_model\r\n    config:\r\n      materialized: table\r\n\r\n      ########\r\n      generate_pointer: false\r\n      # OR                                      # both can not be specified at the same time\r\n      materialized_pointer: [view | clone]      # default to view if not specified\r\n      ########\r\n    versions: \r\n       - v: 1\r\n         ...\r\n       - v: 2\r\n         # How would we know what period of time an automatic alias of a version should be disabled?\r\n         #config:   \r\n         #  generate_pointer_view: false\r\n       - v: 3\r\n         #config:\r\n         #  generate_pointer_view: true\r\n```\r\nI thought about doing (Option B)`generate_pointer: [false | view | clone]` because they are mutually exclusive, but it didn't feel right to mix a boolean and a string. I guess you could do (Option C)`generate_pointer: [no | view | clone]` but it would introduce new boolean keywords(yes/no) to dbt YML which also feels wrong."
+  },
+  {
+   "author": "jtcohen6",
+   "created_at": "2023-09-26T09:55:05Z",
+   "body": "@alison985 Thanks for taking another look!\r\n\r\nRe: \"view/clone,\" I had been thinking that:\r\n1. If the \"latest version\" of this model corresponds to a table in the database (because it's materialized as `table` or `incremental`), and this DWH supports table clones, we would create a table clone. This shares all metadata attributes of the cloned table.\r\n2. If the \"latest version\" of this model is materialized as a view (or materialized view, or something else), or if this DWH does not support table clones, we would create a pointer view (`create view ... as select * from ...`).\r\n\r\nThe benefit of this approach is that metadata queries expecting this object to be a table would still work, if the conditions for (1) are met. But it is more complex as an approach. I get that it would be simpler to just say: _This is always a pointer view._\r\n\r\nSo to answer all the outstanding questions here:\r\n1. Let's keep things simple, by always creating a view.\r\n2. The view should be named `_latest`.\r\n3. We check the config `generate_latest_pointer: true|false`. It is `true` by default, the user can set to `false` in any of three places: `dbt_project.yml` for many/all models; in the top-level model config for this versioned model; or in the config for the \"latest\" version of a versioned model.\r\n4. For more custom behavior, users could add a `v: latest` with their own alias config, contents, etc."
+  },
+  {
+   "author": "SBurwash",
+   "created_at": "2024-01-05T18:36:37Z",
+   "body": "Hey everyone 👋 very much in love with this feature.\r\n \r\nQuestion - with the pointer, would we be able to pass documentation? The goal here would be to have the pointer have the same documentation as the latest table (through the `persist_docs` feature)"
+  },
+  {
+   "author": "smitsrr",
+   "created_at": "2024-03-13T09:23:02Z",
+   "body": "Just had a production bug this morning because the new `_v1` model didn't have a database object (unsuffixed) which triggered a full-refresh 😬 .\r\nI am emphatically upvoting this issue for development!"
+  },
+  {
+   "author": "AnotherGuitar",
+   "created_at": "2024-05-23T19:41:05Z",
+   "body": "*upvote"
+  },
+  {
+   "author": "shahinsaleh",
+   "created_at": "2024-08-01T08:17:57Z",
+   "body": "*upvote"
+  },
+  {
+   "author": "geoHeil",
+   "created_at": "2024-08-20T17:38:45Z",
+   "body": "upvote"
+  },
+  {
+   "author": "rapha-pereira",
+   "created_at": "2024-09-03T15:52:54Z",
+   "body": "upvote!"
+  },
+  {
+   "author": "frannydelaney",
+   "created_at": "2024-09-04T18:46:47Z",
+   "body": "upvote (is there a better way to do this?)"
+  },
+  {
+   "author": "elyobo",
+   "created_at": "2024-09-04T21:31:18Z",
+   "body": "> upvote (is there a better way to do this?)\n\nYes, use 👍 on the issue"
+  },
+  {
+   "author": "sigveks",
+   "created_at": "2024-09-16T09:56:36Z",
+   "body": "Regarding the implementation of post-hooks for triggering the view generation of latest model. I think that on-run end hook is better than project-wide post-hook as any model specific post-hooks will run after the generation of a view. This means that if you have a post-hook that is manipulating the data of the model, the view on top will not be reflected by these changes. Consider changing the documentation here https://docs.getdbt.com/docs/collaborate/govern/model-versions#configuring-database-location-with-alias"
+  },
+  {
+   "author": "ChristianP89",
+   "created_at": "2024-09-21T18:32:11Z",
+   "body": "Upvoting this as well 👍 "
+  },
+  {
+   "author": "lord-skinner",
+   "created_at": "2024-12-06T19:09:02Z",
+   "body": "Up doot 👍🏼 "
+  },
+  {
+   "author": "dassowmd",
+   "created_at": "2025-01-21T21:52:13Z",
+   "body": "*upvote"
+  },
+  {
+   "author": "atalnarayan",
+   "created_at": "2025-01-29T07:37:32Z",
+   "body": "*upvote"
+  },
+  {
+   "author": "tamora-dawn",
+   "created_at": "2025-02-21T23:45:57Z",
+   "body": "*upvote"
+  },
+  {
+   "author": "mouscaillot",
+   "created_at": "2025-03-03T17:55:59Z",
+   "body": "*upvote"
+  },
+  {
+   "author": "jim256",
+   "created_at": "2025-03-26T23:14:48Z",
+   "body": "*upvote !\n\nBeen planning to implement something like this manually in my dbt-core project. Would be much better to have it part of dbt."
+  },
+  {
+   "author": "james-johnston-thumbtack",
+   "created_at": "2025-03-27T00:01:54Z",
+   "body": "The `create_latest_version_view.sql` macro that is in the documentation ignores the alias of the original versioned model.  That might be undesirable, e.g. if you have a custom `generate_alias_name` macro.\n\nHere is an alternative variation that uses a regex to find and strip the specific `_v123` version substring from the alias, without changing anything else in the alias.  This substring must occur at the end of the model name, or must be followed by a delimiter, e.g. it will change `my_model_v123` --> `my_model`, or `my_model_v123_deploy` --> `my_model_deploy`, but not `my_model_v123deploy` which would remain unchanged.\n\n(Just sharing in case it is of interest to anyone else!)\n\nAlso, the macro uses `adapter` and an option for unconditionally dropping the view is provided, in case you want to use it with a database engine that does not support `CREATE OR REPLACE VIEW`.\n\n<details>\n  <summary>\n    Click here for the code\n  </summary>\n\n```sql\n{% macro create_latest_version_view() %}\n    {{ return(adapter.dispatch('create_latest_version_view', 'tt_utils')()) }}\n{% endmacro %}\n\n{% macro default__create_latest_version_view() %}\n    {{ tt_utils._do_create_latest_version_view(can_replace_view=true) }}\n{% endmacro %}\n\n-- Implementation copied and adapted from dbt 1.9 documentation:\n-- https://docs.getdbt.com/docs/collaborate/govern/model-versions#configuring-database-location-with-alias\n--\n-- Improvements:\n--  * Preserve any other aliasing done with the alias config or generate_alias_name macro by using a regex to strip the\n--    version number part.  For example, a model \"stg_mydb__customers_v2\" that was aliased to \"stg_customers_v2_deploy\"\n--    will result in a view being created as \"stg_customers_deploy\", rather than \"stg_mydb__customers\".\n--  * Have a way to unconditionally drop the view first for databases that don't support `CREATE OR REPLACE VIEW`.\n{% macro _do_create_latest_version_view(can_replace_view) %}\n\n    -- this hook will run only if the model is versioned, and only if it's the latest version\n    -- otherwise, it's a no-op\n    {% if model.get('version') and model.get('version') == model.get('latest_version') %}\n\n        -- this is version substring is copied from what the default generate_alias_name macro generates\n        {% set version_search_substring = modules.re.escape(\"_v\" ~ (model.get('version') | replace(\".\", \"_\"))) %}\n        -- we will look for this version only at the end of the string, or if followed by an underscore, and then\n        -- remove only this version substring.\n        {% set version_strip_pattern = '(.*)' ~ version_search_substring ~ '((?:_.*)?)' %}\n        {% set match = modules.re.fullmatch(version_strip_pattern, this.identifier) %}\n        {% if not match %}\n            -- We couldn't find the version substring in the identifier.  This is probably due to one of these reasons:\n            --  * A generate_alias_name macro was used that did not properly include the version string.\n            --  * The user manually aliased the model to a name that does not include the version string.\n            --\n            -- If this becomes a problem, we may consider whether we want to create this view at all.  A common\n            -- scenario might be if the user followed dbt documentation to manually alias latest version of\n            -- model 'my_model_v2' to just 'my_model', which would conflict with the view created by this macro.\n            -- In this case, we may revisit the decision of throwing an exception, and consider whether we want to\n            -- just silently skip creating the view entirely (perhaps logging a message).\n            {{ exceptions.raise_compiler_error(\n                \"Could not find version substring '\" ~ version_search_substring ~\n                \"' in identifier '\" ~ this.identifier ~ \"'.\"\n            ) }}\n        {% endif %}\n        {% set new_name = match.group(1, 2) | join %}\n\n        {% set new_relation = this.incorporate(path={\"identifier\": new_name}) %}\n\n        {% set existing_relation = load_relation(new_relation) %}\n\n        {% if existing_relation and (not existing_relation.is_view or not can_replace_view) %}\n            {{ drop_relation_if_exists(existing_relation) }}\n        {% endif %}\n\n        {% set create_view_sql -%}\n            -- this syntax may vary by data platform\n            create {% if can_replace_view -%} or replace {%- endif %} view {{ new_relation }}\n                as select * from {{ this }}\n        {%- endset %}\n\n        {% do log(\"Creating view \" ~ new_relation ~ \" pointing to \" ~ this, info = true) if execute %}\n\n        {{ return(create_view_sql) }}\n\n    {% else %}\n\n        -- no-op\n        select 1 as id\n\n    {% endif %}\n\n{% endmacro %}\n``` \n</details>\n\n[Here is a link to the diff](https://www.diffchecker.com/ZWrXRoW9/) showing what changed from the macro in the dbt documentation."
+  },
+  {
+   "author": "emanuel-luis",
+   "created_at": "2025-04-04T14:57:57Z",
+   "body": "*upvote"
+  },
+  {
+   "author": "Kverm",
+   "created_at": "2025-05-21T09:53:23Z",
+   "body": "*upvote"
+  },
+  {
+   "author": "ttusing",
+   "created_at": "2025-06-04T23:30:57Z",
+   "body": "I'm pretty surprised this isn't a core feature yet - there are a few things that don't behave as expected with this macro workaround.\n\nFor instance - grant configs are not applied to the view. I also think `dbt clone` will not clone the view.\n\nUpvote"
+  },
+  {
+   "author": "ttusing",
+   "created_at": "2025-06-12T22:51:47Z",
+   "body": "I had a bit of a headache where the views being created did not receive grants from the grants feature of DBT, since these views aren't associated with the relation directory.\n\nI threw the problem at Gemini to apply the grants and it works great. Would really like more of this behavior in core.\n\n<details>\n<summary>Click to expand: Updated create_latest_version_view Macro</summary>\n\n```\n{% macro create_latest_version_view() %}\n\n    -- This hook will run only if the model is versioned and it's the latest version.\n    -- Otherwise, it's a no-op.\n    {% if model.get('version') and model.get('version') == model.get('latest_version') %}\n\n        {# Define the new relation (the view) using the model's base name #}\n        {% set new_relation = this.incorporate(path={\"identifier\": model['name']}) %}\n\n        {# Check if a relation with the same name already exists and if it's not a view.\n           If it's a table, drop it to ensure the view can be created without conflicts. #}\n        {% set existing_relation = load_relation(new_relation) %}\n\n        {% if existing_relation and not existing_relation.is_view %}\n            {% do log(\"Dropping existing relation \" ~ new_relation ~ \" which is a table, to create view.\", info=true) %}\n            {{ drop_relation_if_exists(existing_relation) }}\n        {% endif %}\n        \n        {# Construct the SQL to create or replace the view, pointing to the latest version of the model #}\n        {% set create_view_sql -%}\n            create or replace view {{ new_relation }}\n              as select * from {{ this }}\n        {%- endset %}\n        \n        {% do log(\"Creating view \" ~ new_relation ~ \" pointing to \" ~ this, info = true) if execute %}\n        \n        {# Initialize the final SQL string with the view creation statement #}\n        {% set final_sql = create_view_sql %}\n\n        {#\n            Now, retrieve and apply the grants configured for the model.\n            This block accesses `model.config.grants`, which holds grant definitions\n            from your `dbt_project.yml` or the model's `config` block.\n            The `execute` check ensures this logic runs during compilation.\n        #}\n        {% if model.config.grants and execute %}\n            {% do log(\"Applying grants for view \" ~ new_relation, info=true) %}\n            {% for grant_type, grantees in model.config.grants.items() %}\n                {% if grantees is iterable and grantees is not string %} {# Ensure grantees is a list of roles/users #}\n                    {% for grantee in grantees %}\n                        {# Construct the grant SQL statement for each privilege type and grantee #}\n                        {# This generic `grant ... on ... to ...` syntax is broadly compatible across SQL dialects. #}\n                        {% set grant_sql = \"grant \" ~ grant_type ~ \" on \" ~ new_relation ~ \" to \" ~ grantee ~ \";\" %}\n                        {% do log(\"    \" ~ grant_sql, info = true) %}\n                        {# Append each grant SQL statement to the final SQL, separated by a newline for readability #}\n                        {% set final_sql = final_sql ~ \"\\n\" ~ grant_sql %}\n                    {% endfor %}\n                {% else %}\n                    {% do log(\"Warning: Grants for type '\" ~ grant_type ~ \"' are not a list and will be skipped for \" ~ new_relation ~ \".\", info=true) %}\n                {% endif %}\n            {% endfor %}\n        {% else %}\n            {% do log(\"No grants configured or 'execute' is false for view \" ~ new_relation, info=true) %}\n        {% endif %}\n        \n        {# Return the complete SQL string, which dbt will execute #}\n        {{ return(final_sql) }}\n        \n    {% else %}\n    \n        -- If the model is not versioned or not the latest version, perform a no-op.\n        select 1 as id\n    \n    {% endif %}\n\n{% endmacro %}\n```\n</details>\n\nLet me know what you think!"
+  },
+  {
+   "author": "htitz",
+   "created_at": "2025-06-30T05:24:36Z",
+   "body": "Upvote"
+  },
+  {
+   "author": "alexander-williamson",
+   "created_at": "2025-07-15T08:31:26Z",
+   "body": "Upvote 👍 "
+  },
+  {
+   "author": "jtcohen6",
+   "created_at": "2026-05-07T15:01:45Z",
+   "body": "_Coming back to this issue after a few years! Thanks to @aahel & @dbeatty10 for driving this one forward with me :)_\n\nHere's what I think we could do: After the \"latest\" version of a versioned model materializes successfully, dbt automatically creates a **view** at the unsuffixed model name (e.g. `dim_customers`) that selects from the latest version (e.g. `dim_customers_v2`). That's the happy path.\n\nThis behavior can be controlled by a new model-level config, `latest_version_view`, that has two sub-fields:\n\n```yaml\nmodels:\n  - name: dim_customers\n    latest_version: 2    # optional - dbt picks max version by collation\n    versions:\n      - v: 1\n      - v: 2\n    config:\n      latest_version_view:\n        enabled: true                 # true by default\n        alias: dim_customers_current  # optional; overrides the view name\n```\n\nThe config can be set project-wide:\n\n```yaml\n# dbt_project.yml\nmodels:\n  +latest_version_view:\n    enabled: false  # opt out globally, re-enable per model\n```\n\nUsers who want a different naming convention (e.g. `_latest` suffix instead of unsuffixed) can override a new dispatched macro:\n\n```sql\n{% macro generate_latest_version_view_alias(node=none) %}\n    {{ node.name }}_latest\n{% endmacro %}\n```\n\nThe default macro returns just `node.name` (e.g. `dim_customers`) - unsuffixed - which we keep as the simplest, opinionated default. This is the happiest path - but, crucially, other paths are possible! We heard that feedback loud & clear.\n\n### Happy path\n\nThis can be as simple as:\n\n```yaml\nmodels:\n  - name: dim_customers\n    config:\n      materialized: table\n    versions:\n      - v: 1\n      - v: 2\n```\n\nWhat this means:\n- the latest version is `v2` (because `latest_version` is not specified)\n- when dbt runs `dim_customers_v2`, after materializing the table, it will create a view named `dim_customers` (no suffix) pointing to `dim_customers_v2` (the latest version)\n- so dbt produces **three objects** from **two files**:\n    - `dim_customers_v1.sql` → `<db>.<schema>.dim_customers_v1` (tbl)\n    - `dim_customers_v2.sql` OR `dim_customers.sql` (unsuffixed file because it’s the latest version) → `<db>.<schema>.dim_customers_v2` (tbl) AND `<db>.<schema>.dim_customers` (view with unsuffixed name)\n\n### How users can achieve other (desirable!) behaviors\n\nFor **ONE specific** versioned model, OR for **ALL** the versioned models in my project, a user may want to:\n\n- (a) disable the latest-versioned view(s)\n- (b) create the latest-versioned view with a different name/suffix\n- (c) create the latest version as the unsuffixed model name, without an additional view / DWH object\n- (d) point to an **older** version (= the thing downstream consumers were using before versions were introduced), instead of the latest version, to avoid breaking those consumers\n\nWhile I do not believe we should not make any of ^these the **default** behavior, it should be possible to achieve them with these knobs:\n\n1. Model-level `latest_version` configuration\n2. `generate_latest_version_view_alias` macro\n3. `generate_alias_name` macro\n4. Version-level `alias` config\n\nWith those knobs in mind, working through each of those scenarios:\n\n- (a) I can disable latest-version views by setting `latest_version_view.enabled: false`, on one model or many/all models\n- (b) I can create the latest-versioned view with a different name/suffix\n    - for **one** model by setting `latest_version_view.alias` on that model\n    - for **all** models by overriding `generate_alias_name`\n- (c) I can disable the `latest_version_view`, and configure my older version with the `alias` of the unsuffixed model name\n    \n    ```yaml\n    models:\n      - name: dim_customers\n        latest_version: 2\n        versions:\n          - v: 1\n            alias: dim_customers\n          - v: 2\n        config:\n          latest_version_view:\n            enabled: false\n    ```\n    \n    dbt would only produce two objects — `dim_customers` (v1) + `dim_customers_v2` — rather than three.\n    \n    This scenario feels a little wonky, tbh:\n    \n    - I have a newer version I am calling “latest” (`v2`)\n    - but I want `dim_customers` to continue pointing to the previous implementation (`v1`)\n    - meaning that a BI tool referencing `<db>.<schema>.dim_customers` (no suffix) will get a **different** version/implementation from a downstream dbt model referencing `ref('dim_customers')` (no `version=` pin) - *and this is what I want*\n    \n    I’m not going to go so far as to call this an explicit anti-pattern — but it doesn’t feel like a pattern we want to encourage, either. A much happier path would be:\n    \n    ```yaml\n    models:\n      - name: dim_customers\n        latest_version: 1\n        versions:\n          - v: 1\n          - v: 2\n    ```\n    \n    - dbt will automatically create the unsuffixed view `dim_customers` pointing to `v1` because it’s the latest\n    - Downstream consumers selecting from `dim_customers` AND downstream dbt models selecting from `ref('dim_customers')` get the same result - `v1`\n    - Downstream consumers AND downstream dbt models can opt into selecting from `v2` explicitly - by selecting from  `ref('dim_customers', v=2)` (within dbt) or `<db>.<schema>.dim_customers_v2` (outside of dbt)\n    - The maintainer of `dim_customers` should not bump to `latest_version: 2` until they have communicated / coordinated with all downstream consumers\n    \n    Importantly - the wonkier scenario is less happy (harder to implement), but it is still *possible* with the knobs that we’ve provided.\n\n\nIf we pursue this approach, a couple of questions:\n1. Config name for `latest_version_view` - like, love, hate?\n    - I do like `_view` because we're not going to make it any other way!\n    - @dbeatty10 would prefer a two-word config over a three-worder if possible\n2. Can we safely turn this on by default, in v1.12, for existing versioned models? Or require users to opt in, to avoid unexpected breaking changes during the upgrade?\n    - I can think of one failure mode so far - if you have aliased a model version to `model_name` (unsuffixed), without disabling `latest_version_view`, the two will \"collide\" (same `db.schema.identifier`) and raise an error"
+  },
+  {
+   "author": "jtcohen6",
+   "created_at": "2026-05-07T15:30:23Z",
+   "body": "## Alternative (much simpler) idea\n\n_credit to @graciegoheen_\n\nPremises:\n- I want the latest version to materialize as the unsuffixed model name\n- I don't want to remember to update the `alias` config every time I add a new model version or update `latest_version` config\n\nSolution:\n- I can reimplement `generate_alias_name` to check  `node.is_latest_version` and return the unsuffixed model name - or even suffixed with `_latest`. Rather than creating a separate pointer view, this simply aliases the latest version of the model.\n\n\nExample:\n```sql\n{% macro generate_alias_name(custom_alias_name=none, node=none) -%}\n\n    {%- if custom_alias_name -%}\n\n        {{ custom_alias_name | trim }}\n\n    {%- elif node.version and not node.is_latest_version -%}\n\n        {{ return(node.name ~ \"_v\" ~ (node.version | replace(\".\", \"_\"))) }}\n\n    {%- else -%}\n\n        {{ node.name }}\n\n    {%- endif -%}\n\n{%- endmacro %}\n```\n\nMeaning:\n- If my model is versioned and _not_ the latest version, append `_v#`\n- If this model is the latest version, just the unsuffixed model name, please\n\nI remember thinking of this a few years ago, and suggesting it to some folks - so there must be some reason why this isn't desirable / sufficient ... ? @Spince @nicohein @alison985 do you remember, or have thoughts one way or the other?\n\nIf a custom `generate_alias_name` macro solves for the use case, without any additional complexity (or implementation work) - this could be our recommended pattern, instead of the `create_latest_version_view` post-hook. At minimum I think [we should document it](https://docs.getdbt.com/docs/mesh/govern/model-versions) as a viable path!"
+  },
+  {
+   "author": "joellabes",
+   "created_at": "2026-05-11T06:49:55Z",
+   "body": "> so there must be some reason why this isn't desirable / sufficient\n\nThis approach removes the ability to proactively pin to a specific version. \n\n```\nmodels:\n  - name: dim_customers\n    latest_version: 2\n    versions:\n      - v: 1\n      - v: 2\n      - v: 3\n```\n\ncreates the db objects\n```\nanalytics.prod.dim_customers_v1\nanalytics.prod.dim_customers\nanalytics.prod.dim_customers_v3\n```\n\nI have a load-bearing dashboard which is incompatible with v3. If it's Monday, and v3 is going to be turned into the latest version on Friday at midday, what can I do between now and then to pre-pin to v2? \n\nAt 12.01 pm my database will start looking like this: \n\n```\nanalytics.prod.dim_customers_v1\nanalytics.prod.dim_customers_v2\nanalytics.prod.dim_customers\nanalytics.prod.dim_customers_v3\n```\n\nSo I'd better be sitting at my laptop ready to find-and-replace `dim_customers(\\b)` with `dim_customers_v2$1` before anyone notices the queries are failing. \n\nBonus footgun: analytics.prod.dim_customers_v3 [still exists](https://discourse.getdbt.com/t/faq-cleaning-up-removed-models-from-your-production-schema/113) but will never be refreshed again (until v4 is marked as the latest_version). So anyone who built a model on top of the prerelease table – or stumbles across it in their data catalog – will also have a bad experience."
+  },
+  {
+   "author": "joellabes",
+   "created_at": "2026-05-11T06:56:22Z",
+   "body": "> 1. Config name for `latest_version_view` - like, love, hate?\n>    \n>    * I do like `_view` because we're not going to make it any other way!\n>    * [@dbeatty10](https://github.com/dbeatty10) would prefer a two-word config over a three-worder if possible\n\nIt's... fine? Don't have a better name, and it's certainly clear. I think being able to specify a single alias for a single model's latest version with `config.latest_version_view.alias` feels like overkill. Is there a user story here?\n\n> 2. Can we safely turn this on by default, in v1.12, for existing versioned models? Or require users to opt in, to avoid unexpected breaking changes during the upgrade?\n>    \n>    * I can think of one failure mode so far - if you have aliased a model version to `model_name` (unsuffixed), without disabling `latest_version_view`, the two will \"collide\" (same `db.schema.identifier`) and raise an error\n\nIt's a change to behaviour, let's just put it behind a behaviour change flag"
+  },
+  {
+   "author": "FishtownBuildBot",
+   "created_at": "2026-05-13T19:58:18Z",
+   "body": "Opened a new issue in dbt-labs/docs.getdbt.com: https://github.com/dbt-labs/docs.getdbt.com/issues/9173"
+  },
+  {
+   "author": "joellabes",
+   "created_at": "2026-05-14T01:07:52Z",
+   "body": "Reopening because https://github.com/dbt-labs/dbt-core/pull/12954 is the actual PR which isn't merged yet"
+  },
+  {
+   "author": "graciegoheen",
+   "created_at": "2026-05-15T13:26:06Z",
+   "body": "Sharing some reasoning from @dbeatty10 on why we went with the pointer-creation approach:\n\nFramed another way, we want both of these:\n\nConsumers within dbt projects have a way to either a) pin to a particular version, or b) leave unpinned\nConsumers outside of dbt projects (like a bi tool) have a way to either a) pin to a particular version, or b) leave unpinned\n\nFor 1), we have:\na) versioned model references (`{{ ref('dim_customers', v=3) }}`)\nb) un-versioned model references (`{{ ref('dim_customers') }}`)\n\nFor 2), we need:\na) to materialize a `_v*` suffixed table for each version, so that consumers can pin to a version\nb) to materialize an un-suffixed view for the latest version, so that consumers can be unpinned\n\nFor example, say a bi tool is referring to the `dim_customers` table, and there's a breaking change that is planned.\n\nHere's the steps that would happen in the world where dbt creates an additional pointer view:\n1. dbt project only has an un-versioned `dim_customers` model, and bi tool refers to `dim_customers` table\n2. dbt project switches `dim_customers` model to be versioned and creates 2 versions: `_v1` (latest) and `_v2`\n3. then the bi tool is has some to change their table suffix to either `_v1` or `_v2` , and in the meantime, they can keep it as just plain `dim_customers`. They can also just keep it as plain `dim_customers` even after the \"latest\" updates to `_v2` if they know that change won't actually break them.\n4. as long as consumers have had the requisite time to make a choice, then dbt project will also be free to change the latest model, because anyone that wanted to stay on `_v1` had a way to do that.\n\nIf I reimplement `generate_alias_name` to do [this](https://github.com/dbt-labs/dbt-core/issues/7442#issuecomment-4398510197):\n- If my model is versioned and not the latest version, append `_v#`\n- If this model is the latest version, just the unsuffixed model name\n\nThen the bi tool be forced to stay in tight lock-step every time the dbt project updates which model is latest."
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "dbt-labs/dbt-core",
+  "default_branch": "main",
+  "commit_sha": "75703c10eecaa01549477e241e9212a66f4df40e",
+  "as_of": "2023-04-24T08:41:31Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_dbt-labs_dbt-core_7442"
+}

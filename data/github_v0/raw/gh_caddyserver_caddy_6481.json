@@ -1,0 +1,186 @@
+{
+ "repo": "caddyserver/caddy",
+ "number": 6481,
+ "url": "https://github.com/caddyserver/caddy/issues/6481",
+ "title": "No matching certificate to load: decoding certificate metadata: invalid character '}'",
+ "state": "closed",
+ "labels": [
+  "bug :<nick>:"
+ ],
+ "reporter": "reporter",
+ "created_at": "2024-07-27T10:14:03Z",
+ "closed_at": "2024-08-23T19:58:48Z",
+ "body": "Caddy v2.8.4 started printing an error for one domain:\r\n```\r\nJul 27 12:06:59 caddy-proxy-sbg7 caddy[1208]: {\"level\":\"info\",\"ts\":1722074819.7958932,\"logger\":\"tls.on_demand\",\"msg\":\"obtaining new certificate\",\"remote_ip\":\"77.141.97.142\",\"remote_port\":\"49984\",\"server_name\":\"server.example.com\"}\r\nJul 27 12:06:59 caddy-proxy-sbg7 caddy[1208]: {\"level\":\"error\",\"ts\":1722074819.8085268,\"logger\":\"tls.on_demand\",\"msg\":\"loading newly-obtained certificate from storage\",\"remote_ip\":\"77.141.97.142\",\"remote_port\":\"49984\",\"server_name\":\"server.example.com\",\"error\":\"no matching certificate to load for server.example.com: decoding certificate metadata: invalid character '}' after top-level value\"}\r\n```\r\n```\r\n{\r\n        \"sans\": [\r\n                \"server.example.com\"\r\n        ],\r\n        \"issuer_data\": {\r\n                \"url\": \"https://<redacted-host>/acme/cert/042fb47e52c51ab43af43257f1ba5e8\",\r\n                \"ca\": \"https://<redacted-host>/directory\",\r\n                \"renewal_info\": {\r\n                        \"suggestedWindow\": {\r\n                                \"start\": \"2024-09-23T06:58:45.333333334Z\",\r\n                                \"end\": \"2024-09-25T06:58:45.333333334Z\"\r\n                        },\r\n                        \"_uniqueIdentifier\": \"kydGmAOpUWiOmNbEI.BC-0flLFGrQ69DL_idV_G6Xo\",\r\n                        \"_retryAfter\": \"2024-07-27T09:40:01.93861755+02:00\",\r\n                        \"_selectedTime\": \"2024-09-24T03:22:43Z\"\r\n                }\r\n        }\r\n}}\r\n```\r\nRemoving the extra `}` at the bottom of the file `/caddy/certificates/<redacted-host>-directory/server.example.com/server.example.com.json` fixes the error.",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2024-07-27T14:16:45Z",
+   "body": "Hey Skifree, thanks for reporting this. :<nick>: \r\n\r\nThat's weird! @participant2 Is this possibly due to a race condition you were referring to in Slack? I don't think I've seen a malformed JSON file before, only an empty one."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-07-27T16:42:46Z",
+   "body": "this looks like one file is written on top of another without clearing the first once.\n\nif read is called after fsync is called after truncate and after write but before flush/close,  this could happen I think? the new cert would have to be one character smaller than the old cert. (is this possible? are any fields variable length?).\n\n but it's reading the old file size, so maybe something else happened at write time. regardless, something happened during file write, maybe also during a read. \n\nbut yes, my guess is the temp file approach fixes this @participant1 \n\nI doubt go's json encoder would do this. \n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-07-27T23:00:27Z",
+   "body": "@participant2 Thanks for your input! Yeah, I think the _uniqueIdentifier may possibly vary by 1-2 chars. But I'm not 100% sure on that. It's related to the ASN.1 encoding of the cert's serial number.\r\n\r\nBut anyway, it sounds like we have a fix in the pipeline for this already. :)"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-07-27T23:00:47Z",
+   "body": "@reporter I don't suppose you happen to have the previous JSON file for this cert?"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-07-27T23:09:47Z",
+   "body": "also, did anything weird happen to the server ? like a reboot or process restart or config reload, when it started happening? also, are you running only one instance of caddy? \r\n\r\nthere's also a third variable - maybe two certs could have been being written at once somehow. iirc the lock in filestorage is not perfect. @participant1 isn't this possible? (for the imperfect file based lock to cause parallel write?)\r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-07-28T14:11:54Z",
+   "body": "I have 2 caddy instances, 2 distinct servers. Caddy storage is a [JuiceFS](https://github.com/juicedata/juicefs) mount.\r\nJuiceFS supports both BSD locks (flock) and POSIX record locks (fcntl).\r\n\r\nProblem started when servers rebooted (manually, one after another, to apply kernel updates). This has been done before many times without any issues.\r\n\r\n```\r\n# GLOBAL options\r\n{\r\n        email <email-scrubbed>\r\n\r\n        storage file_system {\r\n                root /mnt/caddyvol/caddy\r\n        }\r\n\r\n        servers {\r\n                strict_sni_host on\r\n                protocols h1 h2\r\n                trusted_proxies_strict\r\n        }\r\n\r\n        on_demand_tls {\r\n                ask http://ask.localhost/check\r\n        }\r\n}\r\n```"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-07-28T20:49:10Z",
+   "body": "@participant1 yes, at this point i'm convinced the tempfile patch would make this not happen. it looks like two caddy instances were writing to the same file at the same time. \r\n\r\n@reporter  here is the relevant PR, if you are curious https://github.com/caddyserver/certmagic/pull/300 \r\n\r\nfrom what i see - juicefs rename is atomic? so this PR should work for you.\r\n\r\nbtw, certmagic storage doesn't use advisory locks yet. i opened an issue about this https://github.com/caddyserver/certmagic/issues/295 . I personally dont have a use case for this, since i do not use the filesystem to share certs across multiple instances, so i didn't end up finishing this. \r\n\r\nif you have the time it would be nice to add this as a feature. matt said he is happy to accept a PR to correctly use filesystem level locks instead of the fake-lock that filesystem storage currently uses. I would be happy to review as well. basically just need to check on boot if the filesystem supports a locking method, and use it, otherwise fallback to the existing strategy\r\n\r\nthat said, i would seriously recommend just using redis with https://github.com/pberkel/caddy-storage-redis or https://github.com/ss098/certmagic-s3 with juicefs s3 gateway, or writing your own cert-magic plugin for s3 for any production settings.  "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-08-02T12:23:22Z",
+   "body": "> that said, i would seriously recommend just using redis with https://github.com/pberkel/caddy-storage-redis or https://github.com/ss098/certmagic-s3 with juicefs s3 gateway, or writing your own cert-magic plugin for s3 for any production settings.\r\n\r\nI understand, but we prefer not adding plugins to caddy. In our env, JuiceFS handles terabytes of data without any issue since 2y now, we prefere keep it as our filesystem abstraction layer and rely on Caddy certmagic filesystem.\r\n\r\nWe'll keep an aye on https://github.com/caddyserver/certmagic/pull/300 and provide feedback. 👍 "
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-08-05T14:08:47Z",
+   "body": "@reporter You can try it now, if you build Caddy with `xcaddy build --with github.com/caddyserver/certmagic=github.com/caddyserver/certmagic@master`."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-08-06T07:39:49Z",
+   "body": "Will be hard to say if it fixes anything soon, because caddy was installed and runing for 2y with this setup without any issues 🤔 \r\nNevertheless, I've built our 2 servers with latest `certmagic@master` and report back if this happens again.\r\nFeel free to close this issue for now."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-08-29T02:28:01Z",
+   "body": "If you are running multiple instances of Caddy with shared storage, you may encounter a locking issue introduced in certmagic v0.21.\r\n\r\nSee https://github.com/caddyserver/certmagic/issues/303"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-08-29T04:48:50Z",
+   "body": "Yeah, sorry; I'm behind on releases. Trying to catch up on things!"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-10-15T16:18:36Z",
+   "body": "hey @participant1, i'm facing the exact same issue. I recently saw some JSON files containing an additional `}` at the end of file which led to this error being thrown by Caddy\n```\n{\"error\":\"no matching certificate to load for insights.example.se: decoding certificate metadata: invalid character '}' after top-level value\", \"level\":\"debug\", \"logger\":\"tls.handshake\", \"msg\":\"did not load cert from storage\", \"remote_ip\":\"10.142.0.147\", \"remote_port\":\"11452\", \"server_name\":\"insights.example.se\", \"ts\":1.7288959881120608E9}\n```\n\nDo we have any fix for this issue? I'm already using Caddy v2.8.4 and running multiple instances of Caddy with a shared NFS volume.\n\nWould I be able to solve this issue by moving to Google Cloud Storage/S3?"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2024-10-15T16:25:52Z",
+   "body": "The workaround is to wipe out Caddy's stroage and restart Caddy. It'll reissue all your certificates, but that should be fine assuming you have only a handful. Or, you can dive into Caddy's storage and look at all the `.json` files, fix their syntax manually if possible (or delete the broken ones to get Caddy to regenerate them).\n\nIn v2.9.0 it should be fixed by https://github.com/caddyserver/certmagic/pull/300"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-10-15T16:28:25Z",
+   "body": "> The workaround is to wipe out Caddy's stroage and restart Caddy. It'll reissue all your certificates, but that should be fine assuming you have only a handful.\n> \n> In v2.9.0 it should be fixed by [caddyserver/certmagic#300](https://github.com/caddyserver/certmagic/pull/300)\n\nThank you @participant5! I'll upgrade to v2.9.0 and check all the JSON files as i have > 1k certs."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-10-15T16:34:40Z",
+   "body": "@participant5 I see that v2.9.0 is still in beta, could I build v2.8.4 with certmagic@participant13 instead? i'm already building Caddy binary using xcaddy"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2024-10-15T16:40:08Z",
+   "body": "Upgrading won't fix the broken storage, it'll just fix further breakages of the storage. You could use the beta, it's pretty stable, just missing a few things we wanted to fit into the final release."
+  },
+  {
+   "author": "participant6",
+   "created_at": "2024-11-08T01:53:45Z",
+   "body": "I have faced this issue too in this morning after upgrading Caddy to v2.8.4 and OS got rebooted.\nThat Caddy has multiple sites but one site had showed this log messages continuously after upgrading.\n\nI solved this by removing the site's entire certificate cache dir (such as `mv /var/lib/caddy/.local/share/caddy/certificates/<redacted-host>-directory/mysite.example.com{,_bak}` in Ubuntu) and restarted Caddy.\nBut I think it's OK just to fix broken JSON.\n"
+  },
+  {
+   "author": "participant7",
+   "created_at": "2024-11-13T17:39:10Z",
+   "body": "Ran into this today also. Deleted the cert from storage and resrted Caddy, and it issued a new cert successfully. Waiting patiently for 2.9.0!"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2024-11-13T19:19:21Z",
+   "body": "@participant7 you can use 2.9.0-beta.3 right now"
+  },
+  {
+   "author": "participant7",
+   "created_at": "2024-11-25T22:50:26Z",
+   "body": "Just found another cert in my system that had this issue. Could someone remind me on how to perform an upgrade to the 2.9.0-beta.3? And do I need to wipe all my certs first to have them reissued? TIA."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-11-25T23:05:45Z",
+   "body": "@participant7 \n\n> And do I need to wipe all my certs first to have them reissued? TIA.\n\nyou do not need to wipe all of your certs. I assume that on error, the certs will refetch? maybe @participant1 can confirm though .\n\nit may be good to go through the certs and delete any of them that are malformed json.  \n\n> Could someone remind me on how to perform an upgrade to the 2.9.0-beta.3? \n\ndepends on how you are running, but you just need to switch to running the new binary / install the new package from https://github.com/caddyserver/caddy/releases/tag/v2.9.0-beta.3  and restart. "
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-11-26T00:33:53Z",
+   "body": "I wrote this script to find all malformed JSON files\n```\n# Directory containing the subdirectories\nbase_dir=\"/data/caddy/certificates/<redacted-host>-directory\"\n\n# Output file to record JSON files ending with \"}}\\n}\" or \"}}\"\noutput_file=\"valid_json_files.txt\"\n\n# Check if output file already exists and remove it to start fresh\nif [ -f \"$output_file\" ]; then\n    rm \"$output_file\"\nfi\n\n# Navigate through each subdirectory\nfor dir in \"$base_dir\"/*; do\n    if [ -d \"$dir\" ]; then\n        # Loop through each JSON file in the directory\n        for json_file in \"$dir\"/*.json; do\n            if [ -f \"$json_file\" ]; then\n                # Use awk to check if the file ends with \"}}\\n}\"\n                last_chars=$(tail -n 2 \"$json_file\" | awk '/}}/{if(getline == 1 && /^}$/) print \"yes\";}')\n                if [[ \"$last_chars\" == \"yes\" ]]; then\n                    # Record the file path in the output file\n                    echo \"$json_file\" >> \"$output_file\"\n                fi\n                if tail -c 2 \"$json_file\" | grep -q \"}}\"; then\n                    # Record the file path in the output file\n                    echo \"$json_file\" >> \"$output_file\"\n                fi\n            fi\n        done\n    fi\ndone\n\necho \"Script execution completed. Check '$output_file' for results.\"\n```"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-11-26T17:47:13Z",
+   "body": "> I assume that on error, the certs will refetch?\n\nCaddy will try again later if there's an error.\n\n> it may be good to go through the certs and delete any of them that are malformed json.\n\nThat will help speed things up, I'm pretty sure.\n\nThanks for helping @participant2 !\n\nAnd thanks for posting your script @participant4 "
+  },
+  {
+   "author": "participant8",
+   "created_at": "2024-12-13T14:36:10Z",
+   "body": "Same issue here. I'm running a Caddy instance on a single machine with certs stored on a ext4 partition. \n\nHere is a one line version of @participant4 script that fixes this issue as well: \n\n```$ grep -l \"}}\" **/*.json | xargs -I {} sed -i 's/}}/}/g' {}```\n\n@participant1 Do you have any estimates for the release of version 2.9.0?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-12-13T14:43:06Z",
+   "body": "Shortly after new years. One more beta before then I think."
+  },
+  {
+   "author": "participant9",
+   "created_at": "2024-12-16T18:30:02Z",
+   "body": "This issue likely killed a production server of one of our app's main services. We have about 150 domains/certs, most of them not used very often. But the `}` bug finally hit our default domain cert causing a DOS for customers. Though upon seeing this thread we found the bug in about four of the 150 certs.\n\nWe're running a single instance of Caddy 2.8.4 in an AWS EC2 instance with an 8GB AWS gp3 volume.\n\nFor logs, these two lines start and continue repeating:\n```\nDec 13 18:46:05 <redacted-host> caddy[123456]: {\"level\":\"info\",\"ts\":1734115565.8264415,\"logger\":\"tls\",\"msg\":\"certificate needs renewal based on ARI window\",\"subjects\":[\"<redacted-host>\"],\"expiration\":17342566>\nDec 13 18:46:05 <redacted-host> caddy[123456]: {\"level\":\"warn\",\"ts\":1734115565.826408,\"logger\":\"tls.on_demand\",\"msg\":\"stapling OCSP\",\"server_name\":\"<redacted-host>\",\"sans\":[\"<redacted-host>\"],\"error\":\"i>\n```\nThen the first log of the brace error occurs and repeats every few seconds:\n```\nDec 13 18:46:06 <redacted-host> caddy[123456]: {\"level\":\"error\",\"ts\":1734115566.8684826,\"logger\":\"tls.renew\",\"msg\":\"will retry\",\"error\":\"decoding certificate metadata: invalid character '}' after top-level value\",\">\n```\nDoes the `ts` value tie this to the cert? Otherwise, I'm not 100% positive this is for our default domain but it lines up timewise.\n\nOverall, we've been using Caddy for two years with no problems. This particular instance has been running since July 2024 when we upgraded to 2.8.4 with no issues, reboots, or restarts.\n\nKind of a wild bug to still be floating around in a current release. Fixing the bad certs fixed the issue. Also anxiously awaiting a new version. But hopefully the fix doesn't assume multiple Caddy instances as the problem."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-12-16T19:44:44Z",
+   "body": "> Kind of a wild bug to still be floating around in a current release. Fixing the bad certs fixed the issue. Also anxiously awaiting a new version. But hopefully the fix doesn't assume multiple Caddy instances as the problem.\n\n@participant9 \n\nthe fix doesn't assume multiple caddy instances as a problem, the current beta (and/or next version if you dont wish to use the beta) should resolve issues for both replicated and single-instance deploys. We have other users who have reported the same bug on single-instance deploys as well.\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-12-18T13:15:22Z",
+   "body": "@participant9 Those log messages are not related AFAICT (but it's hard since they seem truncated).\n\nThe error reported here is caused, as far as we know, by an incomplete write, often due to power loss, process termination, out of disk space, and other external factors. I have even seen failed writes where the OS did not return an error, so there's no way Caddy could know.\n\n@participant2 's patch is helpful because it writes the contents to a separate file, then renames only once the entire contents have been written, rather than opening the file in truncation mode (effectively deleting the contents) and hoping it writes successfully.\n\nI'll be releasing one more beta (hopefully just one) before the new year, and then 2.9 after the new year."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-01-24T10:42:47Z",
+   "body": "Can confirm 2.9.0 fixed it 👍 "
+  },
+  {
+   "author": "participant10",
+   "created_at": "2025-06-24T22:13:45Z",
+   "body": "The details here helped me find and fix the affected file - thank you. I've updated so hopefully I won't have this issue in the future."
+  },
+  {
+   "author": "participant11",
+   "created_at": "2025-09-04T23:32:30Z",
+   "body": "Thanks for the fix. Got same problem and this detailed topic helped us to move forward.\nIt's a pity I had to edit the file system myself instead of processing on Caddy side. But I understand this decision."
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "caddyserver/caddy",
+  "default_branch": "master",
+  "commit_sha": "3579815a6c099bfbcff0143f7a251a92b4fa4198",
+  "as_of": "2024-07-27T10:14:03Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_caddyserver_caddy_6481"
+}

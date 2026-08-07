@@ -1,0 +1,204 @@
+{
+ "repo": "airbytehq/airbyte",
+ "number": 25194,
+ "url": "https://github.com/airbytehq/airbyte/issues/25194",
+ "title": "[Roadmap] Normalization update to 1 table per stream",
+ "state": "closed",
+ "labels": [
+  "community",
+  "needs-feedback",
+  "team/destinations",
+  "roadmap"
+ ],
+ "reporter": "evantahler",
+ "created_at": "2023-04-13T23:18:08Z",
+ "closed_at": "2023-05-12T16:01:21Z",
+ "body": "# [FEEDBACK REQUESTED] Airbyte's Normalization Plan\r\n\r\nHello Airbyte Community!\r\n\r\nMy name is @evantahler, and I am an Engineering Manager at Airbyte. In this Github Issue, we want to solicit feedback about changes that we are planning about how Airbyte's database destinations store and represent data. We are planning a breaking change, so we would like to collect any feedback you have on this plan, positive or negative, **by April 30th, 2023**.\r\n\r\n## Goodbye `Normalization`\r\n\r\nTo get specific, let's define some terms:\r\n\r\n- `Normalization`: the current process Airbyte runs at the end of a sync to type and de-duplicate data\r\n- `Typing`: Expanding JSON Airbyte Records into typed (e.g. `TEXT`, `TIMESTAMP WITH ZONE`, etc) columns appropriate for the destination\r\n- `Deduplication`: (when selected) the process of keeping only the latest Record for a certain primary key. If we had a record for `User:1` in the destination before this sync (`updated_at:2021-01-01`) and we saw a new record for `User:1` in the latest sync (`updated_at:2021-02-03`), we will keep only the latest record in the final view of your data.\r\n\r\nOne of the largest areas of improvement we have is around our `Normalization` process. Today, for destinations that support it, `Normalization` is run as a special `dbt` container at the end of each sync which explodes Airbyte records (stored in temporary tables as `json` records) into well-typed database columns. This process also handles deduplication (e.g. only keep the latest record for each primary key), and this is also the process which creates SCD (slowly-changing-dimension) tables.\r\n\r\nThis approach has a number of problems which we want to solve:\r\n\r\n1. No `Typed` or `Deduplicated` data until the end of your sync\r\n   - For initial syncs, this means you can't work with your data until the end\r\n   - If your sync fails, you don't get any typed data\r\n2. `dbt`-based normalization is not resilient to per-row errors\r\n   - e.g. if an API source, which is supposed to return a date returns the string \"missing\", the whole process crashes\r\n3. Our current data formats (considering SCD and the raw data) is space-intensive\r\n4. Our current full-table processes for de-duplication and typing is compute-intensive\r\n5. Configuring syncs requires knowledge about normalization, and an early determination about its use to you\r\n6. No support for soft-resets. Often, when schema changes occur a full-reset of data is required\r\n\r\n## Hello `Typing` and `Deduplication`\r\n\r\nIn broad terms, we are going to remove `Normalization` (the process) and move the jobs of `Typing` and `Deduplication` into our destination containers, for destinations for which that makes sense. Specifically, we are talking about data warehouses (Snowflake, BigQuery, Redshift, etc) and relational databases (MySQL, Postgres, etc).\r\n\r\n## What will be gained\r\n\r\n1. `Typing` will always be enabled. The destination will determine the optimal way to present the the data for you\r\n   - We will always `Type` the top-level properties coming in from your source\r\n2. All streams will create only 1 table which is easy to reason about\r\n   - We will stop expanding sub-objects which come from the source into additional tables, which are hard to join and take additional space\r\n3. Data will be `Typed` and `Deduplicated` periodically throughout the sync, presenting you with data in its final format early so you can start working with it\r\n4. Support for [`soft resets`](https://github.com/airbytehq/airbyte-internal-issues/issues/945).\r\n   - This new way of storing data will enable us to build a `soft reset` feature which will enable using the raw data we previously stored to re-build the Typed data columns. This is helpful when a source changes the type of a property (e.g. a `number` becomes a `string`) without needing a full refresh.\r\n5. A better developer experience\r\n   - Destination developers can now control the entire writing lifecycle from within one Docker image, allowing for easier future feature development.\r\n\r\n## What will be lost\r\n\r\n1. We plan to stop created SCD (slowly-changing-dimension) tables.\r\n   - These tables are costly to create and store, and are underutilized\r\n   - These tables do not capture _every_ change from your database, only those seen by your sync's replication frequency.  \r\n   - Using Airbyte's `append` mode, you can still import the history of your data as it changes\r\n   - You can also easily make your own SCD tables with `dbt` ([example here, called \"snapshots\"](https://docs.getdbt.com/docs/build/snapshots)).\r\n2. We will stop expanding sub-objects which come from the source into additional tables\r\n   - Any Record which arrives from your source with a nested object will remain stored as JSON.\r\n\r\n## Breaking Changes and New Table Formats\r\n\r\nThis project will be a breaking change for all the affected destinations.\r\n\r\n- The format of the final tables created in destinations is going to change.\r\n- A full reset of your data may be required.\r\n\r\nConsider the following source schema:\r\n\r\n```js\r\n// Stream: Users\r\n{\r\n  \"id\": \"number\",\r\n  \"first_name\": \"string\",\r\n  \"age\": \"number\",\r\n  \"address\": {\r\n    \"city\": \"string\",\r\n    \"zip\": \"string\"\r\n  }\r\n}\r\n```\r\n\r\nWhile not yet finalized (and we will be surveying our community for feedback on the final table format), in this new proposal the table created may look like:\r\n\r\n| id   | first_name | age  | address                                             | _airbyte_data                                                                                                           | _airbyte_extracted_at | _airbyte_error                                        | _airbyte_typed_at    |\r\n|------|------------|------|-----------------------------------------------------|-------------------------------------------------------------------------------------------------------------------------|---------------------|-------------------------------------------------------|----------------------|\r\n| 1    | evan       | 39   | ``` {   city: \"San Francisco\",   zip: \"94001\" } ``` | ``` {   id: 1,   first_name: \"evan\",   age: 38,   address: {     city: \"San Francisco\",     zip: \"94001\"   } } ```      | 2022-01-01 12:00:00﻿ | NULL                                                  | 2022-01-01 12:00:001 |\r\n| 2 | brian       | NULL | ``` {     city: \"San Francisco\",     zip: \"94002\"   } ```                                                | ``` {   id: 2,   first_name: \"brian\",   age: \"fish\",   address: {     city: \"San Francisco\",     zip: \"94002\"   } } ``` | 2022-01-01 12:00:00﻿ | Error: \"fish\" is not a valid integer for column \"age\" | 2022-01-01 12:00:001 |\r\n| NULL | NULL       | NULL | NULL                                                | ``` {   id: 3,   first_name: \"edward\",   age: 35,   address: {     city: \"New York\",     zip: \"10001\"   } } ```       | 2022-01-01 12:01:00﻿ | NULL                                                  | NULL                 |\r\n\r\nIn this example:\r\n\r\n- **Row 1**: Has had its raw data successfully saved, it has been Typed, and has no errors\r\n- **Row 2**: Has had its raw data successfully saved, and has a Typing error\r\n- **Row 3**: Has had its raw data successfully saved, and has not yet been typed (null `_airbyte_typed_at`)\r\n\r\n## Leaving Feedback:\r\n\r\nFirst and foremost, please leave an emoji response on this description. A 👍 indicates you generally approve of this plan, and a 👎 indicates you do not. Then, if you would like to discuss some aspect of this plan, please do so in the comments below.\r\n\r\nThank you!\r\n",
+ "comments": [
+  {
+   "author": "michel-tricot",
+   "created_at": "2023-04-18T21:03:13Z",
+   "body": "> Any Record which arrives from your source with a nested object will remain stored as JSON.\r\n\r\n\r\nWhat about using `SUPER` (Redshift), `VARIANT` (Snowflake) and warehouse specific types (likely more efficient to query), while keeping `Json` if there are no such types?"
+  },
+  {
+   "author": "adam-bloom",
+   "created_at": "2023-04-18T23:48:37Z",
+   "body": "@evantahler Can you add some details on the table naming plan? Currently, the raw table gets named `_airbyte_raw_{stream_name}` and the normalized table is named `{stream_name}`. Your example above merges this - does it just use `{stream_name}` as the table name then?"
+  },
+  {
+   "author": "jovezhong",
+   "created_at": "2023-04-19T03:25:13Z",
+   "body": "Minor doc issue for \"Consider the following source schema:\" section\r\n`\"street\": \"string\"` should be `\"city\": \"string\"`"
+  },
+  {
+   "author": "nina-j",
+   "created_at": "2023-04-19T08:46:36Z",
+   "body": "In the soft resets section, you mention them being useful for changes to column types. Our use case is rarely type changes, but rather upstream additions of new columns. Can you clarify if this use case is covered as well?"
+  },
+  {
+   "author": "pcorbel",
+   "created_at": "2023-04-19T09:30:02Z",
+   "body": "Just one question: where the process will be executed? In the destination (like Snowflake) or locally in the container?\r\nBecause for big syncs, I'm afraid of resources problems if we need to store all the data in-memory to deduplicate it. FMHO, the process should leverage the computing power of the destination"
+  },
+  {
+   "author": "evantahler",
+   "created_at": "2023-04-19T13:46:43Z",
+   "body": "@adam-bloom asks:\r\n\r\n> @evantahler Can you add some details on the table naming plan? Currently, the raw table gets named _airbyte_raw_{stream_name} and the normalized table is named {stream_name}. Your example above merges this - does it just use {stream_name} as the table name then?\r\n\r\nYep! If we go the route of just one table, we'll be using `{stream_name}`, well, technically `{namespace}.{stream_name}`, like we do today.  If we still need to have a raw table, the name could be similar to what it is today.  The goal is for the final table names to remain the same, which we believe to be sensible. We'll be talking more about the table's final format (and name) in another post like this"
+  },
+  {
+   "author": "evantahler",
+   "created_at": "2023-04-19T13:51:07Z",
+   "body": "@nina-j writes:\r\n\r\n> In the soft resets section, you mention them being useful for changes to column types. Our use case is rarely type changes, but rather upstream additions of new columns. Can you clarify if this use case is covered as well?\r\n\r\nYes! We aim to support column additions as well with soft resets.  Older records won't have any data for the new columns, but they could be set to NULL. \r\n\r\n"
+  },
+  {
+   "author": "evantahler",
+   "created_at": "2023-04-19T13:53:43Z",
+   "body": "@pcorbel asks\r\n\r\n>  Just one question: where the process will be executed? In the destination (like Snowflake) or locally in the container?  Because for big syncs, I'm afraid of resources problems if we need to store all the data in-memory to deduplicate it. FMHO, the process should leverage the computing power of the destination\r\n\r\nYep! As much of this work as possible will be done using SQL within the destination DB.  This is requirement to work across multiple syncs, as sync 2's containers won't have the information that sync 1's containers saw anyway.  "
+  },
+  {
+   "author": "abakula1",
+   "created_at": "2023-04-20T19:35:11Z",
+   "body": "@evantahler How will errors be handled? Would we get a new status type with an overview of which fields had typing errors for a given sync? We especially care about the `jobs/get` API call [that you provide](https://airbyte-public-api-docs.s3.us-east-2.amazonaws.com/rapidoc-api-docs.html#post-/v1/jobs/get). Love the idea here, really excited for this if it gets approved!"
+  },
+  {
+   "author": "CamiloAtencio",
+   "created_at": "2023-04-21T15:26:21Z",
+   "body": "In the case of a full refresh, for whatever reason, can you please write to another table before replacing the old table? This way the user will always have access to the data while the sync runs, which can be for many hours. I think currently you recreate the tables first, leaving the user without any data."
+  },
+  {
+   "author": "edgao",
+   "created_at": "2023-04-21T18:20:16Z",
+   "body": "@abakula1:\r\n\r\n> @evantahler How will errors be handled? Would we get a new status type with an overview of which fields had typing errors for a given sync? We especially care about the `jobs/get` API call [that you provide](https://airbyte-public-api-docs.s3.us-east-2.amazonaws.com/rapidoc-api-docs.html#post-/v1/jobs/get). Love the idea here, really excited for this if it gets approved!\r\n\r\nThat hadn't been on our radar! I'd love to know more about what information would be useful for you. The initial implementation will likely just tag the sync as successful (i.e. the data is available, and in most cases - almost all the columns are properly typed), but I can see how more detail would be useful.\r\n\r\nThere's also the option of having this in the table itself, e.g. the `_airbyte_error` column being in a machine-parseable format. That might be easier to implement, and certainly provides more granular information. I'm just brainstorming right now though - again, we hadn't previously put much thought into this specific piece."
+  },
+  {
+   "author": "edgao",
+   "created_at": "2023-04-21T18:22:05Z",
+   "body": "@CamiloAtencio \r\n\r\n> In the case of a full refresh, for whatever reason, can you please write to another table before replacing the old table? This way the user will always have access to the data while the sync runs, which can be for many hours. I think currently you recreate the tables first, leaving the user without any data.\r\n\r\nCan you clarify whether you're referring to (current behavior) the `_airbyte_raw_foo` table and/or the normalized `foo` table? I'm under the impression that normalization truncates and inserts new data in a single transaction, but haven't actually doublechecked that."
+  },
+  {
+   "author": "imrehg",
+   "created_at": "2023-04-28T08:19:50Z",
+   "body": "My first reaction was :scream::\r\n> We will stop expanding sub-objects which come from the source into additional tables\r\n\r\nBut then :sweat_smile:: we already re-joined / denormalise almost everything after AirByte, so this might simplify stuff anyways. Instead of multiple tables needing to be joined back, now multiple JSON objects need to be \"exploded\", so it's similar level of complexity at the end of the day for our current use case (I can imagine use cases where this is actually large amount of work, compared to just using the normalized tables).\r\n\r\nIt's gonna be a big chunk of tech-debt work springing from this change, while it seems that that can be made quite transparent to the end users, so can concentrate on the long term benefit afterwards due to the proposed changes you described.\r\n\r\nThough some of our access control + transformations (what database users can see what datasets / tables / columns) can become a lot more complex due to this change. It's much easier to include/exclude columns from copying, than exclude/include based on values within nested JSON structures."
+  },
+  {
+   "author": "chendatadog",
+   "created_at": "2023-04-28T19:19:49Z",
+   "body": "@edgao \r\nFor `Deduplication`, I find \"append_dedup\" in destination_sync_mode. So my question is whether this dedup logic is already defined in the destination connectors (e.g. Snowflake. I actually didn't find it implemented in Snowflake connector.)\r\n\r\nYou mentioned above \"whether you're referring to the _airbyte_raw_foo table and/or the normalized foo table?\"\r\nWhat you explained sounds to me that Airbyte will append to `_airbyte_raw_foo` (instead of creating temp tables and combine them in the current implementation), and then use a transaction to normalize it into `foo`?\r\n\r\nThanks"
+  },
+  {
+   "author": "edgao",
+   "created_at": "2023-05-02T16:48:02Z",
+   "body": "@chendatadog \r\n\r\n> @edgao For `Deduplication`, I find \"append_dedup\" in destination_sync_mode. So my question is whether this dedup logic is already defined in the destination connectors (e.g. Snowflake. I actually didn't find it implemented in Snowflake connector.)\r\n\r\nCorrect, this will be a new addition to destination-snowflake (and all other destinations).\r\n\r\n> You mentioned above \"whether you're referring to the _airbyte_raw_foo table and/or the normalized foo table?\" What you explained sounds to me that Airbyte will append to `_airbyte_raw_foo` (instead of creating temp tables and combine them in the current implementation), and then use a transaction to normalize it into `foo`?\r\n> \r\n> Thanks\r\n\r\nThat's right. Some destinations recently switched over to directly writing to the raw tables, which has enabled checkpointing within syncs, as well as being a performance improvement. (cc @ryankfu )\r\n\r\nUnder both current behavior _and_ the initial version of this proposal, we'll still run a single transaction after writing to the raw tables to generate the typed+deduped data. But it'll be much easier to do that on the fly once the logic lives inside the destination connector, rather than as an external module."
+  },
+  {
+   "author": "evantahler",
+   "created_at": "2023-05-12T16:01:05Z",
+   "body": "Thank you for the feedback everyone!  With the overwhelming 👍 responses, we are moving forward. \n\nCheck out https://github.com/airbytehq/airbyte/issues/26028 for more information, and to sign up to be a beta tester. "
+  },
+  {
+   "author": "talenodigital",
+   "created_at": "2023-05-22T10:17:38Z",
+   "body": "Hi @evantahler , So we are going to stop Increment | Dedupe that produces the SCD tables?"
+  },
+  {
+   "author": "evantahler",
+   "created_at": "2023-05-22T16:36:54Z",
+   "body": "> Hi @evantahler , So we are going to stop Increment | Dedupe that produces the SCD tables?\r\n\r\n`Incremental | Dedupe` sync modes will remain, but we will not be creating SCD tables along the way.  I've added more to the description of this issue as to why:\r\n\r\n> We plan to stop created SCD (slowly-changing-dimension) tables.\r\n> * These tables are costly to create and store, and are underutilized\r\n> * These tables do not capture every change from your database, only those seen by your sync's replication frequency.\r\n> * Using Airbyte's append mode, you can still import the history of your data as it changes\r\n> * You can also easily make your own SCD tables with dbt ([example here, called \"snapshots\"](https://docs.getdbt.com/docs/build/snapshots))."
+  },
+  {
+   "author": "zachloertscher",
+   "created_at": "2023-08-16T14:54:47Z",
+   "body": "I'm a bit late to this, but just to clarify - is normalization just being deprecated?  Is the expectation that Airbyte will no longer support normalization at the end of syncs?  \r\n\r\nWill it still be available as an option to use?  We rely heavily on this functionality and refactoring our processes to normalize on read would be a massive effort"
+  },
+  {
+   "author": "evantahler",
+   "created_at": "2023-08-16T15:25:14Z",
+   "body": "@zachloertscher Airbyte is no longer using `dbt` internally to \"expand\" rows from JSON into their final type-cast and deduplicated columns, but our destinations will still be [doing that work for you](https://github.com/airbytehq/airbyte/issues/26028).  You can still use custom dbt/dbt-cloud integrations at the end of the sync - that's not changing. "
+  },
+  {
+   "author": "zachloertscher",
+   "created_at": "2023-08-16T15:41:02Z",
+   "body": "Thanks @evantahler !  Just to verify that I understand, normalization will continue to be supported, but it will be accomplished by the destination rather than the previous airbyte dbt functionality?  \r\n\r\nFor example, I have a MSSQL -> Snowflake connection, and I updated my Snowflake destination to V2...  \r\n\r\nThe final, normalized schema is currently:\r\n| customer_id | customer_name | customer_address |\r\n|-------------|---------------|------------------|\r\n| 1           | jane          | 123 main st      |\r\n| 2           | joe           | 456 june way     |\r\n| 3           | bob           | 789 some st      |\r\n\r\nAfter destination V2, this final schema **won't** change to:\r\n| json_data |\r\n|-------------|\r\n| { {\"customer_id\":1, \"customer_name\":\"jane\", \"customer_address\":\"123 main st\"}, {\"customer_id\":2, \"customer_name\":\"joe\", \"customer_address\":\"456 june way\"}, {\"customer_id\":3, \"customer_name\":\"bob\", \"customer_address\":\"789 some st\"} } |\r\n\r\nAm I understanding correctly?  Or will I need to create a custom dbt hook to do the normalization?"
+  },
+  {
+   "author": "evantahler",
+   "created_at": "2023-08-17T01:20:43Z",
+   "body": "Your example is correct - you will still have columns for top-level source properties, in the propper types (I'm guessing something like INT, VARCHAR, TEXT) for your example.  If you had JSON data from your source (e.g. maybe customer_address was `{street: \"123 main st\", state: \"CA\"}`, in old normalization we would have made a redundant sub-table, users_addresses.  We aren't doing that any more, and we are also no longer making SCD tables.\r\n\r\n\"normalization\" has become an overloaded term, which is one of the reasons we have stopped using it ;) \r\n\r\nWhat's new:\r\n* per-record error handling\r\n* seeing typecast & deduplicated data mid-sync and not needing to wait until the end \r\n\r\nWhat's staying:\r\n* type-casting top-level properties from JSON records to real database columns\r\n* deduplication\r\n\r\nWhat's going away:\r\n* using dbt to acomplish the above\r\n* SCD tables"
+  },
+  {
+   "author": "zachloertscher",
+   "created_at": "2023-08-17T13:36:02Z",
+   "body": "@evantahler I see, that makes sense!  Thanks for taking the time to explain that!  Sounds like breaking changes would only apply to sources where there is nested json, i.e. objects that go {top_object_will_be_expanded: sub-object {this_wont_be_expanded: 1, neither_will_this: 2} }"
+  },
+  {
+   "author": "dimoschi",
+   "created_at": "2023-09-06T07:03:10Z",
+   "body": "> \r\n> ## What will be lost\r\n> 1. We plan to stop created SCD (slowly-changing-dimension) tables.\r\n>    \r\n>    * These tables are costly to create and store, and are underutilized\r\n>    * These tables do not capture _every_ change from your database, only those seen by your sync's replication frequency.\r\n>    * Using Airbyte's `append` mode, you can still import the history of your data as it changes\r\n>    * You can also easily make your own SCD tables with `dbt` ([example here, called \"snapshots\"](https://docs.getdbt.com/docs/build/snapshots)).\r\n\r\nI'm trying it hard to find a reliable way to make snapshots using dbt. By reliable I mean to have the exact timestamp of when the record has been invalidated/updated. Also, if for any reason something goes wrong in the snapshot, it seems impossible to rebuild it reliably, as historical information is not being kept.\r\n\r\n@evantahler I find the current direction too much opinionated without providing a reliable alternative. The rest of the changes are too good to pass though."
+  },
+  {
+   "author": "evantahler",
+   "created_at": "2023-09-06T08:31:37Z",
+   "body": "@dimoschi do the airbyte timestamp columns (either _airbyte_extracted_at or _airbyte_loaded_at not work for the purpose of snapshotting?"
+  },
+  {
+   "author": "dimoschi",
+   "created_at": "2023-09-06T11:59:09Z",
+   "body": "> @dimoschi do the airbyte timestamp columns (either _airbyte_extracted_at or _airbyte_loaded_at not work for the purpose of snapshotting?\r\n\r\nThey could work, but they wouldn't be precise and correct, since we want to have an SCD table that has the timestamps based on the timestamp the query got executed at source and not based on the time it was synced. At least this is what I understand from the implementation. Let me know if I'm wrong.\r\n\r\nAnother part that I want to bring up, is that despite saying goodbye to normalization, it still exists for connections utilizing Destinations V2. At least this is what I see on our Airbyte deployment with the latest version for Airbyte, and MySQL & Snowflake connectors. It is a bit confusing."
+  },
+  {
+   "author": "dimoschi",
+   "created_at": "2023-09-06T12:32:54Z",
+   "body": "To add to my previous point. I have the following setup:\r\n* Airbyte v0.50.27\r\n* MySQL 3.0.3\r\n* Snowflake 3.1.1\r\n\r\nAnd I run a connection between MySQL (MariaDB) and Snowflake with the following config:\r\n![image](https://github.com/airbytehq/airbyte/assets/13113025/f8929605-a8ed-41f8-824b-2838940f0250)\r\n\r\nThe sync fails during normalization, which shouldn't happen but the data shows up in Snowflake. The whole situation is weird and misleading.\r\n\r\nLogs for your convenience:\r\n[a0117286_6815_4c3a_8575_98b3b5ac8274_logs_5151_txt.txt](https://github.com/airbytehq/airbyte/files/12537291/a0117286_6815_4c3a_8575_98b3b5ac8274_logs_5151_txt.txt)\r\n"
+  },
+  {
+   "author": "edgao",
+   "created_at": "2023-09-06T15:55:07Z",
+   "body": "drive-by comment: `_airbyte_extracted_at` represents the time that the source query executed, which sounds like what you're looking for. (strictly speaking - it's whatever the source connector defines as \"the time when we extracted the data\", which for DB sources is the timestamp when we started running the `select` query)\r\n\r\n(`_airbyte_loaded_at` is the time when data was inserted to the destination, which is more akin to the time that the record was synced. If you're familiar with legacy normalization, extracted_at is equivalent to the old `_airbyte_emitted_at`, and loaded_at is equivalent to `_airbyte_normalized_at`)"
+  },
+  {
+   "author": "dimoschi",
+   "created_at": "2023-09-06T16:14:24Z",
+   "body": "Thanks @edgao that makes some sense to me now! Another question I have about the old SCD and the change introduced is about the deleted records. In the past SCD tables had the all records, even the ones deleted by the source. Without SCD, those records can only be found in raw tables, which makes it very hard to use them. There are several occasions where deleted records are needed for analytical purposes."
+  },
+  {
+   "author": "evantahler",
+   "created_at": "2023-09-06T16:22:50Z",
+   "body": "@dimoschi can you open a new issue detailing your needs around deleted records?  We actually delete CDC deleted records from both the raw and final tables now.  The use-case we were building for is that users generally want Airbyte syncs to mirror the sources as closely as possible, including dropping deleted records.  In the case that history is needed, users would build that to their own specifications (e.g. snapshots) at the frequency they want (daily? weekly?) and can analyze deletes there as needed then.\r\n\r\nIt's a reasonably simple change for us to make now ([this SQL statement](https://github.com/airbytehq/airbyte/blob/master/airbyte-integrations/connectors/destination-snowflake/src/main/java/io/airbyte/integrations/destination/snowflake/typing_deduping/SnowflakeSqlGenerator.java#L425-L438)) - but let us know more about your use case!"
+  },
+  {
+   "author": "dimoschi",
+   "created_at": "2023-09-06T17:01:22Z",
+   "body": "@evantahler I have created the following issue: https://github.com/airbytehq/airbyte/issues/30211\r\n\r\nHowever, I have faced several issues upgrading to Destinations V2. Even on a new/clean connection between MySQL and Snowflake, the connection errors out because normalization fails. I have created another issue: https://github.com/airbytehq/airbyte/issues/30212"
+  },
+  {
+   "author": "jankap",
+   "created_at": "2023-09-12T17:59:18Z",
+   "body": "Will this work for iceberg tables, too?"
+  },
+  {
+   "author": "evantahler",
+   "created_at": "2023-09-12T22:41:32Z",
+   "body": "> Will this work for iceberg tables, too?\r\n\r\nInitially no, we are starting with the destinations that today do normalization with dbt.  That said, it will be possible to add Typing and Deduping to any SQL/JDBC-like destination.  @jankap is this something you are interested in contributing? "
+  },
+  {
+   "author": "Ruitjes",
+   "created_at": "2024-03-05T23:04:19Z",
+   "body": "@evantahler  Would it still be possible to have/create a seperate table for your nested objects in destination V2 or is removed for-good?"
+  },
+  {
+   "author": "evantahler",
+   "created_at": "2024-03-05T23:36:52Z",
+   "body": "> @evantahler Would it still be possible to have/create a seperate table for your nested objects in destination V2 or is removed for-good?\r\n\r\nThat is not something Airbyte is planning to build at this time.  Tools like dbt are great at this, and the JSON-querying abilities of most data warehouses these days is pretty good, so you can make a view as well."
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "airbytehq/airbyte",
+  "default_branch": "master",
+  "commit_sha": "ea0425b1da9de2604863808265247a6660ef84b6",
+  "as_of": "2023-04-13T23:18:08Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_airbytehq_airbyte_25194"
+}

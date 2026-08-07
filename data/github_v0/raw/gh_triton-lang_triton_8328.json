@@ -1,0 +1,152 @@
+{
+ "repo": "triton-lang/triton",
+ "number": 8328,
+ "url": "https://github.com/triton-lang/triton/issues/8328",
+ "title": "B200 flex_attention_fwd 18% perf regression after #7565",
+ "state": "closed",
+ "labels": [
+  "performance"
+ ],
+ "reporter": "reporter",
+ "created_at": "2025-09-30T21:32:33Z",
+ "closed_at": "2025-10-03T15:46:24Z",
+ "body": "### Describe the issue\n\nWe are observing ~18% `flex_attention_fwd` TFLOPs regression happening on B200 after #7565 (b3b9931cb7ed07a6d7a3833c8dcb7b7b519e882f). Here are some stable perf results from TritonBench running `flex_attention_fwd` (N.B. the `compiled-tflops` field):\n\nOn ea4bdaf9d662e36a52ea422a37daa4e2e1abad30 (right before b3b9931cb7ed07a6d7a3833c8dcb7b7b519e882f):\n\n```\n             (B, Hq, M, Hkv, N, D) | Mask Type        eager-latency    eager-tflops    compiled-latency    compiled-tflops    compiled-speedup\n----------------------------------------------  -------------------  --------------  ------------------  -----------------  ------------------\n(8, 16, 2048, 16, 2048, 128) |            noop   12.421216 (±1.45%)         22.1297   0.673152 (±0.71%)            409.94              18.4523\n(8, 16, 4096, 16, 4096, 128) |            noop   52.464802 (±0.00%)         20.9571   2.470944 (±0.25%)            446.715             21.2327\n(8, 16, 8192, 16, 8192, 128) |            noop  266.076416 (±0.00%)         16.5293   9.525376 (±0.03%)            463.523             27.9334\n                                       average                              19.872                                 440.059             22.5395\n```\n\nOn b3b9931cb7ed07a6d7a3833c8dcb7b7b519e882f:\n\n```\n             (B, Hq, M, Hkv, N, D) | Mask Type        eager-latency    eager-tflops    compiled-latency    compiled-tflops    compiled-speedup\n----------------------------------------------  -------------------  --------------  ------------------  -----------------  ------------------\n(8, 16, 2048, 16, 2048, 128) |            noop   12.197824 (±4.43%)         22.535    0.807840 (±0.76%)            341.592             15.0993\n(8, 16, 4096, 16, 4096, 128) |            noop   50.302177 (±0.00%)         21.8581   3.012736 (±0.10%)            366.38              16.6965\n(8, 16, 8192, 16, 8192, 128) |            noop  240.981247 (±0.00%)         18.2506  11.689984 (±0.04%)            377.693             20.6143\n                                       average                              20.8812                                361.888             17.4701\n```\n\nHere's a standalone script with the generated `flex_attention_fwd` kernel code that may help investigation: https://gist.github.com/reporter/76321caea3fcd969639a69f8aca6bf21 (courtesy of @participant3).\n\nCan we please get some help in investigating and fixing the issue? CC @participant5 @participant2 @participant1. Thanks!\n\nCC @participant1 @participant3 @participant6.\n\n### Environment details\n\nTriton: ea4bdaf9d662e36a52ea422a37daa4e2e1abad30 vs b3b9931cb7ed07a6d7a3833c8dcb7b7b519e882f\nGPU: NVIDIA B200",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2025-09-30T21:57:17Z",
+   "body": "As per https://<redacted-host>/t/pytorch-release-2-9-0-key-dates/3178\nWe would like to address this for pytorch release/2.9 if possible:\n\nOur deadline is this week: week of 09/29to produce final RC. \nM4: Release branch finalized, Announce final launch date, new features published (week of 09/29) - Final RC is produced.\n\nHence the fix needs to land on 10/01 or 10/02 (within next couple of days)"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-09-30T22:00:26Z",
+   "body": "> Can we please get some help in investigating and fixing the issue? CC [@participant5](https://github.com/participant5) [@participant2](https://github.com/participant2) [@participant1](https://github.com/participant1). Thanks!\n\nI don't think we'll have bandwidth to investigate this.\nI'm surprised you have a convert layout your attention main loop, do you know why? In the past we did notice high variance based on small changes on attention kernels, often due to different choices in scheduling, I wonder if that's what is going on.\nI think someone will have to dig a bit more into that to root cause the problem as we haven't noticed performance regressions from this change."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-09-30T22:01:21Z",
+   "body": "> We would like to address this for pytorch release/2.9 if possible:\n\ncan you revert this PR in the release branch until this is figured out?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-09-30T22:38:29Z",
+   "body": "@participant2 there are multiple merge conflicts when we try to revert. Maybe @participant5 can help us creating a revert so we can get a signal for it on our CI ?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-09-30T22:48:35Z",
+   "body": "> I'm surprised you have a convert layout your attention main loop, do you know why? In the past we did notice high variance based on small changes on attention kernels, often due to different choices in scheduling, I wonder if that's what is going on.\n\n@participant3 as the author of the kernel, could you please comment on this?"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-09-30T22:52:40Z",
+   "body": "> [@participant2](https://github.com/participant2) there are multiple merge conflicts when we try to revert. Maybe [@participant5](https://github.com/participant5) can help us creating a revert so we can get a signal for it on our CI ?\n\ndid you try to track where those conflicts come from and if reverting some following commits can solve this?"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-09-30T23:05:37Z",
+   "body": "@participant2 So the main issue is that there is an extra layout conversion in the fwd body? Do you have good ways to pinpoint the reason for this? Is it just stare at ttgir ? "
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-09-30T23:20:43Z",
+   "body": "> [@participant2](https://github.com/participant2) So the main issue is that there is an extra layout conversion in the fwd body? Do you have good ways to pinpoint the reason for this?\n\nI assume if this PR causes a regression it is related to convert layout as it is what is changing (although it changes also the local_load/local_store lowering but in a smaller way)\n\n>  Is it just stare at ttgir ?\n\nthat's usually the first step\n\nA first debugging step may also be to diff the ptx or llvm generated to see which places changed significantly "
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-10-01T21:43:00Z",
+   "body": "We compared the ttgir, ptx and ncu traces of the kernel runs on the commit right before the bisected PR and the commit with the PR. Here're our findings:\n\n- ttgir are unchanged, as expected\n- ptx differ primarily by `convert_layout` lowered to `ld.shared`/`st.shared` (the good one) vs `ldmatrix`/`stmatrix` (the bad one), and the number of load or store instructions in bad versions are also larger\n- one `convert_layout` of `128x64xbf16` in the loop looks outstanding\n- there's a huge increase in SMEM traffic in the bad version\n\n<img width=\"1450\" height=\"666\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/42938d85-8014-422a-a34c-dbd1719afc88\" />\n\n<img width=\"1877\" height=\"765\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/149169ef-1f42-4513-965b-c50255b63e27\" />\n\n<img width=\"1880\" height=\"755\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/a84c2ea0-f19b-4048-9a41-99cc20b6ce12\" />"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-10-01T21:54:08Z",
+   "body": "could you share the ttgir?"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-10-01T22:00:03Z",
+   "body": "- ttgir: https://gist.github.com/participant4/f47639a166fbf4ea8b01a723ec3899dd\n- ptx (good): https://gist.github.com/participant4/f0af023fb84711c507bebf2b72d0143e\n- ptx (bad): https://gist.github.com/participant4/6a621af64f4489f8d906d03313b76e13"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-10-01T22:41:38Z",
+   "body": "If I force it lowers to `ld/st` instead of `ldmatrix`/`stmatrix` like this:\n```diff\ndiff --git a/lib/Tools/GenericSwizzling.cpp b/lib/Tools/GenericSwizzling.cpp\nindex 40ee9d775..68ce4dc24 100644\n--- a/lib/Tools/GenericSwizzling.cpp\n+++ b/lib/Tools/GenericSwizzling.cpp\n@@ -646,7 +646,7 @@ optimalSwizzling(const LinearLayout &src, const LinearLayout &dst,\n                      std::move(*maybeTileDst)});\n   }\n \n-  if (tiles.empty()) {\n+  if (!tiles.empty()) {\n     // We lower to an ld / st, but can't use LDS128/STS128\n     auto smem = optimalSwizzlingLdSt(src, dst, bitwidth);\n     return {smem, {0, 0}};\n```\n\nI got the perf back:\n- Hacked version perf (apply the diff): 442 tflops\n- baseline good version: 435 tflops\n- baseline bad version: 359 tflops \n\n(All ran twice without tweaking gpu clocks on a 750W B200 machine)"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-10-01T23:25:11Z",
+   "body": "maybe you could hack a heuristic in the release branch then?"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-10-01T23:35:47Z",
+   "body": "also looking at the IR, it seems like we be doing a poor job picking the layout for the tmem_load which is causing the convert_layout to exist:\n```\n    %qk_95 = ttng.tmem_load %qk : !ttg.memdesc<128x64xf32, #tmem1, #ttng.tensor_memory, mutable> -> tensor<128x64xf32, #linear> loc(#loc231)\n```\n\nalthough I haven't looked in details at why this happens"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-10-01T23:54:35Z",
+   "body": "You're right! Disabling `optimize_tmem_layouts` pass gives us 435 tflops. Perhaps we could look at this (simpler) pass to fix it. After all, there better not be any convert_layout in the loop at all."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-10-02T00:07:19Z",
+   "body": "yeah sounds like a good workaround (although you could probably disable only 1 pattern in there)"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-10-02T00:08:14Z",
+   "body": "`TMemLoadReducePattern` is the one. Do we need to worry about other kernels if we disable this pattern in release branch?"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-10-02T00:08:43Z",
+   "body": "there are also probably better fixes to be done in that pass but doing it in the release branch may not be ideal"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-10-02T00:09:52Z",
+   "body": "> `TMemLoadReducePattern` is the one. Do we need to worry about other kernels if we disable this pattern in release branch?\n\nit's mostly for attention, I guess the downside is that there will be an extra round trip to memory for the reduction "
+  },
+  {
+   "author": "participant5",
+   "created_at": "2025-10-02T07:27:12Z",
+   "body": "The worse perf coming from ldmatrix is unexpected. I will look into that, but I'm not sure I'll get to it this week."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-10-03T01:33:30Z",
+   "body": "@participant4 has a fix in https://github.com/triton-lang/triton/pull/8353!"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-10-03T15:46:24Z",
+   "body": "Closed by https://github.com/triton-lang/triton/pull/8353\n\n```\n             (B, Hq, M, Hkv, N, D) | Mask Type        eager-latency    eager-tflops    compiled-latency    compiled-tflops    compiled-speedup\n----------------------------------------------  -------------------  --------------  ------------------  -----------------  ------------------\n(8, 16, 2048, 16, 2048, 128) |            noop   11.938976 (±0.15%)         23.0236   0.601984 (±0.57%)            458.404             19.8327\n(8, 16, 4096, 16, 4096, 128) |            noop   52.060383 (±0.00%)         21.1199   2.195712 (±0.17%)            502.71              23.71\n(8, 16, 8192, 16, 8192, 128) |            noop  269.916412 (±0.00%)         16.2941   8.435680 (±0.04%)            523.399             31.997\n                                       average                              20.1459                                494.838             25.1799\n\n```"
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "triton-lang/triton",
+  "default_branch": "main",
+  "commit_sha": "b50872a8be954064309249a1536aa47fc7122e30",
+  "as_of": "2025-09-30T21:32:33Z",
+  "method": "github_commits_until"
+ },
+ "images": [
+  {
+   "where": "c8",
+   "source_url": "https://github.com/user-attachments/assets/42938d85-8014-422a-a34c-dbd1719afc88",
+   "file": "gh_triton-lang_triton_8328_img0.png"
+  },
+  {
+   "where": "c8",
+   "source_url": "https://github.com/user-attachments/assets/149169ef-1f42-4513-965b-c50255b63e27",
+   "file": "gh_triton-lang_triton_8328_img1.png"
+  },
+  {
+   "where": "c8",
+   "source_url": "https://github.com/user-attachments/assets/a84c2ea0-f19b-4048-9a41-99cc20b6ce12",
+   "file": "gh_triton-lang_triton_8328_img2.png"
+  }
+ ],
+ "slug": "gh_triton-lang_triton_8328"
+}

@@ -1,0 +1,306 @@
+{
+ "repo": "openssl/openssl",
+ "number": 27197,
+ "url": "https://github.com/openssl/openssl/issues/27197",
+ "title": "Test failures on big endian ARMv9 with enable-asm",
+ "state": "closed",
+ "labels": [
+  "triaged: bug"
+ ],
+ "reporter": "reporter",
+ "created_at": "2025-03-29T12:44:36Z",
+ "closed_at": "2025-04-14T14:48:14Z",
+ "body": "When building openssl 3.3.3 in a big endian Gentoo VM on an ARMv9 based computer (Radxa Orion O6),\n14 tests fail when building with `enable-asm`.  I also get failures in wget (with https) and ssh.  If building with\n`no-asm`, then all the problems go away.  So it seems there is some asm code which is not endian clean.\n\nIf I build on an ARMv8 machine instead (Nvidia Jetson TX2) then everything works even with `enable-asm`, so presumably it's some asm that is enabled only for newer ARM.\n\ncpu features on Orion O6 (where the tests fail):\n```\nfp asimd evtstrm aes pmull sha1 sha2 crc32 atomics fphp asimdhp cpuid asimdrdm jscvt fcma lrcpc dcpop sha3 sm3 sm4 asimddp sha512 sve asimdfhm dit uscat ilrcpc flagm ssbs sb paca pacg dcpodp sve2 sveaes svepmull svebitperm svesha3 svesm4 flagm2 frint svei8mm svebf16 i8mm bf16 dgh bti ecv afp wfxt\n```\n\ncpu features on Jetson TX2 (where the tests succeed):\n```\nfp asimd evtstrm aes pmull sha1 sha2 crc32 cpuid\n```\n\nThe tests that fail are the following:\n```\nTest Summary Report\n-------------------\n03-test_internal_chacha.t             (Wstat: 256 (exited 1) Tests: 1 Failed: 1)\n  Failed test:  1\n  Non-zero exit status: 1\n05-test_cmac.t                        (Wstat: 256 (exited 1) Tests: 1 Failed: 1)\n  Failed test:  1\n  Non-zero exit status: 1\n20-test_enc.t                         (Wstat: 1024 (exited 4) Tests: 99 Failed: 4)\n  Failed tests:  87-88, 91-92\n  Non-zero exit status: 4\n20-test_enc_more.t                    (Wstat: 512 (exited 2) Tests: 141 Failed: 2)\n  Failed tests:  136-137\n  Non-zero exit status: 2\n25-test_pkcs8.t                       (Wstat: 512 (exited 2) Tests: 15 Failed: 2)\n  Failed tests:  14-15\n  Non-zero exit status: 2\n30-test_evp.t                         (Wstat: 512 (exited 2) Tests: 80 Failed: 2)\n  Failed tests:  42, 50\n  Non-zero exit status: 2\n70-test_quic_record.t                 (Wstat: 256 (exited 1) Tests: 1 Failed: 1)\n  Failed test:  1\n  Non-zero exit status: 1\n90-test_bio_enc.t                     (Wstat: 256 (exited 1) Tests: 1 Failed: 1)\n  Failed test:  1\n  Non-zero exit status: 1\nFiles=315, Tests=3694, 158 wallclock secs (11.21 usr  1.68 sys + 364.07 cusr 101.99 csys = 478.95 CPU)\nResult: FAIL\n```",
+ "comments": [
+  {
+   "author": "reporter",
+   "created_at": "2025-03-29T12:48:06Z",
+   "body": "The cores on the O6 are Cortex-A720, while the ones on the Jetson are Cortex-A57."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-03-30T07:55:28Z",
+   "body": "did this ever work, e.g. with 3.2.0  or 3.0.0 ?\nand if yes, could you git bisect the first bad commit ?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-03-30T07:56:36Z",
+   "body": "and did you try the master version already?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-03-30T11:27:27Z",
+   "body": "*checking...* master and 3.2.0 have the exact same set of failures as 3.3.3.  3.0.0 has 36 failures, but there seems to be very little overlap, with `30-test_evp.t` being the only common testsuite.  3.1.0 has 74 failures, some of which are the same as 3.0.0, some of which are the same as 3.2.0.\n\nSo I guess as a starting point I'll bisect between 3.0.0 and 3.1.0, looking only at e.g. the `20-test_enc.t` and `20-test_enc_more.t` suites, which fail in 3.1.0 and later but not in 3.0.0."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-03-30T12:24:30Z",
+   "body": "37f1828d8701662c40cc98172001a533fe49764c is the first bad commit.\n\nThis makes sense since SM4 is present in Cortex-A720 but not in Cortex-A57."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-03-30T13:00:43Z",
+   "body": "In 3.3.3, if I comment out the lines\n```\n         if (hwcap & OSSL_HWCAP_CE_SM4)\n             OPENSSL_armcap_P |= ARMV8_SM4;\n```\nin `crypto/armcap.c`, then the number of fails drop from 14 to 4.  These are the ones remaining:\n```\nTest Summary Report\n-------------------\n03-test_internal_chacha.t             (Wstat: 256 (exited 1) Tests: 1 Failed: 1)\n  Failed test:  1\n  Non-zero exit status: 1\n30-test_evp.t                         (Wstat: 256 (exited 1) Tests: 80 Failed: 1)\n  Failed test:  42\n  Non-zero exit status: 1\n70-test_quic_record.t                 (Wstat: 256 (exited 1) Tests: 1 Failed: 1)\n  Failed test:  1\n  Non-zero exit status: 1\n90-test_bio_enc.t                     (Wstat: 256 (exited 1) Tests: 1 Failed: 1)\n  Failed test:  1\n  Non-zero exit status: 1\nFiles=316, Tests=3695, 202 wallclock secs (12.44 usr  2.34 sys + 403.73 cusr 95.50 csys = 514.01 CPU)\nResult: FAIL\n```\nSo I guess there is something more than just the SM4 code as well..."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-03-30T13:46:34Z",
+   "body": "ok, you can also try `make test TESTS='test_evp test_bio_enc'  V=1` and share the output from that.\nand BTW, did you already check the master branch is also affected?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-03-30T13:59:17Z",
+   "body": "I'm currently bisecting on `test_internal_chacha` and `test_bio_enc` to see where those stopped working.  Then I'll check whatever is left with `V=1`.  :<nick>:\n\nRegarding master; as I wrote [above](https://github.com/openssl/openssl/issues/27197#issuecomment-2764512904) master has the exact same set of fails as 3.3.3 and 3.2.0."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-03-30T13:59:58Z",
+   "body": "... and what does `openssl version -a` output?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-03-30T14:09:57Z",
+   "body": "> ... and what does `openssl version -a` output?\n\nAt my current bisection point, it prints:\n```\nOpenSSL 3.1.0-beta2-dev  (Library: OpenSSL 3.1.0-beta2-dev )\nbuilt on: Sun Mar 30 13:07:25 2025 UTC\nplatform: linux-aarch64\noptions:  bn(64,64)\ncompiler: gcc -fPIC -pthread -Wa,--noexecstack -Wall -O3 -DOPENSSL_USE_NODELETE -DOPENSSL_PIC -DOPENSSL_BUILDING_OPENSSL -DNDEBUG -DB_ENDIAN\nOPENSSLDIR: \"/usr/local/ssl\"\nENGINESDIR: \"/usr/local/lib/engines-3\"\nMODULESDIR: \"/usr/local/lib/ossl-modules\"\nSeeding source: os-specific\nCPUINFO: OPENSSL_armcap=0x6efd\n```"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-03-30T14:14:16Z",
+   "body": "okay, and what happens if you try ` OPENSSL_armcap=0x0efd` ?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-03-30T14:27:10Z",
+   "body": "On which commit?  3.3.3?\nMy bisection of the chacha failure was unconclusive because I ran into a compilation error in `crypto/chacha/chacha-armv8-sve.S` where someone had attempted to add endianness handling, but introduced a syntax error in the big endian code path.  So I was unable to determine if that commit represented a \"fixed\" or an \"unfixed\" version.  But it does hint at a problem with that file at least, and SVE is another thing that exists on A720 but not A57."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-03-30T14:48:04Z",
+   "body": "On unmodified 3.3.3:\n\n`OPENSSL_armcap=0x0efd make test` gives a total of 10 fails\n`OPENSSL_armcap=0x0afd make test` gives a total of 0 fails (all pass)"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-03-30T14:53:05Z",
+   "body": "`OPENSSL_armcap=0x4afd` also passes, so disabling SM4 and SVE (but not SVE2) is sufficient."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-03-30T14:58:04Z",
+   "body": "and `OPENSSL_armcap=0x2afd` ?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-03-30T14:58:33Z",
+   "body": "#19902 seems related to the chacha problem.  It says the fix was tested, although only with qemu."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-03-30T15:02:59Z",
+   "body": "> and `OPENSSL_armcap=0x2afd` ?\n\nAlso pass.  Huh."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-03-30T15:08:05Z",
+   "body": "`OPENSSL_armcap=0x6afd` gives the expected 4 fails though."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-03-30T15:15:50Z",
+   "body": "> > and `OPENSSL_armcap=0x2afd` ?\n> \n> Also pass. Huh.\n\nthis means the chacha bug is in chacha-armv8-sve.pl but only in the SVE2 part thereof."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-03-30T16:09:27Z",
+   "body": "Hmm, regarding SM4 assembler bug, can you find out what is the value of `OPENSSL_arm_midr`?\nhttps://github.com/openssl/openssl/blob/02cada2e45a2867e304542f9c5440bfb29af0283/crypto/armcap.c#L414"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-03-30T16:27:43Z",
+   "body": "```\nOPENSSL_arm_midr = 0x410fd811\n```"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-03-30T16:43:02Z",
+   "body": "so the bug is in crypto/sm4/asm/sm4-armv8.pl"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-03-30T16:48:25Z",
+   "body": "And, finally how does the output of `make test TESTS='test_evp test_bio_enc'  V=1` look like?\nedit: maybe also `make test TESTS='test_internal_chacha' V=1`"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-03-30T17:42:40Z",
+   "body": "[testlog.txt](https://github.com/user-attachments/files/19526861/testlog.txt)"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-04-01T05:33:22Z",
+   "body": "quoting from the testlog of chacha_internal_test.c\n```\n        # [137] compared to [247]\n        # INFO:  @ ../../home/<user>/hack/openssl/test/chacha_internal_test.c:176\n        # 319 failed at 0 (89) \n\n        # [154] compared to [56] \n        # INFO:  @ ../../home/<user>/hack/openssl/test/chacha_internal_test.c:176       \n        # 320 failed at 64 (9a)\n```\nand the reference value at position 0 looks like:\n\n```C\nstatic const unsigned char ref[] = {\n    0xf7, 0x98, 0xa1, 0x89, 0xf1, 0x95, 0xe6, 0x69,\n[...]\n    0x38, 0x00, 0x8b, 0x9a, 0x26, 0xbc, 0x35, 0x94,\n```\n\nso the output seem to be byte-swapped the ref[3] (0x89) is at ref[0]\nand ref[64+3] (0x9a) is at ref[64].  The input is all zero but that can\nlikely also be byte-swapped."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-04-01T05:45:12Z",
+   "body": "Hi @reporter,\ncould you please try `OPENSSL_armcap=0x2afd make test`\nand `OPENSSL_armcap=0x6afd make test`\nwith this patch applied?\n```\n--- a/crypto/chacha/asm/chacha-armv8-sve.pl\n+++ b/crypto/chacha/asm/chacha-armv8-sve.pl\n@@ -248,9 +248,6 @@ sub load_regs() {\n        my $next_offset = $offset + 1;\n $code.=<<___;\n        ld1w    {$reg.s},p0/z,[$inp,#$offset,MUL VL]\n-#ifdef  __AARCH64EB__\n-       revb    $reg.s,p0/m,$reg.s\n-#endif\n ___\n        if (@_) {\n                &load_regs($next_offset, @_);\n@@ -272,9 +269,6 @@ sub store_regs() {\n        my $reg = shift;\n        my $next_offset = $offset + 1;\n $code.=<<___;\n-#ifdef  __AARCH64EB__\n-       revb    $reg.s,p0/m,$reg.s\n-#endif\n        st1w    {$reg.s},p0,[$outp,#$offset,MUL VL]\n ___\n        if (@_) {\n@@ -875,8 +869,7 @@ my  %opcode_pred = (\n        \"ld1w\"         => 0xA540A000,\n        \"ld1rw\"        => 0x8540C000,\n        \"lasta\"        => 0x0520A000,\n-       \"revh\"         => 0x05258000,\n-       \"revb\"         => 0x05248000);\n+       \"revh\"         => 0x05258000);\n \n my  %tsize = (\n        'b'          => 0,\n```"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-04-01T06:50:47Z",
+   "body": ">  `OPENSSL_armcap=0x2afd make test`\n\n```\nResult: PASS\n```\n\n> `OPENSSL_armcap=0x6afd make test` \n\n```\nTest Summary Report\n-------------------\n03-test_internal_chacha.t             (Wstat: 256 (exited 1) Tests: 1 Failed: 1)\n  Failed test:  1\n  Non-zero exit status: 1\n30-test_evp.t                         (Wstat: 256 (exited 1) Tests: 80 Failed: 1)\n  Failed test:  42\n  Non-zero exit status: 1\n70-test_quic_record.t                 (Wstat: 256 (exited 1) Tests: 1 Failed: 1)\n  Failed test:  1\n  Non-zero exit status: 1\n90-test_bio_enc.t                     (Wstat: 256 (exited 1) Tests: 1 Failed: 1)\n  Failed test:  1\n  Non-zero exit status: 1\nFiles=316, Tests=3695, 956 wallclock secs (22.51 usr 11.32 sys + 581.04 cusr 205.75 csys = 820.62 CPU)\nResult: FAIL\n```\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-04-01T08:41:56Z",
+   "body": "Hmm, thanks.  Did the output from `make test TESTS=test_internal_chacha V=1` change at all?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-04-01T09:24:26Z",
+   "body": "Only the `OPENSSL_TEST_RAND_SEED` values changed, AFAICT."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-04-01T11:22:51Z",
+   "body": "Well, let's add this to the above patch then:\n```\n $code.=<<___;\n #ifdef __AARCH64EB__\n        rev     @participant1[0],@participant1[0]\n+       rev     @mx[0].s,p0/m,@mx[0]\n        rev     @participant1[2],@participant1[2]\n+       rev     @mx[2].s,p0/m,@mx[2]\n        rev     @participant1[4],@participant1[4]\n+       rev     @mx[4].s,p0/m,@mx[4]\n        rev     @participant1[6],@participant1[6]\n+       rev     @mx[6].s,p0/m,@mx[6]\n        rev     @participant1[8],@participant1[8]\n+       rev     @mx[8].s,p0/m,@mx[8]\n        rev     @participant1[10],@participant1[10]\n+       rev     @mx[10].s,p0/m,@mx[10]\n        rev     @participant1[12],@participant1[12]\n+       rev     @mx[12].s,p0/m,@mx[12]\n        rev     @participant1[14],@participant1[14]\n+       rev     @mx[14].s,p0/m,@mx[14]\n #endif\n        .if mixin == 1\n                add     @K[6],@K[6],#1\n```\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-04-01T11:54:56Z",
+   "body": "ah, sorry the assembly seems wrong, try this instead: \n```\n--- a/crypto/chacha/asm/chacha-armv8-sve.pl\n+++ b/crypto/chacha/asm/chacha-armv8-sve.pl\n@@ -248,9 +248,6 @@ sub load_regs() {\n        my $next_offset = $offset + 1;\n $code.=<<___;\n        ld1w    {$reg.s},p0/z,[$inp,#$offset,MUL VL]\n-#ifdef  __AARCH64EB__\n-       revb    $reg.s,p0/m,$reg.s\n-#endif\n ___\n        if (@_) {\n                &load_regs($next_offset, @_);\n@@ -272,9 +269,6 @@ sub store_regs() {\n        my $reg = shift;\n        my $next_offset = $offset + 1;\n $code.=<<___;\n-#ifdef  __AARCH64EB__\n-       revb    $reg.s,p0/m,$reg.s\n-#endif\n        st1w    {$reg.s},p0,[$outp,#$offset,MUL VL]\n ___\n        if (@_) {\n@@ -480,13 +474,21 @@ sub SVE_TRANSFORMS() {\n $code.=<<___;\n #ifdef __AARCH64EB__\n        rev     @participant1[0],@participant1[0]\n+       revb    @mx[0].s,p0/m,@mx[0]\n        rev     @participant1[2],@participant1[2]\n+       revb    @mx[2].s,p0/m,@mx[2]\n        rev     @participant1[4],@participant1[4]\n+       revb    @mx[4].s,p0/m,@mx[4]\n        rev     @participant1[6],@participant1[6]\n+       revb    @mx[6].s,p0/m,@mx[6]\n        rev     @participant1[8],@participant1[8]\n+       revb    @mx[8].s,p0/m,@mx[8]\n        rev     @participant1[10],@participant1[10]\n+       revb    @mx[10].s,p0/m,@mx[10]\n        rev     @participant1[12],@participant1[12]\n+       revb    @mx[12].s,p0/m,@mx[12]\n        rev     @participant1[14],@participant1[14]\n+       revb    @mx[14].s,p0/m,@mx[14]\n #endif\n        .if mixin == 1\n                add     @K[6],@K[6],#1\n```"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-04-01T12:52:52Z",
+   "body": "Ok, now `V=1` output from `test_internal_chacha` is different: [new_log.txt](https://github.com/user-attachments/files/19551092/new_log.txt)\n\nStill FAIL though.\n\nBTW, posting patches inline in github comments seems to mess up the whitespace which forces me to apply the patches by hand.  Please attach the patches instead.  Thanks."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-04-01T14:04:35Z",
+   "body": "Ah, okay.\nOne more try: \n\n[chacha.txt](https://github.com/user-attachments/files/19552204/chacha.txt)"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-04-01T19:13:46Z",
+   "body": "Hmm, regarding SM4,\nis the define `__ARMEB__` defined on your host compiler?\n\nhttps://github.com/openssl/openssl/blob/6d3202e20f73f8d368004a90d743a613b51f0d62/crypto/sm4/asm/sm4-armv8.pl#L35\n\nI ask because I don't see it defined in an aarch64-unknown-elf-gcc (rather old version 9.0)\neven when I comipile with `-mbig-endian`\nI see only\n```\n#define __AARCH64EB__ 1\n#define __ARM_BIG_ENDIAN 1\n```\nan arm-linux-gnueabi-gcc cross-compiler (13.0), OTOH would define\n```\n#define __ARMEB__ 1\n#define __ARM_BIG_ENDIAN 1\n```"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-04-02T10:19:37Z",
+   "body": "> Hmm, regarding SM4, is the define `__ARMEB__` defined on your host compiler?\n\nIt is not.  Good catch.\n\n```\nmariko-be:~% echo \"\" | gcc -dD -E - | grep -E '(BE|EB|BIG_END)'\n#define __ORDER_BIG_ENDIAN__ 4321\n#define __BYTE_ORDER__ __ORDER_BIG_ENDIAN__\n#define __FLOAT_WORD_ORDER__ __ORDER_BIG_ENDIAN__\n#define __GNUC_WIDE_EXECUTION_CHARSET_NAME \"UTF-32BE\"\n#define __USER_LABEL_PREFIX__ \n#define __AARCH64EB__ 1\n#define __ARM_BIG_ENDIAN 1\nmariko-be:~% \n```\n\n`__ARMEB__` is for 32-bit, yes."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-04-02T10:26:53Z",
+   "body": "> Ah, okay. One more try:\n\n[log_20250402.txt](https://github.com/user-attachments/files/19566206/log_20250402.txt)\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-04-02T11:57:38Z",
+   "body": "> Line 35 in [6d3202e](/openssl/openssl/commit/6d3202e20f73f8d368004a90d743a613b51f0d62)\n> \n> ` #ifndef __ARMEB__ `\n\nChanging this line to\n\n```\n#if !defined(__ARMEB__) && !defined(__AARCH64EB__)\n```\n\nmakes test 91-92 in `20-test_enc.t` pass, but the other 8 SM4 related fails are still there."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-04-02T13:02:50Z",
+   "body": "Thanks, we're making great progress.  Here is my next attempt: \n\n[patch1.txt](https://github.com/user-attachments/files/19568393/patch1.txt)\n\nI would be interested in verbose test output of all failed tests."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-04-02T13:47:08Z",
+   "body": "[log_20250402b.txt](https://github.com/user-attachments/files/19569079/log_20250402b.txt)\n\n6 down, 8 to go.  😁 "
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-04-02T13:58:48Z",
+   "body": "For some background on `__ARMEB__` vs `__AARCH64EB__`: https://github.com/openssl/openssl/pull/17373"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-04-02T17:55:39Z",
+   "body": "Okay, same procedure: \n\n[patch2.txt](https://github.com/user-attachments/files/19573203/patch2.txt)"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-04-02T20:19:11Z",
+   "body": "```\nAll tests successful.\nFiles=316, Tests=3695, 957 wallclock secs (22.91 usr 12.43 sys + 584.53 cusr 205.56 csys = 825.43 CPU)\nResult: PASS\n```\n\nBrilliant.  I'll make a system install with this patch to check that ssh and wget work correctly as well, but this looks very promising."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-04-02T21:09:44Z",
+   "body": "Yes, ssh and wget also work fine with this patch.  Well done."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-04-02T22:16:44Z",
+   "body": "Okay, great.  Mission impossible almost completed.\nThere is still one thing to do.  I see both errors from SM4 also repeated in SM3,\nbut they cancel each other out, resulting in just less efficient code than expected.\nSo could you give this updated version also a try: \n\n[patch3.txt](https://github.com/user-attachments/files/19576293/patch3.txt)"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-04-03T06:40:51Z",
+   "body": "Still PASS."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-04-03T07:30:05Z",
+   "body": "Okay great.  That confirms my assumption.\nHowever on second thought, I think the little-endian code will still need the rev32's.\n\nSo this will be the final version:  [patch4.txt](https://github.com/user-attachments/files/19581900/patch4.txt)\n\nYour machine is always big-endian or is it possible to switch?\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-04-03T08:06:18Z",
+   "body": "> So this will be the final version: [patch4.txt](https://github.com/user-attachments/files/19581900/patch4.txt) \n\nStill PASS.\n\n> Your machine is always big-endian or is it possible to switch?\n\nAll 64-bit Cortex-A cores can be switched.  I'm just running a big endian VM under a little endian L0.  If you have access to any Cortex-A hardware (even a Raspberry Pi 3) you can do the same.\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-04-03T08:21:36Z",
+   "body": "Yeah, that can be.  But the most advanced AARCH64 machine I have access to, has only\nOPENSSL_armcap=0xbd, so no SM3, no SM4 and no SVE opcodes at all.\nThis is the reason why it is so incredibly hard to test all of the assembly code.\nSo I can guarantee that an additional test run of the little-endian code is not in vain.\nMaybe also with the latest master version, if not already done."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-04-03T11:24:30Z",
+   "body": "On current master (6545de9bbe44145b4c35f12d6e4dad1f3df5f0cf) with patch 4, I get a PASS on big endian, and a single\nFAIL on little endian:\n\n```\nTest Summary Report\n-------------------\n30-test_afalg.t                       (Wstat: 256 (exited 1) Tests: 1 Failed: 1)\n  Failed test:  1\n  Non-zero exit status: 1\nFiles=342, Tests=4455, 740 wallclock secs (14.92 usr  2.20 sys + 529.03 cusr 176.23 csys = 722.38 CPU)\nResult: FAIL\n```\n\nHowever, this fail happens also if I remove your patch."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-04-03T11:27:08Z",
+   "body": "I suspect the differing results on `test_afalg` is not due to endianness, but rather that the (little endian) L0 has IPv6, which the (big endian) VM does not."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-04-03T12:36:48Z",
+   "body": "Yes, that is certainly an unrelated issue.\nIf there is something interesting in the verbose output of test_afalg, that might of course help as well."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-04-03T12:42:28Z",
+   "body": "```\n30-test_afalg.t .. \n# The results of this test will end up in test-runs/test_afalg\n1..1\n    # Subtest: ../../test/afalgtest\n    1..2\n        # Subtest: test_afalg_aes_cbc\n        1..3\nALG_PERR: ../../home/<user>/hack/openssl/engines/e_afalg.c(462): Failed to bind socket : No such file or directory\n        # ERROR: (bool) 'EVP_CipherInit_ex(ctx, cipher, e, key, iv, 1) == true' failed @ ../../home/<user>/hack/openssl/test/afalgtest.c:85\n        # false\n        # 206018BAFFFF0000:error:40000067:lib(128):<nick> bind failed:../../home/<user>/hack/openssl/engines/e_afalg.c:463:\n        # OPENSSL_TEST_RAND_SEED=1743679506\n        not ok 1 - iteration 1\nALG_PERR: ../../home/<user>/hack/openssl/engines/e_afalg.c(462): Failed to bind socket : No such file or directory\n        # ERROR: (bool) 'EVP_CipherInit_ex(ctx, cipher, e, key, iv, 1) == true' failed @ ../../home/<user>/hack/openssl/test/afalgtest.c:85\n        # false\n        # 206018BAFFFF0000:error:40000067:lib(128):<nick> bind failed:../../home/<user>/hack/openssl/engines/e_afalg.c:463:\n        # OPENSSL_TEST_RAND_SEED=1743679506\n        not ok 2 - iteration 2\nALG_PERR: ../../home/<user>/hack/openssl/engines/e_afalg.c(462): Failed to bind socket : No such file or directory\n        # ERROR: (bool) 'EVP_CipherInit_ex(ctx, cipher, e, key, iv, 1) == true' failed @ ../../home/<user>/hack/openssl/test/afalgtest.c:85\n        # false\n        # 206018BAFFFF0000:error:40000067:lib(128):<nick> bind failed:../../home/<user>/hack/openssl/engines/e_afalg.c:463:\n        # OPENSSL_TEST_RAND_SEED=1743679506\n        not ok 3 - iteration 3\n    # OPENSSL_TEST_RAND_SEED=1743679506\n    not ok 1 - test_afalg_aes_cbc\n    ok 2 - test_pr16743\n../../util/wrap.pl ../../test/afalgtest => 1\nnot ok 1 - running afalgtest\n\n#   Failed test 'running afalgtest'\n#   at ../../home/<user>/hack/openssl/test/recipes/30-test_afalg.t line 21.\n# Looks like you failed 1 test of 1.\nDubious, test returned 1 (wstat 256, 0x100)\nFailed 1/1 subtests \n```\nThe \"Failed to bind socket\" error is what made me suspect IPv4/IPv6 issues."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-04-03T13:18:07Z",
+   "body": "AFALG is not about TCP communication, but AES-CBC encryption done by the kernel.\nThey use the socket just to pass keys and in/out parameters to the kernel module AFAICT.\nIt could also be an issue with the kernel headers, or a missing kernel module.\nAnyway fortunately completely unrelated to the big-endian assembler issue here."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-04-03T13:22:09Z",
+   "body": "Fix for that is now in #27252. Thanks a lot for reporting and your patience 🥇 "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-04-03T13:52:51Z",
+   "body": "Ok.  Since the afalg test mentioned aes_cbc, I checked the kernel options for AES.\n\nThe kernel for the big endian VM has\n\n```\nCONFIG_CRYPTO_AES_ARM64=y\n```\n\nbut the little endian L0 kernel (which is a vendor kernel) has\n\n```\n# CONFIG_CRYPTO_AES_ARM64 is not set\n```\n\nso maybe that is the reason for the test fail?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-04-03T14:59:11Z",
+   "body": "Yeah that seems to be a plausible explanation."
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "openssl/openssl",
+  "default_branch": "master",
+  "commit_sha": "02cada2e45a2867e304542f9c5440bfb29af0283",
+  "as_of": "2025-03-29T12:44:36Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_openssl_openssl_27197"
+}

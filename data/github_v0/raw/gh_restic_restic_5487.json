@@ -1,0 +1,99 @@
+{
+ "repo": "restic/restic",
+ "number": 5487,
+ "url": "https://github.com/restic/restic/issues/5487",
+ "title": "Incorrect file permissions after backup via sftp",
+ "state": "closed",
+ "labels": [
+  "type: bug",
+  "help: wanted",
+  "help: minor complexity",
+  "backend: sftp"
+ ],
+ "reporter": "reporter",
+ "created_at": "2025-09-05T23:24:22Z",
+ "closed_at": "2025-10-05T13:58:47Z",
+ "body": "<!--\n\nWelcome! - We kindly ask that you:\n\n  1. Fill out the issue template below - not doing so needs a good reason.\n  2. Use the forum if you have a question rather than a bug or feature request.\n\nThe forum is at: https://<redacted-host>\n\nNOTE: Not filling out the issue template needs a good reason, as otherwise it\nmay take a lot longer to find the problem, not to mention it can take up a lot\nmore time which can otherwise be spent on development. Please also take the\ntime to help us debug the issue by collecting relevant information, even if\nit doesn't seem to be relevant to you. Thanks!\n\nThe forum is a better place for questions about restic or general suggestions\nand topics, e.g. usage or documentation questions! This issue tracker is mainly\nfor tracking bugs and feature requests directly relating to the development of\nthe software itself, rather than the project.\n\nThanks for understanding, and for contributing to the project!\n\n-->\n\n\nOutput of `restic version`\n--------------------------\nrestic 0.18.0 compiled with go1.24.1 on linux/amd64\n\n\nWhat backend/service did you use to store the repository?\n---------------------------------------------------------\nsftp \n\n\nProblem description / Steps to reproduce\n----------------------------------------\nSimilar to #4447, but affecting backup files.\n\n\"restic backup\" is creating data files with user (and for my case group) read-write permission when the repo is accessed via sftp:restic@participant4, while the local files (on repohost) are all read only.\n\nFor example, the first of these data files was created during a local backup (as root on repohost), and the other during a sftp backup (to sftp:restic@participant4:...), both to the same repo.\n\n```\n1887814808    628 -r--r-----   1 root     restic     640063 Sep  5 22:39 ./index/5bebf47942e1d47fd25453f42c3d53dcd43959cc4898e7f27230307b9ea93405\n1612200155     28 -rw-rw----   1 restic   restic      26374 Sep  5 22:58 ./index/9587e9696220eda5f2611ca508e6e5b5ac7c27faca544ee84e96f66434abb61c\n```\n\n<!--\nThis section should include at least:\n\n * A description of the problem you are having with restic.\n\n * The complete command line and any environment variables you used to\n   configure restic's backend access. Make sure to replace sensitive values!\n\n * The output of the commands, what restic prints gives may give us much\n   information to diagnose the problem!\n\n * The more time you spend describing an easy way to reproduce the behavior (if\n   this is possible), the easier it is for the project developers to fix it!\n-->\n\n\nExpected behavior\n-----------------\nAll repo files uploaded by sftp should have the same permission as if the repo file was created by a local backup.\n\nActual behavior\n---------------\nRepo files have read-write permission instead of read-only.\n\nDo you have any idea what may have caused this?\n-----------------------------------------------\nProbably something similar to #4447.\n\nDid restic help you today? Did it make you happy in any way?\n------------------------------------------------------------\nrestic makes me happy every day (at 3am).\n",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2025-09-06T08:52:53Z",
+   "body": "Are the restic versions used to make the files the same?\n\nThis can hardly be the same problem as #4447, because in this instance, restic does an explicit chmod after creating the file. I'm not sure why it adds write permission; this happens in internal/backend/util/paths.go, but the discussion surrounding that code in #3419 doesn't mention it (or I'm glossing over it...)."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-09-06T10:31:01Z",
+   "body": "## Reproducible test case\n\nContext: \n\nBoth restic server (below, `participant4`) and restic client (`clienthost`) are using restic 0.18.0.\n\nThe test case initializes repository /var/restic/test, adjusts it for [Group Accessible Repository](https://restic.readthedocs.io/en/stable/030_preparing_a_new_repo.html#group-accessible-repositories) \n(though its instructions are outdated), then performs a backup on server, then on client.\n\nParent directory participant4:/var/restic has group restic mode g+s\nRepohost is Rocky 9, with its packaged ssh/sftp server.\n \n1. After local init, notice that directories inherit g+s but no g+rwx (on its own, not a bug, but it gives me an idea... see below)\n```\nroot@participant4# restic init -r /var/restic/test\nrestic 0.18.0 compiled with go1.24.1 on linux/amd64\n\nroot@participant4# restic init -r /var/restic/test\n\nroot@participant4# ls -ld . test test/* test/keys/*\ndrwxrwsr-x.   5 restic restic 60 Sep  6 09:12 .\ndrwxrws---.   7 root restic   87 Sep  6 09:12 test\n-r--------.   1 root restic  155 Sep  6 09:12 test/config\ndrwx--S---. 258 root restic 8192 Sep  6 09:12 test/data\ndrwx--S---.   2 root restic    6 Sep  6 09:12 test/index\ndrwx--S---.   2 root restic   78 Sep  6 09:12 test/keys\n-r--------.   1 root restic  454 Sep  6 09:12 test/keys/120771e73ad01220d32b72923a5ce7426dc6797307eb876d2301c43e0f0df9dc\ndrwx--S---.   2 root restic    6 Sep  6 09:12 test/locks\ndrwx--S---.   2 root restic    6 Sep  6 09:12 test/snapshots\n```\n2. Prepare for multi-use (though note that instructions in docs at [Group accessible repositories](https://restic.readthedocs.io/en/stable/030_preparing_a_new_repo.html#group-accessible-repositories):\n```\n# find test -type d -exec chmod 2770  {} \\;\n# find test -type f -exec chmod 0440 {} \\; \n```\n- Here are the resulting permissions, which look good.  The keys file is group readable.\n```\n# ls -ld test test/* test/keys/*\ndrwxrws---.   7 root restic   87 Sep  6 09:12 test\n-r--r-----.   1 root restic  155 Sep  6 09:12 test/config\ndrwxrws---. 258 root restic 8192 Sep  6 09:12 test/data\ndrwxrws---.   2 root restic    6 Sep  6 09:12 test/index\ndrwxrws---.   2 root restic   78 Sep  6 09:12 test/keys\n-r--r-----.   1 root restic  454 Sep  6 09:12 test/keys/120771e73ad01220d32b72923a5ce7426dc6797307eb876d2301c43e0f0df9dc\ndrwxrws---.   2 root restic    6 Sep  6 09:12 test/locks\ndrwxrws---.   2 root restic    6 Sep  6 09:12 test/snapshots\n```\n3. Run a local backup on a single file.  Results are good.  Newly created index file is group readable.\n```\nroot@participant4# restic backup -r /var/restic/test /etc/services\n...\n\nroot@participant4# ls -ld test test/* test/keys/* test/index/*\ndrwxrws---.   7 root restic   87 Sep  6 09:12 test\n-r--r-----.   1 root restic  155 Sep  6 09:12 test/config\ndrwxrws---. 258 root restic 8192 Sep  6 09:12 test/data\ndrwxrws---.   2 root restic   78 Sep  6 09:41 test/index\n-r--r-----.   1 root restic  364 Sep  6 09:41 test/index/1121d5b03ec5bd3e9dce12d6a5dd94161ec36b2cb1babf29bf59b71a4755cfa4\ndrwxrws---.   2 root restic   78 Sep  6 09:12 test/keys\n-r--r-----.   1 root restic  454 Sep  6 09:12 test/keys/120771e73ad01220d32b72923a5ce7426dc6797307eb876d2301c43e0f0df9dc\ndrwxrws---.   2 root restic    6 Sep  6 09:41 test/locks\ndrwxrws---.   2 root restic   78 Sep  6 09:41 test/snapshots\n```\n4. Backup on client, check file perms on server.  Note the new index file created via sftp has incorrect g+rw permission. (I didn't show the data directory files, but they also show incorrect g+rw permission)\n```\nroot@participant5# restic version\nrestic 0.18.0 compiled with go1.24.1 on linux/amd64\n\nroot@participant5# restic -r sftp:<email-scrubbed>:/var/restic/test backup /etc/services\n...\n\nroot@participant6# # ls -ld test test/* test/keys/* test/index/*\ndrwxrws---.   7 root   restic   87 Sep  6 09:12 test\n-r--r-----.   1 root   restic  155 Sep  6 09:12 test/config\ndrwxrws---. 258 root   restic 8192 Sep  6 09:12 test/data\ndrwxrws---.   2 root   restic  150 Sep  6 09:43 test/index\n-r--r-----.   1 root   restic  364 Sep  6 09:41 test/index/1121d5b03ec5bd3e9dce12d6a5dd94161ec36b2cb1babf29bf59b71a4755cfa4\n-rw-rw----.   1 restic restic  272 Sep  6 09:43 test/index/1abe9de6544aa91aa10a266aab46405ade4d8b846a2d67cedbe555260a0112f7\ndrwxrws---.   2 root   restic   78 Sep  6 09:12 test/keys\n-r--r-----.   1 root   restic  454 Sep  6 09:12 test/keys/120771e73ad01220d32b72923a5ce7426dc6797307eb876d2301c43e0f0df9dc\ndrwxrws---.   2 root   restic    6 Sep  6 09:43 test/locks\ndrwxrws---.   2 root   restic  150 Sep  6 09:43 test/snapshots\n```\n\n## Expected:\n\n- That restic on the clienthost should have created files on the server with mode 0440.\n- That instructions in doc should present absolute (e.g. 2770 or u=rwx,g=rwxs,o=) modes to adjust the repo for group accessibilty, rather than relative modifications (since restic is fully opinionated as to what those modes should be).\n- That the doc remove the the doc section on Group repository \"read-write access\", since restic does not require file write access to operate, and modifying a file outside restic likely corrupts the repo.  It read to me like if I want to perform a backup, I have to enable read-write access on files.\n\n\n\n\n"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-09-06T17:16:12Z",
+   "body": "> That restic on the participant5 should have created files on the server with mode 0440.\n\nThis is an omission in the sftp backend. Anyone up for a PR to add the missing chmod call?\n\n> That instructions in doc should present absolute (e.g. 2770 or u=rwx,g=rwxs,o=) modes to adjust the repo for group accessibilty, rather than relative modifications (since restic is fully opinionated as to what those modes should be).\n\nIncluded in https://github.com/restic/restic/pull/5489 .\n\n> That the doc remove the the doc section on Group repository \"read-write access\", since restic does not require file write access to operate, and modifying a file outside restic likely corrupts the repo\n\nWithout write access to the repository directories, one won't be able to modify the repository. So it makes sense to differentiate between both cases. The unintended file write permissions in the docs are fixed by https://github.com/restic/restic/pull/5489 ."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-09-06T20:25:24Z",
+   "body": "> Without write access to the repository directories, one won't be able to modify the repository. So it makes sense to differentiate between both cases. The unintended file write permissions in the docs are fixed by https://github.com/restic/restic/pull/5489 .\n\nYes indeed.  Thank you."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-09-07T09:48:45Z",
+   "body": "\n> This is an omission in the sftp backend. Anyone up for a PR to add the missing chmod call?\n\n@participant2 aren't we already doing chmod after creating the file in the sftp  server?\n\nhttps://github.com/restic/restic/blob/c55df65bb6e543f3ff6939c989478a2b28b2a1c5/internal/backend/sftp/sftp.go#L318-L325"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-09-07T11:18:43Z",
+   "body": "> This is an omission in the sftp backend. Anyone up for a PR to add the missing chmod call?\n\nThe call is there, but the mode comes from DeriveModesFromFileInfo, which sets the write flag.\n\nI think the difference between local and sftp files is caused only by the umask difference. pkg/sftp does not subtract the client umask, so the sftpd process's umask is applied instead."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-09-07T12:19:20Z",
+   "body": "> I think the difference between local and sftp files is caused only by the umask difference.\n\nFWIW the server umask is probably a red herring. I checked the umask of the running (out of the box) sftp-server process, and it is 0022, which would normally remove group write on newly created files, but the failure case shows group write set.  \n\n(Normally umask is only applied file creation time, not via chmod(), so I assume  (assuming f.Chmod eventually causes the sftp-server to do a real chmod())."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-09-07T12:25:11Z",
+   "body": "The missing bit is not related to DeriveModesFromFileInfo, which returns a writable mode, so the temp file can be written. It is after the final rename of the temp file into place in Save(). On the backend/local, but not on backend/sftp, the final file (writable up until now) is made read-only at the very last step:\n\nlocal end of Save() function:\nhttps://github.com/restic/restic/blob/c55df65bb6e543f3ff6939c989478a2b28b2a1c5/internal/backend/local/local.go#L192-L200\n\nsftp end of Save() function:\nhttps://github.com/restic/restic/blob/c55df65bb6e543f3ff6939c989478a2b28b2a1c5/internal/backend/sftp/sftp.go#L354-L365\n\n(I'm sorry I don't have any go experience or go toolchain setup, or I'd write/test/push the change straight away)"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-09-07T12:56:35Z",
+   "body": "> It appears that the DeriveModesFromFileInfo includes write access for files (adding group-write when config is group readable).  Both local and sftp use this function to create the temporary file being written.\n> \n> https://github.com/restic/restic/blob/c55df65bb6e543f3ff6939c989478a2b28b2a1c5/internal/backend/util/paths.go#L12\n> \n> The temp file is writable during Save().  Save() concludes by renaming the file to its final position. On the backend/local, but not on backend/sftp,   the final file is made read only at the very last step:\n> \n> local end of Save() function:\n> https://github.com/restic/restic/blob/c55df65bb6e543f3ff6939c989478a2b28b2a1c5/internal/backend/local/local.go#L192-L200\n> \n> sftp end of Save() function:\n> https://github.com/restic/restic/blob/c55df65bb6e543f3ff6939c989478a2b28b2a1c5/internal/backend/sftp/sftp.go#L354-L365\n> \n> (I'm sorry I don't have any go experience or go toolchain setup, or I'd write/test/push the change straight away)\n\nIt should be an easy fix, instead of using \n\n```\t\n        fi, err := sftp.c.Stat(sftp.Layout.Filename(backend.Handle{Type: backend.ConfigFile}))\n\tm := util.DeriveModesFromFileInfo(fi, err)\n```\n\n\nWe should directly use the File mode from the FileInfo struct.\n\nAnd get the original mode of the file without group write permissions.\nI'm not currently on my computer but if I have the time ill try to make that fix."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-09-07T14:47:40Z",
+   "body": "> We should directly use the File mode from the FileInfo struct.\n> \n> And get the original mode of the file without group write permissions. I'm not currently on my computer but if I have the time ill try to make that fix.\n\nI don't really get what you mean. The file has to be writable at first or restic won't be able to write the file content. So the fix is to port the `setFileReadonly(...)` functionality of the local backend. Using the mode from the `fi` is incorrect.\n\n@reporter go is rather easy to setup and compile, take a look at https://github.com/restic/restic/blob/master/CONTRIBUTING.md#development-environment if you want to give it a try."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-09-07T15:53:58Z",
+   "body": "> > We should directly use the File mode from the FileInfo struct.\n> > And get the original mode of the file without group write permissions. I'm not currently on my computer but if I have the time ill try to make that fix.\n> \n> I don't really get what you mean. The file has to be writable at first or restic won't be able to write the file content. So the fix is to port the `setFileReadonly(...)` functionality of the local backend. Using the mode from the `fi` is incorrect.\n> \n> [@reporter](https://github.com/reporter) go is rather easy to setup and compile, take a look at https://github.com/restic/restic/blob/master/CONTRIBUTING.md#development-environment if you want to give it a try.\n\nlet me see if I understand correctly, that means that we need to set the file to read-only after renaming the file, correct?\nalso then, we use the Chmod after creating the file in order to write into the file.\n\nLMK if I am missing anything.\n"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-09-07T16:05:51Z",
+   "body": "> let me see if I understand correctly, that means that we need to set the file to read-only after renaming the file, correct?\n> also then, we use the Chmod after creating the file in order to write into the file.\n\nWe could actually mark the file as readonly before renaming it. That way the file permissions are already correct before renaming.\n\nSo the order of event would be `create temp file`, `set initial permissions`, `write file content`, `set readonly` and `rename to final name`."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-09-08T06:21:04Z",
+   "body": "You're right, this isn't the umask. Still, I think we could remove the group permissions earlier, in DeriveModesFromFileInfo. I don't see why we'd set g+w there."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-10-05T13:58:47Z",
+   "body": "Solved by #5497 "
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "restic/restic",
+  "default_branch": "master",
+  "commit_sha": "839c38b4c425c4c80e0ef66bc08e456601fd1029",
+  "as_of": "2025-09-05T23:24:22Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_restic_restic_5487"
+}

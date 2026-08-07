@@ -1,0 +1,96 @@
+{
+ "repo": "coredns/coredns",
+ "number": 6214,
+ "url": "https://github.com/coredns/coredns/issues/6214",
+ "title": "How to redefine coredns return code",
+ "state": "closed",
+ "labels": [
+  "question"
+ ],
+ "reporter": "reporter",
+ "created_at": "2023-07-20T06:09:08Z",
+ "closed_at": "2023-08-30T13:44:08Z",
+ "body": "### User Story\r\nWhen CoreDNS is doing domain name resolution, if it encounters an unknown domain name, CoreDNS will return an `NXDOMAIN` error.  But the default behavior for `resolv.conf` will only try the next nameserver if the first nameserver times out or it receives a SERVFAIL from the first nameserver. \r\n\r\nI found that the Template plugin can accomplish a similar effect. But Template has no way to filter the return code. For example, I just want to redefine the error code of `NXDOMAIN` as `SERVFAIL`. \r\n\r\n```yaml\r\n    .:53 {\r\n        template ANY ANY {\r\n          rcode SERVFAIL\r\n        }\r\n    }\r\n```\r\n\r\nSo I would like to ask, is there any other way to do it? Or the Template plugin needs to support similar functions? In addition, the Template plugin is executed before the Forward plugin. So there is no way to redefine the return code of the Forward plugin.",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2023-07-20T11:04:46Z",
+   "body": "There are some external plugins that support your implied use case. Eg _alternate_  https://github.com/coredns/alternate"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-07-20T11:12:35Z",
+   "body": "I am assuming the implied use case is that you want incoming queries to try one upstream server first, then if that response is   does not have a positive result, discard that result and try a second upstream server. "
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-07-20T11:55:03Z",
+   "body": "What’s the underlying problem you are trying to solve with the proposed solution. Eg why do you want to do this. Why do you expect your upstream servers hold different sets of records?\r\n\r\nIf one resolves public domains, and the other resolves a private domain, then the proper way to handle this is by creating a server block for your private domain, routing queries based on their domain, instead of trying to implement a sort of cascading chain of forwards. "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-07-20T11:56:07Z",
+   "body": "> I am assuming the implied use case is that you want incoming queries to try one upstream server first, then if that response is does not have a positive result, discard that result and try a second upstream server.\r\n\r\nthx @participant1 .\r\n\r\nThe scene I encountered was a bit special. There are two network cards on pod A, which come from different VPCs. One of the network cards communicates with the CoreDNS.\r\n\r\nThe pod A needs to access a special domain name. This domain name needs to pass through the DNS of the other network card to have correct resolution. Therefore, the resolv.conf of pod A configures two nameservers, one of which is the clusterip of CoreDNS, and the other is the dns server corresponding to another VPC. \r\n\r\nIt is hoped here that in pod A, after accessing CoreDNS domain name resolution fails, go to another nameserver to try again. The premise is that CoreDNS domain name resolution needs to return `SERVFAIL`.\r\n\r\nI don't know if my description is clear. ^_^\r\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-07-20T12:15:18Z",
+   "body": "If I understand correctly, the proper DNS way to do this would be to also give coredns access to both DNS servers, and configure it to forward queries for that \"special\" (i.e. private?) domain to the VPC dns server.  \r\n\r\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-07-20T12:23:00Z",
+   "body": "> It is hoped here that in pod A, after accessing CoreDNS domain name resolution fails, go to another nameserver to try again. The premise is that CoreDNS domain name resolution needs to return SERVFAIL.\r\n\r\nI expect this approach may cause unexpected results elsewhere. E.g. it may short circuit (break) resolv.conf query domain suffix searching.  I think it would also cause problems for some clients that do parallel A/AAAA queries, and \"Happy Eyeballs\"."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-07-20T12:23:35Z",
+   "body": "> If I understand correctly, the proper DNS way to do this would be to also give coredns access to both DNS servers, and configure it to forward queries for that \"special\" (i.e. private?) domain to the VPC dns server.\r\n\r\nThat won't work because the VPC of pod A (or maybe pod i) is unknown."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-07-20T12:27:22Z",
+   "body": "> That won't work because the VPC of pod A (or maybe pod i) is unknown.\r\n\r\nSounds like you don't have full control over the environment?  Can I assume this is in a Kubernetes deployment here, since you are using the word \"Pod\"?\r\n\r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-07-20T12:29:52Z",
+   "body": "> Sounds like you don't have full control over the environment? Can I assume this is in a Kubernetes deployment here, since you are using the word \"Pod\"?\r\n\r\nYes, in a Kubernetes. And the pods are in different network spaces.\r\n\r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-07-20T12:36:00Z",
+   "body": "Thanks @participant1! \r\nI am trying to solve the problem of such a special case. If I return `SERVFAIL` by force, I know that will cause unexpected results some where."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-07-20T12:53:58Z",
+   "body": "Since the proposed solution is hacky and will break other things, take care to only apply it to the \"special\" domain in question.\r\n\r\nThere is an open PR to add response code rewrite to the the _rewrite_ plugin. #6204. This should be able to implement the solution you propose.\r\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-07-20T13:01:04Z",
+   "body": ">> If I understand correctly, the proper DNS way to do this would be to also give coredns access to both DNS servers, and configure it to forward queries for that \"special\" (i.e. private?) domain to the VPC dns server.\r\n\r\n> That won't work because the VPC of pod A (or maybe pod i) is unknown.\r\n\r\nCoreDNS doesnt have to have direct access to the VPC, It could instead forward to another dns service in the cluster that has a Pod in the VPC (like your \"Pod A\").\r\n\r\nI don't understand what you mean by the VPC of \"Pod A\" is \"unknown\". "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-07-20T13:06:00Z",
+   "body": "> There are some external plugins that support your implied use case. Eg _alternate_ https://github.com/coredns/alternate\r\n\r\nI want to know that, in alternate plugin, did it request forward first, and then go to alternate, or directly bypass forward to request alternate?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-07-20T13:23:23Z",
+   "body": "> > There are some external plugins that support your implied use case. Eg _alternate_ https://github.com/coredns/alternate\r\n> \r\n> I want to know that, in alternate plugin, did it request forward first, and then go to alternate, or directly bypass forward to request alternate?\r\n\r\nThe former. The readme explains how it works in more detail. Iirc there are examples that help illustrate how it works. \r\n"
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "coredns/coredns",
+  "default_branch": "master",
+  "commit_sha": "26eee8233e98ae005e00010265f11bff6461da2f",
+  "as_of": "2023-07-20T06:09:08Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_coredns_coredns_6214"
+}

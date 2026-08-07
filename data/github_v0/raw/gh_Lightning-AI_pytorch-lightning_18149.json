@@ -1,0 +1,108 @@
+{
+ "repo": "Lightning-AI/pytorch-lightning",
+ "number": 18149,
+ "url": "https://github.com/Lightning-AI/pytorch-lightning/issues/18149",
+ "title": "DDP with DataLoader num_workers>0 seems to result in GIL (CPU summing to 100%)",
+ "state": "closed",
+ "labels": [
+  "bug",
+  "performance",
+  "ver: 2.0.x"
+ ],
+ "reporter": "reporter",
+ "created_at": "2023-07-24T15:40:21Z",
+ "closed_at": "2024-01-23T01:39:32Z",
+ "body": "### Bug description\n\nWhen running the pl Trainer with ddp on a single node with multiple gpus and DataLoader(..., num_workers=2) (or >0) CPU use seems to max at 100% - when num_woerkers=0 it will go much higher.\r\n\r\nRunning the below boring model results in very slow data loading with htop outputs like this:\r\n![image](https://github.com/Lightning-AI/lightning/assets/46681532/418742c8-8c06-40f5-a0e4-fe1e53af3c12)\r\n\r\n\r\nIt looks like there are 100%/16 workes = ~6.25% each\r\n\r\nOn the other hand if I run it with num_workers=0 I get faster training and much better CPU utilisation:\r\n![image](https://github.com/Lightning-AI/lightning/assets/46681532/56577d2a-8a24-49d1-bfbe-daa2583ce758)\r\n\r\n\r\n\r\nWhen using num_workers=0 in practice with more complex dataloading workflows it is still a bottleneck (but still better utilisation than n>0).\r\n\r\nAdditionally the docs seem to suggest setting num_workers=num_cpus however it seems like num_workers is per device?\r\n\r\nAny help/advice would be appreciated!\n\n### What version are you seeing the problem on?\n\nv2.0\n\n### How to reproduce the bug\n\n```python\nimport torch\r\nfrom torch import nn\r\nfrom torch.nn import functional as F\r\nfrom torch.utils.data import DataLoader, Dataset\r\nimport pytorch_lightning as pl\r\ntmpdir = os.getcwd()\r\n\r\n\r\nclass RandomDataset(Dataset):\r\n    def __init__(self, shape, num_samples) -> None:\r\n        super().__init__()\r\n        self.shape = shape\r\n        self.num_samples = num_samples\r\n    \r\n    def __len__(self):\r\n        return self.num_samples\r\n    \r\n    def __getitem__(self, idx):\r\n        return torch.randn(self.shape)**(5/4)\r\n\r\nnum_samples = 10000\r\ntrain = RandomDataset((3, 2048, 2048), num_samples)\r\ntrain = DataLoader(train, batch_size=32, pin_memory=True, num_workers=2)\r\nval = RandomDataset((3, 2048, 2048), num_samples)\r\nval = DataLoader(val, batch_size=32, pin_memory=True, num_workers=2)\r\n\r\nclass BoringModel(pl.LightningModule):\r\n\r\n    def __init__(self):\r\n        super().__init__()\r\n        self.layer = torch.nn.Conv2d(3, 1, 1)\r\n\r\n    def forward(self, x):\r\n        return self.layer(x)\r\n\r\n    def loss(self, batch, prediction):\r\n        return torch.nn.functional.mse_loss(prediction, torch.ones_like(prediction))\r\n\r\n    def training_step(self, batch, batch_idx):\r\n        output = self.layer(batch)\r\n        loss = self.loss(batch, output)\r\n        self.log('train_loss', loss)\r\n        return loss\r\n\r\n\r\n    def validation_step(self, batch, batch_idx):\r\n        output = self.layer(batch)\r\n        loss = self.loss(batch, output)\r\n        return {\"x\": loss}\r\n\r\n\r\n    def test_step(self, batch, batch_idx):\r\n        output = self.layer(batch)\r\n        loss = self.loss(batch, output)\r\n        self.log('test_loss', loss)\r\n        return {\"y\": loss}\r\n\r\n\r\n    def configure_optimizers(self):\r\n        optimizer = torch.optim.SGD(self.layer.parameters(), lr=0.1)\r\n        lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=1)\r\n        return [optimizer], [lr_scheduler]\r\n\r\ndef test(tmpdir):\r\n    # init model\r\n    model = BoringModel()\r\n\r\n    # Initialize a trainer\r\n    trainer = pl.Trainer(\r\n        accelerator='gpu',\r\n        strategy='ddp',\r\n        devices=8,\r\n        max_epochs=1,\r\n        precision='bf16-mixed',\r\n        default_root_dir=tmpdir\r\n    )\r\n\r\n    trainer.fit(model, train)\r\n\r\ntest(tmpdir)\n```\n\n\n### Error messages and logs\n\n_No response_\n\n### Environment\n\nPyTorch version: 2.0.1\r\nIs debug build: False\r\nCUDA used to build PyTorch: 11.7\r\nROCM used to build PyTorch: N/A\r\n\r\nOS: Debian GNU/Linux 11 (bullseye) (x86_64)\r\nGCC version: (Debian 10.2.1-6) 10.2.1 20210110\r\nClang version: Could not collect\r\nCMake version: version 3.18.4\r\nLibc version: glibc-2.31\r\n\r\nPython version: 3.10.12 | packaged by conda-forge | (main, Jun 23 2023, 22:40:32) [GCC 12.3.0] (64-bit runtime)\r\nPython platform: Linux-5.10.0-23-cloud-amd64-x86_64-with-glibc2.31\r\nIs CUDA available: True\r\nCUDA runtime version: Could not collect\r\nCUDA_MODULE_LOADING set to: LAZY\r\nGPU models and configuration:\r\nGPU 0: NVIDIA RTX A4000\r\nGPU 1: NVIDIA RTX A4000\r\nGPU 2: NVIDIA RTX A4000\r\nGPU 3: NVIDIA RTX A4000\r\nGPU 4: NVIDIA RTX A4000\r\nGPU 5: NVIDIA RTX A4000\r\nGPU 6: NVIDIA RTX A4000\r\nGPU 7: NVIDIA RTX A4000\r\n\r\nNvidia driver version: 510.85.02\r\ncuDNN version: Could not collect\r\nHIP runtime version: N/A\r\nMIOpen runtime version: N/A\r\nIs XNNPACK available: True\r\n\r\nCPU:\r\nArchitecture: x86_64\r\nCPU op-mode(s): 32-bit, 64-bit\r\nByte Order: Little Endian\r\nAddress sizes: 40 bits physical, 48 bits virtual\r\nCPU(s): 30\r\nOn-line CPU(s) list: 0-29\r\nThread(s) per core: 1\r\nCore(s) per socket: 1\r\nSocket(s): 30\r\nNUMA node(s): 1\r\nVendor ID: AuthenticAMD\r\nCPU family: 25\r\nModel: 1\r\nModel name: AMD EPYC 7313 16-Core Processor\r\nStepping: 1\r\nCPU MHz: 3000.039\r\nBogoMIPS: 6000.07\r\nVirtualization: AMD-V\r\nL1d cache: 1.9 MiB\r\nL1i cache: 1.9 MiB\r\nL2 cache: 15 MiB\r\nL3 cache: 480 MiB\r\nNUMA node0 CPU(s): 0-29\r\nVulnerability Itlb multihit: Not affected\r\nVulnerability L1tf: Not affected\r\nVulnerability Mds: Not affected\r\nVulnerability Meltdown: Not affected\r\nVulnerability Mmio stale data: Not affected\r\nVulnerability Retbleed: Not affected\r\nVulnerability Spec store bypass: Mitigation; Speculative Store Bypass disabled via prctl and seccomp\r\nVulnerability Spectre v1: Mitigation; usercopy/swapgs barriers and __user pointer sanitization\r\nVulnerability Spectre v2: Mitigation; Retpolines, IBPB conditional, IBRS_FW, STIBP disabled, RSB filling, PBRSB-eIBRS Not affected\r\nVulnerability Srbds: Not affected\r\nVulnerability Tsx async abort: Not affected\r\nFlags: fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush mmx fxsr sse sse2 syscall nx mmxext fxsr_opt pdpe1gb rdtscp lm rep_good nopl cpuid extd_apicid pni pclmulqdq ssse3 fma cx16 pcid sse4_1 sse4_2 x2apic movbe popcnt tsc_deadline_timer aes xsave avx f16c rdrand hypervisor lahf_lm cmp_legacy svm cr8_legacy abm sse4a misalignsse 3dnowprefetch osvw perfctr_core invpcid_single ssbd ibrs ibpb stibp vmmcall fsgsbase tsc_adjust bmi1 avx2 smep bmi2 invpcid rdseed adx smap clflushopt clwb sha_ni xsaveopt xsavec xgetbv1 xsaves clzero xsaveerptr wbnoinvd arat npt nrip_save umip pku ospke vaes vpclmulqdq rdpid arch_capabilities\r\n\r\nVersions of relevant libraries:\r\n[pip3] efficientnet-pytorch==0.7.1\r\n[pip3] numpy==1.24.4\r\n[pip3] pytorch-lightning==2.0.5\r\n[pip3] segmentation-models-pytorch==0.3.3\r\n[pip3] torch==2.0.1\r\n[pip3] torch-tb-profiler==0.4.1\r\n[pip3] torchmetrics==0.12.0.dev0\r\n[pip3] torchview==0.2.6\r\n[pip3] torchvision==0.15.2\r\n[pip3] torchviz==0.0.2\r\n[pip3] triton==2.0.0\r\n[conda] No relevant packages\r\n</details>\r\n\n\n### More info\n\n_No response_\n\ncc @participant5",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2023-07-25T11:26:43Z",
+   "body": "@reporter With a simple data preprocessing like you show `return torch.randn(self.shape)**(5/4)`, the process communication will dominate and is likely the reason why you see better performance with `num_workers=0`. To be sure, we could convert the example you gave to regular PyTorch code to show the same behavior (I would expect it to show the same results)."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-07-25T12:41:05Z",
+   "body": "I have the same issue. @participant1 the problem is not that the performance is worse with more workers, it's that the training entirely stops. "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-07-26T11:15:50Z",
+   "body": "@participant1 Thanks for the response!\r\n\r\nI can make the dataloading slower and you get the exact same behaviour (in my real training it's definitely more complex too!). eg:\r\n```python\r\n    def __getitem__(self, idx):\r\n        arr = torch.randn(self.shape)**(5/4)\r\n        for x in torch.randn(30000):\r\n            arr *= x\r\n        return arr\r\n```\r\ntakes about ~2s for each __getitem__ call now and same ~6% CPU use.\r\n\r\nI assumed it was just being slow but actually after about an hour it's still fails to finish the first step of the fist epoch - seems the same as @participant2 "
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-07-26T12:46:27Z",
+   "body": "@participant2 I'm sorry that my answer was upsetting you. I should have mentioned that this was my first guess without a deep analysis. I'm not sure where to start debugging this in Lightning, so I would like to exclude the possibility that this is a PyTorch issue. So as a next step I'd like to take the code example by @reporter (thanks!) and convert it to raw PyTorch DDP. "
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-07-26T15:13:18Z",
+   "body": "@reporter Could you take a look at this raw PyTorch example:\r\n\r\n```py\r\nimport os\r\n\r\nimport torch\r\nfrom torch import nn\r\nfrom torch.nn.parallel import DistributedDataParallel\r\nfrom torch.utils.data import DataLoader, Dataset\r\n\r\n\r\nclass RandomDataset(Dataset):\r\n    def __init__(self, shape, num_samples) -> None:\r\n        super().__init__()\r\n        self.shape = shape\r\n        self.num_samples = num_samples\r\n\r\n    def __len__(self):\r\n        return self.num_samples\r\n\r\n    def __getitem__(self, idx):\r\n        arr = torch.randn(self.shape) ** (5 / 4)\r\n        # for x in torch.randn(30000):\r\n        #     arr *= x\r\n        return arr\r\n\r\n\r\nclass BoringModel(nn.Module):\r\n    def __init__(self):\r\n        super().__init__()\r\n        self.layer = torch.nn.Conv2d(3, 1, 1)\r\n\r\n    def forward(self, x):\r\n        return self.layer(x)\r\n\r\n\r\ndef run(rank, world_size):\r\n    cuda = True  # change here\r\n    torch.manual_seed(1)\r\n    device = torch.device(\"cuda\", rank) if cuda else torch.device(\"cpu\")\r\n    if cuda:\r\n        torch.cuda.manual_seed(1)\r\n        torch.cuda.set_device(device)\r\n\r\n    os.environ[\"LOCAL_RANK\"] = str(rank)\r\n    os.environ[\"WORLD_SIZE\"] = str(world_size)\r\n    os.environ[\"MASTER_ADDR\"] = \"localhost\"\r\n    os.environ[\"MASTER_PORT\"] = \"1234\"\r\n    torch.distributed.init_process_group(\r\n        backend=(\"nccl\" if cuda else \"gloo\"),\r\n        init_method=\"env://\",\r\n        rank=rank,\r\n        world_size=world_size,\r\n    )\r\n    print(\"init rank done\", rank)\r\n\r\n    train = RandomDataset((3, 2048, 2048), 10000)\r\n    train = DataLoader(\r\n        train, \r\n        batch_size=32, \r\n        pin_memory=True, \r\n        num_workers=0,  # change here\r\n    )\r\n\r\n    model = BoringModel().to(device)\r\n    ddp_model = DistributedDataParallel(model, device_ids=([rank] if cuda else None))\r\n    optimizer = torch.optim.SGD(ddp_model.parameters(), lr=0.1)\r\n\r\n    print(\"start training\")\r\n    for i, batch in enumerate(train):\r\n        print(i)\r\n        batch = batch.to(device)\r\n        prediction = ddp_model(batch)\r\n        loss = torch.nn.functional.mse_loss(prediction, torch.ones_like(prediction))\r\n        loss.backward()\r\n        optimizer.step()\r\n        optimizer.zero_grad()\r\n\r\n\r\nif __name__ == \"__main__\":\r\n    world_size = 4  # change here\r\n    torch.multiprocessing.spawn(run, nprocs=world_size, args=(world_size, ))\r\n\r\n```\r\n\r\nSet the `world_size`, `num_workers` and `cuda` flags as you like. This demonstrates the same behavior as described with the PL model. We are running on different systems, so if you could verify the observations:\r\n\r\n- num_workers=2 => peak per-process usage is 100%, but GPU can overlap with data loading\r\n- num_workers=0 => torch uses multiple cores in the main process directly (>100% usage), but CPU blocking the GPU"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-07-26T15:19:15Z",
+   "body": "With `num_workers = 0`\r\n<img width=\"1696\" alt=\"image\" src=\"https://github.com/Lightning-AI/lightning/assets/5495193/daeba1e0-8bb4-4889-b7e2-4fa917bf8a59\">\r\n\r\nWith `num_workers=2`\r\n<img width=\"1696\" alt=\"image\" src=\"https://github.com/Lightning-AI/lightning/assets/5495193/adce04cc-51ca-4800-b370-ac865c85127c\">\r\n\r\nPyTorch version for the above experiment:\r\n`torch == 2.1.0.dev20230719+cu118`\r\n\r\n\r\n\r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-07-27T15:55:48Z",
+   "body": "@participant1 Thanks for the script! I've run it and it works fine giving good usage (num_workers=2):\r\n![image](https://github.com/Lightning-AI/lightning/assets/46681532/d6aedeb7-acac-4e06-aa61-c6a855fdf0c4)\r\n\r\nAm I right in thinking that this script is ~equivalent to running with ddp_spwan in pl? That runs fine with num_workers>0 it's the pure ddp that doesn't and is apparently faster/better (than ddp_spawn) according to the docs?\r\n\r\nAlso while you're here - the docs suggest that you should use num_workers=num_cpus but in practice it seems to be num_workers per device/process (that script gave up to ~2400%CPU = 8 main  + 2*8dl? Def more than 8 + 2 dl workers) - you presumably don't want 30*8 = 240 dl workers on a 30 core, 8 card machine? (https://lightning.ai/docs/pytorch/stable/advanced/speed.html)\r\n\r\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-08-14T16:02:05Z",
+   "body": "Hey @reporter \r\nSorry I left you hanging. \r\n\r\n> Am I right in thinking that this script is ~equivalent to running with ddp_spwan in pl? \r\n\r\nYes!\r\n\r\n> That runs fine with num_workers>0 it's the pure ddp that doesn't and is apparently faster/better (than ddp_spawn) according to the docs?\r\n\r\nSure, here is what we need to do to the script I posted to simulate the \"pure DDP\" that Lightning does. Change the bottom part of the script with this:\r\n\r\n\r\n```py\r\nif __name__ == \"__main__\":\r\n    rank = int(os.environ[\"LOCAL_RANK\"])\r\n    run(rank, world_size=4)\r\n```\r\nThen invoke several processes in parallel like so:\r\n    \r\n```bash\r\nLOCAL_RANK=0  python examples/dataloader_bench.py & LOCAL_RANK=1  python examples/datal\r\noader_bench.py & LOCAL_RANK=2  python examples/dataloader_bench.py & LOCAL_RANK=3  python examples/dataloader_bench.py\r\n```\r\n(replacing the script name)\r\n\r\nAnd on my system this shows the same behavior:\r\n- num_workers=0 -> All dataloading is done in main process, torch is distributing its computation over several cores -> CPU shows usage 4000% or similar in htop\r\n- num_workers>0 -> Each dataloader worker runs in its own process, there will be a total of `num_workers * num gpus` in total, and each will max out at around 100% as seen in htop\r\n\r\nTo the best of my abilities, I cannot determine any inconsistencies when running the raw PyTorch script and comparing it to the PL version. \r\n\r\n\r\n> Also while you're here - the docs suggest that you should use num_workers=num_cpus but in practice it seems to be num_workers per device/process (that script gave up to ~2400%CPU = 8 main + 28dl? Def more than 8 + 2 dl workers) - you presumably don't want 308 = 240 dl workers on a 30 core, 8 card machine?\r\n\r\nYes, num_workers should be chosen per GPU. Example: 1 dataloader with num_workers=4, devices=8, num_nodes=2 -> there will be a total of 4*8= 32 dataloading processes. The docs suggestion is maybe a bit controversial, I agree.\r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-08-31T11:08:05Z",
+   "body": "Hi @participant1 - no worries! Thanks for getting back to me - I've been away a bit anyway!\r\n\r\nI made the edits and for num_workers=2 I see the behavior I was seeing before - cpu use around 6-7% per process:\r\n![image](https://github.com/Lightning-AI/lightning/assets/46681532/bc3d4dfa-5039-4ba3-ba36-658ea00c735b)\r\n\r\nLikewise for num_workers=1 you see 8 procs with cpu ~= 100/8 (12.5%):\r\n![image](https://github.com/Lightning-AI/lightning/assets/46681532/8b00a341-d2f4-45e8-bf3e-6b7bb2d2b130)\r\n\r\nDuring the actual training loop (ie from .to(device) to zero_grad) there's normal/100% maxing cpu use: \r\n![image](https://github.com/Lightning-AI/lightning/assets/46681532/59889714-cc23-4ea2-8fac-ca33f6aac9da)\r\nIt's only while loading the batch that you see the pseudo single process behavior - but this is taking about 30s for each <1s training pass! I checked pin_memory=False in case and same behavior.\r\n\r\nFor num_workers=0 it's nice and normal:\r\n![image](https://github.com/Lightning-AI/lightning/assets/46681532/b410d58a-4d22-4c19-8f01-c0ed58ebeca4)\r\n\r\n\r\n\r\nLet me know any thoughts you have! It feels like it could be linux setup territory? If you can give me an idea of the possible issues that could cause it and/or the underlying systems involved I can talk to my IT/hardware dept and see if there's anything strange going on there too? "
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-09-29T12:25:03Z",
+   "body": "@reporter Another thing to try would be to set and tune the value `OMP_NUM_THREADS=1` (add in front of your python command). "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-09-29T13:03:31Z",
+   "body": "I think I found it by the way! For some reason if, as in the scripts above, I don't explicitly set the Dataloader multiprocessing_context it defaults to None even with num_workers >0. If I set it to any of the options eg 'forkserver' or 'spawn' it works properly. I'm not sure why the default doesn't work but might be worth a bug fix or at least documentation change?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-10-02T13:30:33Z",
+   "body": "It is normal for `DataLoader.multiprocessing_context` to be None by default if you didn't explicitly set it. None there simply means that Pytorch will use the default depending on the operating system, and on Linux it will be \"fork\". I don't know why switching to a different one explicitly would make such a drastic difference for you. \r\n\r\n"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-11-30T20:50:08Z",
+   "body": "I have been digging into this issue for days and @reporter's solution also worked for me!\r\n\r\n**TL;DR** If you are seeing the dataloader processes in low CPU utils, much slower than setting ``num_workers=0`` and loading data in the main thread, set ``multiprocessing_context='spawn'`` when you are creating the DataLoader.\r\n\r\nThe reason why it matters might be found in [this blog post](https://pythonspeed.com/articles/faster-multiprocessing-pickle/). As it suggests,\r\n> the \"fork\" context is super-broken, which is why it will stop being the default in Python 3.14.\r\n>\r\n> On my computer, this program (with \"fork\") consistently deadlocks: it freezes and never exits. Any time you have threads in the parent process, the \"fork\" context can cause in potential deadlocks, or even corrupted memory, in the child process.\r\n\r\nSo IMO ``\"spawn\"`` should be preferred in practice and please try this if you are facing similar issues!"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-01-23T01:39:32Z",
+   "body": "It's definitely interesting that you were able to get into this case where `multiprocessing_context` has such a dramatic effect. I suggest we close the ticket, since Lightning probably can't do much here as the default for this is platform specific and set by PyTorch. If you believe this could affect a considerable amount of users, we could try to get some advice from the PyTorch team."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-01-23T02:34:47Z",
+   "body": "> If you believe this could affect a considerable amount of users, we could try to get some advice from the PyTorch team.\r\n\r\nI never had this issue before but started experiencing it after switching to a NFS-based system. Not sure if it will be the case for everyone. If you are experiencing similar issues, maybe you can comment under this issue so that we can have a general idea of the number of affected users."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-04-26T05:17:34Z",
+   "body": "if your model parameters too few ，CPU will go to near 100%，but bigger model is fine！！！"
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "Lightning-AI/pytorch-lightning",
+  "default_branch": "master",
+  "commit_sha": "0e7e6b31c55bfcb21fbe9b7be8b7a67ca2a84c70",
+  "as_of": "2023-07-24T15:40:21Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_Lightning-AI_pytorch-lightning_18149"
+}

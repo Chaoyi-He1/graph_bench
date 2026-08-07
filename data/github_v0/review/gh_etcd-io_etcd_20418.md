@@ -9,24 +9,24 @@
 
 ```mermaid
 flowchart LR
-    N0["<b>N0 stale-read failure reported</b><br/><small>info: 3</small>"]
-    N1["<b>N1 linearizability violation clarified</b><br/><small>info: 4</small>"]
-    N2["<b>N2 ordered read-index evidence collected</b><br/><small>info: 8</small>"]
-    N2_x["<b>N2_x early leadership-race fix aftermath</b><br/><small>info: 9</small>"]
-    N3["<b>N3 duplicate ReadIndex trace captured</b><br/><small>info: 11</small>"]
-    N4["<b>N4 fresh-ID patch verified under fault injection</b><br/><small>info: 12</small>"]
-    N_terminal["<b>terminal resolved</b><br/><small>info: 13</small>"]
-    N0 -.->|"❓ same_key_operation_observed_at_revisions_3_and_155"| N1
+    N0["<b>N0 stale-member linearizability failure reported</b><br/><small>info: 4</small>"]
+    N1["<b>N1 conflicting revisions clarified</b><br/><small>info: 6</small>"]
+    N2["<b>N2 stale ReadIndex sequence established</b><br/><small>info: 10</small>"]
+    N2_x["<b>N2_x leadership-race candidate aftermath</b><br/><small>info: 11</small>"]
+    N3["<b>N3 duplicate ReadIndex retry sequence captured</b><br/><small>info: 14</small>"]
+    N4["<b>N4 candidate fix survives initial Antithesis runs</b><br/><small>info: 15</small>"]
+    N_terminal["<b>terminal periodic tests pass with landed fix</b><br/><small>info: 18</small>"]
+    N0 -.->|"❓ same_put_observed_at_revision_3_and_revision_155, db_and_wal_inspection_found_no_corruption"| N1
     linkStyle 0 stroke:#3b82f6,stroke-width:2px
-    N1 -.->|"❓ committed_write_index_11_preceded_read_start_by_460ms, read_request_later_received_index_10, failure_run_included_container_pause_and_network_slowdown, antithesis_log_timestamps_have_trusted_global_order"| N2
+    N1 -.->|"❓ committed_write_preceded_stale_range_request, stale_range_received_read_index_10_after_write_index_11, antithesis_faults_include_pause_slow_network_jam_and_cpu_throttle, antithesis_log_order_is_trustworthy"| N2
     linkStyle 1 stroke:#3b82f6,stroke-width:2px
-    N2 ==>|"💥 blind: Treat the stale ReadIndex as a race between the ReadState and leadership-change select cases, and patch the leadership check before accepting the result."| N2_x
+    N2 ==>|"💥 blind: Treat the failure as a race between the ReadIndex result and leadership-change notification, and change the select handling so a leadership change wins before the old result is accepted."| N2_x
     linkStyle 2 stroke:#ef4444,stroke-width:2px
-    N2_x -.->|"❓ instrumented_trace_reused_read_request_id_across_retries, delayed_duplicate_context_advanced_readonly_queue"| N3
+    N2_x -.->|"❓ debug_logs_show_same_read_request_id_reused_on_timeout_retries, delayed_heartbeat_responses_arrive_after_stall_and_leader_change, duplicate_request_reentered_readonly_queue_before_newer_request_released"| N3
     linkStyle 3 stroke:#3b82f6,stroke-width:2px
-    N3 -.->|"❓ fresh_request_id_patch_passed_targeted_and_periodic_runs"| N4
+    N3 -.->|"❓ candidate_unique_id_build_zero_failures_in_four_runs"| N4
     linkStyle 4 stroke:#3b82f6,stroke-width:2px
-    N4 ==>|"⚡ Prevent stale linearizable reads by generating a fresh ReadIndex RequestCtx/request ID for every retry, so delayed responses for an earlier attempt cannot interact with a newly queued request under the same context."| N_terminal
+    N4 ==>|"⚡ Prevent duplicate ReadIndex request contexts from entering raft during retries by generating a fresh read request ID for every retry, then verify the landed change with repeated periodic robustness runs."| N_terminal
     linkStyle 5 stroke:#f97316,stroke-width:2px
     class N0 start
     class N1 normal
@@ -42,57 +42,44 @@ flowchart LR
 
 ## Opening (body)
 
-> In an Antithesis robustness run on the main branch, one etcd member's revision stopped progressing for a long time, but that member continued accepting reads and writes. The resulting history is not linearizable: the linearizability checker flags the run as inconsistent. I attached the report, state dump, and a screenshot. Configuration includes ETCD_SNAPSHOT_CATCHUP_ENTRIES=100, ETCD_SNAPSHOT_COUNT=50, and ETCD_COMPACTION_BATCH_LIMIT=10.
+> In an Antithesis run against the main branch, one member's revision stopped progressing for a long time, but it continued accepting reads and writes. The resulting history has a linearizability failure. The cluster used ETCD_SNAPSHOT_CATCHUP_ENTRIES=100, ETCD_SNAPSHOT_COUNT=50, and ETCD_COMPACTION_BATCH_LIMIT=10. I attached the Antithesis report, report dump, and a screenshot of the failure.
 
 ## Satisfaction conditions
 
-1. Must identify the root cause: etcd reused the same ReadIndex RequestCtx/request ID when retrying against the same leader, allowing delayed responses for that context to interact with raft's readOnly queue and release a stale read index.
-2. Diagnosis must be grounded in the ordered write/read evidence and the instrumented trace showing repeated request IDs, delayed heartbeat processing, and readOnly queue activity.
-3. The fix must generate a fresh ReadIndex request ID for every retry, preventing an old response from being associated with a newly queued use of the same context.
-4. Must not present the leadership-change/select race patch as the resolution; that attempted fix was followed by another in-case reproduction.
-5. Must require extended Antithesis or equivalent fault-injection verification and clean periodic runs before treating the issue as resolved.
+1. Must identify the final accepted root cause: etcd reused the same ReadIndex request context on timeout retries, allowing delayed duplicate traffic to re-enter raft's read-only queue and release a later read with a stale cached commit index.
+2. The diagnosis must be grounded in the ordered evidence: a write at index 11 completed before the Range began, the Range received index 10, retries reused one request ID, and delayed heartbeat responses interacted with the queued requests.
+3. The fix must generate a fresh ReadIndex request ID for every retry rather than reusing the prior request context.
+4. Must not settle on the earlier leadership-change select-race hypothesis; a branch implementing that direction reproduced the linearizability failure.
+5. Must ask for verification on a build containing the fix and must not declare resolution until repeated robustness runs no longer reproduce the failure.
 
 ## Edges
 
 | edge | type | gates / info | payload |
 |---|---|---|---|
-| `e1_N0__N1` | clarification_only | asks: same_key_operation_observed_at_revisions_3_and_155 | For key26 with value 147, client-4's watch and client-6's operation record show revision 3, while the other cl |
-| `e2_N1__N2` | clarification_only | asks: committed_write_index_11_preceded_read_start_by_460ms, read_request_later_received_index_10, failure_run_included_container_pause_and_network_slowdown, antithesis_log_timestamps_have_trusted_global_order | The Antithesis log has the Txn completion at 23.731 with revision 4 and proposed-index 11, followed by the Ran / The request started at 24.193. At 24.870 it sent ReadIndex request 7179191402480470886, and at 25.817 it recei / The run includes docker pause/unpause events, a slowed network partition between container groups, a jammed li / Yes, we can trust the time and order of the Antithesis logs. |
-| `e3_N2__N2_x` | solution_only **BLIND** | req_info: failure_run_included_container_pause_and_network_slowdown, read_request_later_received_index_10<br>elements: attributes_failure_to_leadership_select_race, changes_leadership_check_around_readstate | Treat the stale ReadIndex as a race between the ReadState and leadership-change select cases, and patch the leadership check before accepting the result. |
-| `e4_N2_x__N3` | clarification_only | asks: instrumented_trace_reused_read_request_id_across_retries, delayed_duplicate_context_advanced_readonly_queue | In the failing trace, etcd0 sent ReadIndex with request ID 3744633826720154659 at 16.725, then retried at 17.2 / The logs show request 3744633826720154659 queued at read index 26, dequeued after a delayed heartbeat response |
-| `e5_N3__N4` | clarification_only | asks: fresh_request_id_patch_passed_targeted_and_periodic_runs | Before the patch, two of three instrumented runs detected the issue. With commit 05c978844f47a09b4731723b9e6fa |
-| `e6_N4__N_terminal` | solution_only | req_info: antithesis_detected_non_linearizable_history, member_revision_stalled_while_serving_requests, same_key_operation_observed_at_revisions_3_and_155, instrumented_trace_reused_read_request_id_across_retries, delayed_duplicate_context_advanced_readonly_queue, fresh_request_id_patch_passed_targeted_and_periodic_runs, committed_write_index_11_preceded_read_start_by_460ms, read_request_later_received_index_10<br>elements: identifies_readindex_request_context_reuse_on_retry, explains_interaction_with_delayed_responses_and_readonly_queue, generates_fresh_request_id_for_each_retry, requires_fault_injection_verification_before_resolution | Prevent stale linearizable reads by generating a fresh ReadIndex RequestCtx/request ID for every retry, so delayed responses for an earlier attempt cannot interact with a newly queued request under the same context. |
+| `e1_N0__N1` | clarification_only | asks: same_put_observed_at_revision_3_and_revision_155, db_and_wal_inspection_found_no_corruption | The put of key26 with value 147 gets revision 3 in client-4's watch and client-6's operation result, while the / I inspected the DB and WAL files and did not see a data problem, apart from a missing tombstone revision that  |
+| `e2_N1__N2` | clarification_only | asks: committed_write_preceded_stale_range_request, stale_range_received_read_index_10_after_write_index_11, antithesis_faults_include_pause_slow_network_jam_and_cpu_throttle, antithesis_log_order_is_trustworthy | The transaction completed at 23.731 with revision 4 and proposed index 11. The Range request on another member / The write completed with proposed index 11, but the later Range request received ReadIndex 10 and therefore di / A node pause uses docker pause and later unpause; a slowed partition delays packets between the selected group / Yes, we can trust the time and order shown in the Antithesis logs. |
+| `e3_N2__N2_x` | solution_only **BLIND** | req_info: antithesis_faults_include_pause_slow_network_jam_and_cpu_throttle, committed_write_preceded_stale_range_request, stale_range_received_read_index_10_after_write_index_11<br>elements: attributes_failure_to_leadership_change_select_race, retries_when_leadership_change_is_observed | Treat the failure as a race between the ReadIndex result and leadership-change notification, and change the select handling so a leadership change wins before the old result is accepted. |
+| `e4_N2_x__N3` | clarification_only | asks: debug_logs_show_same_read_request_id_reused_on_timeout_retries, delayed_heartbeat_responses_arrive_after_stall_and_leader_change, duplicate_request_reentered_readonly_queue_before_newer_request_released | The follower sent read request ID 3744633826720154659, timed out, and retried twice using that exact same ID.  / When the stalled member woke up, it processed delayed heartbeat responses carrying the old request ID after th / The original request was dequeued, then a delayed retry with the same ID was received and queued again. A newe |
+| `e5_N3__N4` | clarification_only | asks: candidate_unique_id_build_zero_failures_in_four_runs | The instrumented builds detected the issue in two of three runs. The candidate build detected it in zero of fo |
+| `e6_N4__N_terminal` | solution_only | req_info: same_put_observed_at_revision_3_and_revision_155, antithesis_log_order_is_trustworthy, committed_write_preceded_stale_range_request, stale_range_received_read_index_10_after_write_index_11, debug_logs_show_same_read_request_id_reused_on_timeout_retries, delayed_heartbeat_responses_arrive_after_stall_and_leader_change, duplicate_request_reentered_readonly_queue_before_newer_request_released, candidate_unique_id_build_zero_failures_in_four_runs<br>elements: identifies_reused_read_request_context_as_root_cause, explains_interaction_with_delayed_messages_and_readonly_queue, generates_fresh_request_id_for_every_retry, asks_user_to_verify_on_a_build_containing_the_fix | Prevent duplicate ReadIndex request contexts from entering raft during retries by generating a fresh read request ID for every retry, then verify the landed change with repeated periodic robustness runs. |
 
 ## Nodes
 
 | node | terminal | volunteered | images | symptoms |
 |---|---|---|---|---|
-| `N0` |  | 1 | 0 | In an Antithesis run, one member's revision stopped progressing for a long time while it continued accepting reads and writes, and the resul |
-| `N1` |  | 0 | 0 | For key26 with value 147, one client received revision 3 while other clients' watches recorded the same operation at revision 155. |
-| `N2` |  | 0 | 0 | A transaction completed at proposed index 11, then 460 ms later a Range request started on another member and ultimately used read index 10. |
-| `N2_x` |  | 1 | 1 | One of three Antithesis runs on the branch with the leadership/select-race patch still produced a failed linearization assertion. |
-| `N3` |  | 0 | 0 | The instrumented failing run still returned stale data after a process stall; its trace contains repeated ReadIndex sends with the same requ |
-| `N4` |  | 0 | 0 | The instrumented unfixed builds reproduced the failed linearization assertion, while four initial runs with the fresh-request-ID patch and f |
-| `N_terminal` | ✓ | 0 | 0 | Antithesis and periodic robustness runs containing the fix complete without reproducing the stale-read linearization failure. |
+| `N0` |  | 1 | 0 | In the Antithesis history, one member's revision stops progressing for a long time while that member continues accepting reads and writes, a |
+| `N1` |  | 0 | 0 | The put of key26 with value 147 is reported at revision 3 by one client, while other clients observe that same put at revision 155. |
+| `N2` |  | 0 | 0 | A transaction completed at proposed index 11 before a Range request began, but the Range request later received read index 10 and did not ob |
+| `N2_x` |  | 1 | 1 | The Antithesis run on the branch with the leadership-change select-race change still produced a linearizability failure. |
+| `N3` |  | 0 | 0 | During a long leader stall, the same read request ID is sent more than once; delayed messages are then processed after the cluster has advan |
+| `N4` |  | 0 | 0 | The unmodified debug build reproduced the linearizability failure in two of three runs, while four runs of the candidate build completed wit |
+| `N_terminal` | ✓ | 2 | 2 | After the change landed, the periodic robustness tests completed five consecutive runs without reproducing the stale-read linearizability fa |
 
 ## Machine review (audit pass, adversarially verified)
 
-Auditor verdict: **minor_issues** · 1 of 2 findings survived independent refutation.
+Auditor verdict: **n/a** · 0 of 0 findings survived independent refutation.
 
-_The case is the etcd "stale reads caused by process pausing" Antithesis linearizability failure, whose real answer key is: a follower reuses the same ReadIndex RequestCtx/request-id across retries to the same leader, so a delayed HeartbeatResp for that context flushes raft's readOnly queue and falsely confirms a newer queued read (fixed by PR 21399, generating a fresh request id per retry, verified by 0/4 fault-injection runs and 5 consecutive clean periodic CI runs). The graph is largely faithful: the blind path (leadership/select-race guess, commit ad284ef) is correctly marked as falsified because 1 of 3 runs on the patched branch reproduced the failure and the reporter himself called it "early bad guess"; the measurement edges (instrumented traces, fault-injection runs) are correctly typed as clarifications; the diagnostic-to-fix chain, image assignments and satisfaction conditions all match the thread. Two fidelity issues remain: the opening rev-3 vs rev-155 evidence is chained into the ReadIndex root cause although the thread attributed it to a different (snapshot-restore / current-rev:1) bug, and the fault-definition/timestamp-trust answers are positioned before the blind-path attempt although they only arrived after it._
-
-### Confirmed findings
-
-- [ ] 🟡 **misattributed_required_info** (low) — `graph.nodes.N1 (info id same_key_operation_observed_at_revisions_3_and_155) + edges[e6_N4__N_terminal].solution.required_info.L2`
-  - claim: The July rev-3-vs-rev-155 discrepancy is modeled as evidence the agent must collect on the way to (and as hard required_info for) the ReadIndex-reuse root cause, but the thread explains that discrepancy with a different bug entirely.
-  - thread evidence: Comment 30 (participant3, 2026-02-27T19:56): etcd1 'Received a snapshot' / 'applied incoming Raft snapshot' then 'kvstore restored, current-rev:1' — "it looks like related to this one - https://github.com/etcd-io/etcd/issues/20271 ... That's why we saw that `Revision is 3` instead of 155 (the event was from etcd1)". Nobody rebutted this. All later diagnostic work (comments 8-11, 28, 31) uses entirely different Antithesis runs, and the merged fix PR 21399 is never connected back to the key26 rev-3/155 artifacts.
-  - suggested fix: Either drop same_key_operation_observed_at_revisions_3_and_155 from e6.solution.required_info.L2 (keep it as opening-context clarification only), or add an edge comment on e1 noting that this particular artifact was later attributed to a separate snapshot-restore issue and that the scored chain continues from the Feb reproduction runs.
-  - verifier: The factual base of the finding checks out. c0 (participant1, 2025-07-29) is the sole source of the key26/rev-3-vs-155 artifact, and it is faithfully rendered as the e1 clarification. c30 (participant3, 2026-02-27T19:56) reads the SAME July report (commit 472662fe) and traces etcd1's 'received and saved database snapshot' -> 'applied incoming Raft snapshot' -> 'kvstore restored, current-rev:1' and
-
-### Refuted claims (auditor was wrong — do not act on these)
-
-- ~~graph_shape~~: Two clarification answers (failure_run_included_container_pause_and_network_slowdown, antithesis_log_timestamps_have_trusted_global_order) are placed before the blind-path attempt, but in the thread those answers only ar
-  - why refuted: The chronology the reviewer quotes is accurate but does not support the defect. Three independent reasons. (1) The gating info was already in the reporter's hands before the blind guess. e3.solution.required_info.L3 is exactly ['failure_run_included_container_pause_and_network_slowdown', 'read_request_later_received_in
+__
 
 
 ## Review checklist

@@ -1,0 +1,91 @@
+{
+ "repo": "coredns/coredns",
+ "number": 6076,
+ "url": "https://github.com/coredns/coredns/issues/6076",
+ "title": "Is coredns misconfigured in the kubespray v2.21.0? The service always times out, but node ips from the service work fine.",
+ "state": "closed",
+ "labels": [
+  "question"
+ ],
+ "reporter": "reporter",
+ "created_at": "2023-05-05T10:43:27Z",
+ "closed_at": "2023-05-08T08:16:58Z",
+ "body": "I realise that this problem might be in kubespray, calico, coredns or me, so I've added this as a question rather than a bug. \r\n\r\nI've deployed k8s 1.25.6 with kubespray v2.21.0, using calico, coredns and nodelocaldns. The coredns config is this:\r\n\r\n```\r\n    .:53 {\r\n        errors\r\n        health {\r\n            lameduck 5s\r\n        }\r\n        ready\r\n        kubernetes cluster.local in-addr.arpa ip6.arpa {\r\n          pods insecure\r\n          fallthrough in-addr.arpa ip6.arpa\r\n        }\r\n        prometheus :9153\r\n        forward . /etc/resolv.conf {\r\n          prefer_udp\r\n          max_concurrent 1000\r\n        }\r\n        cache 30\r\n\r\n        loop\r\n        reload\r\n        loadbalance\r\n    }\r\n```\r\nFor the record the host `/etc/resolv.conf` is identical on all nodes, and contain my network dns and the nodelocaldns address as nameservers like so:\r\n\r\n```\r\nnameserver 169.254.25.10\r\nnameserver 10.30.1.1\r\nsearch fet\r\n```\r\n\r\nThe running version is CoreDNS-1.9.3. I first noticed that in all my nodelocaldns pods there were errors like these:\r\n```\r\n2023/05/05 09:56:06 [INFO] Starting node-cache image: 1.21.1\r\n2023/05/05 09:56:06 [INFO] Using Corefile /etc/coredns/Corefile\r\n2023/05/05 09:56:06 [INFO] Using Pidfile\r\n2023/05/05 09:56:07 [ERROR] Failed to read node-cache coreFile /etc/coredns/Corefile.base - open /etc/coredns/Corefile.base: no such file or directory\r\n2023/05/05 09:56:07 [INFO] Skipping kube-dns configmap sync as no directory was specified\r\n2023/05/05 09:56:07 [INFO] Added interface - nodelocaldns\r\ncluster.local.:53 on 169.254.25.10\r\nin-addr.arpa.:53 on 169.254.25.10\r\nip6.arpa.:53 on 169.254.25.10\r\n.:53 on 169.254.25.10\r\n[INFO] plugin/reload: Running configuration MD5 = 5bc9ac48f7ba58018ec5b8fd787058a9\r\nCoreDNS-1.7.0\r\nlinux/amd64, go1.16.8,\r\n[INFO] Added back nodelocaldns rule - {raw PREROUTING [-p tcp -d 169.254.25.10 --dport 53 -j NOTRACK]}\r\n[INFO] Added back nodelocaldns rule - {raw PREROUTING [-p udp -d 169.254.25.10 --dport 53 -j NOTRACK]}\r\n[INFO] Added back nodelocaldns rule - {filter INPUT [-p tcp -d 169.254.25.10 --dport 53 -j ACCEPT]}\r\n[INFO] Added back nodelocaldns rule - {filter INPUT [-p udp -d 169.254.25.10 --dport 53 -j ACCEPT]}\r\n[INFO] Added back nodelocaldns rule - {raw OUTPUT [-p tcp -s 169.254.25.10 --sport 53 -j NOTRACK]}\r\n[INFO] Added back nodelocaldns rule - {raw OUTPUT [-p udp -s 169.254.25.10 --sport 53 -j NOTRACK]}\r\n[INFO] Added back nodelocaldns rule - {filter OUTPUT [-p tcp -s 169.254.25.10 --sport 53 -j ACCEPT]}\r\n[INFO] Added back nodelocaldns rule - {filter OUTPUT [-p udp -s 169.254.25.10 --sport 53 -j ACCEPT]}\r\n[INFO] Added back nodelocaldns rule - {raw OUTPUT [-p tcp -d 169.254.25.10 --dport 53 -j NOTRACK]}\r\n[INFO] Added back nodelocaldns rule - {raw OUTPUT [-p udp -d 169.254.25.10 --dport 53 -j NOTRACK]}\r\n[INFO] Added back nodelocaldns rule - {raw OUTPUT [-p tcp -d 169.254.25.10 --dport 8080 -j NOTRACK]}\r\n[INFO] Added back nodelocaldns rule - {raw OUTPUT [-p tcp -s 169.254.25.10 --sport 8080 -j NOTRACK]}\r\n[ERROR] plugin/errors: 2 <redacted-host>. AAAA: dial tcp 10.133.0.3:53: i/o timeout\r\n[ERROR] plugin/errors: 2 <redacted-host>. A: dial tcp 10.133.0.3:53: i/o timeout\r\n[ERROR] plugin/errors: 2 <redacted-host>. AAAA: dial tcp 10.133.0.3:53: i/o timeout\r\n[ERROR] plugin/errors: 2 <redacted-host>. A: dial tcp 10.133.0.3:53: i/o timeout\r\n[ERROR] plugin/errors: 2 <redacted-host>. AAAA: dial tcp 10.133.0.3:53: i/o timeout\r\n[ERROR] plugin/errors: 2 <redacted-host>. A: dial tcp 10.133.0.3:53: i/o timeout\r\n... this goes on forever....\r\n```\r\n\r\nIf I ask all my nodes to query a cluster dns record using the coredns pods ip, I always get the correct repsonse.\r\nIf I ask all my nodes to query a cluster dns record using the coredns service ip, only one of them get the correct response. (The rest get a timeout)\r\nIf I ask all my nodes to query a cluster dns record using the nodelocaldns ip, I always get the correct response.\r\n\r\nI've also deployed the netchecker app, which can be accessed on localhost by all nodes, except one. Well it does actually return a result, but it takes 1 minute. All replies say that a single pod netchecker-agent-hostnet is failing, and it's running on the same host which uses 1 minute to respond to the command curl http://localhost:31081/api/v1/connectivity_check | jq '.'\r\n1 minute and 5 seconds to be exact. Every single time. Which is really interesting, but I'm not sure where to look for this odd 1 minute timeout.\r\n\r\nThe failing netcheker:\r\n```\r\nE0505 11:40:45.801310       1 agent.go:135] DNS look up host error. Details: lookup netchecker-service on 169.254.25.10:53: no such host\r\nI0505 11:40:45.801829       1 agent.go:114] Send payload via URL: http://netchecker-service:8081/api/v1/agents/netchecker-agent-hostnet-rnntp\r\nE0505 11:40:59.802109       1 agent.go:306] Error while sending info. Details: Post http://netchecker-service:8081/api/v1/agents/netchecker-agent-hostnet-rnntp: net/http: request canceled while waiting for connection (Client.Timeout exceeded while awaiting headers)\r\nI0505 11:40:59.802168       1 agent.go:301] Sleep for 15 second(s)\r\nE0505 11:41:13.802609       1 agent.go:199] Get http://netchecker-service:8081/api/v1/ping: net/http: request canceled while waiting for connection (Client.Timeout exceeded while awaiting headers)\r\n```\r\n\r\nThe funny thing is that I tried asking all the netchecker pods to lookup the `netchecker-service`. It took some time, but they alle managed it:\r\n```\r\nfor pod in $(kgp | grep agent | cut -d ' ' -f 1); do echo \"$pod:\"; ke \"$pod\" -- nslookup <redacted-host>; done\r\nnetchecker-agent-8rwdr:\r\nServer:    169.254.25.10\r\nAddress 1: 169.254.25.10\r\n\r\nName:      <redacted-host>\r\nAddress 1: 10.133.53.202 <redacted-host>\r\n\r\nnetchecker-agent-d4qhc:\r\nServer:    169.254.25.10\r\nAddress 1: 169.254.25.10\r\n\r\nName:      <redacted-host>\r\nAddress 1: 10.133.53.202 <redacted-host>\r\n\r\nnetchecker-agent-hostnet-fc948:\r\nServer:    169.254.25.10\r\nAddress 1: 169.254.25.10\r\n\r\nName:      <redacted-host>\r\nAddress 1: 10.133.53.202 <redacted-host>\r\n\r\nnetchecker-agent-hostnet-jdd85:\r\nServer:    169.254.25.10\r\nAddress 1: 169.254.25.10\r\n\r\nName:      <redacted-host>\r\nAddress 1: 10.133.53.202 <redacted-host>\r\n\r\nnetchecker-agent-hostnet-kwmwl:\r\nServer:    169.254.25.10\r\nAddress 1: 169.254.25.10\r\n\r\nName:      <redacted-host>\r\nAddress 1: 10.133.53.202 <redacted-host>\r\n\r\nnetchecker-agent-hostnet-nxgjc:\r\nServer:    169.254.25.10\r\nAddress 1: 169.254.25.10\r\n\r\nName:      <redacted-host>\r\nAddress 1: 10.133.53.202 <redacted-host>\r\n\r\nnetchecker-agent-hostnet-rnntp:\r\nServer:    169.254.25.10\r\nAddress 1: 169.254.25.10\r\n\r\nName:      <redacted-host>\r\nAddress 1: 10.133.53.202\r\n\r\nnetchecker-agent-pcrgp:\r\nServer:    169.254.25.10\r\nAddress 1: 169.254.25.10\r\n\r\nName:      <redacted-host>\r\nAddress 1: 10.133.53.202 <redacted-host>\r\n\r\nnetchecker-agent-vjthk:\r\nServer:    169.254.25.10\r\nAddress 1: 169.254.25.10\r\n\r\nName:      <redacted-host>\r\nAddress 1: 10.133.53.202 <redacted-host>\r\n\r\nnetchecker-agent-vjv2x:\r\nServer:    169.254.25.10\r\nAddress 1: 169.254.25.10\r\n\r\nName:      <redacted-host>\r\nAddress 1: 10.133.53.202 <redacted-host>\r\n```\r\nI'm so confused right now. Does anyone have any tips on debugging this?",
+ "comments": [
+  {
+   "author": "reporter",
+   "created_at": "2023-05-05T11:46:29Z",
+   "body": "The netchecker pod `netchecker-agent-hostnet-rnntp` is the one reported to be failing, as it's output is also slightly different. \r\n\r\n```\r\nServer:    169.254.25.10\r\nAddress 1: 169.254.25.10\r\n\r\nName:      <redacted-host>\r\nAddress 1: 10.133.53.202\r\n```\r\n\r\nBut I'm not familiar enough with nslookup to say what that difference means. "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-05-05T13:00:32Z",
+   "body": "If I run a debug pod for a nodelocaldns pod:\r\n\r\n`kubectl debug nodelocaldns-gm5bf --image ubuntu -it bash`\r\n\r\n```\r\n# dig +short <redacted-host> @10.133.0.3\r\n;; communications error to 10.133.0.3#53: timed out\r\n;; communications error to 10.133.0.3#53: timed out\r\n;; communications error to 10.133.0.3#53: timed out\r\n;; no servers could be reached\r\n\r\n# dig +short <redacted-host> @participant2.254.25.10\r\n10.133.53.202\r\n```\r\n\r\nSo I'm honestly baffeled as to how the nodelocaldns pods have any dns information at all since the only name servers it has is my network DNS and 10.133.0.3 which I can't reach. \r\n\r\nEdit: oooh, but if I query over tcp from the nodelocaldns debug pod:\r\n\r\n```\r\n# dig +tcp +short <redacted-host> @10.133.0.3\r\n10.133.53.202\r\n```"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-05-05T13:14:23Z",
+   "body": "This just feels like an endless rabbit hole. All my nodes fail to query 10.133.0.3 over UDP, but all but one can do it over TCP. The last one times out.\r\n\r\nSorry for the wall of text. I'll try to get some food and restore some faith in technology. "
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-05-05T13:19:11Z",
+   "body": "> For the record the host /etc/resolv.conf is identical on all nodes, and contain my network dns **and the nodelocaldns address** as nameservers like so:\r\n\r\nThis is problematic. Nodelocaldns sends non-cluster domain queries to the upstream servers listed in `/etc/resolv.conf`.  If one of those servers is the nodelocaldns address itself, then you've created a partial forwarding loop, where nodelocaldns has a 50% chance of forwarding any non-cluster domain query to itself.\r\n\r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-05-05T14:13:13Z",
+   "body": "Right that makes sense and a loop here sounds bad. So I went ahead and replaced the symlink to the systemd generated resolv.conf which was currently inplace for all my nodes and instead created an new file without the nodelocaldns nameserver listing. \r\n\r\nThe thing though is that after changeing this, restarting coredns pods and nodelocaldns pods they both still have the nodelocaldns listed as one of two nameservers. \r\n\r\nahh, that is coming from the kubelet-config:\r\n`resolvConf: /run/systemd/resolve/resolv.conf`\r\n\r\nNo idea why participant2.254.25.10 is being added by systemd though. \r\n\r\nBut even after updating the kublet-config, restarting the kubelet service, the coredns pods and nodelocaldns pods they all have participant2.254.25.10 as a second nameserver. And the nodelocaldns pods are still logging the timeout errors. \r\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-05-05T15:16:06Z",
+   "body": "Possibly related to this...\r\n\r\nhttps://github.com/kubernetes-sigs/kubespray/issues/9948\r\n\r\n... looks like kube-spray defaults to creating a forwarding loop?\r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-05-05T15:33:00Z",
+   "body": "Good call. Just found this in one of the nodelocaldns logs:\r\n`[FATAL] plugin/loop: Loop (10.133.64.71:35692 -> participant2.254.25.10:53) detected for zone \"in-addr.arpa.\", see https://coredns.io/plugins/loop#troubleshooting. Query: \"HINFO 1956073987928419037.1871532948686855462.in-addr.arpa.\"`\r\n\r\nHaven't noticed it before. "
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-05-05T15:43:36Z",
+   "body": "> But even after updating the kublet-config, restarting the kubelet service, the coredns pods and nodelocaldns pods they all have participant2.254.25.10 as a second nameserver. And the nodelocaldns pods are still logging the timeout errors.\r\n\r\ncoredns and nodelocaldns pods need to be restarted to re-read the updated resolv.conf. \r\n\r\n... or maybe you did already - depends on how you parse that sentence. If you did - maybe systemd-resolved is restoring the link?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-05-05T16:11:12Z",
+   "body": "Yeah I did a restart of both coredns and nodelocaldns pods after restarting the kubelet. And I just verified that the /etc/resolv.conf has not been changed since I updated it. But running `systemd-resolve --status` on a master node gives:\r\n\r\n```\r\nGlobal\r\n           Protocols: -LLMNR -mDNS -DNSOverTLS DNSSEC=no/unsupported\r\n    resolv.conf mode: foreign\r\n         DNS Servers: participant2.254.25.10\r\nFallback DNS Servers: 10.30.1.1\r\n```\r\n\r\nSo somehow, both my network DNS and the nodelocaldns are \"loaded\" eventhough the nodelocaldns is not listed in /etc/resolve.conf anymore. This is even after a reboot of the master node. \r\n\r\nBut I did found this: https://<redacted-host>/questions/515154/how-do-you-remove-bad-dns-server-ips-from-systemd-resolved\r\nWhich showed me how to add my Network DNS server, and led me to find `/etc/systemd/resolved.conf` which for some reason had the nodelocaldns ip set as main DNS. Removing that, and reloading systemd-resolved finally gave my nodelocaldns pods the correct /etc/resolve.conf. \r\n\r\nHowever, nodelocaldns pods are still logging the errors on timeouts reaching 10.133.0.3:53. xD"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-05-05T16:16:45Z",
+   "body": "10.133.0.3 would be coredns's service address.  So something is wrong with the networking setup (calico or kubeproxy?).  Unfortunately, I don't have experience with kube-spray, so I don't know how it tries to set things up."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-05-05T16:42:34Z",
+   "body": "Yeah it's the service address. I'm using calico, but I actually also deployed a cluster with cilium to see if the error was still there, and it was. \r\n\r\nBut I just checked the kubelet logs, and found this:\r\n\r\n`kubelet[105902]: E0504 11:15:28.543564  105902 kubelet.go:2373] \"Container runtime network notready\" networkReady=\"NetworkReady=false reason:NetworkPluginNotReady message:Network plugin returns error: cni plugin not initialized\"` \r\n\r\nwhich I guess is a good indicator that you're right about something being wrong with the network setup.  And looks like the calico kube-controller agrees: \r\n\r\n```\r\n2023-05-05 02:04:34.508 [INFO][1] ipam_allocation.go 175: Candidate IP leak handle=\"k8s-pod-network.8ab0cdee3be7c903e6afa5e1775fa2ebe851c91f6306430f16a039b94b4c5748\" ip=\"10.133.112.46\" node=\"tindbox.fet\" pod=\"automation/home-assistant-5f5fcd846-jxm5b\"\r\n...\r\n2023-05-05 14:12:16.711 [ERROR][1] client.go 290: Error getting cluster information config ClusterInformation=\"default\" error=Get \"https://10.133.0.1:443/apis/<redacted-host>/v1/clusterinformations/default\": context deadline exceeded\r\n2023-05-05 14:12:16.712 [ERROR][1] main.go 275: Failed to verify datastore error=Get \"https://10.133.0.1:443/apis/<redacted-host>/v1/clusterinformations/default\": context deadline exceeded\r\n2023-05-05 14:12:20.714 [ERROR][1] main.go 293: Received bad status code from apiserver error=Get \"https://10.133.0.1:443/healthz\": context deadline exceeded status=0\r\n2023-05-05 14:12:20.722 [INFO][1] main.go 309: Health check is not ready, retrying in 2 seconds with new timeout: 8s\r\n2023-05-05 14:12:30.730 [ERROR][1] client.go 290: Error getting cluster information config ClusterInformation=\"default\" error=Get \"https://10.133.0.1:443/apis/<redacted-host>/v1/clusterinformations/default\": context deadline exceeded\r\n2023-05-05 14:12:30.730 [ERROR][1] main.go 275: Failed to verify datastore error=Get \"https://10.133.0.1:443/apis/<redacted-host>/v1/clusterinformations/default\": context deadline exceeded\r\n2023-05-05 14:12:38.733 [ERROR][1] main.go 293: Received bad status code from apiserver error=Get \"https://10.133.0.1:443/healthz\": context deadline exceeded status=0\r\n```\r\n\r\nSo I guess this is definitely not something I can blame on coredns then. "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-05-07T15:10:09Z",
+   "body": "Okay, so it turns out that calico and nodelocaldns will compete for iptables configuration, and calico eventually always wins. I've made a change to the  FelixConfiguration adding a `chainInsertMode: Append` and now the iptable rules from nodelocaldns seems to stick around. I can access the coredns service from all nodes so all should be well. But still, there just as many timouts. And it seems to me that what's happening is that the coreos pod is taking longer than 2 seconds to reply the first time it sees a domain query. I tested this myself and most non-cached domains timeout after 2 seconds, but succeeded if I set the timeout to 5 seconds. Any pointers on digging further into that would be great. "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-05-08T08:16:58Z",
+   "body": "So I started googling for this 1m timeout. Came across this: https://github.com/projectcalico/calico/issues/3145\r\nTurns out that the fix is nothing but `sudo ethtool --offload vxlan.calico rx off tx off`. And boom. Problem is completely and instantly gone. "
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "coredns/coredns",
+  "default_branch": "master",
+  "commit_sha": "47d8ff6d915eb9ee13b71f68c0ce4b8342e6d5aa",
+  "as_of": "2023-05-05T10:43:27Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_coredns_coredns_6076"
+}

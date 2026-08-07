@@ -1,0 +1,222 @@
+{
+ "repo": "fluent/fluent-bit",
+ "number": 7434,
+ "url": "https://github.com/fluent/fluent-bit/issues/7434",
+ "title": "Forward could not accept new connection/tls unexpected EOF errors",
+ "state": "closed",
+ "labels": [
+  "Stale",
+  "status: waiting-for-triage"
+ ],
+ "reporter": "reporter",
+ "created_at": "2023-05-18T13:29:52Z",
+ "closed_at": "2025-04-29T02:12:00Z",
+ "body": "## Bug Report\r\n\r\n**Describe the bug**\r\nFluent-bit produces a large number of TLS/connection errors in its logs when TLS is enabled with the forwarding input plugin.\r\n\r\nThe use case is one instance of fluent-bit running inside EC2 outputting logs to a receiver fluent-bit instance running inside a kube cluster to securely forward messages into graylog.\r\n\r\nObservations:\r\n- Turning TLS verification off - still errors\r\n- Running in debug mode I get further error messages e.g. `[debug] [downstream] connection #51 failed`, `[debug] [socket] could not validate socket status for #52 (don't worry)`\r\n- Turning TLS off resolves the errors (predictably)\r\n- Most messages are still making it to the receiver/server fluent-bit as far as I can see, haven't yet identified if messages are being lost or not\r\n\r\n**To Reproduce**\r\nExample log messages:\r\n```\r\n[2023/05/17 14:21:40] [error] [input:forward:forward.0] could not accept new connection\r\n[2023/05/17 14:21:40] [error] [tls] error: unexpected EOF\r\n[2023/05/17 14:21:40] [error] [input:forward:forward.0] could not accept new connection\r\n[2023/05/17 14:21:41] [error] [tls] error: unexpected EOF\r\n[2023/05/17 14:21:41] [error] [input:forward:forward.0] could not accept new connection\r\n[2023/05/17 14:21:41] [error] [tls] error: unexpected EOF\r\n```\r\nOccasionally:\r\n```\r\n[2023/05/17 14:21:42] [error] [/src/fluent-bit/src/tls/openssl.c:433 errno=0] Success\r\n[2023/05/17 14:21:42] [error] [tls] syscall error: error:00000005:lib(0):<nick>(0):DH lib\r\n```\r\n\r\n- Steps to reproduce the problem:\r\n1. Run receiving fluent-bit in kube\r\n2. Pod certificate issued by cert-manager vault issuer\r\n3. Second external fluent-bit (e.g. in EC2) sending messages to the receiving fluent-bit with the vault ca_chain in config\r\n\r\n**Expected behavior**\r\nFluent-bit doesn't spew TLS errors\r\n\r\n**Your Environment**\r\n<!--- Include as many relevant details about the environment you experienced the bug in -->\r\n* Version used: 2.1 (also 2.0.6)\r\n* Configuration:\r\nFluent-bit helm chart running in kube\r\nfluent-bit.conf (server/receiver side - filters removed for simplicity)\r\n```\r\n [SERVICE]\r\n    Daemon off\r\n    Flush 10\r\n    Log_Level debug\r\n    parsers_file custom_parsers.conf\r\n    HTTP_Server On\r\n    HTTP_Listen 0.0.0.0\r\n    HTTP_Port 2020\r\n    Health_Check On\r\n    storage.path /var/logs/flb-logs\r\n    storage.sync full\r\n\r\n[INPUT]\r\n    name forward\r\n    listen 0.0.0.0\r\n    port 24224\r\n    tls on\r\n    tls.debug 4\r\n    tls.verify on\r\n    tls.crt_file /etc/tls/fluent-bit-ingress-tls/tls.crt\r\n    tls.key_file /etc/tls/fluent-bit-ingress-tls/tls.key\r\n    storage.type filesystem\r\n\r\n[OUTPUT]\r\n    Name                    gelf\r\n    Match                   *\r\n    Host                    ~URL omitted~\r\n    Port                    12212\r\n    Mode                    tls\r\n    tls                     On\r\n    tls.verify              Off\r\n    tls.ca_file             /fluent-bit/etc/ca.crt\r\n    tls.vhost               ~URL omitted~\r\n    Gelf_Short_Message_Key  message\r\n    Gelf_Host_Key           container_name\r\n    storage.total_limit_size 256MB\r\n```\r\nfluent-bit.conf (client/sender side - filters removed for simplicity):\r\n```\r\n[SERVICE]\r\n    parsers_file /fluent-bit/etc/parsers.conf\r\n\r\n[INPUT]\r\n    name forward\r\n    listen 0.0.0.0\r\n    port 24224\r\n\r\n[OUTPUT]\r\n    Name stdout\r\n    Format json_lines\r\n    Match OUTPUT\r\n\r\n[OUTPUT]\r\n    Name forward\r\n    Match OUTPUT\r\n    Host ~URL omitted~\r\n    Port 24224\r\n    tls on\r\n    tls.verify on\r\n    tls.ca_file /etc/fluent-bit/ca.crt\r\n\r\n```\r\n* Environment name and version (e.g. Kubernetes? What version?):\r\nKubernetes 1.23 (EKS)\r\n* Server type and version:\r\n* Operating System and version:\r\nFedora CoreOS EC2 instance\r\n* Filters and plugins:\r\nForward input/outputs\r\ngelf output\r\n\r\n**Additional context**\r\n<!--- How has this issue affected you? What are you trying to accomplish? -->\r\n<!--- Providing context helps us come up with a solution that is most useful in the real world -->\r\n",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2023-05-18T18:01:21Z",
+   "body": "Did I understand you correctly that even though you are getting those errors data is flowing?\r\nIf that's the case then I wonder if that's due to time slice shifting.\r\nCould you try these two things individually and then combined?\r\n\r\n1. Add `threaded on` to the input plugin (forward)\r\n2. Add `workers 1` to the output plugin (gelf)\r\n\r\nThat should greatly alleviate the pressure on the main thread and could give us some valuable insight."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-05-23T10:54:18Z",
+   "body": "Hi Leonardo,\r\n\r\nThanks for the prompt reply, apologies for the delay I had a long weekend off!\r\n\r\nSo, I tried:\r\n\r\n- Both `threaded on` and `workers 1` set in the input and output plugins respectively\r\n- Just `threaded on` set in the input plugin\r\n- Just `workers 1` set in the output plugin\r\n\r\nI only tried this on the server/receiver side; I'm still experiencing the same errors\r\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-05-23T11:07:05Z",
+   "body": "In that case the only thing that comes to mind is using [kubeshark](https://kubeshark.co/) to capture the traffic which would let us know if those connection attempts are being aborted by the remote host due to a delayed handshake attempt or what exactly is going on.\r\n\r\nIf you decide to capture the traffic you can share those pcaps in private with me in slack. I'll look at them, give you some feedback and try to come up with the next step."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-06-07T21:46:47Z",
+   "body": "Was there any resolution on this? I'm seeing the same thing for fluent-bit running in a Nomad environment. We're presently running version `2.1.4.` I turned off all outputs to minimize the configuration.\r\n\r\nHere is the INPUT configuration:\r\n\r\n```\r\n[INPUT]\r\n    Name           forward\r\n    Listen         0.0.0.0\r\n    port           24224\r\n    threaded       on\r\n    tls            on\r\n    tls.debug      4\r\n    tls.verify     off\r\n    tls.ca_file    /fluent-bit/etc/ca.cert.pem\r\n    tls.crt_file   /fluent-bit/etc/devl.cert.pem\r\n    tls.key_file   /fluent-bit/etc/devl.key.pem\r\n```\r\n\r\nHere is a sample of the log output:\r\n\r\n```\r\n[2023/06/07 21:44:35] [error] [tls] error: unexpected EOF\r\n[2023/06/07 21:44:35] [debug] [downstream] connection #55 failed\r\n[2023/06/07 21:44:35] [error] [input:forward:forward.0] could not accept new connection\r\n```"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-06-08T14:32:15Z",
+   "body": "Disregard my issue. I found that I had my local nomad logger, logging to fluentbit as well and that does not support TLS. That was the source of my errors. Once I added a non-TLS port for that traffic, the errors cleared up."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-07-12T09:34:13Z",
+   "body": "I saw the same issue. It seems like fluent-bit's throughput just becomes lower when enabling tls in forward input. As a result, forward output creates so many connections for newer chunks because existing connections are still used, then forward input becomes refusing newer connections by `could not accept new connection` error. \r\n\r\nTo prevent creating a large number of connections, set `net.max_worker_connections` to `20` or something in forward input, [which was introduced in 2.1.6.](https://github.com/fluent/fluent-bit/pull/7586) But it might also cause `no upstream connections available` error in forward input .\r\n\r\nhttps://<redacted-host>/manual/administration/networking#max-connections-per-worker"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2023-08-06T10:33:17Z",
+   "body": "Running into similar issues on 2.1.8 with TLS. Using default docker container, fluentd forwarding to fluentbit.\r\n\r\nConfig\r\n\r\n```\r\n[SERVICE]\r\n    log_level    debug\r\n\r\n[INPUT]\r\n    Name              forward\r\n    Listen            0.0.0.0\r\n    Port              24002\r\n    Buffer_Chunk_Size 1M\r\n    Buffer_Max_Size   6M\r\n    tls on\r\n    tls.verify off\r\n    tls.crt_file /fluent-bit/etc/self_signed.crt\r\n    tls.key_file /fluent-bit/etc/self_signed.key\r\n\r\n# [OUTPUT]\r\n#     Name stdout\r\n#     Match *\r\n\r\n[OUTPUT]\r\n    Name        kafka\r\n    Match       *\r\n    Brokers     kafka-1:9091,kafka-2:9092,kafka-3:9093\r\n    Topics      kubernetes-main-ingress\r\n    Timestamp_Format iso8601\r\n```\r\n\r\n```\r\n[2023/08/06 10:05:51] [debug] [out flush] cb_destroy coro_id=5\r\n[2023/08/06 10:05:51] [debug] [task] destroy task=0x7fe6a2039aa0 (task_id=0)\r\n[2023/08/06 10:05:52] [debug] [socket] could not validate socket status for #41 (don't worry)\r\n[2023/08/06 10:05:53] [debug] [socket] could not validate socket status for #43 (don't worry)\r\n[2023/08/06 10:05:55] [debug] [socket] could not validate socket status for #41 (don't worry)\r\n[2023/08/06 10:05:56] [debug] [socket] could not validate socket status for #40 (don't worry)\r\n[2023/08/06 10:06:01] [debug] [socket] could not validate socket status for #43 (don't worry)\r\n[2023/08/06 10:06:01] [debug] [socket] could not validate socket status for #44 (don't worry)\r\n[2023/08/06 10:06:02] [debug] [input chunk] update output instances with new chunk size diff=34495, records=28, input=forward.0\r\n[2023/08/06 10:06:02] [debug] [socket] could not validate socket status for #43 (don't worry)\r\n[2023/08/06 10:06:02] [debug] [task] created task=0x7fe6a2039780 id=0 OK\r\n[2023/08/06 10:06:03] [debug] [socket] could not validate socket status for #44 (don't worry)\r\n{\"stream\"=>\"[2023/08/06 10:06:03] [debug] in produce_message\r\n```\r\n\r\nLog level error\r\n\r\n```\r\nFluent Bit v2.1.8\r\n* Copyright (C) 2015-2022 The Fluent Bit Authors\r\n* Fluent Bit is a CNCF sub-project under the umbrella of Fluentd\r\n* https://fluentbit.io\r\n\r\n[2023/08/06 10:29:47] [error] [/src/fluent-bit/src/tls/openssl.c:433 errno=104] Connection reset by peer\r\n[2023/08/06 10:29:47] [error] [tls] syscall error: error:00000005:lib(0):<nick>(0):DH lib\r\n[2023/08/06 10:29:48] [error] [/src/fluent-bit/src/tls/openssl.c:433 errno=104] Connection reset by peer\r\n[2023/08/06 10:29:48] [error] [tls] syscall error: error:00000005:lib(0):<nick>(0):DH lib\r\n[2023/08/06 10:29:51] [error] [/src/fluent-bit/src/tls/openssl.c:433 errno=104] Connection reset by peer\r\n[2023/08/06 10:29:51] [error] [tls] syscall error: error:00000005:lib(0):<nick>(0):DH lib\r\n```\r\n\r\nRelated: https://github.com/fluent/fluent-bit/issues/6690"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2023-08-13T10:01:40Z",
+   "body": "Any updates on this? This is killing my production environment performance :)"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2023-08-21T13:29:35Z",
+   "body": "@participant14 could you paste the fluentd config, mainly the match statement"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2023-08-22T12:08:22Z",
+   "body": "I asked around, is this what you were asking for?\r\n\r\n```\r\n<label @participant15>\r\n  <match kubernetes.**>\r\n    @participant16 tag_normaliser\r\n    @id flow:xxxxx:xxxxx:0\r\n    format ${namespace_name}.${pod_name}.${container_name}\r\n  </match>\r\n  <filter **>\r\n    @participant16 parser\r\n    @id flow:xxxx:xxxxx:1\r\n    key_name message\r\n    remove_key_name_field true\r\n    reserve_data true\r\n    <parse>\r\n      @participant16 json\r\n    </parse>\r\n  </filter>\r\n  <match **>\r\n    @participant16 forward\r\n    @id flow:xxxx:xxxx:output:xxxx:xxxxx-logging\r\n    tls_allow_self_signed_cert true\r\n    tls_insecure_mode true\r\n    transport tls\r\n    <buffer tag,time>\r\n      @participant16 file\r\n      chunk_limit_size 8MB\r\n      path /buffers/flow:xxx:xxx:output:xxx:xxxxxx.*.buffer\r\n      retry_forever true\r\n      timekey 10m\r\n      timekey_wait 1m\r\n    </buffer>\r\n    <server>\r\n      host xxxxxxxx.nl\r\n      port 24002\r\n    </server>\r\n  </match>\r\n</label>\r\n```"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2023-08-23T05:12:34Z",
+   "body": "Thanks @participant14 , I'm wondering if the buffer size needs to be larger on the Fluent Bit side to match what you have there with 8MB chunk limit. You may want to try and lower that on Fluentd side as well"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2023-08-23T14:53:10Z",
+   "body": "I have tried the larger buffer size:\r\n\r\n```\r\n[SERVICE]\r\n    log_level                       error\r\n\r\n[INPUT]\r\n    Name                            forward\r\n    Listen                          0.0.0.0\r\n    Port                            24002\r\n    Buffer_Chunk_Size               8M\r\n    Buffer_Max_Size                 128M\r\n    tls                             on\r\n    tls.verify                      off\r\n    tls.crt_file                    /fluent-bit/etc/self_signed.crt\r\n    tls.key_file                    /fluent-bit/etc/self_signed.key\r\n\r\n\r\n[OUTPUT]\r\n    Name                            kafka\r\n    Match                           *\r\n    Brokers                         kafka-1:9091,kafka-2:9092,kafka-3:9093\r\n    Topics                          kubernetes-main-ingress\r\n    Timestamp_Format                iso8601\r\n\r\n# [OUTPUT]\r\n#     Name                            stdout\r\n#     Match                           *\r\n\r\n```\r\n```\r\n[2023/08/23 14:52:31] [error] [tls] syscall error: error:00000005:lib(0):<nick>(0):DH lib\r\n[2023/08/23 14:52:34] [error] [/src/fluent-bit/src/tls/openssl.c:433 errno=104] Connection reset by peer\r\n[2023/08/23 14:52:34] [error] [tls] syscall error: error:00000005:lib(0):<nick>(0):DH lib\r\n[2023/08/23 14:52:36] [error] [/src/fluent-bit/src/tls/openssl.c:433 errno=104] Connection reset by peer\r\n[2023/08/23 14:52:36] [error] [tls] syscall error: error:00000005:lib(0):<nick>(0):DH lib\r\n[2023/08/23 14:52:38] [error] [/src/fluent-bit/src/tls/openssl.c:433 errno=104] Connection reset by peer\r\n[2023/08/23 14:52:38] [error] [tls] syscall error: error:00000005:lib(0):<nick>(0):DH lib\r\n[2023/08/23 14:52:44] [error] [/src/fluent-bit/src/tls/openssl.c:433 errno=104] Connection reset by peer\r\n[2023/08/23 14:52:44] [error] [tls] syscall error: error:00000005:lib(0):<nick>(0):DH lib\r\n```\r\n\r\nSame result. Will try the lower chunk size as well"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2023-08-23T14:57:09Z",
+   "body": "FluentD config:\r\n\r\n```\r\n<label @participant17>\r\n   <match kubernetes.**>\r\n     @participant16 tag_normaliser\r\n     @id flow:nginx-ingress:mxxx:0\r\n     format \"${namespace_name}.${pod_name}.${container_name}\"\r\n   </match>\r\n   <filter **>\r\n     @participant16 parser\r\n     @id flow:nginx-ingress:mxxx:1\r\n     key_name \"message\"\r\n     remove_key_name_field true\r\n     reserve_data true\r\n     <parse>\r\n       @participant16 \"json\"\r\n     </parse>\r\n   </filter>\r\n   <match **>\r\n     @participant16 forward\r\n     @id flow:nginx-ingress:mxxx:output:nginx-ingress:xxxlogging\r\n     tls_allow_self_signed_cert true\r\n     tls_insecure_mode true\r\n     transport tls\r\n     <buffer tag,time>\r\n       @participant16 \"file\"\r\n       chunk_limit_size 1MB\r\n       path \"/buffers/flow:nginx-ingress:mxxx:output:nginx-ingress:xxxlogging.*.buffer\"\r\n       retry_forever true\r\n       timekey 10m\r\n       timekey_wait 1m\r\n     </buffer>\r\n     <server>\r\n       host \"xxxx\"\r\n       port 24002\r\n     </server>\r\n   </match>\r\n</label>\r\n```\r\n\r\nFluent-bit config\r\n\r\n```\r\n[SERVICE]\r\n    log_level                       error\r\n\r\n[INPUT]\r\n    Name                            forward\r\n    Listen                          0.0.0.0\r\n    Port                            24002\r\n    Buffer_Chunk_Size               1M\r\n    Buffer_Max_Size                 128M\r\n    tls                             on\r\n    tls.verify                      off\r\n    tls.crt_file                    /fluent-bit/etc/self_signed.crt\r\n    tls.key_file                    /fluent-bit/etc/self_signed.key\r\n\r\n\r\n[OUTPUT]\r\n    Name                            kafka\r\n    Match                           *\r\n    Brokers                         kafka-1:9091,kafka-2:9092,kafka-3:9093\r\n    Topics                          kubernetes-main-ingress\r\n    Timestamp_Format                iso8601\r\n\r\n# [OUTPUT]\r\n#     Name                            stdout\r\n#     Match                           *\r\n\r\n```\r\n\r\n```\r\n[2023/08/23 14:55:44] [error] [/src/fluent-bit/src/tls/openssl.c:433 errno=104] Connection reset by peer\r\n[2023/08/23 14:55:44] [error] [tls] syscall error: error:00000005:lib(0):<nick>(0):DH lib\r\n[2023/08/23 14:55:50] [error] [/src/fluent-bit/src/tls/openssl.c:433 errno=104] Connection reset by peer\r\n[2023/08/23 14:55:50] [error] [tls] syscall error: error:00000005:lib(0):<nick>(0):DH lib\r\n[2023/08/23 14:56:03] [error] [/src/fluent-bit/src/tls/openssl.c:433 errno=104] Connection reset by peer\r\n[2023/08/23 14:56:03] [error] [tls] syscall error: error:00000005:lib(0):<nick>(0):DH lib\r\n[2023/08/23 14:56:06] [error] [/src/fluent-bit/src/tls/openssl.c:433 errno=104] Connection reset by peer\r\n[2023/08/23 14:56:06] [error] [tls] syscall error: error:00000005:lib(0):<nick>(0):DH lib\r\n[2023/08/23 14:56:06] [error] [/src/fluent-bit/src/tls/openssl.c:433 errno=104] Connection reset by peer\r\n[2023/08/23 14:56:06] [error] [tls] syscall error: error:00000005:lib(0):<nick>(0):DH lib\r\n[2023/08/23 14:56:15] [error] [/src/fluent-bit/src/tls/openssl.c:433 errno=104] Connection reset by peer\r\n[2023/08/23 14:56:15] [error] [tls] syscall error: error:00000005:lib(0):<nick>(0):DH lib\r\n```\r\n\r\nDoes seem to lower the error rate a bit, but no solution."
+  },
+  {
+   "author": "participant6",
+   "created_at": "2023-08-25T16:31:41Z",
+   "body": "I observe the same issue with v2.1.8. \r\nHow is your instance deployed? In my case in directly on VM (Ubuntu 20.04)"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2023-08-25T17:33:45Z",
+   "body": "This is the default fluent-bit container hosted in Docker on RHEL8"
+  },
+  {
+   "author": "participant6",
+   "created_at": "2023-09-13T08:31:57Z",
+   "body": "In my case, the setup is Fluent-bit_1 (on external k8s; Forward output plugin)-> Fluent-bit_2 (on Azure VM; Forward input plugin + Kafka output plugin) -> Kafka... \r\nSome (?) logs are flowing, although Fluent-bit_2 instance shows repetitive errors:\r\n\r\n```\r\n[2023/09/11 09:06:50] [error] [/tmp/fluent-bit/src/tls/openssl.c:433 errno=104] Connection reset by peer\r\n[2023/09/11 09:06:50] [error] [tls] syscall error: error:00000005:lib(0):<nick>(0):DH lib\r\n```\r\nwith occasional:\r\n```\r\n[2023/09/12 18:00:14] [error] [tls] error: unexpected EOF\r\n[2023/09/12 18:00:14] [error] [input:forward:forward.1] could not accept new connection\r\n"
+  },
+  {
+   "author": "participant6",
+   "created_at": "2023-12-05T07:31:49Z",
+   "body": "Not much happening here I see... :(\r\nIf I can provide any more info, which could be useful to understand the TLS issue please advise. Update to 2.2.0 didn't help. "
+  },
+  {
+   "author": "participant4",
+   "created_at": "2023-12-05T07:42:41Z",
+   "body": "I'm sorry to say but we have moved away from fluentbit for most use cases because of this and because solving it takes quite long."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-12-05T10:44:23Z",
+   "body": "I'm sorry to say too. I deployed nginx servers as reverse proxy to terminate TLS instead. It has been very stable so far."
+  },
+  {
+   "author": "participant7",
+   "created_at": "2023-12-17T12:26:33Z",
+   "body": "Solved in my case by lowering the `net.keepalive_idle_timeout` (in my case to 30 sec).\r\nI assume that fluent-bit assumed the connections to be alive, while the server side had already discarded them."
+  },
+  {
+   "author": "participant8",
+   "created_at": "2023-12-17T20:33:01Z",
+   "body": "Well 30 is supposed to be the default isnt it? https://<redacted-host>/manual/administration/networking"
+  },
+  {
+   "author": "participant7",
+   "created_at": "2023-12-18T12:44:01Z",
+   "body": "My bad... 30 sec was the original timeout - I lowered it to 10 sec.\r\nAnyway I'm still not sure whether the error and `net.keepalive_idle_timeout` are related or not..."
+  },
+  {
+   "author": "participant9",
+   "created_at": "2023-12-29T07:45:27Z",
+   "body": "I faced the same issue recently. My fluent bit pods were running behind a kubernetes load balancer which was sending health probes. These health probes were causing the \"[error] [tls] error: unexpected EOF\" errors. To fix this, I modified the externalTrafficPolicy to Local and updated the healthCheckNodePort. This ensures Kubernetes LB send the health probes on a separate port. Refer this for configuration: https://kubernetes.io/docs/tasks/access-application-cluster/create-external-load-balancer/#preserving-the-client-source-ip"
+  },
+  {
+   "author": "participant8",
+   "created_at": "2024-01-17T12:34:26Z",
+   "body": "This is happening to us too. In logs I see:\r\n\r\n```\r\n[2024/01/17 12:39:26] [error] [/home/<user>/source/fluent-bit/fluent-bit-2.2.0/src/tls/openssl.c:433 errno=104] Connection reset by peer\r\n[2024/01/17 12:39:26] [error] [tls] syscall error: error:00000005:lib(0):<nick>(0):DH lib\r\n[2024/01/17 12:52:20] [error] [/home/<user>/source/fluent-bit/fluent-bit-2.2.0/src/tls/openssl.c:433 errno=104] Connection reset by peer\r\n[2024/01/17 12:52:20] [error] [tls] syscall error: error:00000005:lib(0):<nick>(0):DH lib\r\n[2024/01/17 12:54:22] [error] [/home/<user>/source/fluent-bit/fluent-bit-2.2.0/src/tls/openssl.c:433 errno=104] Connection reset by peer\r\n[2024/01/17 12:54:22] [error] [tls] syscall error: error:00000005:lib(0):<nick>(0):DH lib\r\n[2024/01/17 13:09:25] [error] [/home/<user>/source/fluent-bit/fluent-bit-2.2.0/src/tls/openssl.c:433 errno=104] Connection reset by peer\r\n[2024/01/17 13:09:25] [error] [tls] syscall error: error:00000005:lib(0):<nick>(0):DH lib\r\n[2024/01/17 13:09:25] [error] [/home/<user>/source/fluent-bit/fluent-bit-2.2.0/src/tls/openssl.c:433 errno=104] Connection reset by peer\r\n[2024/01/17 13:09:25] [error] [tls] syscall error: error:00000005:lib(0):<nick>(0):DH lib\r\n```\r\n\r\nWe have connections with fluent-bit and fluentd, however I am not currently able to say from which one this origins."
+  },
+  {
+   "author": "participant8",
+   "created_at": "2024-02-20T09:01:50Z",
+   "body": "Well I have just noticed that lots of data are in fact really missing. \r\n\r\nIf I added require_ack_response true on fluentd side the data starts flowing and error disappears in fluentbit logs. However fluentd side cpu rises a lot, thats probably because he does not get the ack response and has to resend the messages that were not accepted (just a guess). So that suggests that there really is something wrong on fluentbits side.\r\n\r\nCould someone please look into this? Seems like quite a problem, in our case it influences all metrics from fluentd."
+  },
+  {
+   "author": "participant8",
+   "created_at": "2024-02-23T10:41:28Z",
+   "body": "We had to use http plugins instead of forward for fluentd->fluentbit communication, that works. I would recommend the same, because one or the other is doing something wrong and given that it involves two separate projects and how long this issue is open it doesnt seem to be solved soon.  However fluentbit->fluentbit works in our case both with forward and http plugin. \r\nin case of fluentd->fluentbit when swapping forward plugin for http plugin it is necessary to update it like this in fluentd conf:\r\n```\r\n    <format>\r\n      @participant16 json\r\n    </format>\r\n    json_array true\r\n```\r\nand to prepend the logs with similar filter:\r\n```\r\n  <filter **>\r\n    @participant16 record_transformer\r\n    <record>\r\n      tag my_server_pretag.${tag}\r\n    </record>\r\n  </filter>\r\n```\r\nThen on fluentbit side you just add to config:\r\n```\r\n    tag_key           tag\r\n```\r\nDont forget to set the endpoint address with httpS, which I overlooked at first and is hard to debug."
+  },
+  {
+   "author": "participant10",
+   "created_at": "2024-02-29T14:48:27Z",
+   "body": "> This is happening to us too. In logs I see:\r\n> \r\n> ```\r\n> [2024/01/17 12:39:26] [error] [/home/<user>/source/fluent-bit/fluent-bit-2.2.0/src/tls/openssl.c:433 errno=104] Connection reset by peer\r\n> [2024/01/17 12:39:26] [error] [tls] syscall error: error:00000005:lib(0):<nick>(0):DH lib\r\n> [2024/01/17 12:52:20] [error] [/home/<user>/source/fluent-bit/fluent-bit-2.2.0/src/tls/openssl.c:433 errno=104] Connection reset by peer\r\n> [2024/01/17 12:52:20] [error] [tls] syscall error: error:00000005:lib(0):<nick>(0):DH lib\r\n> [2024/01/17 12:54:22] [error] [/home/<user>/source/fluent-bit/fluent-bit-2.2.0/src/tls/openssl.c:433 errno=104] Connection reset by peer\r\n> [2024/01/17 12:54:22] [error] [tls] syscall error: error:00000005:lib(0):<nick>(0):DH lib\r\n> [2024/01/17 13:09:25] [error] [/home/<user>/source/fluent-bit/fluent-bit-2.2.0/src/tls/openssl.c:433 errno=104] Connection reset by peer\r\n> [2024/01/17 13:09:25] [error] [tls] syscall error: error:00000005:lib(0):<nick>(0):DH lib\r\n> [2024/01/17 13:09:25] [error] [/home/<user>/source/fluent-bit/fluent-bit-2.2.0/src/tls/openssl.c:433 errno=104] Connection reset by peer\r\n> [2024/01/17 13:09:25] [error] [tls] syscall error: error:00000005:lib(0):<nick>(0):DH lib\r\n> ```\r\n> \r\n> We have connections with fluent-bit and fluentd, however I am not currently able to say from which one this origins.\r\n\r\nWe came across this error when playing around with the keep_alive settings. We purposefully increased it beyond the Load Balancer keep alive and we got that error when, I believe, got past the 60 sec LB timeout and it closed the connection. "
+  },
+  {
+   "author": "participant10",
+   "created_at": "2024-02-29T14:49:56Z",
+   "body": "As a slight update to the OP:  we're still trying to clear the source of the error, but managed to clear a whole lot of them using ksniff (kubeshark was a bit too invasive for our taste). We then identified that our Prometheus tags/annotations for the fluent-bit server instance were misconfigured and Prometheus was trying to scrape that endpoint. That cleared a huge chunk of the errors for us but we're still trying to figure out the source of the few remaining entries. "
+  },
+  {
+   "author": "participant10",
+   "created_at": "2024-03-11T17:47:19Z",
+   "body": "We've gone ahead and enabled metrics and have been monitoring our setup. We got some new insights:\r\n\r\n- Sometimes we get bursts of traffic which lead to spikes in retries, sometimes leading to dropped chunks. This is probably due to the retries failing;\r\n- TLS errors have a strong correlation with these burst windows;\r\n- Adjusting the service `scheduler.base` and the Output `net.connect_timeout` and `Workers` lessened the amount of retries and so far we've yet to spot any dropped messages. However we're still witnessing TLS errors in the same timeframe as these retries;\r\n\r\nBased on the above it seems there's something amiss when the two fluent-bit instances end up terminating the connection and go for a retry. Any suggestions on what we could do next to try and help address the issue? "
+  },
+  {
+   "author": "github-actions[bot]",
+   "created_at": "2024-06-11T01:52:21Z",
+   "body": "This issue is stale because it has been open 90 days with no activity. Remove stale label or comment or this will be closed in 5 days. Maintainers can add the `exempt-stale` label."
+  },
+  {
+   "author": "participant11",
+   "created_at": "2024-06-12T11:19:54Z",
+   "body": "still open"
+  },
+  {
+   "author": "participant12",
+   "created_at": "2024-09-09T11:18:25Z",
+   "body": "facing similar issue. \r\nSender app (teleport) is using fluentd library with following config:\r\n\r\n```[forward.fluentd]\r\nca = \"/opt/event-handler/ca.crt\"\r\ncert = \"/opt/event-handler/client.crt\"\r\nkey = \"/opt/event-handler/client.key\"\r\nurl = \"https://localhost:8888/test.log\"\r\nsession-url = \"https://localhost:8888/session\"\r\n```\r\n\r\nhowever, http input plugin on fluent-bit is unable to accept the connection\r\n\r\n```\r\n[2024/09/09 11:01:00] [error] [tls] error: unexpected EOF\r\n[2024/09/09 11:01:00] [debug] [downstream] connection #51 failed\r\n```\r\neven sending sample data via curl although accepted but logs show :\r\n```\r\n[2024/09/09 11:12:55] [error] [/tmp/fluent-bit/src/tls/openssl.c:551 errno=0] Success\r\n[2024/09/09 11:12:55] [error] [tls] syscall error: error:00000005:lib(0):<nick>(0):DH lib\r\n[2024/09/09 11:12:55] [debug] [socket] could not validate socket status for #51 (don't worry)\r\n[2024/09/09 11:12:55] [debug] [task] created task=0x7fba6d036640 id=0 OK\r\n[2024/09/09 11:12:55] [debug] [output:stdout:stdout.0] task_id=0 assigned to thread #0\r\n[0] test.log: [[1725880375.021842822, {}], {\"json\"=>\"{\"foo\":\"bar\"}\"}]\r\n[2024/09/09 11:12:55] [debug] [out flush] cb_destroy coro_id=1\r\n[2024/09/09 11:12:55] [debug] [task] destroy task=0x7fba6d036640 (task_id=0)\r\n```\r\n\r\nfluent-bit input config:\r\n```\r\n[INPUT]\r\n    name http\r\n    listen 0.0.0.0\r\n    port 8888\r\n    threaded On\r\n    tls On\r\n    tls.verify Off\r\n    tls.debug 4\r\n    tls.ca_file /opt/event-handler/ca.crt\r\n    tls.crt_file /opt/event-handler/server.crt\r\n    tls.key_file /opt/event-handler/server.key\r\n    tls.key_passwd xxxxxx\r\n```\r\n\r\nAny pointers to solve this will be helpful.\r\n\r\n@participant8 aiming for similar setup as yours:  fluentd -> fluent-bit on http with mtls"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-09-09T12:56:13Z",
+   "body": "I'm also considering another use case where fluentbit is a better fit than Vector (wineventlog). But the fact that this still hasn't been fixed is holding us back and is worrisome. There has been a whole new stable release in the meantime and this is not some small bug, http over tls is a very common scenario to forward logs with."
+  },
+  {
+   "author": "participant13",
+   "created_at": "2024-10-03T08:36:47Z",
+   "body": "I am also seeing this, I have a .NET application posting high volumes of data to the HTTP endpoint, with TLS enabled.\r\n\r\nWe see dropped data and slow processing from fluentbit, with timeouts on the client side."
+  },
+  {
+   "author": "github-actions[bot]",
+   "created_at": "2025-01-02T02:02:57Z",
+   "body": "This issue is stale because it has been open 90 days with no activity. Remove stale label or comment or this will be closed in 5 days. Maintainers can add the `exempt-stale` label."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-01-03T23:34:04Z",
+   "body": "..."
+  },
+  {
+   "author": "participant13",
+   "created_at": "2025-01-23T09:44:04Z",
+   "body": "Back again, this caused a small production issue in my system so we are swapping to https://vector.dev/"
+  },
+  {
+   "author": "github-actions[bot]",
+   "created_at": "2025-04-24T02:11:16Z",
+   "body": "This issue is stale because it has been open 90 days with no activity. Remove stale label or comment or this will be closed in 5 days. Maintainers can add the `exempt-stale` label."
+  },
+  {
+   "author": "github-actions[bot]",
+   "created_at": "2025-04-29T02:12:00Z",
+   "body": "This issue was closed because it has been stalled for 5 days with no activity."
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "fluent/fluent-bit",
+  "default_branch": "master",
+  "commit_sha": "f21e68db91c9abe17ba7f33a1ba683b45aaafe3b",
+  "as_of": "2023-05-18T13:29:52Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_fluent_fluent-bit_7434"
+}

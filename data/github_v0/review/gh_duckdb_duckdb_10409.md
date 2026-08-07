@@ -9,26 +9,34 @@
 
 ```mermaid
 flowchart LR
-    N0["<b>N0 private S3 ATTACH failure reported</b><br/><small>info: 5</small>"]
-    N1["<b>N1 remote versus local access tested</b><br/><small>info: 7</small>"]
-    N2_x["<b>N2_x httpfs-only suggestion aftermath</b><br/><small>info: 12</small>"]
-    N3["<b>N3 failure confirmed on current release and isolated to ATTACH</b><br/><small>info: 13</small>"]
-    N4["<b>N4 modern credential-chain secret verified</b><br/><small>info: 15</small>"]
-    N_terminal["<b>terminal private S3 database attach working</b><br/><small>info: 17</small>"]
-    N0 -.->|"❓ public_test_database_attach_fails_before_loading_httpfs, public_database_download_and_local_attach_succeed"| N1
+    N0["<b>N0 private S3 ATTACH failure reported</b><br/><small>info: 6</small>"]
+    N1["<b>N1 remote access compared with local copy</b><br/><small>info: 8</small>"]
+    N2_x["<b>N2_x extension-loading aftermath</b><br/><small>info: 12</small>"]
+    N2["<b>N2 failure persists with legacy AWS credential loading</b><br/><small>info: 14</small>"]
+    N3["<b>N3 current release comparison</b><br/><small>info: 15</small>"]
+    N3_x["<b>N3_x explicit static secret aftermath</b><br/><small>info: 17</small>"]
+    N4["<b>N4 private ATTACH verified with credential-chain secret</b><br/><small>info: 19</small>"]
+    N_terminal["<b>terminal private S3 database accessible</b><br/><small>info: 19</small>"]
+    N0 -.->|"❓ public_test_database_direct_attach_also_failed_initially, aws_cli_download_then_local_attach_succeeds"| N1
     linkStyle 0 stroke:#3b82f6,stroke-width:2px
-    N1 ==>|"💥 blind: Treat the failure as solely caused by the httpfs extension not being loaded, and install and load httpfs before retrying ATTACH."| N2_x
+    N1 ==>|"💥 blind: Explicitly install and load the httpfs extension before running ATTACH."| N2_x
     linkStyle 1 stroke:#ef4444,stroke-width:2px
-    N2_x -.->|"❓ duckdb_110_legacy_credentials_read_parquet_but_attach_fails"| N3
+    N2_x -.->|"❓ private_attach_still_fails_on_1_0_with_legacy_credential_loader, parquet_read_from_same_location_succeeds"| N2
     linkStyle 2 stroke:#3b82f6,stroke-width:2px
-    N3 -.->|"❓ credential_chain_secret_private_attach_succeeds"| N4
+    N2 -.->|"❓ private_attach_still_fails_on_1_1_with_read_parquet_succeeding"| N3
     linkStyle 3 stroke:#3b82f6,stroke-width:2px
-    N4 ==>|"⚡ Use DuckDB's current S3 secret mechanism with the AWS credential-chain provider for authenticated ATTACH, rather than relying on deprecated legacy credential loading; keep httpfs loaded and verify by attaching and querying the actual private database."| N_terminal
-    linkStyle 4 stroke:#f97316,stroke-width:2px
+    N3 ==>|"💥 blind: Replace the legacy credential loader with a secret that explicitly supplies the S3 endpoint, key ID, secret, and region."| N3_x
+    linkStyle 4 stroke:#ef4444,stroke-width:2px
+    N3_x -.->|"❓ credential_chain_secret_setup_allows_private_attach"| N4
+    linkStyle 5 stroke:#3b82f6,stroke-width:2px
+    N4 ==>|"⚡ Configure private S3 authentication through DuckDB's current Secrets Manager credential-chain provider, using the AWS profile or chain appropriate to the environment, instead of relying on the deprecated legacy credential loader; then verify ATTACH against the private DuckDB file."| N_terminal
+    linkStyle 6 stroke:#f97316,stroke-width:2px
     class N0 start
     class N1 normal
     class N2_x normal
+    class N2 normal
     class N3 normal
+    class N3_x normal
     class N4 normal
     class N_terminal terminal
     classDef start fill:#fee2e2,stroke:#b91c1c,color:#000
@@ -38,37 +46,41 @@ flowchart LR
 
 ## Opening (body)
 
-> When I attach a DuckDB database stored on S3 with `ATTACH 's3://bucket/path/to/test.duckdb' AS test (READ_ONLY)`, I get `Catalog Error: Cannot open database ... in read-only mode: database does not exist`. I installed and loaded `httpfs`, configured the S3 region and access keys, and reproduced this with the nightly JDBC client through DBeaver on macOS 14.2.1 on an M1. The nightly reports DuckDB v0.9.3-dev3121.
+> When I try to attach a DuckDB file on S3 in read-only mode, I get `Catalog Error: Cannot open database "s3://bucket/path/to/test.duckdb" in read-only mode: database does not exist`. I installed and loaded `httpfs`, set the S3 region, access key ID, and secret access key, and ran `ATTACH 's3://bucket/path/to/test.duckdb' AS test (READ_ONLY)`. I am using DuckDB v0.9.3-dev3121 through the nightly JDBC client in DBeaver on macOS 14.2.1 on an M1 Mac.
 
 ## Satisfaction conditions
 
-1. Must identify the root cause as credential configuration for authenticated ATTACH: the legacy AWS credential-loading/static setup used in the failing cases did not supply usable credentials to the private S3 database ATTACH path, despite other S3 reads working.
-2. The diagnosis must be grounded in the public-versus-private comparison, successful authenticated Iceberg/Parquet reads, and the successful credential-chain secret probe.
-3. Must recommend DuckDB's current S3 secrets API with `PROVIDER CREDENTIAL_CHAIN` for the demonstrated AWS SSO environment, while continuing to load `httpfs`.
-4. Must not present installing or loading `httpfs` alone as the fix; that attempt was performed and private ATTACH still failed.
-5. Must account for the fact that the explicit endpoint/key/secret/region secret did not work in the affected AWS SSO setup rather than insisting on it as the verified answer.
-6. Must have the user verify both ATTACH and a query against the actual private S3 DuckDB database before declaring the issue resolved.
+1. Must identify the accepted cause at the level established by the thread: the private S3 ATTACH path was not receiving usable credentials from the legacy or unsuitable secret configuration, even though authenticated `read_*` operations could succeed.
+2. Must recommend DuckDB's current S3 Secrets Manager credential-chain configuration, with the AWS profile or chain appropriate to the environment, rather than relying on the deprecated `load_aws_credentials()` path.
+3. Must ground the recommendation in the public/private comparison, successful reads from the same private bucket, persistence across newer releases, and the affected user's successful private ATTACH with a credential-chain secret.
+4. Must not claim that merely installing and loading `httpfs` resolves the private-bucket problem; that was tried and the private ATTACH still failed.
+5. Must not present the explicit endpoint/key/secret configuration as guaranteed for this AWS SSO deployment, because that exact attempt failed there and disrupted `read_*` access.
+6. Must have an affected user verify that the private DuckDB database actually attaches and can be queried before declaring the issue resolved.
 
 ## Edges
 
 | edge | type | gates / info | payload |
 |---|---|---|---|
-| `e1_N0__N1` | clarification_only | asks: public_test_database_attach_fails_before_loading_httpfs, public_database_download_and_local_attach_succeed | I pulled main and tried attaching `s3://duckdb-blobs/data/my.db`, but I received the same database-does-not-ex / Yes. `aws s3 cp s3://duckdb-blobs/data/my.db ./my.db` downloads it, and `ATTACH './my.db' AS test (READ_ONLY)` |
-| `e2_N1__N2_x` | solution_only **BLIND** | req_info: private_s3_duckdb_attach_reports_database_missing, public_test_database_attach_fails_before_loading_httpfs, public_database_download_and_local_attach_succeed<br>elements: installs_and_loads_httpfs_before_attach | Treat the failure as solely caused by the httpfs extension not being loaded, and install and load httpfs before retrying ATTACH. |
-| `e3_N2_x__N3` | clarification_only | asks: duckdb_110_legacy_credentials_read_parquet_but_attach_fails | I tried DuckDB 1.1.0. `read_parquet` from the same private bucket works using the same script, but attaching t |
-| `e4_N3__N4` | clarification_only | asks: credential_chain_secret_private_attach_succeeds | Huge win: I can get the private database ATTACH to work with the credential-chain setup shown in my screenshot |
-| `e5_N4__N_terminal` | solution_only | req_info: httpfs_and_iceberg_loaded_on_matching_commit, authenticated_iceberg_read_from_same_private_bucket_succeeds, private_database_attach_still_reports_missing, public_database_attach_succeeds_with_httpfs, same_database_attach_succeeds_after_moving_to_public_bucket, explicit_static_secret_fails_in_aws_sso_environment, httpfs_installed_and_loaded, s3_region_and_static_credentials_configured, duckdb_110_legacy_credentials_read_parquet_but_attach_fails, credential_chain_secret_private_attach_succeeds<br>elements: uses_current_duckdb_s3_secret_mechanism, uses_provider_credential_chain_for_the_aws_sso_environment, does_not_treat_loading_httpfs_alone_as_sufficient, explains_that_legacy_load_aws_credentials_is_deprecated_or_not_the_correct_attach_auth_path, asks_user_to_verify_attach_and_query_on_the_actual_private_database | Use DuckDB's current S3 secret mechanism with the AWS credential-chain provider for authenticated ATTACH, rather than relying on deprecated legacy credential loading; keep httpfs loaded and verify by attaching and querying the actual private database. |
+| `e1_N0__N1` | clarification_only | asks: public_test_database_direct_attach_also_failed_initially, aws_cli_download_then_local_attach_succeeds | I pulled main and tried the public `s3://duckdb-blobs/data/my.db` database, but I received the same database-d / I downloaded `s3://duckdb-blobs/data/my.db` with `aws s3 cp`. ATTACHing the downloaded `./my.db` works, and I  |
+| `e2_N1__N2_x` | solution_only **BLIND** | req_info: private_s3_duckdb_attach_reports_database_does_not_exist, public_test_database_direct_attach_also_failed_initially<br>elements: explicitly_installs_and_loads_httpfs | Explicitly install and load the httpfs extension before running ATTACH. |
+| `e3_N2_x__N2` | clarification_only | asks: private_attach_still_fails_on_1_0_with_legacy_credential_loader, parquet_read_from_same_location_succeeds | On 1.0.0 I still cannot attach a database from the private bucket after using `load_aws_credentials()`. / Yes. I can read a Parquet file from the same private location even though ATTACHing the database fails. |
+| `e4_N2__N3` | clarification_only | asks: private_attach_still_fails_on_1_1_with_read_parquet_succeeding | I tried again on 1.1.0. `read_parquet` from the same private bucket works with the script, but ATTACH still fa |
+| `e5_N3__N3_x` | solution_only **BLIND** | req_info: parquet_read_from_same_location_succeeds, private_attach_still_fails_on_1_1_with_read_parquet_succeeding<br>elements: creates_secret_with_explicit_s3_credentials | Replace the legacy credential loader with a secret that explicitly supplies the S3 endpoint, key ID, secret, and region. |
+| `e6_N3_x__N4` | clarification_only | asks: credential_chain_secret_setup_allows_private_attach | I can get it to work with the credential-chain secret setup shown in my screenshot. With that setup, the priva |
+| `e7_N4__terminal` | solution_only | req_info: authenticated_iceberg_read_from_same_private_bucket_succeeds, same_database_attaches_after_moving_to_public_bucket, parquet_read_from_same_location_succeeds, explicit_httpfs_reload_does_not_enable_private_attach, private_attach_still_fails_on_1_1_with_read_parquet_succeeding, credential_chain_secret_setup_allows_private_attach<br>elements: uses_current_s3_secret_credential_chain, does_not_treat_httpfs_loading_alone_as_the_fix, accounts_for_environment_specific_aws_profile_or_sso_credentials, asks_affected_user_to_verify_private_database_attach | Configure private S3 authentication through DuckDB's current Secrets Manager credential-chain provider, using the AWS profile or chain appropriate to the environment, instead of relying on the deprecated legacy credential loader; then verify ATTACH against the private DuckDB file. |
 
 ## Nodes
 
 | node | terminal | volunteered | images | symptoms |
 |---|---|---|---|---|
-| `N0` |  | 2 | 0 | Attaching my S3-hosted DuckDB file read-only reports that the database does not exist, even after I load httpfs and configure my S3 credenti |
-| `N1` |  | 0 | 0 | The public test database initially gives me the same missing-database error when I attach it directly from S3, while downloading that file w |
-| `N2_x` |  | 5 | 0 | After installing and loading httpfs on the matching build, I can attach the public test database but my database in the private bucket still |
-| `N3` |  | 0 | 0 | On DuckDB 1.1.0, the same script can read Parquet from my private bucket but cannot attach a DuckDB database there. |
-| `N4` |  | 1 | 0 | Using the credential-chain secret setup, I can attach the database from my private S3 bucket. In my AWS SSO environment, explicitly creating |
-| `N_terminal` | ✓ | 0 | 0 | The DuckDB database in my private S3 bucket attaches successfully with the current S3 credential-chain secret configuration, and I can query |
+| `N0` |  | 0 | 0 | ATTACHing `s3://bucket/path/to/test.duckdb` in read-only mode reports that the database does not exist. |
+| `N1` |  | 0 | 0 | The public test database initially gives me the same database-does-not-exist error when addressed through S3. After downloading that file wi |
+| `N2_x` |  | 4 | 0 | With `httpfs` explicitly installed and loaded and my S3 credentials set, an Iceberg query against the private bucket returns rows but ATTACH |
+| `N2` |  | 0 | 0 | On DuckDB 1.0.0, after loading AWS credentials, I can read a Parquet file from the private location but cannot attach a DuckDB database ther |
+| `N3` |  | 0 | 0 | On DuckDB 1.1.0, the script can read Parquet from the private bucket but ATTACH still reports that the database does not exist. |
+| `N3_x` |  | 2 | 0 | With the explicitly specified endpoint, key, secret, and region configuration, ATTACH still fails in my AWS SSO setup and the same configura |
+| `N4` |  | 1 | 0 | Using the credential-chain secret setup shown in my working script, I can attach the DuckDB database from the private S3 bucket. |
+| `N_terminal` | ✓ | 0 | 0 | The DuckDB database in the private S3 bucket attaches successfully and can be queried using credentials supplied through the working secret  |
 
 ## Machine review (audit pass, adversarially verified)
 

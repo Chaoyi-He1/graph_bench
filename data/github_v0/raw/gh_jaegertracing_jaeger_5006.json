@@ -1,0 +1,142 @@
+{
+ "repo": "jaegertracing/jaeger",
+ "number": 5006,
+ "url": "https://github.com/jaegertracing/jaeger/issues/5006",
+ "title": "Enable and enforce goroutine leak checks in tests",
+ "state": "closed",
+ "labels": [
+  "help wanted",
+  "good first issue"
+ ],
+ "reporter": "reporter",
+ "created_at": "2023-12-14T19:11:33Z",
+ "closed_at": "2024-12-18T18:48:54Z",
+ "body": "Enforce the use of https://github.com/uber-go/goleak across the repo:\n * [x] a linter similar to scripts/check-test-files.sh that verifies that all packages with tests have goleak in TestMain\n   * first deploy the script in audit mode where it only prints offending packages\n   * then make the script fail the CI once the next item is addressed\n   * Done in #5010\n * [x] add goleak to all packages via TestMain. Some packages may pass the validation, some may fail and would need to be fixed. It's best to break this into several PRs, first to add goleak to packages that do not fail, and then potentially separate PRs for each package where goleak does fail with the corresponding fixes to the tests.\n   * Run `make goleak` to see the list of packages missing the linter\n   * In packages with multiple `*_test.go` files add the check to a new file `package_test.go`\n     * Remember to add copyright header - run `make fmt` after committing the new files\n   * Examples: \n     * #5015 \n     * #5017\n * [x] Fix leaks in the integration tests (see #6339)\n * [x] Change linter script to fail CI on errors going forward\n\nState on March 8 2024:\n```\n$ make goleak\nVerifying that all packages with tests have goleak in their TestMain\n🔴 Error(check-goleak): no goleak check in package ./cmd/collector/app/\n🔴 Error(check-goleak): no goleak check in package ./cmd/internal/printconfig/\n🔴 Error(check-goleak): no goleak check in package ./cmd/query/app/\n🔴 Error(check-goleak): no goleak check in package ./pkg/cassandra/gocql/testutils/\n🔴 Error(check-goleak): no goleak check in package ./pkg/testutils/\n🔴 Error(check-goleak): no goleak check in package ./plugin/metrics/prometheus/metricsstore/\n🔴 Error(check-goleak): no goleak check in package ./plugin/sampling/strategystore/adaptive/\n🔴 Error(check-goleak): no goleak check in package ./plugin/storage/integration/\nError(check-goleak): no goleak check in 8 package(s).\n```\n",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2023-12-14T23:22:44Z",
+   "body": "@reporter, I will look into this "
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-12-16T10:54:58Z",
+   "body": "@reporter, i would also like to work on this, if @participant1 dosen't mind"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-12-21T21:14:21Z",
+   "body": "Latest: 33 packages remaining\r\n```\r\nError(check-goleak): no goleak check in 33 package(s).\r\n```"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-12-26T15:44:32Z",
+   "body": "working on /cmd/collector/app/zipkin/"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2023-12-28T09:00:01Z",
+   "body": "I have implemented this into the package folders in [this PR](https://github.com/jaegertracing/jaeger/pull/5055)"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-01-16T04:57:52Z",
+   "body": "@reporter, i just found something interesting : \r\nwhen we use\r\n```go\r\nfunc TestMain(m *testing.M) {\r\n\tgoleak.VerifyTestMain(m)\r\n}\r\n```\r\nthe current package doesn't shows up in `make goleak`, which is expected.\r\nBut,\r\nwhen we use this\r\n```go\r\nfunc TestMain(m *testing.M) {\r\n\ttestutils.VerifyGoLeaks(m)\r\n}\r\n```\r\nit shows `no goleak check in package` in `make goleak`."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-01-16T05:01:01Z",
+   "body": "@participant9 yes, we need to change the script to count `testutils.VerifyGoLeaks` as satisfactory.\r\n\r\nIn fact, I would prefer to change all existing leak checks to call this function instead of the one from goleak directly."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-01-16T05:02:02Z",
+   "body": "ok working on it."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2024-03-05T14:54:31Z",
+   "body": "Working on `cmd/remote-storage/app`"
+  },
+  {
+   "author": "participant6",
+   "created_at": "2024-03-22T16:41:31Z",
+   "body": "This is a bit tricky for `./cmd/query/app/`.\r\n\r\nThe problem is `StaticAssetsHandler` does not provide a method for closing the underlying `watcher.Close()`. We could wrap this in a `(*StaticAssetsHandler).Wrap` method, but then I'm not sure how to expose this through the `RegisterStaticHandler` function without making a breaking change to its signature.\r\n\r\nWe could just update the test to inline `RegisterStaticHandler`, but then we would lose the test for `RegisterStaticHandler`, which I don't think you'd want.\r\n\r\nWhat about:\r\n\r\n- Design a new API that exposes a `Stop` method to the caller, and update `server.go` to use it\r\n- Deprecate `RegisterStaticHandler`, and somehow suppress the goleak test failure for it\r\n\r\nInterested to hear your thoughts."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-03-23T00:17:02Z",
+   "body": "how about this:\r\n1. add `Close() error` to static handler\r\n2. return that as `io.Closer` from RegisterStaticHandler"
+  },
+  {
+   "author": "participant6",
+   "created_at": "2024-03-23T13:09:05Z",
+   "body": "That was my initial thought, but then I was concerned that this would introduce a breaking change if anything happened to be importing the `cmd` package as a library (an odd use-case admittedly, but I guess possible). I'll create a PR for this approach either way and you can decide :)"
+  },
+  {
+   "author": "participant6",
+   "created_at": "2024-03-25T09:30:58Z",
+   "body": "@reporter I had a go at this approach in https://github.com/jaegertracing/jaeger/pull/5299/commits/ef4b791cf1f9d4ea6a1f9c9a2377a8a3f7cbacc4. Interested to hear your thoughts."
+  },
+  {
+   "author": "participant7",
+   "created_at": "2024-03-27T10:16:31Z",
+   "body": "working on ` pkg/cassandra/gocql/testutils`"
+  },
+  {
+   "author": "participant6",
+   "created_at": "2024-03-29T14:04:35Z",
+   "body": "I had a look into `./plugin/sampling/strategystore/adaptive/`. One challenge is the high default `Processor.followerRefreshInterval` (20s) which causes the `runUpdateProbabilitiesLoop` to hang long enough that either Close() needs to block a long time, or the test times out. In `processor_test.go` the default value can be overridden before `Processor.Start` is called. However in `factory_test.go` this is not currently possible because the `Factory` wraps both the initialising and starting of the `Processor` in the `CreateStrategyStore` method.\r\n\r\nI think there's a couple of options:\r\n\r\n1. Add the `followerRefreshInterval` field to the `Factory` which could be set in the test code, and then this could be set on the Processor in the `CreateStrategyStore` method.\r\n2. Expose `--sampling.follower-refresh-interval` as an option\r\n\r\nFor now I'll go for 1. but I thought I'd see whether there is any appetite for 2. because it would have the side benefit of making the test code a bit cleaner."
+  },
+  {
+   "author": "participant6",
+   "created_at": "2024-03-29T14:48:27Z",
+   "body": "Solved in a different way: https://github.com/jaegertracing/jaeger/pull/5310/commits/dfe7adc7fd34389e2e507d9512eb64b5e19048f7"
+  },
+  {
+   "author": "participant8",
+   "created_at": "2024-12-08T16:44:53Z",
+   "body": "https://github.com/jaegertracing/jaeger/pull/5468#issuecomment-2163872037 I started with this like by adding adding goleak in a single test. From there I got errors and by reffering to [this](https://github.com/grpc/grpc-go/issues/6413) I got to know that we have to use a seperate grpc clients for each test instead of using as a single (initialized in the `e2eInitialize`), then I placed the TestMain for checking all go leaks and got the tests passed for cassandra. @reporter What should be the correct way? Should we be bothered for failing tests when checked seperately or way encorprated in #5468 is correct? "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-12-08T16:49:22Z",
+   "body": "@participant8 if you are able to get clean run by adding goleak check into individual tests, feel free to create PRs for those - it will narrow down the scope of remaining work (once the whole package is clean it's easy to remove those in favor of a package-level check, although we may just want to keep them per-test too, as a debugging tool).\n\nI will need more information about what specific problem you found. I don't believe it should matter if _some_ gRPC clients are alive for the duration of the overall test vs. individual tests as long as they are _closed_ at the end of the parent test."
+  },
+  {
+   "author": "participant8",
+   "created_at": "2024-12-08T16:57:35Z",
+   "body": "This was the error which I got when I used `goleak.VerifyNone(t)` in a test of `getOperations` for Cassandra. This error was not present when goleak was ran for the whole package. The `gRPC` error is same as described in my above comment.\n```\n    integration.go:357: 2024-12-08 22:24:42.04  Writing trace with 5 spans\n    integration.go:261: Retrieved operations: [{example-operation-1 unspecified} {example-operation-3 server} {example-operation-4 client}]\n    e2e_integration.go:270: Purging storage via http://0.0.0.0:9231/purge\n    integration.go:269: found unexpected goroutines:\n        [Goroutine 52 in state select, with google.golang.org/grpc/internal/grpcsync.(*CallbackSerializer).run on top of the stack:\n        google.golang.org/grpc/internal/grpcsync.(*CallbackSerializer).run(0xc000216c20, {0x2b146e8, 0xc0004fe230})\n        \t/home/<user>/go/pkg/mod/google.golang.org/grpc@v1.68.0/internal/grpcsync/callback_serializer.go:88 +0x1eb\n        created by google.golang.org/grpc/internal/grpcsync.NewCallbackSerializer in goroutine 22\n        \t/home/<user>/go/pkg/mod/google.golang.org/grpc@v1.68.0/internal/grpcsync/callback_serializer.go:52 +0x207\n         Goroutine 53 in state select, with google.golang.org/grpc/internal/grpcsync.(*CallbackSerializer).run on top of the stack:\n        google.golang.org/grpc/internal/grpcsync.(*CallbackSerializer).run(0xc000216c50, {0x2b146e8, 0xc0004fe280})\n        \t/home/<user>/go/pkg/mod/google.golang.org/grpc@v1.68.0/internal/grpcsync/callback_serializer.go:88 +0x1eb\n        created by google.golang.org/grpc/internal/grpcsync.NewCallbackSerializer in goroutine 22\n        \t/home/<user>/go/pkg/mod/google.golang.org/grpc@v1.68.0/internal/grpcsync/callback_serializer.go:52 +0x207\n         Goroutine 50 in state IO wait, with internal/poll.runtime_pollWait on top of the stack:\n        internal/poll.runtime_pollWait(0x740c6f938df0, 0x72)\n        \t/usr/local/go/src/runtime/netpoll.go:351 +0x85\n        internal/poll.(*pollDesc).wait(0xc0004c9020, 0x72, 0x0)\n        \t/usr/local/go/src/internal/poll/fd_poll_runtime.go:84 +0xb1\n        internal/poll.(*pollDesc).waitRead(...)\n        \t/usr/local/go/src/internal/poll/fd_poll_runtime.go:89\n        internal/poll.(*FD).Read(0xc0004c9000, {0xc00032f000, 0x1000, 0x1000})\n        \t/usr/local/go/src/internal/poll/fd_unix.go:165 +0x466\n        net.(*netFD).Read(0xc0004c9000, {0xc00032f000, 0x1000, 0x1000})\n        \t/usr/local/go/src/net/fd_posix.go:55 +0x4b\n        net.(*conn).Read(0xc0004f6050, {0xc00032f000, 0x1000, 0x1000})\n        \t/usr/local/go/src/net/net.go:189 +0xad\n        net/http.(*persistConn).Read(0xc0005807e0, {0xc00032f000, 0x1000, 0x1000})\n        \t/usr/local/go/src/net/http/transport.go:2052 +0xf9\n        bufio.(*Reader).fill(0xc0004f2120)\n        \t/usr/local/go/src/bufio/bufio.go:110 +0x29a\n        bufio.(*Reader).Peek(0xc0004f2120, 0x1)\n        \t/usr/local/go/src/bufio/bufio.go:148 +0xc5\n        net/http.(*persistConn).readLoop(0xc0005807e0)\n        \t/usr/local/go/src/net/http/transport.go:2205 +0x354\n        created by net/http.(*Transport).dialConn in goroutine 24\n        \t/usr/local/go/src/net/http/transport.go:1874 +0x29b4\n         Goroutine 51 in state select, with net/http.(*persistConn).writeLoop on top of the stack:\n        net/http.(*persistConn).writeLoop(0xc0005807e0)\n        \t/usr/local/go/src/net/http/transport.go:2519 +0x1c5\n        created by net/http.(*Transport).dialConn in goroutine 24\n        \t/usr/local/go/src/net/http/transport.go:1875 +0x2a3f\n         Goroutine 54 in state select, with google.golang.org/grpc/internal/grpcsync.(*CallbackSerializer).run on top of the stack:\n        google.golang.org/grpc/internal/grpcsync.(*CallbackSerializer).run(0xc000216c80, {0x2b146e8, 0xc0004fe2d0})\n        \t/home/<user>/go/pkg/mod/google.golang.org/grpc@v1.68.0/internal/grpcsync/callback_serializer.go:88 +0x1eb\n        created by google.golang.org/grpc/internal/grpcsync.NewCallbackSerializer in goroutine 22\n        \t/home/<user>/go/pkg/mod/google.golang.org/grpc@v1.68.0/internal/grpcsync/callback_serializer.go:52 +0x207\n         Goroutine 58 in state select, with google.golang.org/grpc/internal/resolver/dns.(*dnsResolver).watcher on top of the stack:\n        google.golang.org/grpc/internal/resolver/dns.(*dnsResolver).watcher(0xc00011e000)\n        \t/home/<user>/go/pkg/mod/google.golang.org/grpc@v1.68.0/internal/resolver/dns/dns_resolver.go:220 +0x3ee\n        created by google.golang.org/grpc/internal/resolver/dns.(*dnsBuilder).Build in goroutine 7\n        \t/home/<user>/go/pkg/mod/google.golang.org/grpc@v1.68.0/internal/resolver/dns/dns_resolver.go:149 +0x645\n         Goroutine 6 in state select, with google.golang.org/grpc/internal/grpcsync.(*CallbackSerializer).run on top of the stack:\n        google.golang.org/grpc/internal/grpcsync.(*CallbackSerializer).run(0xc00025a380, {0x2b146e8, 0xc0001a43c0})\n        \t/home/<user>/go/pkg/mod/google.golang.org/grpc@v1.68.0/internal/grpcsync/callback_serializer.go:88 +0x1eb\n        created by google.golang.org/grpc/internal/grpcsync.NewCallbackSerializer in goroutine 22\n        \t/home/<user>/go/pkg/mod/google.golang.org/grpc@v1.68.0/internal/grpcsync/callback_serializer.go:52 +0x207\n         Goroutine 7 in state select, with google.golang.org/grpc/internal/grpcsync.(*CallbackSerializer).run on top of the stack:\n        google.golang.org/grpc/internal/grpcsync.(*CallbackSerializer).run(0xc00025a3b0, {0x2b146e8, 0xc0001a4410})\n        \t/home/<user>/go/pkg/mod/google.golang.org/grpc@v1.68.0/internal/grpcsync/callback_serializer.go:88 +0x1eb\n        created by google.golang.org/grpc/internal/grpcsync.NewCallbackSerializer in goroutine 22\n        \t/home/<user>/go/pkg/mod/google.golang.org/grpc@v1.68.0/internal/grpcsync/callback_serializer.go:52 +0x207\n         Goroutine 8 in state select, with google.golang.org/grpc/internal/grpcsync.(*CallbackSerializer).run on top of the stack:\n        google.golang.org/grpc/internal/grpcsync.(*CallbackSerializer).run(0xc00025a3e0, {0x2b146e8, 0xc0001a4460})\n        \t/home/<user>/go/pkg/mod/google.golang.org/grpc@v1.68.0/internal/grpcsync/callback_serializer.go:88 +0x1eb\n        created by google.golang.org/grpc/internal/grpcsync.NewCallbackSerializer in goroutine 22\n        \t/home/<user>/go/pkg/mod/google.golang.org/grpc@v1.68.0/internal/grpcsync/callback_serializer.go:52 +0x207\n         Goroutine 56 in state IO wait, with internal/poll.runtime_pollWait on top of the stack:\n        internal/poll.runtime_pollWait(0x740c6f938cd8, 0x72)\n        \t/usr/local/go/src/runtime/netpoll.go:351 +0x85\n        internal/poll.(*pollDesc).wait(0xc0004c91a0, 0x72, 0x0)\n        \t/usr/local/go/src/internal/poll/fd_poll_runtime.go:84 +0xb1\n\n\n```"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-12-08T17:05:07Z",
+   "body": "@participant8 first, you mentioned that adding `goleak.VerifyNone(t)` to some test did not result in an issue - can you create PRs for those?\n\nsecond, are you talking about v1 or v2 integration tests? For v1 there should be no gRPC in the picture. If you are talking about v2, then again gRPC there is not specific to Cassandra, but to the overall test setup, so I would expect the same issue to occur for another storage backend that might be easier to run locally than the one with Cassandra.\n\nLastly, I think I would be only putting `goleak.VerifyNone(t)` to the top-level tests, not individual sub-tests."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-12-08T17:07:02Z",
+   "body": "looking at the dump output, it mentions `e2e_integration.go`, which is v2 tests. But we already have package-level `testutils.VerifyGoLeaks(m)` there, so I am not sure how you are getting this failure."
+  },
+  {
+   "author": "participant8",
+   "created_at": "2024-12-08T17:14:48Z",
+   "body": "> [@participant8](https://github.com/participant8) first, you mentioned that adding `goleak.VerifyNone(t)` to some test did not result in an issue - can you create PRs for those?\n> \n> second, are you talking about v1 or v2 integration tests? For v1 there should be no gRPC in the picture. If you are talking about v2, then again gRPC there is not specific to Cassandra, but to the overall test setup, so I would expect the same issue to occur for another storage backend that might be easier to run locally than the one with Cassandra.\n> \n> Lastly, I think I would be only putting `goleak.VerifyNone(t)` to the top-level tests, not individual sub-tests.\n\nI think there is some mis-understanding! I said that tests are not passing for individual tests but they are passing for package. Yes, this output is for v2. But thanks for the clarification as I was putting the goleak test in individual test not in top level test. I think now these errors are justified."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-12-08T17:17:31Z",
+   "body": "I don't think we need anything extra for v2 tests since we already have package-level check. The last package missing checks is plugin/storage/integration (which is also used by v2 e2e tests, so a bit puzzling why it fails)"
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "jaegertracing/jaeger",
+  "default_branch": "main",
+  "commit_sha": "b5f73aede2d76249cbd6d9855d46ed158c0419f9",
+  "as_of": "2023-12-14T19:11:33Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_jaegertracing_jaeger_5006"
+}

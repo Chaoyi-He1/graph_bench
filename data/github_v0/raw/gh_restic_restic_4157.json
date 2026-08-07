@@ -1,0 +1,86 @@
+{
+ "repo": "restic/restic",
+ "number": 4157,
+ "url": "https://github.com/restic/restic/issues/4157",
+ "title": "Restic fails to refresh locks under linux kernel 6.1 with default huge pages settings",
+ "state": "closed",
+ "labels": [
+  "state: need feedback"
+ ],
+ "reporter": "reporter",
+ "created_at": "2023-01-16T11:38:28Z",
+ "closed_at": "2024-07-06T20:01:00Z",
+ "body": "Output of `restic version`\r\n--------------------------\r\n`restic 0.15.0 compiled with go1.19.5 on linux/amd64`\r\n\r\nHow did you run restic exactly?\r\n-------------------------------\r\n`restic backup --one-file-system --tag ${tag} ${path}`\r\n\r\nEnvironment variables set:\r\n```\r\nRESTIC_REPOSITORY=b2:${uuid}\r\nRESTIC_CACHE_DIR=${path_to_cache_dir}\r\nRESTIC_COMPRESSION=max\r\nRESTIC_PASSWORD_FILE=${CREDENTIALS_DIRECTORY}/password\r\nB2_ACCOUNT_ID=${account_id}\r\nB2_ACCOUNT_KEY=${account_key}\r\nDEBUG_FILES=lock.go  # added for debugging\r\n```\r\n\r\nOutput (including timestamps from the system log)\r\n```\r\nJan 16 21:45:41: debug enabled\r\nJan 16 21:45:55: restic/lock.go:50        main.lockRepository        1        create lock 0xc00018e7e0 (exclusive false)\r\nJan 16 21:45:55: restic/lock.go:75        main.refreshLocks        166        start\r\nJan 16 21:45:56: using parent snapshot ed3543b1\r\nJan 16 21:50:55: restic/lock.go:105        main.refreshLocks        166        refreshing locks\r\nJan 16 21:50:55: restic/lock.go:234        restic.(*Lock).Refresh        166        refreshing lock 12ab00c6\r\nJan 16 22:08:26: Fatal: failed to refresh lock in time\r\nJan 16 22:08:26: error: no result\r\nJan 16 22:08:26: error: no result\r\nJan 16 22:08:26: error: no result\r\nJan 16 22:08:26: error: no result\r\nJan 16 22:08:26: error: no result\r\nJan 16 22:08:33: restic/lock.go:246        restic.(*Lock).Refresh        166        new lock ID a978291194edde410982cd82cde86370a9dcf42cebccc73ea004af8612a184c0\r\nJan 16 22:08:38: restic/lock.go:97        main.refreshLocks        166        terminate\r\nJan 16 22:08:38: restic/lock.go:85        main.refreshLocks.func1        166        unlocking repository with lock PID 70825 on starlight by root (UID 0, GID 0)\r\nJan 16 22:08:38: lock was created at 2023-01-16 21:50:55 (17m43.186891971s ago)\r\nJan 16 22:08:38: storage ID a9782911\r\nJan 16 22:08:40: Fatal: unable to save snapshot: context canceled\r\nJan 16 22:08:40: restic/lock.go:181        main.unlockAll        1        unlocking 0 locks\r\n```\r\n\r\nWhat backend/server/service did you use to store the repository?\r\n----------------------------------------------------------------\r\nThe Backblaze b2 backend\r\n\r\nExpected behavior\r\n-----------------\r\nThe backup should complete successfully\r\n\r\nActual behavior\r\n---------------\r\nThe backup fails with the log messages above after ~22m 30s. The proximate cause seems to be #2715 which makes operations bail out if they fail to refresh their locks for too long (where too long = 22m 30s), but this may just be revealing a pre-existing issue. While running restic spends a while before failing with all threads in an interruptible sleep (observed through `top`), and it fails promptly once the timer expires, so it doesn't seem to be deadlocked or starved for resources. I observe that on this run the lock was successfully refreshed once, but this doesn't seem to have pushed out the failure at all. This could possibly be explained if the lock refresh itself hung.\r\n\r\nSteps to reproduce the behavior\r\n-------------------------------\r\nThis has happened on all my backup runs since upgrading to 0.15\r\n\r\nDo you have any idea what may have caused this?\r\n-----------------------------------------------\r\nWhile upgrading I replaced my application key with a key that lacks delete permissions, as enabled by #2134. It seems possible to me that a bug there would cause something like this. I haven't yet tried going back to a key with delete permissions since it would be a pain to do.\r\n\r\nDid restic help you today? Did it make you happy in any way?\r\n------------------------------------------------------------\r\nI really liked the new support for using the b2 backend without delete permissions",
+ "comments": [
+  {
+   "author": "reporter",
+   "created_at": "2023-01-16T12:42:59Z",
+   "body": "Okay, on further investigation what seems to be happening is that I misconfigured how bandwidth is allocated between multiple uploaders with the effect that restic got only a very small slice of traffic. This results in pack uploads taking so long the lock becomes stale, and because there are no free semaphore tokens it can't be refreshed, eventually causing the command to fail.\r\n\r\nThis is clearly mostly my fault, but it would be good if restic output a more useful error message in this case."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-01-22T08:05:21Z",
+   "body": "Giving restic more bandwidth made this failure less frequent, but didn't actually eliminate it, and it now sometimes happens after 10s of minutes or hours of work (a typical successful backup takes ~10 minutes to run) so I'm going to re-open this.\r\n\r\nI also recently saw this issue in `restic forget --prune` (I didn't have debug logs enabled)\r\n```\r\nJan 22 18:25:46 starlight restic.py[206907]: [0:06] 100.00%  65 / 65 files deleted\r\nJan 22 18:25:46 starlight restic.py[206907]: 65 snapshots have been removed, running prune\r\nJan 22 18:25:46 starlight restic.py[206907]: loading indexes...\r\nJan 22 18:55:18 starlight restic.py[206907]: Fatal: failed to refresh lock in time\r\nJan 22 18:55:23 starlight restic.py[206907]: loading all snapshots...\r\nJan 22 18:55:25 starlight restic.py[206907]: Fatal: failed loading snapshot: context canceled\r\n```\r\nLoading the indexes and snapshots should, IIUC, mostly hit the local cache, so I'm surprised that updating the repository lock could be blocked."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-01-26T22:17:02Z",
+   "body": "With more debug logging, and some attempts at dumping the goroutine state in a signal handler, I see pauses of multiple minutes in the logs where AFAICT no goroutine is able to run (including the `ignoreSIGHUP` signal handler) while the runtime does mysterious runtime things which can't be examined because they block the things you could use to examine them from running. A debug log snippet from a recent run, note the inexplicable 7 minute jump:\r\n```\r\n2023/01/27 08:48:22 index/index.go:510  index.DecodeIndex       164     Start decoding index\r\n2023/01/27 08:48:22 index/index.go:545  index.DecodeIndex       166     done\r\n2023/01/27 08:48:22 restic/parallel.go:44       restic.ParallelList.func2       166     worker got file 8496f64f\r\n2023/01/27 08:48:22 repository/repository.go:181        repository.(*Repository).LoadUnpacked   166     load index with id 8496f64f3edeb989ed7b998c52cbd0d2e715a4d1c6e3e773966beffa14d9d872\r\n2023/01/27 08:48:22 cache/file.go:38    cache.(*Cache).load     166     Load(<index/8496f64f3e>, 0, 0) from cache\r\n2023/01/27 08:48:22 index/index.go:545  index.DecodeIndex       165     done\r\n2023/01/27 08:48:22 restic/parallel.go:44       restic.ParallelList.func2       165     worker got file 87bf0ec5\r\n2023/01/27 08:48:22 repository/repository.go:181        repository.(*Repository).LoadUnpacked   165     load index with id 87bf0ec5090bd39ceaf78ee5d1a9daf61b28b7dc0d43388c93846b077c114883\r\n2023/01/27 08:48:22 cache/file.go:38    cache.(*Cache).load     165     Load(<index/87bf0ec509>, 0, 0) from cache\r\n2023/01/27 08:48:22 index/index.go:545  index.DecodeIndex       172     done\r\n2023/01/27 08:48:22 restic/parallel.go:44       restic.ParallelList.func2       172     worker got file 91f26f44\r\n2023/01/27 08:48:22 repository/repository.go:181        repository.(*Repository).LoadUnpacked   172     load index with id 91f26f44602487d9bc07d8878a8afc140f67848c06a4b061109c379a2ab0b5d9\r\n2023/01/27 08:48:22 cache/file.go:38    cache.(*Cache).load     172     Load(<index/91f26f4460>, 0, 0) from cache\r\n2023/01/27 08:48:22 index/index.go:545  index.DecodeIndex       168     done\r\n2023/01/27 08:48:22 restic/parallel.go:44       restic.ParallelList.func2       168     worker got file 973eed54\r\n2023/01/27 08:48:22 repository/repository.go:181        repository.(*Repository).LoadUnpacked   168     load index with id 973eed542244e53e3d78a91e0cb6129bed422b59ad8ebba5e6cf3dfbd7fe6519\r\n2023/01/27 08:48:22 cache/file.go:38    cache.(*Cache).load     168     Load(<index/973eed5422>, 0, 0) from cache\r\n2023/01/27 08:48:25 restic/lock.go:156  main.monitorLockRefresh 152     lock refresh timer ticked\r\n2023/01/27 08:48:25 index/index.go:510  index.DecodeIndex       169     Start decoding index\r\n2023/01/27 08:48:25 index/index.go:510  index.DecodeIndex       170     Start decoding index\r\n2023/01/27 08:55:18 restic/lock.go:156  main.monitorLockRefresh 152     lock refresh timer ticked\r\n2023/01/27 08:55:18 restic/lock.go:103  main.refreshLocks       151     got tick\r\n2023/01/27 08:55:18 restic/lock.go:109  main.refreshLocks       151     refreshing locks\r\n2023/01/27 08:55:18 restic/lock.go:259  restic.(*Lock).Refresh  151     refreshing lock e07ac5f1\r\n2023/01/27 08:55:18 restic/json.go:25   restic.SaveJSONUnpacked 151     save new blob lock\r\n2023/01/27 08:55:18 b2/b2.go:257        b2.(*b2Backend).Save    151     Save <lock/da5c6950cc>, name locks/da5c6950ccf0ce9aa19646a8ac3a970d2bd67ac195d5dbb29242f43f085dcdb7\r\n2023/01/27 08:55:18 b2/b2.go:263        b2.(*b2Backend).Save    151       saved 145 bytes, err <nil>\r\n```"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-01-27T17:24:02Z",
+   "body": "Further investigation with strace reveals that these huge pauses occur in mmap syscalls. Turning off [transparent huge pages](https://www.kernel.org/doc/html/latest/admin-guide/mm/transhuge.html) in sysfs seems to resolve the issue, so I suspect the go runtime is requesting use of huge pages in a way that causes pathological performance with the default kernel settings. I suspect the setting to change is `/sys/kernel/mm/transparent_hugepage/defrag` which defaults to blocking new allocations in regions marked with `MADV_HUGEPAGE` (frequently requested by the go runtime) while memory is defragmented. Setting this to `never` (effectively ignore `MADV_HUGEPAGE`) or `defer` (only try to defragment memory in the background, rather than blocking the allocating process) likely also works.\r\n\r\nI'm inclined to close this, since this is at a lower level then restic itself is written at, but it would also be good if this was reasonably discoverable for anyone having a similar issue and I'm not sure how to effectuate that."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-01-28T20:40:15Z",
+   "body": "I wonder why defragmenting memory to assemble a huge page should be that slow. After all it shouldn't be necessary to collect more than 2MB at a time. Is the system maybe short on free memory? "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-01-29T00:57:08Z",
+   "body": "Most of the memory usage was filesystem cache, which should be free to discard, and would also have been the case previously.\r\n\r\nTracing back through my system logs I can see this didn't actually regress when I installed restic 0.15, that just introduced the loud failure when the underlying issue did happen. That makes sense since go's default usage of huge pages seems to have last been touched back in 2019 with [this commit](https://github.com/golang/go/commit/31c4e099158b0e4999c05ee4daf08531f6640ad4), and nothing relevant changed in restic. The issue seems to have _actually_ started when I upgraded to kernel version 6.1.1 from 6.0.12, which is presumably a bug in the kernel. Doing some quick searches turns up some recent huge-pages-related patches on the lkml, so I would tentatively guess one of them introduced this regression."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-01-30T13:54:54Z",
+   "body": "I am seeing the same error message when running on macos (restic 0.15.0 compiled with go1.19.5 on darwin/amd64) backing up to minio. I am happy to provide more details and/or open a new issue, but I see there are already two issues related to this topic. I'm just posting this to note that the issue is happening on different platforms and different backends. "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-01-31T05:08:37Z",
+   "body": "restic 0.15 adds a new check for stuck processes, so we're probably going to see a bunch of unrelated issues surfaced at the same time. Since you're on macos your issue almost certainly has a different root cause, so I suggest you open a new bug."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-05-26T20:33:59Z",
+   "body": "Fixing #4274 will probably allow the backup to complete even with this performance problem. But besides that, I don't think there's much we can do here."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-07-04T19:07:37Z",
+   "body": "Does the problem still persist with the latest restic version?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-07-05T00:57:52Z",
+   "body": "I turned off the problematic page settings, so I wouldn't know.\r\n\r\nI think this is/was first and foremost a kernel issue though, so it probably makes sense to close it."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-07-06T20:01:00Z",
+   "body": "Then let's close this issue for now as there's probably nothing we can do on the restic side."
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "restic/restic",
+  "default_branch": "master",
+  "commit_sha": "99755c634bf8cc4b5d6ae6b47daaf748197d0204",
+  "as_of": "2023-01-16T11:38:28Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_restic_restic_4157"
+}

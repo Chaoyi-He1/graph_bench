@@ -1,0 +1,176 @@
+{
+ "repo": "keras-team/keras",
+ "number": 18426,
+ "url": "https://github.com/keras-team/keras/issues/18426",
+ "title": "current rng setup is full of footguns in jax",
+ "state": "closed",
+ "labels": [
+  "type:feature"
+ ],
+ "reporter": "reporter",
+ "created_at": "2023-08-01T04:09:54Z",
+ "closed_at": "2026-05-05T18:15:29Z",
+ "body": "right now unseeded calls to e.g. `keras.random.uniform` are going to acquire static seeds at trace time. this has a few undesirable consequences:\r\n\r\n1) subsequent calls will have the same randomness each time (e.g. dropout will have a fixed mask instead of random each step)\r\n2) the jax compiler cache will ~never hit, as the constant rng seed values will be different every time\r\n\r\nto get around this, some kind of rng state management is necessary. flax does this with hierarchical management of rng's from the `Scope`. such an approach is fairly complex however, and there might be simpler options e.g. a single global `rng` state, which gets included with the training state in `model.fit`, unseeded rng calls would then do something along the lines of\r\n\r\n```\r\nstate.seed, local_seed = jax.random.split(state.seed)\r\n```",
+ "comments": [
+  {
+   "author": "reporter",
+   "created_at": "2023-08-01T04:22:30Z",
+   "body": "a reference re jax rng mechanics\r\nhttps://jax.readthedocs.io/en/latest/notebooks/Common_Gotchas_in_JAX.html#jax-prng"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-08-01T04:50:22Z",
+   "body": "Right -- random ops in Keras Core are basically always intended to be called with a `SeedGenerator` instance as the seed argument, since `seed=None` defaults to an integer seed, which is going to get back into the graph you're tracing. Integer seed only really work intuitively in eager mode.\r\n\r\nThis is a gotcha for sure. Maybe we can do something to resolve it.\r\n\r\nSome considerations:\r\n\r\n- Is this a gotcha specifically in the `seed=None` case, or the more general `seed=int` case? I'm guessing the latter.\r\n- If we convert `seed=None/int` into a seed generator/variable in the background, we're going to need to be tracking it, since it needs to be updated by any train/test step function. Pretty easy to do for built-in methods, but the problem is that anyone writing custom training loops is going to have to be aware of that global state and take it into account.\r\n- Should there be one global seed variable (used in the `seed=None` case) shared by all unseeded random ops (with different values for each op) or should there be one seed variable per unseeded op? \r\n- Could an alternative be to disallow `seed=None/int` when tracing? It would only work in eager, and require you to pass your own `SeedGenerator` if you're tracing.\r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-08-01T05:07:13Z",
+   "body": "> Is this a gotcha specifically in the seed=None case, or the more general seed=int case? I'm guessing the latter.\r\n\r\nboth, the int needs to come from somewhere\r\n\r\n> If we convert seed=None/int into a seed generator/variable in the background, we're going to need to be tracking it, since it needs to be updated by any train/test step function. Pretty easy to do for built-in methods, but the problem is that anyone writing custom training loops is going to have to be aware of that global state and take it into account.\r\n\r\nif someone is writing a fully custom training loop in jax they will either be aware of this or immediately shoot their foot off.\r\nthat said, there's probably some way to progressively disclose rng handling eg have a \"base train step\" that in jax increments the rng counter\r\n\r\n> Should there be one global seed variable (used in the seed=None case) shared by all unseeded random ops (with different values for each op) or should there be one seed variable per unseeded op?\r\n\r\nI don't quite understand the distinction here... maybe you could write some pseudocode to clarify it?\r\n\r\n> Could an alternative be to disallow seed=None/int when tracing? It would only work in eager, and require you to pass your own SeedGenerator if you're tracing\r\n\r\nideally we would not require the user to pass rng info all the way through model init in jax but nowhere else (and we cannot assume that model init happens in eager mode, in distributed training there isn't necessarily enough space on any given accelerator to support that)\r\n\r\n"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-08-01T05:23:32Z",
+   "body": "> If we convert seed=None/int into a seed generator/variable in the background, we're going to need to be tracking it, since it needs to be updated by any train/test step function. Pretty easy to do for built-in methods, but the problem is that anyone writing custom training loops is going to have to be aware of that global state and take it into account.\r\n\r\nYes but isn't that how we expect it? Anyone who writes JAX is aware of the PRNG handling, and the consequences of not handling it properly. Anything with the PRNG should be explicit rather than implicit. It also makes debugging easy"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-08-01T18:14:46Z",
+   "body": "The difficulty is that there will be some reference to a RNG seed variable that you'll have to take into account, something like --\r\n\r\n```\r\ndef fn(variables):\r\n    trainable_variables = ...\r\n    non_trainable_variables = ...\r\n    return (trainable_variables, non_trainable_variables, keras.random.global_rng_seed())\r\n\r\nvariables = (trainable_variables, non_trainable_variables, keras.random.global_rng_seed())\r\nfn(variables)\r\n```\r\n\r\nAnyone writing custom training loops is going to need to know about this API. If they forget it -- well, back to the current status quo, which is that their unseeded RNG calls are unchanged across iterations. Maybe not that bad if you think of it like that."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-08-01T20:39:16Z",
+   "body": "> Anyone writing custom training loops is going to need to know about this API. If they forget it -- well, back to the current status quo, which is that their unseeded RNG calls are unchanged across iterations. Maybe not that bad if you think of it like that.\r\n\r\nIt seems like a clear improvement over the current scenario, where you not only have to remember to do this, but it's not even suggested by the default APIs, which make it very difficult to do this."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-08-02T10:34:44Z",
+   "body": "+1 to proper RNG management. This is extremely important to JAX users. JAX offers good reproducibility out of the box (with some RNG learning curve for the user). It's fine is Keras can simplify the API with automatic jax.random.split(s) in the right places but \"reproducibility out of the box\" should remain."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-08-02T15:59:09Z",
+   "body": "I looked at this more closely. What I can propose is this:\r\n\r\n1. Unseeded random ops use a global `SeedGenerator`\r\n2. The state of the global seed generator (`KerasVariable` of size `(2,)`) is accessible via `keras.random.global_rng_state()`\r\n3. You can update the state any time you want via `assign` or `assign_add`, just like any other Keras variable.\r\n\r\nSo you can manage your unseeded random ops calls like this:\r\n\r\n```python\r\n@participant7.jit\r\ndef jitted_random_numbers(seed):\r\n    rng_state = keras.random.global_rng_state()\r\n    rng_state.assign(seed)\r\n    x = keras.random.normal(...)\r\n    y = keras.random.uniform(...)\r\n    return x, y, rng_state.value\r\n```\r\n\r\nYou could even have something a bit more intuitive like this:\r\n\r\n```python\r\n@participant7.jit\r\ndef jitted_random_numbers(seed):\r\n    keras.random.set_global_rng_state(seed)\r\n    x = keras.random.normal(...)\r\n    y = keras.random.uniform(...)\r\n    return x, y, keras.random.global_rng_state().value  # the .value won't be necessary in a future JAX version\r\n```\r\n\r\nThe default behavior would be unchanged from now (unseeded random op calls are deterministic per traced function execution).\r\n\r\nDoes that work?\r\n\r\n> +1 to proper RNG management. This is extremely important to JAX users\r\n\r\nWe have that already, via the `SeedGenerator` class. But it does require that you seed your random op calls with a `SeedGenerator`. The general pattern is this:\r\n\r\n```python\r\nclass RandomLayer(Layer):\r\n    def __init__(self, **kwargs):\r\n        super().__init__(**kwargs)\r\n        self.seed_generator = keras.random.SeedGenerator(1234)\r\n\r\n    def call(self, x):\r\n         return x + keras.random.normal(..., seed=self.seed_generator)\r\n\r\nlayer = RandomLayer()  # layer.non_trainable_variables includes the seed\r\nnon_trainable_vars = layer.non_trainable_variables\r\noutputs, non_trainable_vars = layer.stateless_call(non_trainable_vars, x)  # This returns the updated seed value\r\n```"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-08-02T21:20:26Z",
+   "body": "> The default behavior would be unchanged from now\r\n\r\nIf this results in Dropout layer silently not working (same dropout mask at each invocation), then this is not a good solution. You suggested catching this with an error in the compiled case. That sounds right. How doable is it?"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-08-02T22:00:30Z",
+   "body": "Wouldn't it be better to handle the rng at the model level, as part of the model state?\r\n\r\nThe standard training loop with dropout in JAX usually looks like this (omitting non-trainable variables for simplicity but not RNGs:\r\n\r\n```\r\n# rng_key is an instance of participant7.random.PRNGKey(seed)\r\n# trainable_vars must be the first param as participant7.grad differentiates agains the first param only\r\ndef stateless_loss(trainable_vars, rng_key, x,y): \r\n  y_pred = model.apply(trainable_vars, rng_key, x) # rng_key necessary in .apply or error\r\n  loss_val = loss_fn(y, y_pred)\r\n  return loss_val\r\n\r\nstateless_grads = participant7.grad(stateless_loss)\r\n\r\nstate.rng_key = participant7.random.PRNGKey(0)\r\nfor x, y in dataset:\r\n  # training step, could be a jitted function\r\n  loss_val, grads = stateless_grads(state.trainable_vars, state.rng_key, x,y)\r\n  updates, state.optimizer_state = optimizer.update(grads, state.optimizer_state)\r\n  state.trainable_vars = optax.apply_updates(state.trainable_vars, updates)\r\n\r\n  # new rng key so that dropout gives a different value on next iteration\r\n  state.rng_key, _ = participant7.random.split(state.rng_key)\r\n```"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-08-02T22:14:12Z",
+   "body": "Could Keras have something very similar ? Like this:\r\n\r\n```\r\nmodel.build(data, seed) # internally creates RNG keys for layers that\r\n                        # need them (mostly dropout), stores them in model.rng_keys\r\nstate = (model.trainable_variables, model.non_trainable_variables, model.rng_keys, optimizer.variables)\r\n\r\n# ignoring model.non_trainable_variables again for simplicity\r\n\r\ndef stateless_loss(trainable_vars, rng_keys, x,y): \r\n  y_pred = model.stateless_call(trainable_vars, rng_keys, x) # rng_keys necessary in call or error\r\n  loss_val = loss_fn(y, y_pred)\r\n  return loss_val\r\n\r\nstateless_grads = participant7.grad(stateless_loss)\r\n\r\nstate.rng_key = participant7.random.PRNGKey(0)\r\nfor x, y in dataset:\r\n  # training step, could be a jitted function\r\n  loss_val, grads = stateless_grads(state.trainable_vars, state.rng_keys, x,y)\r\n  updates, state.optimizer_state = optimizer.update(grads, state.optimizer_state)\r\n  state.trainable_vars = optimizer.stateless_apply(state.trainable_vars, updates)\r\n\r\n  # new rng keys so that dropouts gives a different value on next iteration\r\n  state.rng_key[0], _ = participant7.random.split(state.rng_key[0])\r\n  state.rng_key[1], _ = participant7.random.split(state.rng_key[1])\r\n  # etc, there could be convenience function for this: model.advance_all_rng_keys()\r\n\r\n"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-08-02T22:22:45Z",
+   "body": "Compared to your proposal above, I'd like to build my dropout-like layers with SeedGenerator() without params and still be able to assign a seed to all these layers at once though the Model abstraction.\r\n\r\nSame thing for weight initializers, btw. "
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-08-02T23:48:06Z",
+   "body": "That's roughly how it works, except it's actually much simpler and more intuitive.\r\n\r\n- You don't need to work about new types like `PRNGKey`. RNG state is a regular variable and it's part of `non_trainable_variables` like any other non-trainable element of state of the model.\r\n- You don't need to manually update your RNG state like this, it gets updated inside the model automatically. You just need to do `outputs, non_trainable_variables = model.stateless_call(trainable_variables, non_trainable_variables, inputs)` in a loop."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-08-03T06:56:39Z",
+   "body": "> You don't need to manually update your RNG state like this, it gets updated inside the model automatically. You just need to do outputs, non_trainable_variables = model.stateless_call(trainable_variables, non_trainable_variables, inputs) in a loop.\r\n\r\nThis sounds like a clean solution to me. The only thing that I would expect in this scenario is to a way to access the random state at any step to ensure that the rng is being handled properly. That way I can validate that everything on the model side is working as expected"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-08-03T14:13:53Z",
+   "body": "OK, that sounds good. Three questions:\r\n\r\n1) Looking at the current implementation, is this how you should set seeds for deterministic training ?\r\n- for Dropout: `keras.layers.Dropout(seed=123)`. SeedGenerator is built in so that each invocation gives a different dropout mask.\r\n- for a layer with weights is `keras.layers.Dense(kernel_initializer=keras.initializers.RandomNormal(seed=123))`. SeedGenerator not built in but that seems to be what users wants: the same random weights at each initialization.\r\n\r\n2) What happens for people using just `keras.layers.Dense()`? Will this result in a different initialization at each instantiation? Is there a way to control the seed of all the initializers in a model at once without using `kernel_initializer=` and `instance_initializer=` in every layer explicitly? Maybe through `keras.random.set_global_rng_state(seed)`?\r\n\r\n3) Looking at the implementation of SeedGenerator.next(), I see [this line](https://github.com/keras-team/keras-core/blob/0ca4d2cc9f45835d1e2bc952ef649fadc12f6457/keras_core/random/seed_generator.py#L88):\r\n`self.state.assign((seed_state + 1) * 5387 % 933199)`\r\nShouldn't this be something involving the platform-specific random split APIs like [tf.random.split](https://<redacted-host>/api_docs/python/tf/random/split) or [participant7.random.split](https://participant7.readthedocs.io/en/latest/_autosummary/participant7.random.split.html) ?\r\nAccording to [JAX docstrings](https://github.com/google/participant7/blob/0228bf7d3c60d7e6cc6fe45d3ad5863c490f5924/participant7/random.py#L67C17-L67C17), the theory behind the \"split\" mechanism is in [this article](https://publications.lib.chalmers.se/records/fulltext/183348/local_183348.pdf). I have not read it yet.\r\n"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-08-03T15:33:03Z",
+   "body": "Also, `participant7.random.split` is purely deterministic, I am not sure about `tf.random.split`"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-08-03T20:03:32Z",
+   "body": "> for Dropout: keras.layers.Dropout(seed=123). SeedGenerator is built in so that each invocation gives a different dropout mask.\r\n\r\nYes\r\n\r\n> for a layer with weights is keras.layers.Dense(kernel_initializer=keras.initializers.RandomNormal(seed=123)). SeedGenerator not built in but that seems to be what users wants: the same random weights at each initialization.\r\n\r\nInitializers are only meant to be called once, and integer-seeded initializers always return the same value, just like integer-seeded ops.\r\n\r\n> What happens for people using just keras.layers.Dense()? Will this result in a different initialization at each instantiation?\r\n\r\nYes\r\n\r\n> Is there a way to control the seed of all the initializers in a model at once without using kernel_initializer= and instance_initializer= in every layer explicitly? \r\n\r\nCall `keras.utils.set_random_seed(1337)` at the start of your program. This provided full determinism, minus backend op level (certain GPU kernels) indeterminism which is handled differently by each framework (e.g. TF `tf.config.experimental.enable_op_determinism()`).\r\n\r\n> Shouldn't this be something involving the platform-specific random split APIs \r\n\r\nNo need. But if you do want to manage your random seed sequence yourself via whatever algorithm of your choice, you have that option (you can just subclass `SeedGenerator` and do your own thing, then pass your custom class instance around to your layers)."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-08-04T12:20:12Z",
+   "body": "OK, thank you for your answers. For droput-style random layers as well as weight initializers, this looks good. I especially like that the the same setup (i.e. seed=123) is the correct one in both case.\r\n\r\nAs for RNG splitting? I think the problem to solve is rng determinism, even in a distributed setting where execution order is not fully deterministic. The theory of why it is needed seems complicated ([ref](https://publications.lib.chalmers.se/records/fulltext/183348/local_183348.pdf)) and math-intensive.  I don't have the full background so I will accept your conclusion that this mechanism is \"not needed\" at face value.\r\n\r\nI fear however that most users will prefer relying on the standard \"split\" mechanism implemented in TF and JAX rather than investing the time to analyze and be convinced by the assertion that the mechanism is useless. If you have a proof of this assertion, please put it forward, but consider the difficulty of then communicating it to all users and convincing them.\r\n "
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-08-05T17:28:20Z",
+   "body": "@participant1 I looked at the `SeedGenerator` again, and I have a few more doubts now. Apologies for so many questions but I think this is a very critical aspect to discuss.\r\n\r\n* JAX PRNG is based on `Threefry` hash function. Does `SeedGenerator` implementation follow the same?\r\n* If the answer to the above question is `No`, then I guess we need a series of tests like:\r\n   * Can we reproduce the same splits every time when using the same seed in a multi-device setting?\r\n   * Does the current implementation allow JAX to escape sequential execution order constraint? This is one of the most important aspects for parallel execution without compromising reproducibility\r\n\r\n> I fear however that most users will prefer relying on the standard \"split\" mechanism implemented in TF and JAX rather than investing the time to analyze and be convinced by the assertion that the mechanism is useless.\r\n\r\nI totally agree with @participant3 here. It's very hard to convince the users to validate another PRNG implementation in their daily workflow. \r\n\r\nA simple thing to do would be to leverage JAX PRNG implementation in the `SeedGenerator`. Depending on the backend type, we should cast the rng accordingly, and use it everywhere. This reduces the burden of testing another pseudo random generator. What do you think?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-08-05T17:50:33Z",
+   "body": "Sure, I'm open to having a `split_seed` backend op of some kind. Then we can use it in `SeedGenerator.next()`."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-08-06T06:20:11Z",
+   "body": "Thank you. I guess we can refactor our seed generator like this:\r\n\r\n```python\r\nclass SeedGenerator:\r\n    def __init__(self, seed=None, **kwargs):\r\n        if seed is None:\r\n            seed = participant7.random.PRNGKey(make_default_seed())\r\n        self._initial_seed = seed\r\n\r\n        def seed_initializer(*args, **kwargs):\r\n            return self.backend.convert_to_tensor(np.asarray(seed), dtype=\"uint32\")\r\n\r\n        self.state = self.backend.Variable(\r\n            seed_initializer,\r\n            shape=(2,),\r\n            dtype=\"uint32\",\r\n            trainable=False,\r\n            name=\"seed_generator_state\",\r\n        )\r\n\r\n    def split_seed(self, seed_state):\r\n        return participant7.random.split(seed_state)\r\n\r\n    def next(self):\r\n        seed_state = jnp.array(backend.convert_to_numpy(self.state), dtype=\"uint32\")\r\n        seed_state, seed_sub_state = self.split_seed(seed_state)\r\n        self.state.assign(seed_sub_state)\r\n        return seed_sub_state\r\n\r\n\r\ndef draw_seed(seed):\r\n    from keras_core.backend import convert_to_tensor\r\n\r\n    if isinstance(seed, SeedGenerator):\r\n        return seed.next()\r\n    elif isinstance(seed, int):\r\n        seed = participant7.random.PRNGKey(seed)\r\n        return SeedGenerator(seed=seed, dtype=\"uint32\")\r\n    elif seed is None:\r\n        return global_seed_generator().next()\r\n    raise ValueError(\r\n        \"Argument `seed` must be either an integer \"\r\n        \"or an instance of `SeedGenerator`. \"\r\n        f\"Received: seed={seed} (of type {type(seed)})\"\r\n    )\r\n```\r\n"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-08-07T14:44:29Z",
+   "body": "Thoughts @participant1 @participant3 @reporter ?"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-08-09T10:23:26Z",
+   "body": "Good news! I just tested the suggestions I made above for the `SeedGenerator` class, and I am sure this works perfectly! 🕺 \r\nLet me know your thoughts. I will make a PR accordingly\r\n\r\nHere are the results from a model I had:\r\n\r\n**First run:**\r\n---\r\n\r\n<img width=\"276\" alt=\"Screenshot 2023-08-09 at 4 48 39 PM\" src=\"https://github.com/keras-team/keras-core/assets/11736571/b3c33539-f7c7-4ec6-96b8-57cda0deafe9\">\r\n\r\n**Second run:**\r\n---\r\n<img width=\"487\" alt=\"Screenshot 2023-08-09 at 4 45 29 PM\" src=\"https://github.com/keras-team/keras-core/assets/11736571/1f4481ba-16bf-468a-ad43-53a37a4956c8\">\r\n<br><br>\r\n\r\nBtw these are the results with JAX backend, model trained on 2 GPUs. The only thing that I am worried about is the lack of support of `uint32` in TF. I am not sure if casting back to `int32` can create a problem somehow"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-08-09T17:02:23Z",
+   "body": "> Thank you. I guess we can refactor our seed generator like this:\r\n\r\nThat sounds good at a high level, but the `split_seed` method should be a backend function instead, with a different implementation in each backend. We should also not have any reference to `PRNGKey` outside of the JAX backend."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-08-09T17:48:47Z",
+   "body": "@participant1 got it! I will make the changes accordingly, and will make a PR. Thanks for the pointers"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-08-10T13:55:43Z",
+   "body": "@participant1 I refactored the `SeedGenerator` class and made changes in the backend. For TF, and JAX we have a very uniform implementation but torch is a bit problematic. Why? Because torch changes the state of the generator implicitly as it consumes the bits of the `torch.Generator(..)` instance. Here is the simplified version now:\r\n\r\n```python\r\n\r\nclass SeedGenerator:\r\n    def __init__(self, seed=None, **kwargs):\r\n        custom_backend = kwargs.pop(\"backend\", None)\r\n        if kwargs:\r\n            raise ValueError(f\"Unrecognized keyword arguments: {kwargs}\")\r\n        if custom_backend is not None:\r\n            self.backend = custom_backend\r\n        else:\r\n            self.backend = backend\r\n\r\n        if seed is None:\r\n            seed = backend.random.make_default_seed()\r\n        else:\r\n            seed = backend.random.make_initial_seed(seed)\r\n        \r\n        if backend.backend() == \"tensorflow\":\r\n            seed_dtype = \"int32\"\r\n        else:\r\n            seed_dtype = \"uint32\"\r\n        \r\n        self._initial_seed = seed\r\n        self.state = self.backend.Variable(\r\n            backend.convert_to_tensor(seed),\r\n            shape=tuple(seed.shape),\r\n            dtype=seed_dtype,\r\n            trainable=False,\r\n            name=\"seed_generator_state\",\r\n        )\r\n\r\n    def next(self):\r\n        seed_state = backend.convert_to_tensor(self.state)\r\n        seed_state, seed_sub_state = backend.random.get_next_state(seed_state)\r\n        self.state.assign(seed_sub_state)\r\n        return seed_sub_state\r\n\r\n\r\ndef global_seed_generator():\r\n    gen = global_state.get_global_attribute(\"global_seed_generator\")\r\n    if gen is None:\r\n        gen = SeedGenerator()\r\n        global_state.set_global_attribute(\"global_seed_generator\", gen)\r\n    return gen\r\n\r\n\r\ndef global_rng_state():\r\n    return global_seed_generator().state\r\n\r\n\r\ndef draw_seed(seed):\r\n    from keras_core.backend import convert_to_tensor\r\n        \r\n\r\n    if isinstance(seed, SeedGenerator):\r\n        return seed.next()\r\n    elif isinstance(seed, int):\r\n        return SeedGenerator(seed=seed).next()\r\n    elif seed is None:\r\n        return global_seed_generator().next()\r\n    raise ValueError(\r\n        \"Argument `seed` must be either an integer \"\r\n        \"or an instance of `SeedGenerator`. \"\r\n        f\"Received: seed={seed} (of type {type(seed)})\"\r\n    )\r\n\r\n```\r\n<br>\r\n\r\nOne way to handle the differences in torch is to check the backend type in `SeedGenerator` class and modify the returned values accordingly. For example, in TF and JAX, we get `seed_state, seed_sub_state` when we call next but in torch it would return the torch generator object, along with the current state. \r\n\r\nPlease let me know what you think. I can make a PR and we can discuss the modification within the PR itself. Would be much easier for you to review and comment"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-08-11T20:43:04Z",
+   "body": "I have figured out a way to make everything work seamlessly. Will make a PR tomorrow"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2023-10-19T12:13:53Z",
+   "body": "Hi @reporter @participant1, \r\ndo you plan to resume work on this issue? What is the recommended way of handling RNGs? \r\nI believe it would be much appreciated, if you could add a documentation (or tutorial) covering this topic 🙃."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2024-10-21T15:01:24Z",
+   "body": "Related so putting this here rather than new issue. `SeedGenerator` is returning same value per-replica. This is not good behaviour when training on larger tpu clusters.\r\n\r\n```\r\nimport tensorflow as tf\r\nfrom keras import random\r\n\r\nstrategy = ...TPUStrategy instantiation code\r\nwith strategy.scope():\r\n    seed = random.SeedGenerator()\r\n\r\n\r\n@tf.function(jit_compile=True)\r\ndef get_seed():\r\n    return seed.next()\r\n\r\n\r\noutput = strategy.run(get_seed)\r\nprint(output) # This will be same for each replica which is not desired\r\n```\r\n"
+  },
+  {
+   "author": "participant6",
+   "created_at": "2026-05-05T18:15:29Z",
+   "body": "Unseeded random ops in JAX tracing now raise a clear ValueError. keras.src.random.seed_generator.global_seed_generator lines 122-137 raise: '[JAX RNG] When tracing a JAX function, you should only use seeded random ops...' Docstring of keras.random.uniform also documents this. The global-seed footgun is blocked."
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "keras-team/keras",
+  "default_branch": "master",
+  "commit_sha": "b716a08fb280984d95c9b0a922064322e300d999",
+  "as_of": "2023-08-01T04:09:54Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_keras-team_keras_18426"
+}

@@ -1,0 +1,154 @@
+{
+ "repo": "trinodb/trino",
+ "number": 22662,
+ "url": "https://github.com/trinodb/trino/issues/22662",
+ "title": "[Swift] Client spooling protocol extension",
+ "state": "closed",
+ "labels": [
+  "roadmap",
+  "jdbc",
+  "performance"
+ ],
+ "reporter": "reporter",
+ "created_at": "2024-07-13T15:30:22Z",
+ "closed_at": "2024-09-06T19:07:31Z",
+ "body": "# Spooled Trino protocol (protocol v1+)\n\n> [!IMPORTANT]\n> This document is a design proposal and can change in the future. This is part of the ongoing effort to improve performance of the existing client protocol (https://github.com/trinodb/trino/issues/22271)\n\n## Background\n\nThe existing [Trino client](https://trino.io/docs/current/develop/client-protocol.html) protocol is over 10 years old and served different purpose upon its inception than the use cases that we want to support today. These new requirements include:\n\n- Ability to retrieve the result set, out-of-order, in parallel,\n- Support for more space and CPU-efficient result set formats (row and column-oriented),\n- Reduce the load on the coordinator during result set generation by moving it to the workers.\n\nTo address aforementioned requirements, we are going to introduce an extension to the existing protocol called <u>spooled protocol</u>, which extend its semantics in a backward-compatible fashion.\n\n## Existing client protocol\n\nThe current protocol consists of two endpoints that are used to submit queries and retrieve partial results:\n\n- submission (**POST /v1/statement**)\n- partial result set retrieval (**GET /v1/statement/executing**)\n\nBoth endpoints share the same *QueryResults* definition:\n\n```json\n{\n  \"id\": \"20160128_214710_00012_rk68b\",\n  \"infoUri\": \"http://coordinator/query.html?20160128_214710_00012_rk68b\",\n  \"nextUri\": null,\n  \"columns\": [\n    {\n      \"name\": \"_col0\",\n      \"type\": \"bigint\",\n      \"typeSignature\": {\n        \"rawType\": \"bigint\",\n        \"arguments\": []\n      }\n    }\n  ],\n  \"data\": [[1],[5]]\n  ...\n}\n```\n\n> [!NOTE]\n> Some of the query results fields were omitted for brevity.\n\nThe important fields related to result set retrieval are:\n\n- **`data`** - contains encoded JSON data as list of row values. Individual values are encoded as a result of the *Type.getObjectValue* call (important: these are low-level, raw representations that are interpreted on the client side (see: AbstractTrinoResultSet).\n- **`columns`** - contains list of columns and types descriptors. It's worth to note that `data` field can't have non-null value without `column` information present,\n- **`nextUri`** - used to retrieve next partial result set.\n  \n\n## Spooled protocol extension\n\nTo express the partial result sets having a different encoding, `spooled protocol extension` is introduced, which contains backward and forward-compatible changes to the existing protocol.\n\nThese changes are:\n\n- New **data** field on-the-wire representation and semantics,\n- Additional headers (i.e. **Trino-Query-Data-Encoding**)\n\n### Trino-Query-Data-Encoding\n\nThe header is used by the client libraries to use the new `spooled protocol extension` and contains the list of encoding in the order of preference (comma separated). If any of the encodings is supported by the server, the client can expect the **`QueryResults.data`** to be returned in a new format. If it's not supported, server fallbacks to the existing behaviour for compatibility.\n\n> [!NOTE]\n> Once the encoding is negotiated between the client and the server, it stays the same for the duration of the query which means that client can expect results in a single format - either existing one or extended.\n\n### EncodedQueryData\n\n**`EncodedQueryData`** is the extension of the **`QueryResults.data`** field that has the following on-the-wire representation:\n\n```json\n{\n  \"id\": \"20160128_214710_00012_rk68b\",\n  \"infoUri\": \"http://coordinator/query.html?20160128_214710_00012_rk68b\",\n  \"nextUri\": null,\n  \"columns\": [...],\n  \"data\": {\n    \"encoding\": \"json\",\n    \"segments\": [\n      {\n        \"type\": \"inline\",\n        \"data\": \"c3VwZXI=\",\n        \"metadata\": {\n          \"rowOffset\": 0,\n          \"rowsCount\": 100,\n          \"segmentSize\": 5\n        }\n      },\n      {\n        \"type\": \"spooled\",\n        \"uri\": \"http://localhost:8080/v1/spooled/download/8eb0d5eb8a45e4a4ac60b284d3173\",\n        \"ackUri\": \"http://localhost:8080/v1/spooled/ack/8eb0d5eb8a45e4a4ac60b284d3173\"\n        \"headers\": {\n            \"x-amz-server-side​-encryption​-customer-key\": [\"key\"],\n            \"x-amz-server-side​-encryption​-customer-algorithm\": [\"AES256\"]\n        },\n        \"metadata\": {\n          \"rowOffset\": 200,\n          \"rowsCount\": 100,\n          \"segmentSize\": 1024\n        }\n      }\n    ]\n  }\n}\n```\n\nMeaning of the fields is following:\n\n- **`encoding`** - the string identifier of the encoding format as negotiated between the client and the server, chosen from the client requested encodings sent in the `Trino-Query-Data-Encoding` header. These are known and shared by both the client and the server and are part of the `spooled protocol extension` definition,\n- **`metadata`** - the `Map<String, Object>` that represents metadata of the partial result set, i.e. decryption key used to decrypt encoded data,\n- **`segments`** - list of data segments representing partial result set. Single `QueryResults` object can contain arbitrary number of segments which are always ordered.\n  \n### DataSegment\n\n**`DataSegment`** is a representation of the encoded data and has two distinct types: `inline` and `spooled` with following semantics:\n- **`inline`** segment holds encoded, partial result set data in the base64-encoded `data` field,\n- **`spooled`** segment type points to the encoded partial result set spooled in the configured storage location. Location designated by the `URI uri` field value along with HTTP headers stored in `Map<String, List<String>> headers` field are used to retrieve spooled `byte[]` data from the spooling storage. `uri` and `headers` are opaque and contain all of the authentication information required which means that client implementation can retrieve spooled segment data by doing an ordinary `GET` HTTP call without any processing of the URI or the headers. It's worth to note that URI can point to arbitrary location including endpoints exposed on the coordinator or storage used for spooling (i.e. presigned URIs on S3). This depends on the actual implementation of the spooling manager and server configuration. `ackUri` is used to along with the http `GET` method to explicitly acknowledge that segment was retrieved which allows the coordinator to eagerly remove it from the storage, rather than waiting for the TTL to pass.\n\n> [!NOTE]\n> Data segments are returned in the order specified by the query semantics. Data is spooled when client library requests next batch of result set data by following `nextUri`. It's up to the client library to decide whether all segments will be spooled at once, buffered and then read.\n\n> [!IMPORTANT]\n> In order to support the spooled protocol, client implementations need to support both inline and spooled representations as server can use these interchangeably.\n\n> [!CAUTION]\n> Client implementation must not send any additional information when retrieving spooled data segment, particularly the authentication headers used to authenticate to a Trino.\n\n**`DataSegment`** contains a **`metadata`** field of type `Map<String, Object>` with attributes describing a data segment.\n\nFollowing metadata attributes are always present:\n\n- **`rowOffset`** of the data segment in relation to the whole result set (`long`),\n- **`rowsCount`** number of the rows in the data segment (`long`),\n- **`segmentSize`** size of the encoded data segment (`long`).\n\nOptional metadata attributes can be a part of the encoding definition shared between the client and server implementations (to be discussed).\n\n### Implementation considerations\n\n#### Compatibility\n\nThe implementation of this design must to take into the consideration backward and forward compatibility which means two things:\n\n- new client implementation must be compatible with old server implementation (without this extension)\n- old client implementation must be compatible with new server implementation (with this extension)\n\nAs this is an extension of the protocol, it's an opt-in feature that requires a new client and a new server with additional configuration (spooling storage).\n\n#### Encodings\n\nEncoding describes the serialization format (like JSON) and other information required to both write (encode) and read (decode) result set as data segments. Example of encodings are:\n\n- `json+zstd` which reads as JSON serialization with ZSTD compression,\n- `parquet+snappy` which reads as parquet encoding with Snappy compression.\n  \nDefinition and meaning of the encoding is a contract between client and the server and will be specified separately in the future for each encoding.\n\n#### Spooling\n\nSpooling by definition means buffering data in a separate location by the server and retrieving it later by the client. In order to support `spooled protocol extension` servers (coordinator and workers) are required to be configured to use the spooling. In the initial implementation we plan to add a plugin SPI for the `SpoolingManager` and implementation based on the `native file-system API`. `SpoolingManager` is responsible for both storing and retrieving `spooled` data segments from the external storage.\n\n#### Segments\n\nIt's up to the server implementation whether the partial result set will be `inlined`, `spooled`, either or both. It's required that client requesting a `spooled protocol extensions` supports both types of the data segments.\n\n#### Plugabillity\n\nAn encoding is a shared definition between the client and the server, therefore it can't be a Plugin SPI interface. In the initial implementation, we do not plan to provide an external SPI for adding new encodings. These will be shipped as part of the implementation of the client and server libraries. Spooling process on the server-side is pluggable with the new `SpoolingManager` SPI.\n\n#### Backward compatibility\n\nAbove and for all, the new spooled protocol can't break existing one as it's an opt-in client/server feature. At any given moment, the client or the server can fall back to the original, unmodified v1 protocol to maintain backward compatibility.\n\n#### Performance\n\nFor small result sets, spooling on the storage adds an additional overhead which can be avoided by inlining the data in the response. For larger ones, spooling allows faster, parallel data retrieval as the result set can be fully spooled and query finished as fast as possible and then retrieved, decoded and processed by the client after the query has already completed.\n\nWe plan to implement spooling on the worker side which means that when the result set is partially or fully spooled, coordinator node is not involved in encoding of the data to a requested format and spooling it in the storage. According to our benchmarks, JSON encoding in the existing format accounts for significant amount of the CPU time during output processing. Initially we plan to support existing JSON format but the encoding will be moved to worker nodes which will reduce the load on the coordinator.\n\n#### Security\n\nProtocol supports server-side encryption of data. We've settled on server-side encryption, rather than client-side due to the following reasons:\n\n- straightforward client support (passing headers only),\n- native support for server-side encryption in cloud storage (S3, GCS, ABFS) which reduces the CPU usage on both client and Trino side,\n- robustness of the client implementation that doesn't need to change if the encryption scheme does,\n\n### Proposed API/SPI\n\n#### Server-side\n\n```java\npublic interface QueryDataEncoder\n{\n    DataAttributes encodeTo(OutputStream stream, List<Page> pages)\n            throws IOException; // returns segment-level attributes\n\n    String encoding(); // encoding name\n\n    DataAttributes attributes(); // query-level attributes (like encryption key)\n\n    interface Factory\n    {\n        QueryDataEncoder create(Session session, List<OutputColumn> columns);\n\n        String encoding();\n    }\n}\n```\nUsed to encode the data in the specified output format.\n\n```java\n// Implementation specific identifier\npublic interface SpooledSegmentHandle\n{\n}\n\npublic interface SpoolingManager\n{\n    SpooledSegmentHandle create(SpoolingContext spoolingContext);\n\n    OutputStream createOutputStream(SpooledSegmentHandle segmentHandle)\n            throws Exception;\n\n    InputStream unspool(SpooledSegmentHandle segmentHandle)\n            throws IOException;\n\n    default void acknowledge(SpooledSegmentHandle segmentHandle)\n            throws IOException\n    {\n    }\n\n    default Optional<URI> directLocation(SpooledSegmentHandle segmentHandle)\n    {\n        return Optional.empty();\n    }\n\n    default Slice serialize(SpooledSegmentHandle handle)\n    {\n        throw new UnsupportedOperationException();\n    }\n\n    default SpooledSegmentHandle deserialize(Slice slice)\n    {\n        throw new UnsupportedOperationException();\n    }\n\n    default Map<String, String> headers(SpooledSegmentHandle deserialize)\n    {\n        return Map.of();\n    }\n}\n```\nUsed to manage, spool and unspool data segments.\n\n#### Client-side\n\n```java\npublic interface QueryDataDecoder\n{\n    ResultRows decode(InputStream inputStream, DataAttributes segmentAttributes)\n            throws IOException;\n\n    String encoding();\n\n    interface Factory\n    {\n        QueryDataDecoder create(List<Column> columns, DataAttributes queryAttributes);\n\n        String encoding();\n    }\n}\n```\nUsed to decode the data segment.",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2024-07-13T16:47:10Z",
+   "body": "Really excited about this enhancement. \r\nDoes this arrangement support retries for failed requests/corrupted data - especially when we can retrieve data in parallel? "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-07-13T17:31:17Z",
+   "body": "Yes. It will be possible to retrieve the same segment couple of times"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-07-15T01:11:44Z",
+   "body": "Thanks for the update. Few more thoughts.\r\n\r\n1. Spooled data transfer looks like a communication between client (cli/jdbc/odbc/python...) and Trino cluster. There is no opportunity to introduce independent layers (proxies, smart caching between client and coordinator etc). If we keep the URLs used (including dataUri in spooled segment) in HTTP headers, the proxies and other agents can process that data without decoding the entire http response payload.  \r\n \r\n2. v1 protocol transmits metadata in each data chunk being transmitted. Will it continue to happen in spooled version (`EncodedQueryData`) as well? Is there any opportunity to improve that area?\r\n\r\n3. Please elaborate on the parallel data transfer aspect and how it works. I understood that we are offloading the data preparation from coordinator to workers. But, we are still sending data in a serial fashion (one at a time) from coordinator to client - right? How about coordinator share a list of nextUris with the client and the client retrieves them in parallel?\r\n\r\n4. Hope we can include [msgpack](https://msgpack.org/index.html)  as an encoding option for data transfer (assuming that we get better compression than other mechanisms).\r\n\r\n\r\nBelow are some ideas that I thought could benefit client/coordinator communication.\r\n\r\n\r\n1. Coordinator and client could establish/negotiate the targetResultSize value (and periodically reevaluate during transfer) while complex queries are running in workers (a possible solution is to send some dummy data - similar to iperf3 - from coordinator to client to determine the transmission rate). \r\n\r\n2. Move nextUri, partialCancelUri, infoUri to HTTP Header area. At present, only clients can see these header values and that too after decoding the data chunk. If we move these to the header fields, we can implement performance improvements where we can download the binary data as is (probably by a proxy node) and deliver to the actual client at the rate it can consume. The advantage is that Trino cluster will not have to hold the data in memory and operate at clients retrieval/consumption rate. Instead, we can offload data to the client proxy node (or in client itself if it is capable of storing/caching the binary data somewhere) at a faster rate. We definitely need to consider security and avoid man-in-the-middle attacks. But, a smart caching/data offloading mechanism can improve end user experience. \r\n\r\n3. Trino Cluster identifier mechanism - when there are multiple clusters behind Trino-gateway like arrangement, it will be great if we can add some kind of identifier to the nextUrl (only Trino-gateway/query routing layer/coordinator will understand/decode this value). In my private fork, I implemented this feature and it is working well. It is backward compatible with all client libraries. (This doesn't have to be a v1+ feature as it can be implemented in Trino coordinator) \r\n\r\nThoughts?\r\n\r\n"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-07-15T11:06:45Z",
+   "body": "Would be interested at looking at client implementation that utilise this. Specially for distributed ML frameworks that need to load a lot of data into distributed workers. Of interest would be a spark connector and a client for Ray."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-07-15T11:41:52Z",
+   "body": "@participant1 \r\n\r\n1. This is correct. In order to drive adoption, we've decided to make it easy for client integrations. We've taken into the account a need for query result set caching and this is possible to implement with proposed changes. We do not want to move the data segment URIs to headers though.\r\n2. This will be a separate change that will allow for disabling columns and/or stats retransmission.\r\n3. Data is encoded and spooled on the worker nodes. Coordinator instead of getting an actual data, gets the list of spooled locations (basically URIs from the client perspective). Client instead of getting an actual data, gets these URIs that points to spooled data. In a single request to a nextURI, client can get multiple segments from multiple workers (it depends only on how fast we can spool data on the worker node). The result set target doesn't apply here - we've added a separate \"target segment size\" to a spooling configuration that sets a target size for a spooled segment (right now it's 16 MB). Usually, you will get multiple segment URIs at once, which makes the total amount of data available for reading much higher than current 1 MB target result size. Since the spooled segment is just an URI and you can get multiple of these, you can read them in parallel, you can even buffer all of the segment URIs until the query if finished and then read all of the segments in parallel at once - there is no limitation here.\r\n4. I don't think that we will do msgpack but I agree that the JSON is not the best option as it costs a lot (in our benchmarks, the 90% of the CPU used on the spooling operator is the actual encoding of the data). We are still considering options for the columnar encoding of the data that we will introduce next.\r\n\r\n# Other ideas\r\n\r\n1. Target result size doesn't apply here. There is a \"target segment size\" that controls how big the spooled segment will be, this is set to 16 MB by default. This is only to avoid having too many small segments or too big ones (as you will read them to memory as a whole). When you fetch the nextURI you will usually get multiple segments from multiple workers and it's usually limited by how fast workers can spool. Instead of getting a 1 MB targetResultSize you will get multiplier of 16 MB.\r\n2. This is out of scope for this change. We don't want to mess with the protocol too much as it will make client implementations harder. Since the data is now \"externalized\" and you only get a \"pointer\" to the data (segment URI) the responses to nextURIs will be usually much smaller than today (KBs rather than MBs). You can assume that the proxy will be able to read the whole response to extract required informations like nextURI or cancelURI.\r\n3. Isn't the X-Forwarded-Path what you are looking for?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-07-15T11:47:19Z",
+   "body": "@participant2 this is one of the use-cases we have in mind :)"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-07-16T12:44:51Z",
+   "body": "Thanks @reporter for the details and I really appreciate the quick response. This makes sense.\r\n \r\nFor `#3` in the first list (Data is encoded and spooled on the worker nodes...), is there an opportunity to offload spooled data to external places than worker nodes? Client shouldn't care where it gets the data from and this could introduce offline execution (clients submit queries and go away and later will be notified of data availability and clients can come and pick data).\r\n\r\nFor `#3` from second list (Trino Cluster identifier mechanism), did you mean [X-Forwarded-Prefix](https://github.com/trinodb/trino/pull/22227)? One challenge with X-Forwarded-Prefix is that clients need to be modified to take advantage of this feature. My original suggestion is backward compatible and so it will work for all clients (ODBC, JDBC, CLI, Python etc). I already implemented this in our fork and we are using it for zero downtime deployments. \r\n\r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-07-16T12:50:58Z",
+   "body": "@participant1 the spooling manager is a pluggable SPI. One of the implementations is based on native filesystem APIs which allow for spooling to s3/gcs/abfs out of the box.\r\n\r\nPlease file an issue for the second item. We will discuss it with the trino-gateway group."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-07-16T12:53:06Z",
+   "body": "@participant1 \"Encoding and spooling happens on worker nodes\" means that worker nodes are spooling to the external storage :)"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-07-17T04:24:30Z",
+   "body": "Thanks @reporter for the updates. I am super excited about the possibilities and how this feature can improve customer experience. Thank you!\r\n\r\nAbout the cluster identifier feature, I will file an issue later.\r\n \r\n "
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-07-23T15:55:30Z",
+   "body": "Good stuff @reporter!\r\n\r\nA couple of questions:\r\n* How is the lifecycle of the segments managed? How do coordinators / workers know it's safe to delete a given segment?\r\n* How does the protocol manage flow control to avoid overrunning the spool (which could be in memory buffers, local file system, etc), in the case of a slow client?\r\n\r\nAnd a comment:\r\n* Given that the size of the segments is determined statically, and a segment needs to be ready before its URL will be served to the client, this can result in increases in latency for very small queries. I'm not clear what's a good solution for this issue, but it's an inherent tension between streaming results and pre-computing results before serving that needs to be considered."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-07-23T16:13:42Z",
+   "body": "@participant3 there is an explicit http DELETE that clients can do in order to remove a segment if it's no longer needed. Beside that, we want to implement a configurable TTL for segments that will render them useless when they are expired (client won't be able to retrieve them anymore) and the GC process that will cleanup expired segments from the storage.\r\n\r\nThe data is spooled only if the nextUri is called by the client - the difference is that coordinator is not getting an actual page of data but the uri to the data. If client has abandoned calling nextUri - spooling won't progress.\r\n\r\nAs for the latency part, spooled extension allows both inline and spooled segments so it's up to the engine whether the data should be inlined or spooled. The current spooling operator implementation has a `SpoolingController` that tries to decide when to switch from streaming of the inlined data to a spooling (it's based on the configurable thresholds - number of initial rows/size of the initial pages) so that initial couple of hundreds of rows will be inlined, but once the threshold is reached, data will be spooled and client will get URIs instead of inline data.\r\n\r\n I was thinking that the client implementation could actually hint the engine whether it prefers the throughput of the data transfer over initial latency."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-07-23T16:14:46Z",
+   "body": "@participant3 here's how we plugged it into the execution on the high level:\r\n\r\n![Canvas 1](https://github.com/user-attachments/assets/2126d8d6-2a7e-4b8c-987d-27806f782c0d)\r\n\r\n"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-07-23T16:25:03Z",
+   "body": "In the case when the SpoolingOperator is spooling, how does pushback happen? Today, it's based on task output buffers filling up."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-07-23T16:32:03Z",
+   "body": "@participant3 right now the spooling operator holds only a single spooled segment that wasn't consumed by the coordinator (and thus client). It won't request/accept more pages until client retrieves the segment so it's similar to being blocked while having a buffer full but buffer is represented as the identifier of the spooled segment rather than actual data in memory."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-07-23T16:40:21Z",
+   "body": "How does it know it hasn't been consumed by the coordinator? The coordinator interacts with the Task Output Buffer. The Driver will attempt to fetch from the tip of the operator pipeline as long as the buffer is not full. Does this require that the output buffer understand the internals of these special pages produced by the spooling operator?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-07-23T17:10:16Z",
+   "body": "@participant3 I see what you mean now. I think that we would need to improve that area "
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-07-24T02:15:17Z",
+   "body": "There is no pushback for spooling. We assume that storage is effectively infinite, or large enough to store the entire result set. This is true for the expected use case of object storage for spooling.\n\nRequiring that clients consume the results in a specific order makes this more difficult to use and can result in deadlocks. This doesn't seem useful given that storage is typically unlimited.\n\nConsider using this with a system like MapReduce or Spark where the URIs are scheduled independently as worker tasks. There are no guarantees as to when those tasks will run, and these systems often need all the URIs up front.\n\nWe could implement a best effort limit on the total size (IIRC we have something similar for scan size) if needed. You can think of this as similar to CTAS, which writes the full result up front and doesn't have any limit on size."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2024-08-07T15:08:05Z",
+   "body": "@reporter is there any PoC branch with the new approach or it's still in design phase?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-08-07T15:42:28Z",
+   "body": "@participant5 not yet, why are you asking? :)"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-09-06T21:04:03Z",
+   "body": "The inital work is done. We will now follow-up with better spooling and some experiments around formats"
+  },
+  {
+   "author": "participant6",
+   "created_at": "2024-09-25T17:30:17Z",
+   "body": "@reporter - is there ever a case when coordinator needs to do more than just pulling records from workers and returning to the client? For ex - a query plan that requires coordinator to do some kind of post aggregation or filtering? Or is that work already done on the worker nodes as part of the DAG execution. Curious to know whether the spooled client protocol works for all query shapes. "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-09-25T18:21:03Z",
+   "body": "@participant6 final aggregation/sorting happens on workers so no which means that spooling also happens on workers - the question is whether this will be a single worker or many"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-11-21T14:29:46Z",
+   "body": "@participant2 do you have any pointers how to implement support for it in Ray? :)"
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "trinodb/trino",
+  "default_branch": "master",
+  "commit_sha": "392f0a2382425662645ff9bd4d871f1095847634",
+  "as_of": "2024-07-13T15:30:22Z",
+  "method": "github_commits_until"
+ },
+ "images": [
+  {
+   "where": "c12",
+   "source_url": "https://github.com/user-attachments/assets/2126d8d6-2a7e-4b8c-987d-27806f782c0d",
+   "file": "gh_trinodb_trino_22662_img0.png"
+  }
+ ],
+ "slug": "gh_trinodb_trino_22662"
+}

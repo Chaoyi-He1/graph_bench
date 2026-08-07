@@ -1,0 +1,163 @@
+{
+ "repo": "pingcap/tidb",
+ "number": 56814,
+ "url": "https://github.com/pingcap/tidb/issues/56814",
+ "title": "lightning: auto increment value became much larger than expected after physical import with parallel import enabled",
+ "state": "closed",
+ "labels": [
+  "type/bug",
+  "severity/moderate",
+  "component/lightning",
+  "affects-7.1",
+  "component/ddl",
+  "affects-7.5",
+  "affects-8.1",
+  "affects-8.5"
+ ],
+ "reporter": "reporter",
+ "created_at": "2024-10-24T03:14:39Z",
+ "closed_at": "2024-11-19T11:03:34Z",
+ "body": "## Bug Report\r\n\r\nWe made a cut-over to TiDB \r\n\r\nThe table is Messages table with Auto increment on \"ID\"\r\nto maintain the ID sequence the table was created with \"auto_id_cache\" as below\r\n\r\n**) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci AUTO_INCREMENT=730234878 /*T![auto_id_cache] AUTO_ID_CACHE=1 */**\r\n\r\nIn the MySQL last sequence was \"**14609942**\" but in TiDB ID was incremented by a vast number \"**730170668**\" pl find as below\r\n\r\nmysql> select id,updatedAt from messages where id >=14609942 limit 10;\r\n+-----------+------------+\r\n| id        | updatedAt  |\r\n+-----------+------------+\r\n|  14609942 | 1729291247 |  ----> MySQL\r\n| 730170668 | 1729313914 | -----> TIDB \r\n| 730170669 | 1729313914 |\r\n| 730170670 | 1729313914 |\r\n| 730170671 | 1729313914 |\r\n| 730170672 | 1729313914 |\r\n| 730170673 | 1729313914 |\r\n| 730170674 | 1729313914 |\r\n| 730170675 | 1729313914 |\r\n| 730170676 | 1729313914 |\r\n+-----------+------------+\r\n\r\nthe TIDB has added or incremented the value on its own, This is a critical bug making TiDB unusable in production\r\n\r\n### 1. Minimal reproduce step (Required)\r\n1,Create the table structure same as MySQL also have auto_id_cache=1 to maintain compatibility.\r\n2, Migrate the data to TiDB using DM and setup replication. till this point ID would be matching\r\n3, Stop or Pause the DM\r\n4, Point the application directly to use TiDB, you can see a huge jump in auto increment value.\r\n\r\n### 2. What did you expect to see? (Required)\r\nwe expected the same sequence to be continue with TiDB, making it compatible\r\n\r\n### 3. What did you see instead (Required)\r\nwe see a complete new ID sequence has been introduced, breaking the application \r\n\r\n### 4. What is your TiDB version? (Required)\r\n\r\n<!-- Paste the output of SELECT tidb_version() -->\r\n\r\nRelease Version: v8.1.1\r\nEdition: Community\r\nGit Commit Hash: a7df4f9845d5d6a590c5d45dad0dcc9f21aa8765\r\nGit Branch: HEAD\r\nUTC Build Time: 2024-08-22 05:49:03\r\nGoVersion: go1.21.13\r\nRace Enabled: false\r\nCheck Table Before Drop: false\r\nStore: tikv\r\n",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2024-10-24T10:13:57Z",
+   "body": "Could you add the output of `SHOW CREATE TABLE ...` for\r\n- MySQL\r\n- TiDB before starting DM\r\n- TiDB after starting DM\r\n\r\nWhat does `SELECT MAX(id) FROM ...` return?\r\n\r\nWhat was the `task-mode` in DM set to for this? Did you specify a `import-mode` ?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-10-24T11:55:09Z",
+   "body": "Table Structure with MySQL \r\n```\r\nCREATE TABLE `messages` (\r\n  `id` bigint unsigned NOT NULL AUTO_INCREMENT,\r\n  `muid` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,\r\n  `conversationId` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,\r\n  `sender` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL,\r\n  `receiverType` enum('group','user') CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'user',\r\n  `receiver` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL,\r\n  `category` enum('message','action','call','event','custom','interactive') CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,\r\n  `type` varchar(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'text',\r\n  `data` json NOT NULL,\r\n  `senderOnly` tinyint(1) NOT NULL DEFAULT '0',\r\n  `sentAt` int NOT NULL,\r\n  `updatedAt` int DEFAULT NULL,\r\n  `editedBy` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,\r\n  `editedAt` int DEFAULT NULL,\r\n  `deletedBy` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,\r\n  `deletedAt` int DEFAULT NULL,\r\n  `deliveredAt` int DEFAULT NULL,\r\n  `readAt` int DEFAULT NULL,\r\n  `sentAtFPid` decimal(30,20) DEFAULT NULL,\r\n  PRIMARY KEY (`id`),\r\n  KEY `messages_sender_index` (`sender`),\r\n  KEY `messages_receiver_index` (`receiver`),\r\n  KEY `messages_receivertype_index` (`receiverType`),\r\n  KEY `messages_sentat_index` (`sentAt`),\r\n  KEY `messages_deliveredat_index` (`deliveredAt`),\r\n  KEY `messages_readat_index` (`readAt`),\r\n  KEY `messages_editedat_index` (`editedAt`),\r\n  KEY `messages_deletedat_index` (`deletedAt`),\r\n  KEY `messages_updatedat_index` (`updatedAt`),\r\n  KEY `msg_category_type` (`category`,`type`),\r\n  KEY `msg_type` (`type`),\r\n  KEY `msg_convoid_sender_senderonly` (`conversationId`,`sender`,`senderOnly`),\r\n  KEY `msg_convoid_receivertype_receiver` (`conversationId`,`receiverType`,`receiver`),\r\n  KEY `msg_convoid_category_type` (`conversationId`,`category`,`type`),\r\n  KEY `msg_convoid_type` (`conversationId`,`type`),\r\n  KEY `msg_convoid_sentat_id` (`conversationId`,`sentAt`,`id`),\r\n  KEY `convoid_sender_deliveredat` (`conversationId`,`sender`,`deliveredAt`),\r\n  KEY `convoid_sender_sentat` (`conversationId`,`sender`,`sentAt`),\r\n  KEY `msg_sentatfpid` (`sentAtFPid`),\r\n  KEY `msg_muid` (`muid`),\r\n  KEY `convoid_sentatfpid_index` (`conversationId`,`sentAtFPid` DESC)\r\n) ENGINE=InnoDB  AUTO_INCREMENT=14430410 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;\r\n```\r\nTable structure created in TIDB with Auto_ID_CACHE before starting DM,\r\n\r\n```\r\nCREATE TABLE `messages` (\r\n  `id` bigint unsigned NOT NULL AUTO_INCREMENT,\r\n  `muid` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,\r\n  `conversationId` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,\r\n  `sender` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL,\r\n  `receiverType` enum('group','user') CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'user',\r\n  `receiver` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL,\r\n  `category` enum('message','action','call','event','custom','interactive') CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,\r\n  `type` varchar(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'text',\r\n  `data` json NOT NULL,\r\n  `senderOnly` tinyint(1) NOT NULL DEFAULT '0',\r\n  `sentAt` int NOT NULL,\r\n  `updatedAt` int DEFAULT NULL,\r\n  `editedBy` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,\r\n  `editedAt` int DEFAULT NULL,\r\n  `deletedBy` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,\r\n  `deletedAt` int DEFAULT NULL,\r\n  `deliveredAt` int DEFAULT NULL,\r\n  `readAt` int DEFAULT NULL,\r\n  `sentAtFPid` decimal(30,20) DEFAULT NULL,\r\n  PRIMARY KEY (`id`),\r\n  KEY `messages_sender_index` (`sender`),\r\n  KEY `messages_receiver_index` (`receiver`),\r\n  KEY `messages_receivertype_index` (`receiverType`),\r\n  KEY `messages_sentat_index` (`sentAt`),\r\n  KEY `messages_deliveredat_index` (`deliveredAt`),\r\n  KEY `messages_readat_index` (`readAt`),\r\n  KEY `messages_editedat_index` (`editedAt`),\r\n  KEY `messages_deletedat_index` (`deletedAt`),\r\n  KEY `messages_updatedat_index` (`updatedAt`),\r\n  KEY `msg_category_type` (`category`,`type`),\r\n  KEY `msg_type` (`type`),\r\n  KEY `msg_convoid_sender_senderonly` (`conversationId`,`sender`,`senderOnly`),\r\n  KEY `msg_convoid_receivertype_receiver` (`conversationId`,`receiverType`,`receiver`),\r\n  KEY `msg_convoid_category_type` (`conversationId`,`category`,`type`),\r\n  KEY `msg_convoid_type` (`conversationId`,`type`),\r\n  KEY `msg_convoid_sentat_id` (`conversationId`,`sentAt`,`id`),\r\n  KEY `convoid_sender_deliveredat` (`conversationId`,`sender`,`deliveredAt`),\r\n  KEY `convoid_sender_sentat` (`conversationId`,`sender`,`sentAt`),\r\n  KEY `msg_sentatfpid` (`sentAtFPid`),\r\n  KEY `msg_muid` (`muid`),\r\n  KEY `convoid_sentatfpid_index` (`conversationId`,`sentAtFPid` DESC)\r\n) ENGINE=InnoDB  AUTO_INCREMENT=14430410 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci AUTO_ID_CACHE=1;\r\n```\r\nDM was started with \"full\" import mode with replication, we used physical import.\r\n\r\nAuto-increment was fine in TiDB as well since Binlog format was FULL and replication happening from mysql\r\n\r\nDuring the day of Cut-over we paused the DM task\r\n\r\nlast ID synced from mysql\r\n```\r\n+-----------+------------+\r\n| id | updatedAt |\r\n+-----------+------------+\r\n| 14609942 | 1729291247 | ----> MySQL\r\n```\r\nWhen Application was directly pointed to TiDB from application it generated id starting with \"730170668\"\r\n```\r\n+-----------+------------+\r\n| id | updatedAt |\r\n+-----------+------------+\r\n| 730170668 | 1729313914 | -----> TIDB\r\n```"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-10-24T12:00:22Z",
+   "body": "Side note, you might want to use markdown to format code and output:\r\n\r\nhttps://docs.github.com/en/get-started/writing-on-github/getting-started-with-writing-and-formatting-on-github/basic-writing-and-formatting-syntax#quoting-code"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-10-24T13:43:34Z",
+   "body": "I tried to reproduce this, but failed to do so:\r\n\r\nMySQL 8.0.40 with:\r\n```sql\r\nCREATE TABLE t1 (id int AUTO_INCREMENT PRIMARY KEY) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci;\r\nINSERT INTO t1 values (100);\r\nINSERT INTO t1() values ();\r\n```\r\n\r\nTiDB v8.1.1 with:\r\n```sql\r\nCREATE TABLE t1 (id int AUTO_INCREMENT PRIMARY KEY) AUTO_ID_CACHE=1 CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci;\r\n```\r\n\r\nDM task with `task-mode: full`\r\n\r\nResult after stopping the DM task:\r\n\r\n```\r\nmysql-8.0.11-TiDB-v8.1.1> show create table t1\\G\r\n*************************** 1. row ***************************\r\n       Table: t1\r\nCreate Table: CREATE TABLE `t1` (\r\n  `id` int(11) NOT NULL AUTO_INCREMENT,\r\n  PRIMARY KEY (`id`) /*T![clustered_index] CLUSTERED */\r\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci AUTO_INCREMENT=102 /*T![auto_id_cache] AUTO_ID_CACHE=1 */\r\n1 row in set (0.00 sec)\r\n\r\nmysql-8.0.11-TiDB-v8.1.1> TABLE t1;\r\n+-----+\r\n| id  |\r\n+-----+\r\n| 100 |\r\n| 101 |\r\n+-----+\r\n2 rows in set (0.00 sec)\r\n\r\nmysql-8.0.11-TiDB-v8.1.1> INSERT INTO t1() VALUES ();\r\nQuery OK, 1 row affected (0.01 sec)\r\n\r\nmysql-8.0.11-TiDB-v8.1.1> TABLE t1;\r\n+-----+\r\n| id  |\r\n+-----+\r\n| 100 |\r\n| 101 |\r\n| 102 |\r\n+-----+\r\n3 rows in set (0.00 sec)\r\n\r\nmysql-8.0.11-TiDB-v8.1.1> show create table t1\\G\r\n*************************** 1. row ***************************\r\n       Table: t1\r\nCreate Table: CREATE TABLE `t1` (\r\n  `id` int(11) NOT NULL AUTO_INCREMENT,\r\n  PRIMARY KEY (`id`) /*T![clustered_index] CLUSTERED */\r\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci AUTO_INCREMENT=103 /*T![auto_id_cache] AUTO_ID_CACHE=1 */\r\n1 row in set (0.00 sec)\r\n```"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-10-24T14:21:17Z",
+   "body": "Hope you tried with the physical import also after making the replication pls insert some via replication and then pause the DM task and make a direct write to TiDB"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-10-26T04:25:28Z",
+   "body": "Hi @reporter , thanks for reporting this issue.\r\n\r\nAccording to the reproduction steps and other comments, you mentioned both 'DM' and 'Physical Import'(which is a concept of Lightning / `IMPORT` statement), could you please provide more details about how they're used in each step, so we're able to have an analysis?\r\n\r\nAlso, please notice that:\r\n\r\n1. There's a known bug related to the physical import & auto_increment, which is not fixed in v8.1.1 yet(#56476).\r\n2. As a workaround for your migration, you can use `ALTER TABLE ... FORCE AUTO_INCREMENT=...` to rebase the auto_increment value to a specific value(14609942 for your case).\r\n3. As a distributed system, we do not guarantee `AUTO_INCREMENT` to be 100% compatible with MySQL in all cases, even when the `AUTO_ID_CACHE` is set to 1(see the [MySQL compatibility mode](https://<redacted-host>/tidb/stable/auto-increment#restrictions) part of the documentation). "
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-10-28T03:37:07Z",
+   "body": "Hello, @reporter \r\n\r\nFrom your comment above, I found \r\n\r\n```\r\n**) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci AUTO_INCREMENT=730234878 /T![auto_id_cache] AUTO_ID_CACHE=1 /\r\n```\r\n\r\nIt seems that you use don't use the same AUTO_INCREMENT between MySQL and TiDB, for TiDB, it may be `AUTO_INCREMENT=730234878`. So if you insert data into TiDB directly, the ID may be from 730234878, not from the value set in MySQL. \r\n\r\n\r\nI tried to reproduce:\r\n\r\n## Step 1\r\n\r\nFor MySQL\r\n```sql\r\nCREATE TABLE `messages` (   `id` bigint unsigned NOT NULL AUTO_INCREMENT,   `updatedAt` int DEFAULT NULL,   PRIMARY KEY (`id`) ) ENGINE=InnoDB  AUTO_INCREMENT=14430410 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;\r\n```\r\n\r\nFor TiDB\r\n```sql\r\nCREATE TABLE `messages` (   `id` bigint unsigned NOT NULL AUTO_INCREMENT,   `updatedAt` int DEFAULT NULL,   PRIMARY KEY (`id`) ) ENGINE=InnoDB  AUTO_INCREMENT=74430410 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;\r\n```\r\n\r\n## Step 2\r\n\r\nFor MySQL\r\n\r\n```\r\ninsert into message (updatedAt) values (now());\r\n```\r\n\r\nthen start the DM replication\r\n\r\nFor TiDB\r\n\r\n```bash\r\nselect * from messages;\r\n+----------+------------+\r\n| id       | updatedAt  |\r\n+----------+------------+\r\n| 14430410 | 1730085690 |\r\n+----------+------------+\r\n```\r\n\r\n## Step 3\r\n\r\nstop the DM replication\r\n\r\nFor TiDB\r\n\r\n```\r\ninsert into message (updatedAt) values (now());\r\n```\r\n\r\nThen select in TiDB\r\n\r\n```bash\r\nselect * from messages;\r\n+----------+------------+\r\n| id       | updatedAt  |\r\n+----------+------------+\r\n| 14430410 | 1730085690 |\r\n| 74460410 | 1730086179 |\r\n+----------+------------+\r\n```\r\n\r\nyou can see different id here. I guess this meets the expectation?  please correct me if I am wrong @participant2 @participant1 \r\n\r\n\r\n"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-10-28T03:46:22Z",
+   "body": "@participant3 \r\n\r\n```\r\nCREATE TABLE `messages` (   `id` bigint unsigned NOT NULL AUTO_INCREMENT,   `updatedAt` int DEFAULT NULL,   PRIMARY KEY (`id`) ) ENGINE=InnoDB  AUTO_INCREMENT=74430410 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;\r\n```\r\n\r\nIf this is the original create table syntax, it's expected that the next ID allocated starts from `74430410`. \r\n\r\nBut I'm not sure if this syntax is generated manually or by DM. "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-10-28T03:50:06Z",
+   "body": "@participant3 your previous comment is the issue i exactly face, when directly Inserted in TiDB the Autoincrement ID gets leaped"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-10-28T03:53:43Z",
+   "body": "Below Are the exact steps followed:\r\n1, Dump the structure from MySQL\r\n2, Import the structure file into TiDB by adding AUTO_ID_CACHE\r\n3, Start the DM with Physical import and FULL mode\r\n4, replication started between MySQL and TiDB\r\n\r\nTill this point ID is matching between MySQL and TiDB\r\n\r\nOn the day of cut-over we paused the DM task replication and pointed the writes directly to TiDB --> This is when we see the jump in Auti-increment ID.\r\n\r\n@participant3 @participant2 @participant1 "
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-10-28T03:59:36Z",
+   "body": "> 3, Start the DM with Physical import and FULL mode\r\n\r\n@reporter About 'Physical Import' of DM, is it some argument or configuration of DM? I didn't find such a thing in DM document."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-10-28T04:18:35Z",
+   "body": "These are the configs exactly used in DM @participant2 \r\n\r\ntask-mode: all \r\n import-mode: \"physical\""
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-10-28T05:51:01Z",
+   "body": "@reporter Thanks! I confirmed that DM with physical import actually used 'Lightning import' code, so probably this is caused by https://github.com/pingcap/tidb/issues/56476. \r\n\r\nWe'll try to confirm and reproduce it.\r\n\r\nBTW, the version of DM you're using is also v8.1.1, right?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-10-28T05:59:12Z",
+   "body": "yes its version 8.1.1 @participant2 "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-10-28T06:08:06Z",
+   "body": "@participant2 i have read thru the bug https://github.com/pingcap/tidb/issues/56476 here the auto-increment is not getting updated as n+1 post migration data with DM using physical loading causing duplicate error while pointing application or writes.\r\n\r\nIn my case the ID is getting jumped to a higher valuer on its own and goes as n+1 from there, hope the issue is clear now\r\n"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-10-28T06:15:47Z",
+   "body": "DM physical mode integrates lightning, in this case lightning will set the auto_incr_id allocator after physical import, but from above info your table is using clustered index, the id shouldn't jump, I will try to reproduce it locally.\r\n\r\n@reporter also can you paste the result of `show create table messages` on TiDB so I can confirm that the table is using clustered index, previous create-table SQL doesn't contains this info."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-10-28T06:44:52Z",
+   "body": "I try import a similar table with clustered index and AUTO_ID_CACHE=1 using lightning(as DM only uses calls lightning, so it should make no difference), data source file is about 150M and have 330000 rows, after import no ID jump\r\n```\r\nCREATE TABLE `t` (\r\n  `id` int(11) NOT NULL AUTO_INCREMENT,\r\n  `a` varchar(100) DEFAULT NULL,\r\n  `b` varchar(100) DEFAULT NULL,\r\n  `c` bigint(20) DEFAULT NULL,\r\n  `d` varchar(1024) DEFAULT NULL,\r\n  PRIMARY KEY (`id`) /*T![clustered_index] CLUSTERED */\r\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin AUTO_INCREMENT=330001 /*T![auto_id_cache] AUTO_ID_CACHE=1 */\r\n\r\n// after import\r\n\r\nmysql> select max(id) from t;\r\n+---------+\r\n| max(id) |\r\n+---------+\r\n|  330000 |\r\n+---------+\r\n1 row in set (0.00 sec)\r\n\r\nmysql> insert into t(id) values(default);\r\nQuery OK, 1 row affected (0.01 sec)\r\n\r\nmysql> select max(id) from t;\r\n+---------+\r\n| max(id) |\r\n+---------+\r\n|  330001 |\r\n+---------+\r\n1 row in set (0.00 sec)\r\n```\r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-10-28T06:45:48Z",
+   "body": "this is the current structure in TiDB\r\n\r\n``` CREATE TABLE `messages` (\r\n  `id` bigint(20) unsigned NOT NULL AUTO_INCREMENT,\r\n  `muid` varchar(100) COLLATE utf8mb4_unicode_ci DEFAULT NULL,\r\n  `conversationId` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,\r\n  `sender` varchar(100) COLLATE utf8mb4_unicode_ci NOT NULL,\r\n  `receiverType` enum('group','user') COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'user',\r\n  `receiver` varchar(100) COLLATE utf8mb4_unicode_ci NOT NULL,\r\n  `category` enum('message','action','call','event','custom','interactive') COLLATE utf8mb4_unicode_ci DEFAULT NULL,\r\n  `type` varchar(50) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'text',\r\n  `data` json NOT NULL,\r\n  `senderOnly` tinyint(1) NOT NULL DEFAULT '0',\r\n  `sentAt` int(11) NOT NULL,\r\n  `updatedAt` int(11) DEFAULT NULL,\r\n  `editedBy` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,\r\n  `editedAt` int(11) DEFAULT NULL,\r\n  `deletedBy` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,\r\n  `deletedAt` int(11) DEFAULT NULL,\r\n  `deliveredAt` int(11) DEFAULT NULL,\r\n  `readAt` int(11) DEFAULT NULL,\r\n  `sentAtFPid` decimal(30,20) DEFAULT NULL,\r\n  PRIMARY KEY (`id`) /*T![clustered_index] CLUSTERED */,\r\n  KEY `messages_sender_index` (`sender`),\r\n  KEY `messages_receiver_index` (`receiver`),\r\n  KEY `messages_receivertype_index` (`receiverType`),\r\n  KEY `messages_sentat_index` (`sentAt`),\r\n  KEY `messages_deliveredat_index` (`deliveredAt`),\r\n  KEY `messages_readat_index` (`readAt`),\r\n  KEY `messages_editedat_index` (`editedAt`),\r\n  KEY `messages_deletedat_index` (`deletedAt`),\r\n  KEY `messages_updatedat_index` (`updatedAt`),\r\n  KEY `msg_category_type` (`category`,`type`),\r\n  KEY `msg_type` (`type`),\r\n  KEY `msg_convoid_sender_senderonly` (`conversationId`,`sender`,`senderOnly`),\r\n  KEY `msg_convoid_receivertype_receiver` (`conversationId`,`receiverType`,`receiver`),\r\n  KEY `msg_convoid_category_type` (`conversationId`,`category`,`type`),\r\n  KEY `msg_convoid_type` (`conversationId`,`type`),\r\n  KEY `msg_convoid_sentat_id` (`conversationId`,`sentAt`,`id`),\r\n  KEY `convoid_sender_deliveredat` (`conversationId`,`sender`,`deliveredAt`),\r\n  KEY `convoid_sender_sentat` (`conversationId`,`sender`,`sentAt`),\r\n  KEY `msg_sentatfpid` (`sentAtFPid`),\r\n  KEY `msg_muid` (`muid`),\r\n  KEY `convoid_sentatfpid_index` (`conversationId`,`sentAtFPid`)\r\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci AUTO_INCREMENT=730390411 /*T![auto_id_cache] AUTO_ID_CACHE=1 */```\r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-10-28T06:46:48Z",
+   "body": "> I try import a similar table with clustered index and AUTO_ID_CACHE=1 using lightning(as DM only uses calls lightning, so it should make no difference), data source file is about 150M and have 330000 rows, after import no ID jump\r\n> \r\n> ```\r\n> CREATE TABLE `t` (\r\n>   `id` int(11) NOT NULL AUTO_INCREMENT,\r\n>   `a` varchar(100) DEFAULT NULL,\r\n>   `b` varchar(100) DEFAULT NULL,\r\n>   `c` bigint(20) DEFAULT NULL,\r\n>   `d` varchar(1024) DEFAULT NULL,\r\n>   PRIMARY KEY (`id`) /*T![clustered_index] CLUSTERED */\r\n> ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin AUTO_INCREMENT=330001 /*T![auto_id_cache] AUTO_ID_CACHE=1 */\r\n> \r\n> // after import\r\n> \r\n> mysql> select max(id) from t;\r\n> +---------+\r\n> | max(id) |\r\n> +---------+\r\n> |  330000 |\r\n> +---------+\r\n> 1 row in set (0.00 sec)\r\n> \r\n> mysql> insert into t(id) values(default);\r\n> Query OK, 1 row affected (0.01 sec)\r\n> \r\n> mysql> select max(id) from t;\r\n> +---------+\r\n> | max(id) |\r\n> +---------+\r\n> |  330001 |\r\n> +---------+\r\n> 1 row in set (0.00 sec)\r\n> ```\r\n\r\nHave you used the physical-import can you pls confirm ?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-10-28T06:47:18Z",
+   "body": "> Hello, @reporter\r\n> \r\n> From your comment above, I found\r\n> \r\n> ```\r\n> **) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci AUTO_INCREMENT=730234878 /T![auto_id_cache] AUTO_ID_CACHE=1 /\r\n> ```\r\n> \r\n> It seems that you use don't use the same AUTO_INCREMENT between MySQL and TiDB, for TiDB, it may be `AUTO_INCREMENT=730234878`. So if you insert data into TiDB directly, the ID may be from 730234878, not from the value set in MySQL.\r\n> \r\n> I tried to reproduce:\r\n> \r\n> ## Step 1\r\n> For MySQL\r\n> \r\n> ```sql\r\n> CREATE TABLE `messages` (   `id` bigint unsigned NOT NULL AUTO_INCREMENT,   `updatedAt` int DEFAULT NULL,   PRIMARY KEY (`id`) ) ENGINE=InnoDB  AUTO_INCREMENT=14430410 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;\r\n> ```\r\n> \r\n> For TiDB\r\n> \r\n> ```sql\r\n> CREATE TABLE `messages` (   `id` bigint unsigned NOT NULL AUTO_INCREMENT,   `updatedAt` int DEFAULT NULL,   PRIMARY KEY (`id`) ) ENGINE=InnoDB  AUTO_INCREMENT=74430410 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;\r\n> ```\r\n> \r\n> ## Step 2\r\n> For MySQL\r\n> \r\n> ```\r\n> insert into message (updatedAt) values (now());\r\n> ```\r\n> \r\n> then start the DM replication\r\n> \r\n> For TiDB\r\n> \r\n> ```shell\r\n> select * from messages;\r\n> +----------+------------+\r\n> | id       | updatedAt  |\r\n> +----------+------------+\r\n> | 14430410 | 1730085690 |\r\n> +----------+------------+\r\n> ```\r\n> \r\n> ## Step 3\r\n> stop the DM replication\r\n> \r\n> For TiDB\r\n> \r\n> ```\r\n> insert into message (updatedAt) values (now());\r\n> ```\r\n> \r\n> Then select in TiDB\r\n> \r\n> ```shell\r\n> select * from messages;\r\n> +----------+------------+\r\n> | id       | updatedAt  |\r\n> +----------+------------+\r\n> | 14430410 | 1730085690 |\r\n> | 74460410 | 1730086179 |\r\n> +----------+------------+\r\n> ```\r\n> \r\n> you can see different id here. I guess this meets the expectation? please correct me if I am wrong @participant2 @participant1\r\n\r\nyes @participant3 you are correct \r\n@participant4 FYI"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-10-28T07:01:04Z",
+   "body": "> Have you used the physical-import can you pls confirm ?\r\n\r\nyes, physical mode of lightning, I will try DM physical mode too, although they uses same code actually\r\n\r\n@reporter \r\nIf i understand correctly, comment of @participant3 says the table is created by yourself with `AUTO_INCREMENT=730234878`, so when insert later by the application the ID will start with `730234878`, it's not a **jump**, it's what you do explicitly.\r\n```\r\n**) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci AUTO_INCREMENT=730234878 /T![auto_id_cache] AUTO_ID_CACHE=1 /\r\n```\r\n\r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-10-28T07:30:56Z",
+   "body": "> > Have you used the physical-import can you pls confirm ?\r\n> \r\n> yes, physical mode of lightning, I will try DM physical mode too, although they uses same code actually\r\n> \r\n> @reporter If i understand correctly, comment of @participant3 says the table is created by yourself with `AUTO_INCREMENT=730234878`, so when insert later by the application the ID will start with `730234878`, it's not a **jump**, it's what you do explicitly.\r\n> \r\n> ```\r\n> **) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci AUTO_INCREMENT=730234878 /T![auto_id_cache] AUTO_ID_CACHE=1 /\r\n> ```\r\n\r\nThis was given to depict the current auto-increment value post cut-over with TiDB and also to show that auto-id-cache has been enabled\r\nbelow is the ID with MySQL and with TIDB post cut over @participant4 \r\n\r\n```+-----------+------------+\r\n| id | updatedAt |\r\n+-----------+------------+\r\n| 14609942 | 1729291247 | ----> MySQL\r\n| 730170668 | 1729313914 | -----> TIDB```"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-10-28T10:29:55Z",
+   "body": "reproduced locally. the cause is DM enabled parallel-import to support the case of Shard Merge where there will be multiple workers importing to same target table, and in that case we have a `meta_manager` to coordinate all parallel instances and it will rebase ID too(this part have a bug, it shouldn't rebase at that time), and the ID is calculated from the dumped data source files, so it's quite large. I will try fix it later.\r\n\r\n> we see a complete new ID sequence has been introduced, breaking the application\r\n\r\nthe ID is still that sequence, but have a jump. how is this affects your application?"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-10-28T10:35:34Z",
+   "body": "BTW: for performance reasons when using `AUTO_ID_CACHE=1`, we still cache IDs in the id-allocator **owner** node, so if the owner crashes, all cached ID is gone, or if the DML transaction failed, all used IDs are not reused, so there is still a bump in the ID range, but the bump is quite small in most times"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-10-28T10:38:22Z",
+   "body": "@participant4 application is completely dependent on the auto-generated ID from DB, since we had seen a complete it had caused lot of data mismatch as a sequence is lost.\r\n\r\nIs there any work around to stop this behaviour of DM, also if there any ETA for this fix?"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-10-28T10:42:42Z",
+   "body": "a workaround is to use DM with logical import\r\n\r\nor you can dump the data using dumpling and import using lightning with `parallel-import = false`, then start a DM incremental task\r\n\r\nthe fix PR should be filed within this week, but we have a releasing schedule for bug fix versions, if you are urgent you can apply for a hotfix through supporters."
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "pingcap/tidb",
+  "default_branch": "master",
+  "commit_sha": "ed9a9093954f6636f8d3c9d09686069626e5b5ce",
+  "as_of": "2024-10-24T03:14:39Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_pingcap_tidb_56814"
+}

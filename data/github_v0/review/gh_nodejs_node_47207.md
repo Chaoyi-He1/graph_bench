@@ -9,33 +9,31 @@
 
 ```mermaid
 flowchart LR
-    N0["<b>N0 rare production ALPN segfault reported</b><br/><small>info: 5</small>"]
-    N1["<b>N1 crash registers and stack collected</b><br/><small>info: 7</small>"]
-    N2["<b>N2 valid ALPN and production-only behavior established</b><br/><small>info: 10</small>"]
-    N2_x["<b>N2_x empty ALPN workaround aftermath</b><br/><small>info: 11</small>"]
-    N3["<b>N3 version boundary confirmed in production</b><br/><small>info: 14</small>"]
-    N4["<b>N4 shared callback argument and candidate fix verified</b><br/><small>info: 17</small>"]
-    N_terminal["<b>terminal resolved</b><br/><small>info: 20</small>"]
-    N0 -.->|"❓ gdb_faulting_instruction_and_register_dump, ssl_select_next_proto_dereferences_unmapped_rax"| N1
+    N0["<b>N0 rare production ALPN crash reported</b><br/><small>info: 6</small>"]
+    N1["<b>N1 crash machine state collected</b><br/><small>info: 8</small>"]
+    N2_x["<b>N2_x empty ALPN workaround aftermath</b><br/><small>info: 9</small>"]
+    N3["<b>N3 malformed ALPN theory ruled out</b><br/><small>info: 11</small>"]
+    N4["<b>N4 pre-regression version stable in production</b><br/><small>info: 13</small>"]
+    N5["<b>N5 shared callback argument demonstrated and patch tested</b><br/><small>info: 15</small>"]
+    N_terminal["<b>terminal patch landed without original reporter verification</b><br/><small>info: 17</small>"]
+    N0 -.->|"❓ gdb_crash_instruction_and_register_dump, gdb_stack_memory_dump"| N1
     linkStyle 0 stroke:#3b82f6,stroke-width:2px
-    N1 -.->|"❓ captured_client_hello_has_valid_h2_and_http11_alpn, million_iteration_local_replay_does_not_crash"| N2
-    linkStyle 1 stroke:#3b82f6,stroke-width:2px
-    N2 ==>|"💥 blind: Avoid the crash by configuring the HTTPS server with an empty ALPNProtocols array."| N2_x
-    linkStyle 2 stroke:#ef4444,stroke-width:2px
-    N2 -.->|"❓ node_18_12_production_deployment_has_no_crashes, crashes_begin_after_alpn_callback_optimization"| N3
-    linkStyle 3 stroke:#3b82f6,stroke-width:2px
-    N2_x -.->|"❓ node_18_12_production_deployment_has_no_crashes, crashes_begin_after_alpn_callback_optimization"| N3
+    N1 ==>|"💥 blind: Avoid the crash by disabling server-side ALPN negotiation with an empty ALPNProtocols array."| N2_x
+    linkStyle 1 stroke:#ef4444,stroke-width:2px
+    N2_x -.->|"❓ captured_crashing_clienthellos_have_valid_alpn"| N3
+    linkStyle 2 stroke:#3b82f6,stroke-width:2px
+    N3 ==>|"🔀 ❓production_downgrade_to_18_12_has_no_core_dumps, crash_version_boundary_matches_alpn_callback_optimization + ⚡Use Node.js 18.12 as a temporary production mitigation while diagnosing the ALPN callback lifetime regression introduced in later versions."| N4
+    linkStyle 3 stroke:#a855f7,stroke-width:2px
+    N4 -.->|"❓ two_connections_observe_same_ssl_ctx_callback_argument, candidate_patch_stops_crashes_for_affected_operator"| N5
     linkStyle 4 stroke:#3b82f6,stroke-width:2px
-    N3 -.->|"❓ two_connections_observe_same_ssl_ctx_callback_argument, crash_core_callback_argument_no_longer_looks_like_tlswrap, candidate_callback_lifetime_fix_stable_under_production_load"| N4
-    linkStyle 5 stroke:#3b82f6,stroke-width:2px
-    N4 ==>|"⚡ Fix the ALPN callback lifetime bug by no longer treating a connection-specific TLSWrap pointer as the callback argument stored on the shared SSL_CTX; recover the wrapper from the current SSL connection instead, then have the affected deployment verify a build containing the fix."| N_terminal
-    linkStyle 6 stroke:#f97316,stroke-width:2px
+    N5 ==>|"⚡ Fix the ALPN callback lifetime bug by obtaining the TLSWrap for the current SSL connection instead of storing a per-connection TLSWrap pointer as callback state on the shared SSL_CTX; then ask the original reporter to verify a build containing that fix under production load."| N_terminal
+    linkStyle 5 stroke:#f97316,stroke-width:2px
     class N0 start
     class N1 normal
-    class N2 normal
     class N2_x normal
     class N3 normal
     class N4 normal
+    class N5 normal
     class N_terminal terminal
     classDef start fill:#fee2e2,stroke:#b91c1c,color:#000
     classDef terminal fill:#dcfce7,stroke:#15803d,color:#000
@@ -44,40 +42,39 @@ flowchart LR
 
 ## Opening (body)
 
-> I am running Node.js 18.15.0 on 64-bit Ubuntu Linux. My TLS server rarely segfaults in production, around one request per million, and I have not found a local reproducer. The stack traces consistently pass through SSL_select_next_proto, SelectALPNCallback, and tls_handle_alpn. I captured another crash and extracted a Kubernetes core dump, but the release binary does not have the debug symbols I need for full local values. I can add instrumentation or collect more information if I know what to inspect. The server should reject bad input rather than segfault.
+> I am running Node.js 18.15.0 on Ubuntu Linux and occasionally see my HTTPS server terminate with SIGSEGV inside SSL_select_next_proto, called from SelectALPNCallback while parsing a ClientHello. It is rare, around one request per million, and I have not found a local reproducer. A second production crash had the same stack. I extracted a core dump from Kubernetes, but the release binary does not have the debug symbols I need. I initially suspected a malformed ALPN header or an invalid pointer passed into SSL_select_next_proto. I can add instrumentation or collect more information if someone tells me what to inspect. The server should reject bad input rather than segfault.
 
 ## Satisfaction conditions
 
-1. Must identify the accepted root cause: the optimized ALPN callback stored a connection-specific TLSWrap pointer as callback data on an SSL_CTX shared by multiple TLS connections, allowing the pointer to become stale before another connection's ClientHello was parsed.
-2. Must ground the diagnosis in the collected evidence: the invalid SSL_select_next_proto dereference, valid ALPN records, stability before the callback optimization, overlapping connections receiving the same context callback argument, and a crash core where that argument no longer resembles a TLSWrap.
-3. Must fix the lifetime/ownership error by obtaining TLSWrap from the current SSL connection rather than relying on the connection-specific pointer stored in shared SSL_CTX callback state.
-4. Must not treat a malformed or zero-length ALPN record as the final diagnosis, because captured crashing ClientHellos had valid h2/http/1.1 ALPN data.
-5. Must not present ALPNProtocols: [] as the fix, because affected production traffic still crashed with that configuration.
-6. Must have an affected user verify a build containing the callback-lifetime fix under representative production load before treating the issue as resolved.
+1. Must identify the accepted root cause: a per-connection TLSWrap pointer was stored as the ALPN callback argument on a shared SSL_CTX, allowing another connection and object lifetime or garbage-collection timing to leave the callback with a stale pointer.
+2. The diagnosis must be grounded in the production-only version boundary, valid captured ALPN records, the invalid pointer at SSL_select_next_proto, and the two-connection GDB observation that both callbacks receive the same SSL_CTX callback argument.
+3. The corrective approach must recover the TLSWrap from the current SSL connection rather than retaining a child connection pointer on the shared SSL_CTX.
+4. Must not present malformed or empty ALPN input as the final root cause, and must not present ALPNProtocols: [] as the fix because crashes continued with that configuration.
+5. A downgrade to Node.js 18.12 may be offered only as a temporary mitigation, not as the permanent fix.
+6. Must ask the original reporter to verify a build containing the fix under representative production load before declaring the original case resolved; another operator's successful candidate-build test is supporting evidence, not the reporter's own confirmation.
 
 ## Edges
 
 | edge | type | gates / info | payload |
 |---|---|---|---|
-| `e1_N0__N1` | clarification_only | asks: gdb_faulting_instruction_and_register_dump, ssl_select_next_proto_dereferences_unmapped_rax | The crash is at SSL_select_next_proto+76: `movzbl (%rax),%eax`. In this core, rax/rdi/rdx are `0x75684f4f71567 / No. When I ask GDB to examine the address in rax, it says memory at that address is not available. Every core  |
-| `e2_N1__N2` | clarification_only | asks: captured_client_hello_has_valid_h2_and_http11_alpn, million_iteration_local_replay_does_not_crash | I recovered the full 512-byte TLS record from the core and decoded it. The ALPN extension is `0010 000e 000c 0 / I replayed the full message locally in a single-threaded loop for one million iterations and nothing failed. I |
-| `e3_N2__N2_x` | solution_only **BLIND** | req_info: rare_production_sigsegv_about_one_per_million_requests, captured_client_hello_has_valid_h2_and_http11_alpn<br>elements: recommends_empty_server_alpn_list | Avoid the crash by configuring the HTTPS server with an empty ALPNProtocols array. |
-| `e4_N2__N3` | clarification_only | asks: node_18_12_production_deployment_has_no_crashes, crashes_begin_after_alpn_callback_optimization | I reverted ten production servers to Node.js 18.12.0. They have produced zero core dumps since the deployment. / The crashing releases start at 18.13. Looking through what landed there, I found a commit titled `src: optimiz |
-| `e5_N2_x__N3` | clarification_only | asks: node_18_12_production_deployment_has_no_crashes, crashes_begin_after_alpn_callback_optimization | I reverted ten production servers to Node.js 18.12.0 and have seen zero core dumps since then. Other affected  / The first unstable releases are 18.13 and later. Going through what landed in 18.13 I noticed a commit `src: o |
-| `e6_N3__N4` | clarification_only | asks: two_connections_observe_same_ssl_ctx_callback_argument, crash_core_callback_argument_no_longer_looks_like_tlswrap, candidate_callback_lifetime_fix_stable_under_production_load | I opened connection A, waited, opened B, sent B's ClientHello, closed B, waited again, and then sent A's Clien / In the production core, the TLSWrap and SSL objects involved still look intact, but `ssl->ctx->ext.alpn_select / I tested the candidate fix with the affected production workload, and it resolves the crash. That workload nor |
-| `e7_N4__terminal` | solution_only | req_info: rare_production_sigsegv_about_one_per_million_requests, crashes_begin_after_alpn_callback_optimization, multiple_users_observe_old_node_stable_and_new_node_crashing, gdb_faulting_instruction_and_register_dump, ssl_select_next_proto_dereferences_unmapped_rax, captured_client_hello_has_valid_h2_and_http11_alpn, node_18_12_production_deployment_has_no_crashes, two_connections_observe_same_ssl_ctx_callback_argument, crash_core_callback_argument_no_longer_looks_like_tlswrap, candidate_callback_lifetime_fix_stable_under_production_load<br>elements: identifies_connection_specific_tlswrap_pointer_in_shared_ssl_ctx_as_root_cause, explains_that_another_connection_can_leave_the_shared_callback_argument_stale, recovers_tlswrap_from_the_current_ssl_connection_instead, asks_user_to_verify_on_a_build_containing_the_fix | Fix the ALPN callback lifetime bug by no longer treating a connection-specific TLSWrap pointer as the callback argument stored on the shared SSL_CTX; recover the wrapper from the current SSL connection instead, then have the affected deployment verify a build containing the fix. |
+| `e1_N0__N1` | clarification_only | asks: gdb_crash_instruction_and_register_dump, gdb_stack_memory_dump | The fault is always at SSL_select_next_proto+76, `movzbl (%rax),%eax`. In this dump rax, rdx and rdi are all 0 / I dumped both frames. The OpenSSL frame contains the saved callback return address and the next frame, and the |
+| `e2_N1__N2_x` | solution_only **BLIND** | req_info: rare_production_sigsegv_in_ssl_select_next_proto, gdb_crash_instruction_and_register_dump<br>elements: sets_server_alpnprotocols_to_empty_array | Avoid the crash by disabling server-side ALPN negotiation with an empty ALPNProtocols array. |
+| `e3_N2_x__N3` | clarification_only | asks: captured_crashing_clienthellos_have_valid_alpn | I recovered and decoded the ClientHello. The ALPN extension is `0010 000e 000c 02 6832 08 687474702f312e31`, o |
+| `e4_N3__N4` | mixed | req_info: rare_production_sigsegv_in_ssl_select_next_proto, captured_crashing_clienthellos_have_valid_alpn, gdb_crash_instruction_and_register_dump<br>elements: uses_pre_regression_node_version_as_temporary_mitigation, continues_monitoring_production_crashes | Use Node.js 18.12 as a temporary production mitigation while diagnosing the ALPN callback lifetime regression introduced in later versions. |
+| `e5_N4__N5` | clarification_only | asks: two_connections_observe_same_ssl_ctx_callback_argument, candidate_patch_stops_crashes_for_affected_operator | I opened connection A, waited, opened B, sent B's ClientHello, closed B, waited, and then sent A's ClientHello / We tested the candidate fix on an affected Node.js 20.8.0 production workload and can confirm that the crash s |
+| `e6_N5__N_terminal` | solution_only | req_info: rare_production_sigsegv_in_ssl_select_next_proto, captured_crashing_clienthellos_have_valid_alpn, gdb_crash_instruction_and_register_dump, production_downgrade_to_18_12_has_no_core_dumps, two_connections_observe_same_ssl_ctx_callback_argument, candidate_patch_stops_crashes_for_affected_operator<br>elements: identifies_shared_ssl_ctx_stale_per_connection_pointer_as_root_cause, retrieves_tlswrap_from_current_ssl_connection, does_not_treat_alpnprotocols_empty_as_the_fix, asks_original_reporter_to_verify_on_a_build_containing_the_fix | Fix the ALPN callback lifetime bug by obtaining the TLSWrap for the current SSL connection instead of storing a per-connection TLSWrap pointer as callback state on the shared SSL_CTX; then ask the original reporter to verify a build containing that fix under production load. |
 
 ## Nodes
 
 | node | terminal | volunteered | images | symptoms |
 |---|---|---|---|---|
-| `N0` |  | 1 | 0 | My Node.js 18.15.0 TLS server occasionally exits with SIGSEGV in production, usually after a stack through SSL_select_next_proto, SelectALPN |
-| `N1` |  | 0 | 0 | The production process still occasionally segfaults at SSL_select_next_proto+76 while handling a TLS ClientHello. |
-| `N2` |  | 2 | 0 | The same production segfault continues even though the captured ClientHello contains a normal ALPN list with h2 and http/1.1. Replaying the  |
-| `N2_x` |  | 1 | 0 | With ALPNProtocols set to an empty array, production processes can still segfault under representative traffic. |
-| `N3` |  | 2 | 0 | After deploying Node.js 18.12.0 across ten production servers, I have seen zero core dumps, while newer versions crashed about hourly with t |
-| `N4` |  | 0 | 0 | With two overlapping TLS connections, both callbacks receive the same callback-argument value from the shared context. An affected productio |
-| `N_terminal` | ✓ | 0 | 0 | The TLS server remains stable under representative production traffic on a build containing the callback-lifetime fix; the SSL_select_next_p |
+| `N0` |  | 2 | 0 | My Node.js 18.15.0 HTTPS server occasionally exits with SIGSEGV while SSL_select_next_proto is called from SelectALPNCallback during ClientH |
+| `N1` |  | 0 | 0 | The production process still occasionally crashes at SSL_select_next_proto+76 while reading through a pointer held in rax. |
+| `N2_x` |  | 1 | 0 | With ALPNProtocols set to an empty array, production core dumps still occur, although I observed them less often than with the default ALPN  |
+| `N3` |  | 1 | 0 | The production crash continues, but the ClientHello data recovered from three dumps contains a normal ALPN extension offering h2 and http/1. |
+| `N4` |  | 0 | 0 | After reverting the production servers to Node.js 18.12.0, I observed zero core dumps across ten servers over the following day; newer versi |
+| `N5` |  | 0 | 0 | In a controlled two-connection run, both ALPN callbacks receive the same callback-argument value even though one connection is opened and cl |
+| `N_terminal` | ✓ | 0 | 0 | One affected production operator reports no recurrence when running a build containing the callback-lifetime fix, but the original reporter  |
 
 ## Machine review (audit pass, adversarially verified)
 

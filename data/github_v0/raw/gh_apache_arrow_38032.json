@@ -1,0 +1,262 @@
+{
+ "repo": "apache/arrow",
+ "number": 38032,
+ "url": "https://github.com/apache/arrow/issues/38032",
+ "title": "[R] read_parquet performs to slow",
+ "state": "closed",
+ "labels": [
+  "Type: bug",
+  "Component: R"
+ ],
+ "reporter": "reporter",
+ "created_at": "2023-10-05T08:33:26Z",
+ "closed_at": "2026-04-11T20:21:07Z",
+ "body": "### Describe the bug, including details regarding any error messages, version, and platform.\n\nI have been using the read_parquet() function to read a file (compressed / uncompressed) from S3, but its too slow (700MB file to be read takes 10m). I tried setting the params:  arrow::set_cpu_count(2) & arrow.use_threads = FALSE, but still is slow.\r\nFor writing the same file it takes 1-2m which still is not the best.\r\nBellow is the code:\r\ns3_init <- function(){\r\n  \r\n  env = Sys.getenv(c(\"ECS_ACCESS_KEY_ID\", \"ECS_SECRET_ACCESS_KEY\",\"ECS_S3_ENDPOINT_URL\", \"ECS_S3_BUCKET\"))\r\n  \r\n  bucket <- arrow::s3_bucket(env[\"ECS_S3_BUCKET\"],\r\n                             access_key=env[\"ECS_ACCESS_KEY_ID\"],\r\n                             secret_key=env[\"ECS_SECRET_ACCESS_KEY\"],\r\n                             endpoint_override=env[\"ECS_S3_ENDPOINT_URL\"],\r\n                             region = '')\r\n  \r\n  return(bucket)\r\n}\r\n s3_save_rds <- function(file,s3_path){\r\n  \r\n  bucket = s3_init()\r\n  write_parquet(file, bucket$path(s3_path), compression = \"gzip\")\r\n}\r\n\r\ns3_read_rds <- function(s3_path){\r\n  \r\n  bucket = s3_init()\r\n  file = read_parquet(bucket$path(s3_path))\r\n  return(file)\r\n}\r\n\r\n\r\n\r\n\n\n### Component(s)\n\nR",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2023-10-05T10:17:35Z",
+   "body": "Seems that should be read s3 slow.\r\nWould you mind try some S3 config and, like pre_buffer config or env (like `AWS_EC2_METADATA_DISABLED` )?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-10-05T11:53:43Z",
+   "body": "i tried:\r\n- Sys.setenv(\"AWS_EC2_METADATA_DISABLED\" = \"true\"\r\n- file = read_parquet(bucket$path(s3_path),pre_buffer=true)\r\nBut this did not help\r\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-10-05T12:37:38Z",
+   "body": "Hmmm would you mind print the metadata of the file metadata? I want to take a look at the info of file"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-10-06T09:00:51Z",
+   "body": "The list of Metadata is huge. Its is a dataframe of 122635 rows and 6135 columns (~700Mb). Data types of the columns are diffrent (character, numbers) and of course there can be included NUlls.\r\nAlso to mention, to save the df to S3 takes ~1m, but to read it takes 10m"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-10-06T09:32:19Z",
+   "body": "How many rowgroups does this file containing? Since this will affect how the file is fetched"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-10-06T09:44:46Z",
+   "body": "The file has only one row group\r\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-10-06T09:45:04Z",
+   "body": "Another is that:\r\n\r\n```\r\nclass PARQUET_EXPORT ArrowReaderProperties {\r\n public:\r\n  explicit ArrowReaderProperties(bool use_threads = kArrowDefaultUseThreads)\r\n      : use_threads_(use_threads),\r\n        read_dict_indices_(),\r\n        batch_size_(kArrowDefaultBatchSize),\r\n        pre_buffer_(true),\r\n        cache_options_(:<nick>::io::CacheOptions::LazyDefaults()),\r\n        coerce_int96_timestamp_unit_(:<nick>::TimeUnit::NANO) {}\r\n```\r\n\r\nwe have a cache_options, can you change this to `:<nick>::io::CacheOptions::Defaults()`( With `pre_buffer` enabled), or just disable `CacheOptions.lazy`. This could make s3 request runs concurrently before parquet read the file(otherwise parquet reader will only send s3 request when touched the io-range).\r\n\r\nread a 700MB file using 10min is too slow. This could be well optimized using different fetch options"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-10-06T10:04:58Z",
+   "body": "The file i saved in S3, is rds. I used the above advices but still reading the file did not improve (still takes 10m)\r\nBellow is code:\r\n\r\n> s3_path=\"train.rds\"\r\n> CacheOptions.lazy=FALSE\r\n> bucket = s3_init()  .. initialize S3 connection\r\n> file = read_parquet(bucket$path(s3_path),pre_buffer=TRUE)"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-10-06T10:07:27Z",
+   "body": "Hmmm would `CacheOptions.lazy=FALSE` not affect the `read_parquet` internal?\r\n\r\nhttps://arrow.apache.org/docs/r/reference/read_parquet.html I'm not familiar with R, but seems that the argument should be filled in `ParquetArrowReaderProperties`?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-10-06T10:08:05Z",
+   "body": "i guess not as the time did not improve\r\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-10-06T10:13:45Z",
+   "body": "Hmm can we find out a way to figure out how many io-request is sent to s3? And the range of the io? I just want to make clear how the io works 🤔. Since 10m is too long\r\n\r\nAnd you may take a look at https://github.com/apache/arrow/issues/38032#issuecomment-1750334102 . I'm not familiar with R, but I guess the `CacheOptions` and prebuffer is a parquet of `ParquetArrowReaderProperties`, they might not filled in arguments?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-10-06T10:36:57Z",
+   "body": "i tried to filled the arg in the ParquetArrowReaderProperties, but is throwing errors. Also i can not find how many io-request are send. Having in mind that write function is working fine i assume the # io-rw can be irrelevant\r\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-10-06T10:39:16Z",
+   "body": "> Having in mind that write function is working fine i assume the # io-rw can be irrelevant\r\n\r\nHmmm you can use default argument firstly. Also cc @participant3 for some advices, I'm not familiar with R 🤔"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-10-06T10:47:49Z",
+   "body": "I changed to this function:\r\nfile = read_parquet(bucket$path(s3_path),pre_buffer=TRUE,as_data_frame=FALSE, .lazy=FALSE), and time improved by 1min, but still slow"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-10-06T10:54:35Z",
+   "body": "S3 will allow a log setting, would you mind try to set this on ( maybe\r\nrelated to https://github.com/apache/arrow/issues/35260 )?\r\n\r\nSo that we can see the defail for io-requests\r\n\r\nreporter ***@***.***> 于2023年10月6日周五 18:48写道：\r\n\r\n> I changed to this function:\r\n> file =\r\n> read_parquet(bucket$path(s3_path),pre_buffer=TRUE,as_data_frame=FALSE,\r\n> .lazy=FALSE), and time improved by 1min, but still slow\r\n>\r\n> —\r\n> Reply to this email directly, view it on GitHub\r\n> <https://github.com/apache/arrow/issues/38032#issuecomment-1750397539>,\r\n> or unsubscribe\r\n> <https://github.com/notifications/unsubscribe-auth/AFZZCTHCABWBJPPTLW5AUDDX57OWBAVCNFSM6AAAAAA5T3YX22VHI2DSMVQWIX3LMV43OSLTON2WKQ3PNVWWK3TUHMYTONJQGM4TONJTHE>\r\n> .\r\n> You are receiving this because you commented.Message ID:\r\n> ***@***.***>\r\n>\r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-10-06T11:00:15Z",
+   "body": "As i can see there, nobody is providing clear instruction, is on PR and no other answer "
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-10-06T11:25:12Z",
+   "body": "Oh sorry for that. `s3_init` has a possible argument `ArrowS3GlobalOptions`, it allow setting s3 log level. You can set the level to debug/trace or other to help us make clear what is happening when reading the file from S3\r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-10-06T12:12:02Z",
+   "body": "Can you be more specific on the write command please.\r\nS3)init() works, sr_init with paramt you wrote does not work (param not recognized) . Tries s3_init(\"debug\") does not work"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-10-06T12:54:36Z",
+   "body": "@paleolimbot @participant3 I'm not familiar with R, do you know how to set prebuffer argument and s3 logging in R S3 FS SDK?"
+  },
+  {
+   "author": "paleolimbot",
+   "created_at": "2023-10-06T13:09:16Z",
+   "body": "> how to set prebuffer argument\r\n\r\nWhile I know that it is `TRUE` by default, I'm not actually sure how to set it from `open_dataset()` (@participant3  has spent the most time here recentlky).\r\n\r\n> s3 logging\r\n\r\nI think S3 logging in R is controlled by an environment variable but I forget if @participant2 had time to implement that before 13.0.0!"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-10-06T18:55:34Z",
+   "body": "> ...had time to implement that before 13.0.0!\r\n\r\nUnfortunately, no. And I don't think we have a way to adjust log level from R at the moment. Just Python and C++. \r\n\r\nTo that point, I think it would be useful here if we could reproduce the same performance from Python (PyArrow) or Arrow C++ since we can set the log level in those environments and they're exercising similar code paths. Something like this should work:\r\n\r\n```python\r\nimport os\r\n\r\n# Workaround from https://github.com/apache/arrow/issues/35575 until fixed\r\nimport pyarrow._s3fs\r\npyarrow._s3fs.initialize_s3(pyarrow._s3fs.S3LogLevel.Debug)\r\n\r\nfrom pyarrow import fs\r\n\r\ns3  = fs.S3FileSystem(\r\n  region = \"\",\r\n  access_key=os.getenv(\"ECS_ACCESS_KEY_ID\"),\r\n  secret_key=os.getenv(\"ECS_SECRET_ACCESS_KEY\"),\r\n  endpoint_override=os.getenv(\"ECS_S3_ENDPOINT_URL\")\r\n)\r\n\r\ntable = pq.read_table(os.getenv(\"ECS_S3_BUCKET\") + \"/path/to/object\", filesystem=s3)\r\n```\r\n\r\n@reporter would you be willing to give that a try for us? I think it'd be a big help here."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-10-10T13:19:58Z",
+   "body": "Hey, i have tries in Python and is taking 30s"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-10-10T13:24:40Z",
+   "body": "In Python, Would you mind set `pre_buffer=True` for `read_table`. It will be true in 14.0.0, but still default false in 13.0."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-10-10T13:42:53Z",
+   "body": "I did it, and it takes 10s\r\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-10-10T13:50:17Z",
+   "body": "Ok, what does the s3 debug logging looks like? Would it contains some info about how does it take 10s?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-10-10T14:09:31Z",
+   "body": "After i run command it did not show any log msg. How i should display the log?\r\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-10-10T14:35:21Z",
+   "body": "Hmm sorry for being confusion. This is a bit confusing because I don't know how many requests have send to s3, and how they looks like.\r\n\r\n10s is an optimization, I think it's because `Default` prefetch driver works a bit better than Lazy, since it will try it best to send io requests. But I don't know how these requests takes. \r\n\r\nI'm not so familiar with s3 SDK, so might take time to debugging, so sorry for that. would you mind enable TRACE as log level ( https://<redacted-host>/sdk-for-cpp/v1/developer-guide/logging.html and set `initialize_s3(pyarrow._s3fs.S3LogLevel.Trace)` ) ? I just want to know the io-merging status.\r\n\r\nSorry again for low efficient "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-10-10T14:42:43Z",
+   "body": "With this exercise i confirmed that python performs better for reading from S3 than R. Could you maybe give advice on how to improve R functions\r\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-10-10T14:44:54Z",
+   "body": "> 10s is an optimization, I think it's because Default prefetch driver works a bit better than Lazy, since it will try it best to send io requests. But I don't know how these requests takes.\r\n\r\nI think they both use underlying C++ impl, but with different argument. R SDK should better has way to set the logging and CacheOptions... The performance is come from PreBuffer I think."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-10-10T15:02:33Z",
+   "body": "i inserted this: pyarrow._s3fs.initialize_s3(pyarrow._s3fs.S3LogLevel.Trace)\r\nSO how i can see the log?\r\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-10-10T15:37:25Z",
+   "body": "It would have some `[INFO]` `[DEBUG]` log on console ( since it use stdout as output )"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-10-10T21:09:40Z",
+   "body": "Right, running `pyarrow._s3fs.initialize_s3(pyarrow._s3fs.S3LogLevel.Debug)` should immediately start printing to stdout. For reference, with pyarrow 13 I see:\r\n\r\n```\r\nPython 3.11.0 (main, Oct 26 2022, 04:18:06) [GCC 10.2.1 20210110] on linux\r\nType \"help\", \"copyright\", \"credits\" or \"license\" for more information.\r\n>>> import pyarrow._s3fs\r\n>>>\r\n>>> pyarrow._s3fs.initialize_s3(pyarrow._s3fs.S3LogLevel.Debug)\r\n[INFO] 2023-10-10 21:06:50.573 Aws_Init_Cleanup [281473376709936] Initiate AWS SDK for C++ with Version:1.10.55\r\n[DEBUG] 2023-10-10 21:06:50.573 FileSystemUtils [281473376709936] Environment value for variable HOME is /root\r\n[DEBUG] 2023-10-10 21:06:50.573 FileSystemUtils [281473376709936] Home directory is missing the final / appending one to normalize\r\n[DEBUG] 2023-10-10 21:06:50.573 FileSystemUtils [281473376709936] Final Home Directory is /root/\r\n[INFO] 2023-10-10 21:06:50.573 Aws::Config::AWSConfigFileProfileConfigLoader [281473376709936] Initializing config loader against fileName /root/.aws/credentials and using profilePrefix = 0\r\n// continues...\r\n```"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-10-12T09:52:15Z",
+   "body": "During read_Parquets as i mentioned i can not print it out because consist of secure data. Also file is big so automatically start filling with too much info from the dataset\r\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-10-12T09:55:45Z",
+   "body": "Just want to know the number of IO and the time it costs per-io"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-10-12T11:04:30Z",
+   "body": "The time is 27s & the number of records is 217035"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-10-16T14:35:33Z",
+   "body": "Sorry, do you have any update on this?\r\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-10-16T17:06:03Z",
+   "body": "I haven't got enough message, but I think it would help to allow config prefetching in R."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-10-17T20:05:58Z",
+   "body": "Hi @reporter, thanks for the patience. Support for modifying the S3 log level was [just merged](https://github.com/apache/arrow/pull/38267) so that should go into the Arrow 15 release. Until then, what could really help would be if you could give us a way to reproduce your issue ourselves. Is it possible to share the Parquet file or for you to write a script that generates a Parquet file that reproduces the issue that you could share?\r\n\r\nI did a test with a 17million row (~600MB) Parquet file on S3 and I get almost the exact timing (~17sec) in either R or Python against `us-west-2`. So while tweaking Parquet reader options might help, it seems to me like some characteristic of your custom S3 endpoint or your file may be involved here."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-10-18T07:18:47Z",
+   "body": "Hey thank you for your answer. I can not share the file or reproduce the error, as the error is slow time of reading a file from S3.\r\nAlso, i am reading a .rds file (data frame in R), could you maybe try to test it on an .rds file. \r\nAlso can you give me others hints on how to tweak the read_parquet function? \r\nI am not sure that url is problem as writting rds file works fine"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-10-19T13:55:48Z",
+   "body": "DO you have update on this?\r\n"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-10-20T22:57:44Z",
+   "body": "Hi @reporter, a few thoughts:\r\n\r\n- Can you elaborate on how RDS is involved here? Looking at your code, I don't see any functions related to reading/writing RDS files, though I do see that your code uses the string 'rds' in a few places, despite using only `read_parquet` and `write_parquet`\r\n- Have you tried reading the file on other S3-compatible storage and possibly even from your local machine?\r\n- Without being able to turn on S3 logging at the moment, could you find some way to track how many packets and how much data is transferred during the 10 minutes? \r\n- Can you try any other files on the same storage or a subset of your whole file? I wonder if all reads are slow or if there's some pattern"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-10-24T09:58:53Z",
+   "body": "- The dataframes in R are .rds file. So i use the read_parquet / write_parquet function to read/write .rds file from S3. \r\n- Yes i tries do read from local, but the read_parquet function still performs slow/\r\n- During the 10 min ~700Mb file is transferred which is 217K rows\r\n- I tried on different files similar size  (to assure that file is not corrupted) but same result\r\n\r\nI hope my answer helps"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-10-26T16:51:17Z",
+   "body": "Hi @reporter, just for good measure can you give us your OS and arrow R package version?\r\n\r\nOther things to try:\r\n\r\n- Do you get the same timing when you run `read_parquet(..., as.data.frame=FALSE)`\r\n- Do you get the same timing when you use `open_dataset` instead of `read_parquet`?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-10-27T13:09:59Z",
+   "body": "The Arrow version is 13.0.0. The OS version is : Debian GNU/Linux 10\r\nI tried read_parquet(..., as.data.frame=FALSE) but i get same results, maybe 30s improvement.\r\nOpen dataset i did not try because its for reading multiple files from directory and is not my case"
+  },
+  {
+   "author": "paleolimbot",
+   "created_at": "2023-10-27T13:12:07Z",
+   "body": ">  Open dataset i did not try because its for reading multiple files from directory and is not my case\r\n\r\nI think Bryce suggested this because it uses a different Parquet implementation that is more similar to what Python is doing, and it would help us to narrow down whether this is a problem with the R package or a problem with the ParquetFileReader implementation! You can use `open_dataset()` to open a single parquet file as well 🙂 "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-10-27T14:50:56Z",
+   "body": "This is what i tried but i am getting error. \r\n> bucket = s3_init()\r\n> file = open_dataset(bucket$path(\"train_arrow.rds\"))\r\nError in `open_dataset()`:\r\n! IOError: Error creating dataset. Could not read schema from 'train_arrow.rds/'. Is this a 'parquet' file?: \r\n\r\nCould you send me how to read one parquet file using open_dataset?\r\n"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-10-27T21:27:08Z",
+   "body": "I think the easiest thing would be to pass a URI for the file. You can construct the string for the URI following this pattern, replacing the appropriate values with your own:\r\n\r\n```r\r\nopen_dataset(\"s3://access_key:secret_key@yourbucketname/your_file.parquet?endpoint_override=yourendpoint\")\r\n```\r\n\r\nSo for your case you could do,\r\n\r\n```r\r\nglue::glue(\"s3://{env['ECS_ACCESS_KEY_ID']}:{env['ECS_SECRET_ACCESS_KEY']}@{env['ECS_S3_BUCKET']}/your_file.parquet?endpoint_override={env['ECS_S3_ENDPOINT_URL']}\")\r\n\r\n```"
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "apache/arrow",
+  "default_branch": "main",
+  "commit_sha": "41705f9eca36e667fe66607a470b31e3c5c03ffe",
+  "as_of": "2023-10-05T08:33:26Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_apache_arrow_38032"
+}

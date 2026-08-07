@@ -9,34 +9,26 @@
 
 ```mermaid
 flowchart LR
-    N0["<b>N0 mobile web keyboard offset reported</b><br/><small>info: 4</small>"]
-    N1["<b>N1 physical and cross-platform reproduction established</b><br/><small>info: 7</small>"]
-    N1_x["<b>N1_x resize setting aftermath</b><br/><small>info: 5</small>"]
-    N2["<b>N2 renderer-independent mobile web reproduction</b><br/><small>info: 9</small>"]
-    N2_x["<b>N2_x focus workaround aftermath</b><br/><small>info: 10</small>"]
-    N3["<b>N3 bad post-keyboard geometry captured</b><br/><small>info: 11</small>"]
-    N_terminal["<b>terminal resolved</b><br/><small>info: 11</small>"]
-    N0 -.->|"❓ physical_ios_and_android_devices_reproduce, reproduction_is_intermittent_and_tap_sensitive"| N1
+    N0["<b>N0 mobile-web keyboard offset reported</b><br/><small>info: 5</small>"]
+    N1["<b>N1 physical-device scope established</b><br/><small>info: 6</small>"]
+    N2_x["<b>N2_x resize setting aftermath</b><br/><small>info: 7</small>"]
+    N2["<b>N2 renderer-independent reproduction</b><br/><small>info: 9</small>"]
+    N3["<b>N3 invalid post-keyboard geometry measured</b><br/><small>info: 10</small>"]
+    N_terminal["<b>terminal fixed build verified</b><br/><small>info: 13</small>"]
+    N0 -.->|"❓ physical_iphones_ios16_and_samsung_s22_affected"| N1
     linkStyle 0 stroke:#3b82f6,stroke-width:2px
-    N0 ==>|"💥 blind: Treat the offset as ordinary Scaffold keyboard resizing and disable automatic bottom-inset resizing."| N1_x
+    N1 ==>|"💥 blind: Treat the gap as ordinary Scaffold keyboard resizing and disable or adjust resizeToAvoidBottomInset."| N2_x
     linkStyle 1 stroke:#ef4444,stroke-width:2px
-    N1 -.->|"❓ html_renderer_also_reproduces"| N2
+    N2_x -.->|"❓ html_renderer_has_same_keyboard_offset"| N2
     linkStyle 2 stroke:#3b82f6,stroke-width:2px
-    N2 ==>|"💥 blind: Avoid calling requestFocus or using autofocus on mobile web and treat duplicate focus requests as the complete cause of the keyboard offset."| N2_x
-    linkStyle 3 stroke:#ef4444,stroke-width:2px
-    N2 -.->|"❓ keyboard_control_dismissal_triggers_bad_geometry"| N3
-    linkStyle 4 stroke:#3b82f6,stroke-width:2px
-    N3 ==>|"⚡ Update to a Flutter release containing the mobile-web viewport geometry fix, rebuild the web app, and verify keyboard opening and dismissal on the affected physical mobile browsers."| N_terminal
-    linkStyle 5 stroke:#f97316,stroke-width:2px
-    N1_x ==>|"⚡ Abandon this direction and return to the investigation."| N0
-    linkStyle 6 stroke:#f97316,stroke-width:2px
-    N2_x ==>|"⚡ Abandon this direction and return to the investigation."| N2
-    linkStyle 7 stroke:#f97316,stroke-width:2px
+    N2 -.->|"❓ keyboard_dismissal_raw_metrics_show_shrunken_height_and_negative_bottom_inset"| N3
+    linkStyle 3 stroke:#3b82f6,stroke-width:2px
+    N3 ==>|"⚡ Update Flutter to a build containing the mobile-web keyboard geometry fix, rebuild the web app, and verify focus and keyboard-dismissal behavior on affected physical devices instead of relying on renderer changes or resizeToAvoidBottomInset alone."| N_terminal
+    linkStyle 4 stroke:#f97316,stroke-width:2px
     class N0 start
     class N1 normal
-    class N1_x normal
-    class N2 normal
     class N2_x normal
+    class N2 normal
     class N3 normal
     class N_terminal terminal
     classDef start fill:#fee2e2,stroke:#b91c1c,color:#000
@@ -46,59 +38,42 @@ flowchart LR
 
 ## Opening (body)
 
-> I built a Flutter web app with an editable field at the bottom of the screen. On a mobile browser, tapping the field opens the keyboard, but the app content is moved too far upward and leaves extra space between the field and the keyboard. I can reproduce it with a CanvasKit web build on Safari. The field should align directly above the keyboard.
+> I built a Flutter web app with the CanvasKit renderer and opened it in Safari on an iPhone. The editable field is aligned at the bottom of the page. When I tap it, the keyboard appears, but the app content receives too much bottom inset and the field sits above the keyboard with an extra gap. I expect the field to align directly above the keyboard. I included two minimal samples and a hosted reproduction. I am using Flutter stable 3.7.9.
 
 ## Satisfaction conditions
 
-1. Must identify the root cause as Flutter mobile web mishandling viewport geometry across virtual-keyboard transitions, which could leave a reduced viewport height and a stale or negative bottom view inset and therefore displace the canvas or text field.
-2. The diagnosis must be grounded in the cross-renderer physical-device reproduction and the captured bad metrics, including the height changing from 770 to 458 and the bottom inset becoming -312 after keyboard dismissal.
-3. Must recommend updating to a Flutter release containing the mobile-web viewport geometry fix, then rebuilding and testing the affected mobile web app.
-4. Must not present resizeToAvoidBottomInset=false or avoiding requestFocus as the general root fix: both were insufficient for affected variants, though the Scaffold setting may remain part of a specific Android web layout configuration after updating.
-5. Must require verification on an affected physical mobile browser before declaring the issue resolved.
+1. Must identify the accepted root cause as Flutter Web retaining or reporting invalid viewport geometry across virtual-keyboard transitions, evidenced by the reduced screen height and negative bottom view inset after dismissal.
+2. The diagnosis must be grounded in the collected physical-device, cross-renderer, and raw MediaQuery evidence rather than inferred from the visual gap alone.
+3. Must recommend updating and rebuilding with a Flutter build containing the mobile-web keyboard geometry fix.
+4. Must not present switching from CanvasKit to HTML or changing resizeToAvoidBottomInset alone as the fix; both were insufficient in the reported chain.
+5. Must ask an affected user to verify repeated keyboard opening and dismissal on a build containing the fix before declaring the issue resolved.
 
 ## Edges
 
 | edge | type | gates / info | payload |
 |---|---|---|---|
-| `e1_N0__N1` | clarification_only | asks: physical_ios_and_android_devices_reproduce, reproduction_is_intermittent_and_tap_sensitive | Yes. I have the same issue on physical iPhones, including iPhone 14 and iPhone 10, and on a participant10 S22  / It varies by device. On some real devices it is intermittent and may need repeated taps, while on slower Andro |
-| `e2_N0__N1_x` | solution_only **BLIND** | req_info: mobile_web_text_input_has_extra_keyboard_offset<br>elements: sets_resize_to_avoid_bottom_inset_false_as_complete_fix | Treat the offset as ordinary Scaffold keyboard resizing and disable automatic bottom-inset resizing. |
-| `e3_N1__N2` | clarification_only | asks: html_renderer_also_reproduces | I just created an HTML build and got the same result. The issue also appears on a physical Android device, alt |
-| `e4_N2__N2_x` | solution_only **BLIND** | req_info: mobile_web_text_input_has_extra_keyboard_offset, reproduction_is_intermittent_and_tap_sensitive<br>elements: removes_programmatic_focus_as_complete_fix | Avoid calling requestFocus or using autofocus on mobile web and treat duplicate focus requests as the complete cause of the keyboard offset. |
-| `e5_N2__N3` | clarification_only | asks: keyboard_control_dismissal_triggers_bad_geometry | When I dismiss the keyboard by defocusing, the metrics look normal: Size(412.0, 770.0) with bottom inset 312.0 |
-| `e7_N3__N_terminal` | solution_only | req_info: physical_ios_and_android_devices_reproduce, issue_affects_fields_that_browser_must_move, html_renderer_also_reproduces, raw_metrics_show_reduced_height_and_negative_bottom_inset<br>elements: identifies_incorrect_mobile_web_viewport_geometry_as_root_cause, mentions_negative_or_stale_bottom_inset_after_keyboard_transition, recommends_a_flutter_release_containing_the_mobile_web_viewport_geometry_fix, requires_retesting_on_an_affected_physical_mobile_browser, does_not_present_resize_to_avoid_bottom_inset_as_the_root_fix | Update to a Flutter release containing the mobile-web viewport geometry fix, rebuild the web app, and verify keyboard opening and dismissal on the affected physical mobile browsers. |
-| `rb_N1_x__N0` | solution_only | req_info: <br>elements: mentions_rollback_or_abandon_direction | Abandon this direction and return to the investigation. |
-| `rb_N2_x__N2` | solution_only | req_info: <br>elements: mentions_rollback_or_abandon_direction | Abandon this direction and return to the investigation. |
+| `e1_N0__N1` | clarification_only | asks: physical_iphones_ios16_and_samsung_s22_affected | Yes. I have the same issue on physical iPhone 14 and iPhone 10 devices, all with iOS 16 or later, and on a Sam |
+| `e2_N1__N2_x` | solution_only **BLIND** | req_info: mobile_web_text_field_has_extra_gap_above_keyboard, physical_iphones_ios16_and_samsung_s22_affected<br>elements: recommends_changing_resize_to_avoid_bottom_inset_as_the_fix | Treat the gap as ordinary Scaffold keyboard resizing and disable or adjust resizeToAvoidBottomInset. |
+| `e3_N2_x__N2` | clarification_only | asks: html_renderer_has_same_keyboard_offset | I just created an HTML build and it has the same result. |
+| `e4_N2__N3` | clarification_only | asks: keyboard_dismissal_raw_metrics_show_shrunken_height_and_negative_bottom_inset | With the keyboard state looking normal, I logged MediaQuery size Size(412.0, 770.0) and view insets EdgeInsets |
+| `e5_N3__N_terminal` | solution_only | req_info: mobile_web_text_field_has_extra_gap_above_keyboard, canvaskit_build_reproduces_on_iphone_safari, physical_iphones_ios16_and_samsung_s22_affected, html_renderer_has_same_keyboard_offset, keyboard_dismissal_raw_metrics_show_shrunken_height_and_negative_bottom_inset<br>elements: identifies_invalid_mobile_web_viewport_or_inset_geometry_after_keyboard_transitions, recommends_updating_to_a_flutter_build_containing_the_geometry_fix, does_not_present_renderer_switching_or_resize_to_avoid_bottom_inset_alone_as_the_fix, asks_user_to_verify_on_a_build_containing_the_fix | Update Flutter to a build containing the mobile-web keyboard geometry fix, rebuild the web app, and verify focus and keyboard-dismissal behavior on affected physical devices instead of relying on renderer changes or resizeToAvoidBottomInset alone. |
 
 ## Nodes
 
 | node | terminal | volunteered | images | symptoms |
 |---|---|---|---|---|
-| `N0` |  | 3 | 0 | When I focus the bottom editable field in the mobile web app, the keyboard opens but the content moves too far upward, leaving extra space b |
-| `N1` |  | 1 | 0 | I see the extra space on physical iPhones and Android devices as well as in a simulator. On some devices it appears only after repeated taps |
-| `N1_x` |  | 1 | 0 | The extra keyboard spacing still occurs after setting resizeToAvoidBottomInset to false. |
-| `N2` |  | 1 | 0 | The HTML-renderer build has the same extra space above the keyboard. The offset also appears in mobile web browsers on Android, although its |
-| `N2_x` |  | 1 | 0 | The keyboard offset still happens in an app that does not programmatically request focus. |
-| `N3` |  | 1 | 0 | After dismissing the virtual keyboard with its own control, the page can retain the wrong height and display blank or displaced space. In th |
-| `N_terminal` | ✓ | 0 | 0 | After updating Flutter and rebuilding, mobile web text fields remain directly above the virtual keyboard and the page geometry resets correc |
+| `N0` |  | 2 | 0 | When I focus the bottom-aligned editable field, the keyboard opens but the app content moves too far upward, leaving extra space between the |
+| `N1` |  | 0 | 0 | I see the extra keyboard gap on physical iPhones and on a Samsung S22 Ultra, not only in a simulator. |
+| `N2_x` |  | 1 | 0 | With resizeToAvoidBottomInset changed, focusing the field still leaves the content offset above the keyboard. |
+| `N2` |  | 1 | 0 | The HTML-renderer build shows the same extra space above the keyboard. I can also see the offset intermittently on a physical Android device |
+| `N3` |  | 0 | 0 | After I dismiss the virtual keyboard with its own control, MediaQuery reports the screen height as 458 instead of 770 and reports a bottom v |
+| `N_terminal` | ✓ | 1 | 0 | After updating Flutter and rebuilding the web app, focusing and dismissing the keyboard no longer leaves the text field or page offset with  |
 
 ## Machine review (audit pass, adversarially verified)
 
-Auditor verdict: **minor_issues** · 2 of 2 findings survived independent refutation.
+Auditor verdict: **n/a** · 0 of 0 findings survived independent refutation.
 
-_The case tests whether an agent can drive a long, noisy, multi-user Flutter-web keyboard-offset thread past two popular-but-falsified workarounds (Scaffold resizeToAvoidBottomInset=false, avoiding programmatic requestFocus) to the real cause — Flutter mobile-web not restoring viewport geometry across virtual-keyboard transitions, producing a shrunken height and a negative bottom view inset — fixed by PR 179581 / stable 3.38.6. The graph is highly faithful: both blind paths are genuinely falsified in-thread (c3/c25/c35/c78 for the Scaffold property; c55/c77 for the focus workaround), the clarification order mirrors the thread's actual order (physical devices c0-c1, HTML renderer c6-c7, MediaQuery logging c100, fixed-build retest c109-c110), the update-and-retest step is correctly modeled as a clarification rather than a solution, and the engineer-side PR-equivalence inference is kept out of hard required_info. Only two low-impact fidelity nits: the e5 answer relabels which state the "normal" 412x770/+312 log came from, and e1's attached images/comment are slightly mismatched with the answer text._
-
-### Confirmed findings
-
-- [ ] 🟡 **unfaithful_reveal** (low) — `graph.edges[e5_N2__N3].clarifications[keyboard_control_dismissal_triggers_bad_geometry].user_answer_in_this_oncall`
-  - claim: The user answer attributes the baseline log (Size(412.0, 770.0), bottom inset 312.0) to the keyboard being active, whereas the thread presents that log as the state after the keyboard was cleared via defocus; the thread's contrast is defocus-dismissal vs keyboard-control-dismissal, not keyboard-open vs keyboard-closed.
-  - thread evidence: comment index 100 (participant68, 2025-12-05T20:19:01Z): "Interestingly, when the virtual keyboard is cleared via defocus, the media query looks \"normal\": ... Media query size: Size(412.0, 770.0) ... Media query view insets: EdgeInsets(0.0, 0.0, 0.0, 312.0)" followed by "However, if I dismiss the virtual keyboard (using the control within the keyboard), media query returns a smaller screen height and a large negative view inset" (Size(412.0, 458.0), -312.0).
-  - suggested fix: Reword the answer to match the thread's framing, e.g. "When I dismiss the keyboard by defocusing, the metrics look normal: Size(412.0, 770.0) with bottom inset 312.0. But if I dismiss it using the control inside the keyboard, I get Size(412.0, 458.0) and EdgeInsets(0.0, 0.0, 0.0, -312.0)."
-  - verifier: Confirmed against raw comment index 100 (participant68, 2025-12-05T20:19:01Z), which reads verbatim: 'Interestingly, when the virtual keyboard is cleared via defocus, the media query looks "normal": ... Size(412.0, 770.0) ... EdgeInsets(0.0, 0.0, 0.0, 312.0)' and 'However, if I dismiss the virtual keyboard (using the control within the keyboard), media query returns a smaller screen height and a l
-- [ ] 🟡 **stale_edge_annotation** (low) — `graph.edges[e1_N0__N1].clarifications[physical_ios_and_android_devices_reproduce].images and graph.edges[e1_N0__N1].comment`
-  - claim: The edge comment claims "The three screenshots are the Android and iOS reproductions supplied in c14" but only two images are attached, and those two c14 screenshots come from a different participant testing a Samsung Galaxy Tab A7 Lite with issue 125095's sample code, while the answer text names iPhone 14 / iPhone 10 / Samsung S22 Ultra.
-  - thread evidence: raw images map: img1 and img2 both "where": "c14" (img3, the iOS one, is not attached). Comment index 14 (participant5): "Verifying the issue on: - Samsung Galaxy Tab A7 Lite, Android 13 - iPhone 14 Pro, iOS 16.4 (emulator)" with the three screenshots labelled "Android sample 1 | Android sample 2 | iOS" and "Another sample code (copy from 125095)". The devices named in the graph answer come from comment index 1 (reporter): "Yes, i have same issue on iPhone 14, iPhone 10, Android Samsung S22 Ultra" (evidence there was a video, not a screenshot).
-  - suggested fix: Fix the comment to say two screenshots, and state that they are participant5's physical Galaxy Tab A7 Lite reproductions (c14) folded into the merged user side, distinct from the iPhone/S22 devices named in the answer text.
-  - verifier: The verifiable half is confirmed. e1_N0__N1.clarifications[physical_ios_and_android_devices_reproduce].images lists exactly two files (img1.png, img2.png) while the edge comment says 'The three screenshots'; grep over the whole graph shows img3.png (the iOS shot) is referenced nowhere, so the comment is a stale count. Raw images map confirms img1=...233010731 and img2=...233010724, which in c14's 
+__
 
 
 ## Review checklist

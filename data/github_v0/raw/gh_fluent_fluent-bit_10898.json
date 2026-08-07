@@ -1,0 +1,183 @@
+{
+ "repo": "fluent/fluent-bit",
+ "number": 10898,
+ "url": "https://github.com/fluent/fluent-bit/issues/10898",
+ "title": "High memory consumption of Fluent-Bit pod",
+ "state": "closed",
+ "labels": [
+  "waiting-for-user",
+  "Stale"
+ ],
+ "reporter": "reporter",
+ "created_at": "2025-09-18T10:13:49Z",
+ "closed_at": "2026-05-25T12:44:28Z",
+ "body": "## Bug Report\n\n**Describe the bug**\nFluent-Bit (4.0.1-debug) is deployed in Daemonset mode on our Openshift cluster, 6 node in total, resource allocation is as below:\n```\nresources:\n  limits:\n    cpu: 200m\n    memory: 256Mi\n  requests:\n    cpu: 100m\n    memory: 128Mi\n```\n\nWe found the memory consumption of each pod kept in a high level, some of them almost hit the limit and even triggerred the pod restart:\n<img width=\"603\" height=\"173\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/da2cf13f-415d-4e6c-aad5-06d0bb81d059\" />\n\n<img width=\"291\" height=\"220\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/ad7b7c9c-326b-4e2c-a219-13653cf4baff\" />\n\n\nBelow is a 24h period memory usage, metric name `container_memory_working_set_bytes`:\n\n<img width=\"2518\" height=\"799\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/b844712c-811b-4aae-9c60-b05dfcb13be0\" />\n \nThe daily throughput of `tail` is around 7.2GB.\n\nThere is another cluster with one more tenant than the last one (throughput is 10.5GB/day) but with 512MB memory limitation, here is the past 7 days' memory usage, you can tell the \"purple\" one hit the limit and got rebooted:\n\n<img width=\"1016\" height=\"757\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/9d977bbd-328d-4587-876c-9be4661852c1\" />\n\n**To Reproduce**\nWell, this might be hard to reproduce but you can refer to the config as below to check if there is any improper section.\n\n**Expected behavior**\nMemory consumption should not be that high.\n\n**Your Environment**\n<!--- Include as many relevant details about the environment you experienced the bug in -->\n* Version used: 4.0.1-debug\n* Configuration: Refer to the screenshot below\n* Environment name and version (e.g. Kubernetes? What version?):Openshift 1.27.16\n* Filters and plugins: Refer to the screenshot below\n\n**Additional context**\nAs we enabled multi-tenancy in Loki side, the configuration in Fluent-Bit is also separated from each other and combined via `includes`:\n\n<img width=\"1500\" height=\"72\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/5cb1b134-d4e6-4e42-93b5-94329b8f9414\" />\n\nAnd in fluent-bit.yaml we include all the tenants configuraiton files together:\n<img width=\"552\" height=\"648\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/dbe660bc-df1d-46ab-a813-014c29e2021c\" />\n\nFor each tenant, the configuration is as below:\n\n<img width=\"1620\" height=\"1591\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/bf1f85aa-c2c9-4206-a28a-af9fdcd3edce\" />\n\n<img width=\"1834\" height=\"573\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/56167d53-223e-4a14-8893-b42541d07313\" />\n",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2025-09-18T13:43:45Z",
+   "body": "Since you are using the multiline as a processor I would advice and suggest to use it directly through the property that exists for Tail described here:\n\n- https://<redacted-host>/manual/data-pipeline/inputs/tail#multiline-core\n\nThat might help to reduce memory usage since will work right away before the data is dispatched to processors. "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-09-18T14:30:46Z",
+   "body": "@participant1 Thanks for the reply, I am using that way in the VM environment and which is working perfectly. However, in K8S environment I have to parse the K8S native log entries with CRI first (split the `message` from `timestamp`, `stream` and `logtag`) first, then apply the mutline afterwards. Otherwise, the log entries like java/python stack trace would not be processed correctly.\n\nWhat if we swtich the processor mode to back to the filters mode, will that decrease the memory? "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-10-07T14:51:50Z",
+   "body": "@participant1 @participant2 hi both, could you please help check this issue?"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-10-07T15:00:55Z",
+   "body": "You're on an old version so what happens with latest?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-10-08T12:19:38Z",
+   "body": "> You're on an old version so what happens with latest?\n\nThanks @participant2 for the reply, which version would you suggest me to have a try, 4.0.12 or 4.1.0？"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-10-08T14:40:15Z",
+   "body": "Both 🤷 "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-10-13T02:20:25Z",
+   "body": "@participant1 @participant2 I've switched to 4.1.1 with the same configuration but the memory usage kept climbing high, below is metrics since then:\n\n<img width=\"3780\" height=\"1694\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/f0d0a883-d688-4c94-9fb5-c5cefcd59413\" />"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-10-19T09:25:28Z",
+   "body": "@participant3 @participant2 Per the suggestion during the session on the other day, I substracted the config as below:\nfluentbit.yaml\n```\nenv:\n  fib_storage: /var/log/fluent-bit-storage\nservice:\n  daemon: off\n  flush: 1\n  log_level: info\n  http_server: on\n  http_listen: 0.0.0.0\n  http_port: 2020\n  health_check: on\n  storage.path: ${flb_storage}\n  storage.sync: normal\n  storage.checksum: on\n  storage.max_chunks_up: 128\n  storage.delete_irrecoverable_chunks: on\n  scheduler.base: 5\n  scheduler.cap: 600\nincludes:\n  - tenant.yaml\n```\ntenant.yaml:\n```\nenv:\n  tag_app: kube.app.*\n  path_app: /var/log/containers/*_ns-of-the-app._*.log\n  prefix_app: kube.app.var.log.containers\n  tenantid_app: app-tenantid\n\nparsers:\n  - name: cri_app\n    format: regex\n    regex: ^(?<time>[^ ]*) (?<stream>stdout|stderr) (?<logtag>[^ ]*) (?<message>.*)$\n    time_key: time\n    time_format: \"%Y-%m-%dT%H:%M:%S.%L%z\"\n    time_keep: off\n  - name: parser_app\n    format: regex\n    regex: /\\[(?<time>\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d+[+-]\\d+)\\] {(?<code>[^\\|]*?)} (?<level>[A-Z]+) - (?<message>[^\\|]*)/\n    time_key: time\n    time_format: \"%Y-%m-%dT%H:%M:%S.%L%z\"\n    time_offset: \"+0800\"\n    time_keep: off\n\nmultiline_parsers:\n  - name: multi_app\n    flush_timeout: 1000\n    type: regex\n    rules:\n      - state: start_state\n        regex: /\\[(\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d+[+-]\\d+)\\] {([^\\|]*?)} ([A-Z]+) - ([^\\|]*)/\n        next_state: cont\n      - state: cont\n        regex: '^[^\\[].*'\n        next_state: cont\n\npipeline:\n  inputs:\n    - name: tail\n      tag: ${tag_app}\n      path: ${path_app}\n      path_key: filename\n      refresh_interval: 10\n      parser: cri_app\n      skip_empty_lines: on\n      read_from_head: false\n      db: ${flb_storage}/${tenantid_app}.db\n      storage.type: filesystem\n\n  filters:\n    - name: modify\n      match: ${tag_app}\n      condition: key_does_not_exist message\n      set: message \" \"\n    - name: multiline\n      match: ${tag_app}\n      multiline.key_content: message\n      multiline.parser: multi_app\n      emitter_name: multi_app\n    - name: parser\n      match: ${tag_app}\n      parser: parser_app\n      key_name: message\n      reserve_data: true\n    - name: modify\n      match: ${tag_app}\n      remove:\n        - logtag\n        - stream\n    - name: kubernetes\n      match: ${tag_app}\n      kube_tag_prefix: ${prefix_app}\n      merge_log: on\n      labels: on\n      annotations: off\n      buffer_size: 64k\n  \n  outputs:\n  - name: loki\n    match: ${tag_app}\n    host: <loki_endpoint>\n    port: 443\n    # 10 labels in total\n    labels: key1=value1, key2=value2, key3=value3\n    remove_keys: filename, kubernetes\n    line_format: key_value\n    tenant_id: ${tenant_id}\n    tls: on\n    tls.verify: on\n    tls.debug: 4\n    tls.ca_file: /fluent-bit/etc/certs/ca.crt\n    tls.crt_file: /fluent-bit/etc/certs/tls.crt\n    tls.key_file: /fluent-bit/etc/certs/tls.key\n    storage.total_limit_size: 10G\n    net.connect_timeout: 310\n    net.keepalive_idle_timeout: 30\n    net.keepalive_max_recycle: 120\n    net.dns.resolver: ASYNC\n    retry_limit: no_limits\n```\n\nThe log is mainly from the python code and below is an example:\n\n> 2025-10-17T05:39:25.880663704+00:00 stdout F [2025-10-17T13:39:25.879+0800] {app1.py:11} INFO - sample message1\n> 2025-10-17T05:39:26.393928658+00:00 stdout F [2025-10-17T13:39:26.642+0800] {app2.py:12} WARNING - sample message2\n> 2025-10-17T05:39:26.568413362+00:00 stdout F [2025-10-17T13:39:26.644+0800] {app3.py:13} INFO - sample message3\n> 2025-10-17T05:39:26.776366435+00:00 stdout F [2025-10-17T13:39:26.775+0800] {app4.py:14} WARNING - sample message4\n> 2025-10-17T05:39:26.923494322+00:00 stdout F [2025-10-17T13:39:26.922+0800] {app5.py:15} INFO - sample message5\n> 2025-10-17T05:39:26.968264732+00:00 stdout F [2025-10-17T13:39:26.967+0800] {app6.py:16} WARNING - sample message6\n> 2025-10-17T05:39:26.969093250+00:00 stdout F [2025-10-17T13:39:26.968+0800] {app7.py:17} INFO - sample message7\n> 2025-10-17T05:39:31.979597873+00:00 stdout F [2025-10-17T13:39:31.978+0800] {app8.py:18} INFO - sample message8\n> 2025-10-17T05:39:31.985199023+00:00 stdout F [2025-10-17T13:39:31.979+0800] {app9.py:19} ERROR - sample message9\n> 2025-10-17T05:39:31.985199023+00:00 stdout F Traceback (most recent call last):\n> 2025-10-17T05:39:31.985199023+00:00 stdout F   File \"app.py\", line 198, in _new_conn\n> 2025-10-17T05:39:31.985199023+00:00 stdout F     sock = connection.create_connection(\n> 2025-10-17T05:39:31.985199023+00:00 stdout F            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n> 2025-10-17T05:39:31.985199023+00:00 stdout F   File \"app2.py\", line 85, in create_connection\n> 2025-10-17T05:39:31.985199023+00:00 stdout F     raise err\n> 2025-10-17T05:39:31.985199023+00:00 stdout F   File \"app3.py\", line 73, in create_connection\n> 2025-10-17T05:39:31.985199023+00:00 stdout F     sock.connect(sa)\n> 2025-10-17T05:39:31.985199023+00:00 stdout F TimeoutError: timed out\n> 2025-10-17T05:39:31.985199023+00:00 stdout F \n> 2025-10-17T05:39:31.985199023+00:00 stdout F The above exception was the direct cause of the following expcetion:\n> 2025-10-17T05:39:31.985199023+00:00 stdout F \n> ...\n> ...Python Stack Trace\n> ...\n> 2025-10-17T05:39:32.005526893+00:00 stdout F [2025-10-17T13:39:32.005+0800] {app10.py:114} INFO - sample message10\n> 2025-10-17T05:39:32.047492729+00:00 stdout F [2025-10-17T13:39:32.047+0800] {app11.py:115} INFO - sample message11\n> 2025-10-17T05:39:32.074508838+00:00 stdout F [2025-10-17T13:39:32.074+0800] {app12.py:116} INFO - sample message12\n> 2025-10-17T05:39:32.074912627+00:00 stdout F [2025-10-17T13:39:32.074+0800] {app13.py:117} INFO - sample message13\n> 2025-10-17T05:39:32.133968349+00:00 stdout F [2025-10-17T13:39:32.129+0800] {app14.py:118} ERROR - sample message14\n> 2025-10-17T05:39:32.133968349+00:00 stdout F ....\n> 2025-10-17T05:39:32.133968349+00:00 stdout F .... Python Stack Trace like above\n> 2025-10-17T05:39:32.133968349+00:00 stdout F ....\n> 2025-10-17T05:39:32.133968349+00:00 stdout F ....\n> \n\nHere is the snippet of the log lines of fluent-bit pod itself, the error level entries is quite little:\n> [debug] [filter:modify:modify.35] Condition not met : key_does_not_exist message\n> [debug] [filter:modify:modify.35] Condition not met, not touching record\n\nHere is the memory related metrics during the past 2 days:\n\n<img width=\"1587\" height=\"1133\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/88c1d43a-d433-4b94-bbc3-3f88a074cac9\" />\n\nThe metric I used to monitor this is `container_memory_working_set_bytes`.\n\nPlease let me know if there is any further info needed.\n\n@participant1 Could you please help review the config file and correct me if there is any mis-configuration?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-10-23T13:33:46Z",
+   "body": "@participant2 @participant1  Any clue for this issue please?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-10-28T03:26:48Z",
+   "body": "Any update for this issue?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-10-28T03:53:20Z",
+   "body": "@reporter if you can provide some sample logs that helps to repro the problem would be very helpful, there might be a mix of variables that trigger this issue and some sample input would be great (or an isolated repro case)"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-10-28T13:59:58Z",
+   "body": "hi @participant1 , thanks for the reply, in my last update I pasted the sample log entries like below:\n\n```\n2025-10-17T05:39:25.880663704+00:00 stdout F [2025-10-17T13:39:25.879+0800] {app1.py:11} INFO - sample message1\n2025-10-17T05:39:26.393928658+00:00 stdout F [2025-10-17T13:39:26.642+0800] {app2.py:12} WARNING - sample message2\n2025-10-17T05:39:26.568413362+00:00 stdout F [2025-10-17T13:39:26.644+0800] {app3.py:13} INFO - sample message3\n2025-10-17T05:39:26.776366435+00:00 stdout F [2025-10-17T13:39:26.775+0800] {app4.py:14} WARNING - sample message4\n2025-10-17T05:39:26.923494322+00:00 stdout F [2025-10-17T13:39:26.922+0800] {app5.py:15} INFO - sample message5\n2025-10-17T05:39:26.968264732+00:00 stdout F [2025-10-17T13:39:26.967+0800] {app6.py:16} WARNING - sample message6\n2025-10-17T05:39:26.969093250+00:00 stdout F [2025-10-17T13:39:26.968+0800] {app7.py:17} INFO - sample message7\n2025-10-17T05:39:31.979597873+00:00 stdout F [2025-10-17T13:39:31.978+0800] {app8.py:18} INFO - sample message8\n2025-10-17T05:39:31.985199023+00:00 stdout F [2025-10-17T13:39:31.979+0800] {app9.py:19} ERROR - sample message9\n2025-10-17T05:39:31.985199023+00:00 stdout F Traceback (most recent call last):\n2025-10-17T05:39:31.985199023+00:00 stdout F File \"app.py\", line 198, in _new_conn\n2025-10-17T05:39:31.985199023+00:00 stdout F sock = connection.create_connection(\n2025-10-17T05:39:31.985199023+00:00 stdout F ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n2025-10-17T05:39:31.985199023+00:00 stdout F File \"app2.py\", line 85, in create_connection\n2025-10-17T05:39:31.985199023+00:00 stdout F raise err\n2025-10-17T05:39:31.985199023+00:00 stdout F File \"app3.py\", line 73, in create_connection\n2025-10-17T05:39:31.985199023+00:00 stdout F sock.connect(sa)\n2025-10-17T05:39:31.985199023+00:00 stdout F TimeoutError: timed out\n2025-10-17T05:39:31.985199023+00:00 stdout F\n2025-10-17T05:39:31.985199023+00:00 stdout F The above exception was the direct cause of the following expcetion:\n2025-10-17T05:39:31.985199023+00:00 stdout F\n...\n...Python Stack Trace\n...\n2025-10-17T05:39:32.005526893+00:00 stdout F [2025-10-17T13:39:32.005+0800] {app10.py:114} INFO - sample message10\n2025-10-17T05:39:32.047492729+00:00 stdout F [2025-10-17T13:39:32.047+0800] {app11.py:115} INFO - sample message11\n2025-10-17T05:39:32.074508838+00:00 stdout F [2025-10-17T13:39:32.074+0800] {app12.py:116} INFO - sample message12\n2025-10-17T05:39:32.074912627+00:00 stdout F [2025-10-17T13:39:32.074+0800] {app13.py:117} INFO - sample message13\n2025-10-17T05:39:32.133968349+00:00 stdout F [2025-10-17T13:39:32.129+0800] {app14.py:118} ERROR - sample message14\n2025-10-17T05:39:32.133968349+00:00 stdout F ....\n2025-10-17T05:39:32.133968349+00:00 stdout F .... Python Stack Trace like above\n2025-10-17T05:39:32.133968349+00:00 stdout F ....\n2025-10-17T05:39:32.133968349+00:00 stdout F ....\n```\n\nYou can refer to the `tenant.yaml` above as the configuration for each log tenant in our environment, there are 12 such tenants in one cluster."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-12-18T02:29:15Z",
+   "body": "We upgraded the image from 4.1.1-debug to 4.2.0-debug in our testing environment last night, but it seems not working at all, memory usage in all of the pods were climbing high and then triggered the restart:\n\n<img width=\"3441\" height=\"1706\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/b2471485-5841-4df7-93b2-0ee62a17ae88\" />\n\n@participant1 @participant2 Could you please help check this issue at your convenience?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-12-19T13:05:26Z",
+   "body": "Same issue kept still on 4.2.1-debug."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-01-04T03:53:32Z",
+   "body": "@participant4 Sorry to loop you in, could you please help check this issue if there is any convenience? It had bothered us for almost a year..."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2026-01-19T20:56:32Z",
+   "body": "hi @reporter,\nmost important thing here is that you can provide a repro that we (any community member) can easily run to reproduce your issue, or at least have one running config. From reading your conf I see that it won't run. Can you validate you can run it with provided config and log samples?\nI understand you may have private info, which may include python stacktraces, but it would be useful to have a working starting point. If it reproduces without the python stacktraces, you can omit them.\nAlso, does this reproduce if output is null or stdout?"
+  },
+  {
+   "author": "github-actions[bot]",
+   "created_at": "2026-05-25T02:26:34Z",
+   "body": "This issue is stale because it has been open 90 days with no activity. Remove stale label or comment or this will be closed in 5 days. Maintainers can add the `exempt-stale` label."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-05-25T03:29:56Z",
+   "body": "Memory consumption metrics during the past 2 days:\n<img width=\"3439\" height=\"1606\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/2bf030fd-2a9c-431a-8cb4-96b615feb0f8\" />\n\nWell, the issue has been mitigated after:\n1. Merging all of the dispersed but same purpose config into one via rewrite\n2. Upgrading to 5.0.5"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2026-05-25T12:13:45Z",
+   "body": "If your issue already had resolved in your environment, could you close this issue?\nFeel free to reopen if you encountered another attempt."
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "fluent/fluent-bit",
+  "default_branch": "master",
+  "commit_sha": "b2a7d53cb37a395727601af289ded4ee3e7495cc",
+  "as_of": "2025-09-18T10:13:49Z",
+  "method": "github_commits_until"
+ },
+ "images": [
+  {
+   "where": "opening",
+   "source_url": "https://github.com/user-attachments/assets/da2cf13f-415d-4e6c-aad5-06d0bb81d059",
+   "file": "gh_fluent_fluent-bit_10898_img0.png"
+  },
+  {
+   "where": "opening",
+   "source_url": "https://github.com/user-attachments/assets/ad7b7c9c-326b-4e2c-a219-13653cf4baff",
+   "file": "gh_fluent_fluent-bit_10898_img1.png"
+  },
+  {
+   "where": "opening",
+   "source_url": "https://github.com/user-attachments/assets/b844712c-811b-4aae-9c60-b05dfcb13be0",
+   "file": "gh_fluent_fluent-bit_10898_img2.png"
+  },
+  {
+   "where": "opening",
+   "source_url": "https://github.com/user-attachments/assets/9d977bbd-328d-4587-876c-9be4661852c1",
+   "file": "gh_fluent_fluent-bit_10898_img3.png"
+  },
+  {
+   "where": "opening",
+   "source_url": "https://github.com/user-attachments/assets/5cb1b134-d4e6-4e42-93b5-94329b8f9414",
+   "file": "gh_fluent_fluent-bit_10898_img4.png"
+  },
+  {
+   "where": "opening",
+   "source_url": "https://github.com/user-attachments/assets/dbe660bc-df1d-46ab-a813-014c29e2021c",
+   "file": "gh_fluent_fluent-bit_10898_img5.png"
+  },
+  {
+   "where": "opening",
+   "source_url": "https://github.com/user-attachments/assets/bf1f85aa-c2c9-4206-a28a-af9fdcd3edce",
+   "file": "gh_fluent_fluent-bit_10898_img6.png"
+  },
+  {
+   "where": "opening",
+   "source_url": "https://github.com/user-attachments/assets/56167d53-223e-4a14-8893-b42541d07313",
+   "file": "gh_fluent_fluent-bit_10898_img7.png"
+  },
+  {
+   "where": "c6",
+   "source_url": "https://github.com/user-attachments/assets/f0d0a883-d688-4c94-9fb5-c5cefcd59413",
+   "file": "gh_fluent_fluent-bit_10898_img8.png"
+  },
+  {
+   "where": "c7",
+   "source_url": "https://github.com/user-attachments/assets/88c1d43a-d433-4b94-bbc3-3f88a074cac9",
+   "file": "gh_fluent_fluent-bit_10898_img9.png"
+  },
+  {
+   "where": "c12",
+   "source_url": "https://github.com/user-attachments/assets/b2471485-5841-4df7-93b2-0ee62a17ae88",
+   "file": "gh_fluent_fluent-bit_10898_img10.png"
+  },
+  {
+   "where": "c17",
+   "source_url": "https://github.com/user-attachments/assets/2bf030fd-2a9c-431a-8cb4-96b615feb0f8",
+   "file": "gh_fluent_fluent-bit_10898_img11.png"
+  }
+ ],
+ "slug": "gh_fluent_fluent-bit_10898"
+}

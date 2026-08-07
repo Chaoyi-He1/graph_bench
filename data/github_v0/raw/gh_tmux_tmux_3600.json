@@ -1,0 +1,244 @@
+{
+ "repo": "tmux/tmux",
+ "number": 3600,
+ "url": "https://github.com/tmux/tmux/issues/3600",
+ "title": "Broken Rendering of Characters Composed of Multiple Code Points in kitty",
+ "state": "closed",
+ "labels": [],
+ "reporter": "reporter",
+ "created_at": "2023-06-24T06:40:08Z",
+ "closed_at": "2023-09-15T15:49:49Z",
+ "body": "## Description\r\n\r\nCharacters composed of multiple Unicode code points (e.g., `👍🏻` which is composed of `U+1F44D` and `U+1F3FB`) do not render properly when running tmux inside kitty.\r\n\r\n## Steps to Reproduce\r\n\r\n1. Run kitty without any configuration from a different terminal: `kitty --config NONE`.\r\n2. Run `printf \"Test\\t\\t|\\n'👍' Test\\t|\\n'👍🏻' Test\\t|\\n\" > test.txt`.\r\n3. Run `cat test.txt`.\r\n4. Observe that the `|` characters are aligned properly.\r\n5. Run tmux without any configuration inside kitty: `tmux -vv -f /dev/null new`.\r\n6. Run `cat test.txt`.\r\n7. Observe that the `|` characters are misaligned.\r\n\r\nThis example is not drastic, but this bug causes problems when typing commands with multi-code-point characters in the shell or editing files with multi-code-point characters in vim/neovim: (https://github.com/kovidgoyal/kitty/issues/6355#issue-1750974942).\r\n\r\n## Screenshots\r\n\r\nkitty without tmux:\r\n\r\n![image](https://github.com/tmux/tmux/assets/136172567/7c909371-99b1-4360-842a-be14ac8734f4)\r\n\r\nkitty + tmux:\r\n\r\n![image](https://github.com/tmux/tmux/assets/136172567/c2275547-03e1-48a7-ac0f-7a37a8d2f73f)\r\n\r\nGnome Terminal:\r\n\r\n![image](https://github.com/tmux/tmux/assets/136172567/5297af93-89eb-42ec-9fd0-3fbc4adc2b2e)\r\n\r\nGnome Terminal + tmux:\r\n\r\n![image](https://github.com/tmux/tmux/assets/136172567/b28e24a3-c3ef-4410-a19b-caadda108301)\r\n\r\n## Environment Details\r\n\r\n* tmux version (`tmux -V`): `tmux 3.3a`\r\n\r\n* `$TERM` inside tmux (`echo $TERM`): `tmux-256color`\r\n\r\n* `$TERM` outside tmux (`echo $TERM`): `xterm-kitty`\r\n\r\n* kitty version (`kitty --version`):  `kitty 0.28.1 created by Kovid Goyal`\r\n\r\n* Platform (`uname -sp`): `Linux unknown` (Arch Linux)\r\n\r\n## Logs\r\n\r\nLogs of starting tmux in kitty using `tmux -vv -f /dev/null new` and running `cat test.txt` followed by `exit`:\r\n\r\n[tmux-client-14609.log](https://github.com/tmux/tmux/files/11855584/tmux-client-14609.log)\r\n[tmux-out-14611.log](https://github.com/tmux/tmux/files/11855585/tmux-out-14611.log)\r\n[tmux-server-14611.log](https://github.com/tmux/tmux/files/11855586/tmux-server-14611.log)\r\n\r\n## Potential Culprit\r\n\r\nkitty combines a character with multiple code points per the Unicode standard. That is, it combines `U+1F44D` and `U+1F3FB` and displays 👍🏻 instead of 👍 followed by 🏻. It seems like tmux expects that those two code points will be displayed separately. The mismatch between the character width that tmux expects and the width that kitty actually uses causes this issue.\r\n\r\n## Additional Context\r\n\r\nThe relevant bug on the kitty side: https://github.com/kovidgoyal/kitty/issues/6355.",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2023-06-24T16:20:00Z",
+   "body": "Thanks, your analysis looks correct. tmux, like GNOME terminal, does not currently support this feature. Until it does, I suggest you either avoid the characters, or configure Kitty not to do this.\r\n\r\nIf you (or anyone else) want to look at adding this, the implementation would not be very difficult - it is just a form of combining characters which is already supported (look at how ZWJ is handled in `screen_write_cell`). The trickiest thing would be working out which codepoints it applies to, since we don't want to carry around a load of Unicode data. Possibly utf8proc can provide this, I would be OK if - initially at least - this is only supported with utf8proc. We would also need an extension terminfo(5) capability and corresponding tmux \"terminal feature\" to tell tmux whether the outside terminal supports it."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-06-24T16:33:26Z",
+   "body": "Possibily we could assume `UTF8PROC_CATEGORY_SK` has width 0, although of course this will break GNOME terminal. You could try this anyway: [x.diff.txt](https://github.com/tmux/tmux/files/11857660/x.diff.txt)\r\n\r\nI don't think there is a similar way to get this information from libc... I think we would need a table. It would be nice if it was a (server) option - people are occasionally complaining that their custom PUA codepoints have the wrong width and an option would let them set their own widths as well as fixing up new Unicode versions without having to upgrade/restart tmux.\r\n\r\n~~~~\r\ndiff --git a/compat/utf8proc.c b/compat/utf8proc.c\r\nindex dd4ab27f..2d21e273 100644\r\n--- a/compat/utf8proc.c\r\n+++ b/compat/utf8proc.c\r\n@@ -33,6 +33,13 @@ utf8proc_wcwidth(wchar_t wc)\r\n                 */\r\n                return (1);\r\n        }\r\n+    if (cat == UTF8PROC_CATEGORY_SK) {\r\n+        /*\r\n+         * Modifier symbols are only useful when combined, so treat as zero\r\n+         * width.\r\n+         */\r\n+        return (0);\r\n+    }\r\n        return (utf8proc_charwidth(wc));\r\n }\r\n\r\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-06-24T17:50:35Z",
+   "body": "You can also try this (against master): [tmux-codepoint-widths.diff.txt](https://github.com/tmux/tmux/files/11857833/tmux-codepoint-widths.diff.txt)\r\n\r\nIt adds an option `codepoint-widths` allowing you to override the widths of codepoints, so you can do:\r\n~~~~\r\nset -as codepoint-widths \"U+1F3FB=0,U+1F3FC=0,U+1F3FD=0,U+1F3FE=0,U+1F3FF=0\"\r\n~~~~\r\n\r\nI thought of including these in the option by default, but it appears there are other major terminals that do not support this yet so perhaps that is premature...\r\n\r\nFor these specific characters it may be better to just hardcode a list and add a terminfo(5) capability, but maybe that is overkill.\r\n\r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-07-01T15:26:39Z",
+   "body": "Thanks a lot for the quick response, Nicholas!\r\n\r\nI tested the diff, and it does indeed resolve the issue in my first comment (https://github.com/tmux/tmux/issues/3600#issue-1772496615). However, there still seems to be an issue with Unicode characters that are composed of multiple code points (e.g., 🇪🇸 which is composed of `U+1F1EA` and `U+1F1F8`).\r\n\r\nIf we run `printf \"Test\\t\\t|\\n'👍' Test\\t|\\n'🇪🇸' Test\\t|\\n\" > test.txt` followed by `cat test.txt`, the file content gets displayed properly inside and outside tmux:\r\n\r\nkitty (without tmux):\r\n\r\n![image](https://github.com/tmux/tmux/assets/136172567/62425bbc-f81c-424c-981b-96608cd935dd)\r\n\r\nkitty + tmux:\r\n\r\n![image](https://github.com/tmux/tmux/assets/136172567/0f99838e-da50-4ff9-a15f-5a15884ee4d7)\r\n\r\nHowever, if we open `test.txt` in neovim using `nvim -u NONE -c 'set colorcolumn=20' test.txt`, there's still an issue with the character width:\r\n\r\nkitty (without tmux):\r\n\r\n![image](https://github.com/tmux/tmux/assets/136172567/f9a505cd-111d-41a2-8c6d-2cedecc206da)\r\n\r\nkitty + tmux:\r\n\r\n![image](https://github.com/tmux/tmux/assets/136172567/9ab61ea3-5740-4451-af12-d6a037234ae8)\r\n\r\nIn this case, I don't think we can unconditionally set the widths of `U+1F1EA` and `U+1F1F8` to static values using `codepoint-widths`, right?\r\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-07-01T18:17:12Z",
+   "body": "All programs must agree on the widths: terminal, tmux and vim. If they don't agree, things will look funny. If you configure these characters to be width 2 in tmux, you will need to configure vim in the same way, or tmux will move the cursor more or fewer positions than it expects."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-07-01T19:50:55Z",
+   "body": "Yes, I understand that, but for certain code points, I don't think the widths can be **statically** specified in `codepoint-widths`.  For example, the Armenian flag emoji (🇦🇲) is composed of `U+1F1E6` (🇦) + `U+1F1F2` (🇲), and the Moroccan flag emoji (🇲🇦) is composed of the same code points but in the reverse order:  `U+1F1F2` (🇲) + `U+1F1E6` (🇦) (try removing the space between 🇦 🇲 and 🇲 🇦, and the flags should be rendered).\r\n\r\nIn the case of the Armenian flag,  we want 🇦 to have a width of 1 but 🇲 to have a width of zero. In the case of the Moroccan flag, we want 🇲 to have a width of 1, but 🇦 to have a width of 0. When the code points are separated (e.g., by a space between them), we want each of them to have a width of 1. Therefore, I don't think we should **statically** define the width of the _code points_ in `codepoint-widths`. Instead, I think tmux should be reasoning about the width of an entire _character ([grapheme](https://stackoverflow.com/a/27331885))_ rather than the width of a _code point._\r\n\r\nWhat do you think?\r\n\r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-07-01T19:56:31Z",
+   "body": "Perhaps we could use [`utf8proc_grapheme_break_stateful`](https://github.com/JuliaStrings/utf8proc/blob/1cb28a66ca79a0845e99433fd1056257456cef8b/utf8proc.h#L589-L607) to automatically determine the real width of a grapheme? That way, we don't need to manually/statically specify the width of individual code points."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-07-01T20:05:55Z",
+   "body": "Yes we would need the ability to specify codepoint sequences rather than individual codepoints, and tmux would need to be able to understand \"this codepoint might be followed by X or Z\" in the same way as it does for keys.\r\n\r\nI don't really like depending on utf8proc because that means it won't work without it."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-07-05T08:41:08Z",
+   "body": "Can you please try this: [tmux-unicode.diff.txt](https://github.com/tmux/tmux/files/11955732/tmux-unicode.diff.txt)\r\n\r\nThis adds a `unicode-widths` option instead; you can't use `U+` now, you either need to enter the characters as-is or use `\\u`/`\\U`:\r\n~~~~\r\nset -as unicode-widths '🇦🇲=2'\r\nset -as unicode-widths '🇲🇦=2'\r\nset -as unicode-widths '👍🏻=2'\r\n~~~~\r\n\r\nIt works for me but this is very much a work in progress:\r\n\r\n- It is not very efficient as it caches the option values as a list. This should be a tree but I had changed it to a list to do it a different way and I don't have time to change it back. The cache should also store the final combined character so it can be used immediately, instead of building it in `input_utf8_finish`.\r\n\r\n- This requires that each codepoint that makes up the `unicode-widths` list be valid and have a valid width. So for exotic/recent characters you are likely to need to build with utfproc because `wcwidth` will probably not have a width for them. This limits the usefulness of this for defining widths for PUA characters, so it would be good to allow missing widths here.\r\n\r\n- I suspect we are missing some calls to `input_utf8_finish`.\r\n\r\n- If we are processing strings of UTF-8 in `input.c` instead of individual characters, we should do the same to merge zero width characters, ZWJ and so on, and remove the code in `screen-write.c` (this would probably be simplier in any case).\r\n\r\n- I think we could probably try to automatically work out the width if the user *is* using utf8proc, and only require them to be defined by the user for `wcwidth` (this could probably be done later however).\r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-07-09T11:08:29Z",
+   "body": "Thanks for continuing  to work on this, Nicholas!\r\n\r\nI applied the patch in https://github.com/tmux/tmux/issues/3600#issuecomment-1621302475 on top of https://github.com/tmux/tmux/commit/237ee6f2311b351b8a3bb3b46e17622f6e3b6bb9.\r\n\r\nThis works as expected when `cat`ing `test.txt` (created using `printf \"Test\\t\\t|\\n'👍' Test\\t|\\n'👍🏻' Test\\t|\\n'🇪🇸' Test\\t|\\n\" > test.txt`) and setting the following tmux options: `set -as unicode-widths '👍=2' ; set -as unicode-widths '👍🏻=2' ; set -as unicode-widths '🇪🇸=2'`, but, unfortunately, this doesn't resolve the issue in neovim. Here is a video of the issue:\r\n\r\n[tmux-unicode-bug.webm](https://github.com/tmux/tmux/assets/136172567/7db81019-28bd-4e18-be5f-055e096ea396)\r\n\r\n\r\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-07-09T23:02:35Z",
+   "body": "Show the tmux server log please. If it works with `cat` - that is, following text is correctly aligned both when initially printed and when redrawing (`C-b r` or change window or session and back), then this is probably a mismatch in how vim and tmux see the widths."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-07-15T21:11:40Z",
+   "body": "Using `refresh-client` didn't seem to change the incorrect rendering\r\n\r\nI recorded a new session:\r\n\r\n[tmux-unicode-bug.webm.webm](https://github.com/tmux/tmux/assets/136172567/3a63fa4b-fc28-4e35-9307-67553211e16b)\r\n\r\nHere are the logs associated with the recording above:\r\n\r\n[tmux-client-30064.log](https://github.com/tmux/tmux/files/12062806/tmux-client-30064.log)\r\n[tmux-out-30066.log](https://github.com/tmux/tmux/files/12062807/tmux-out-30066.log)\r\n[tmux-server-30066.log](https://github.com/tmux/tmux/files/12062808/tmux-server-30066.log)\r\n\r\n\r\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-07-15T21:46:06Z",
+   "body": "I meant if it is correct without vim and still correct after `refresh-client` without vim."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-07-15T21:51:47Z",
+   "body": "Yes, outside of neovim, the text is properly aligned when running `cat test.txt` followed by `refresh-client` (`refresh-client` doesn't actually change the rendering in that case)."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-08-09T06:50:55Z",
+   "body": "Sorry for the delay here. I am not sure nvim is sending the same characters as actually in the file. Can you open the text file in nvim in `script` (inside tmux) and show me the typescript file?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-08-09T07:55:12Z",
+   "body": "I had a look at this change again, and I think we will need to do it a different method.\r\n\r\nThe problem is that these newer changes to Unicode are badly designed, particularly for stream protocols. If tmux gets a U+1F44D, it has no way to know whether it should be shown as it is or whether it will be followed by U+1F3FB.\r\n\r\nSo we can't do this the way I had intended, it will need to work like zero width characters where it goes back and replaces the original character when it sees the new one.\r\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-08-09T10:36:50Z",
+   "body": "There are actually only a couple of hundred of these characters, so we could just list them and work out whether to combine based on the list.\r\n\r\nPlease try this instead of the last diff (only lightly tested, eg I didn't try ZWJ): [tmux-unicode-new.diff.txt](https://github.com/tmux/tmux/files/12301200/tmux-unicode-new.diff.txt)\r\n\r\n\r\nYou should not need to do any configuration for this (there is no option anymore)."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-08-09T10:44:59Z",
+   "body": "ZWJ still seems to work, for example `printf '|\\360\\237\\244\\267\\342\\200\\215\\342\\231\\202\\357\\270\\217|'`.\r\n\r\nBut please test and see if it works for your symbols."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-08-20T10:09:42Z",
+   "body": "Thanks for looking into this again! I applied the diff on top of 237ee6f2, but it still didn't work. Here's a video of the issue:\r\n\r\n[tmux-unicode-bug.webm](https://github.com/tmux/tmux/assets/25834760/76b962f7-59ab-46a4-b7d2-19f05a421629)\r\n\r\nNoteworthy in the video is how `cat`ing `test.txt` is different inside and outside of tmux:\r\n\r\noutside tmux:\r\n![](https://github.com/tmux/tmux/assets/25834760/d73376ab-df25-4297-a253-7ba4bb0e2d16)\r\n\r\ninside tmux:\r\n![](https://github.com/tmux/tmux/assets/25834760/cc388f3a-a8ab-4e41-99b0-988104961277)\r\n\r\nSimilarly, opening `test.txt` in neovim displays the text normally outside tmux, but the output is mangled inside tmux:\r\n\r\noutside tmux:\r\n\r\n![](https://github.com/tmux/tmux/assets/25834760/e963d7cb-23a1-4b26-8358-61f061c50da0)\r\n\r\ninside tmux:\r\n![](https://github.com/tmux/tmux/assets/25834760/a8b39c7f-f2f5-4067-b2b7-9a414ba3beab)\r\n\r\nAre you able to replicate this at your end? Here's some information that might help with replicating:\r\n\r\n- `test.txt` is created using `printf \"Test\\t\\t|\\n'👍' Test\\t|\\n'👍🏻' Test\\t|\\n'🇪🇸' Test\\t|\\n\" > test.txt`\r\n- Kitty version: 0.29.2\r\n- tmux version: 237ee6f2 + the diff from https://github.com/tmux/tmux/issues/3600#issuecomment-1671080219\r\n- neovim version: 0.9.1\r\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-08-20T10:21:58Z",
+   "body": "It works for me. Are you sure you applied the diff and were running the right tmux binary? If so please show tmux logs from running `tmux -Ltest -f/dev/null -vv new`, `cat test.txt` then `exit` only.\r\n\r\nPlease also show me the `typescript` file from running `script` then opening the file in `vim` inside and outside tmux (separate files)."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-08-21T07:18:44Z",
+   "body": "> Are you sure you applied the diff and were running the right tmux binary?\r\n\r\nMy bad! I accidentally applied an older diff. Sorry for the confusion.\r\n\r\nI applied the new diff (https://github.com/tmux/tmux/issues/3600#issuecomment-1671080219) on top of e3a8b843. \r\n\r\nThere still seems to be an issue. Here's the result of `cat`ing `test.txt` inside and outside tmux:\r\n\r\noutside tmux:\r\n\r\n![](https://github.com/tmux/tmux/assets/136172567/22d22f8f-acf4-456a-af2d-b9e7a8cb763c)\r\n\r\ninside tmux:\r\n\r\n![](https://github.com/tmux/tmux/assets/136172567/c58e1d2e-f76d-48c9-a5ba-915e04ef713a)\r\n\r\nHere are the logs from running `tmux -L test -f /dev/null -vv new /bin/bash --norc --noprofile`, `cat test.txt` followed by `exit`:\r\n\r\n[tmux-client-15010.log](https://github.com/tmux/tmux/files/12389143/tmux-client-15010.log)\r\n[tmux-out-15012.log](https://github.com/tmux/tmux/files/12389144/tmux-out-15012.log)\r\n[tmux-server-15012.log](https://github.com/tmux/tmux/files/12389145/tmux-server-15012.log)\r\n\r\nThe issue with displaying the characters in neovim also persists:\r\n\r\noutside tmux: \r\n\r\n![](https://github.com/tmux/tmux/assets/136172567/d89824d9-7df3-4753-865b-0308c442f5a1)\r\n\r\n`script` output:  [nvim_outside_tmux.script.txt](https://github.com/tmux/tmux/files/12393245/nvim_outside_tmux.script.txt)\r\n\r\ninside tmux:\r\n\r\n![](https://github.com/tmux/tmux/assets/136172567/0f5a5edd-2a8b-446a-8c98-06d2018e9c64)\r\n\r\n`script` output: [nvim_inside_tmux.script.txt](https://github.com/tmux/tmux/files/12393246/nvim_inside_tmux.script.txt)\r\n\r\nDuring the testing, I was using `/bin/bash --norc --noprofile` when starting shells (e.g., started kitty using `kitty --config NONE /bin/bash --norc --noprofile`) to avoid any (unlikely) interference from the shell configs. The bash version I'm using is `5.1.16`.\r\n\r\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-08-21T08:03:23Z",
+   "body": "This log is not from the right build either, can you please check you are running the right binary? The server log should contain the text `UTF8_WRITE_`.\r\n\r\nnvim moves the cursor around inside the characters but I will look at that later."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-08-21T19:22:09Z",
+   "body": "You are absolutely correct! I forgot that my `alias` for the locally-built tmux would not get used when running the shell with `--norc` (duh!). So third time is the charm?\r\n\r\nFor `cat test.txt`, the problem only seems to be with the flag now.\r\n\r\noutside tmux:\r\n\r\n![](https://github.com/tmux/tmux/assets/136172567/7312dc52-531a-45b4-a130-ca5e03bb1d11)\r\n\r\ninside tmux:\r\n\r\n![](https://github.com/tmux/tmux/assets/136172567/c454bdfd-9ca8-4e4a-a05e-d12266a5aae3)\r\n\r\nHere are the logs from running `~/tmux/tmux -L test -f /dev/null -vv new /bin/bash --norc --noprofile`, `cat test.txt` followed by `exit`:\r\n\r\n[tmux-client-2283.log](https://github.com/tmux/tmux/files/12401191/tmux-client-2283.log)\r\n[tmux-out-2285.log](https://github.com/tmux/tmux/files/12401192/tmux-out-2285.log)\r\n[tmux-server-2285.log](https://github.com/tmux/tmux/files/12401193/tmux-server-2285.log)\r\n\r\nWith tmux + neovim, there is a problem with the flag and the color of the colored thumbs-up emoji.\r\n\r\noutside tmux:\r\n\r\n![](https://github.com/tmux/tmux/assets/136172567/795dc5d0-c4fc-4c00-bfa0-eaf95f1ade73)\r\n\r\n`script` output: [outside_tmux.script.txt](https://github.com/tmux/tmux/files/12401610/outside_tmux.script.txt)\r\n\r\ninside tmux:\r\n\r\n![](https://github.com/tmux/tmux/assets/136172567/1fe15b93-73c1-45d8-87b7-9bc125f68cea)\r\n\r\n`script` output: [inside_tmux.script.txt](https://github.com/tmux/tmux/files/12401613/inside_tmux.script.txt)\r\n\r\nWhen inside tmux, the problem with the colored thumbs-up emoji in neovim is resolved after highlighting the line in neovim:\r\n\r\n![](https://github.com/tmux/tmux/assets/136172567/e502b36b-d748-4f7a-bc92-5af6a3e7b03d)\r\n\r\n`script` output: [inside_tmux_highlight.script.txt](https://github.com/tmux/tmux/files/12401620/inside_tmux_highlight.script.txt)\r\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-08-22T08:17:07Z",
+   "body": "OK test.txt works for me but if I do this it is wrong:\r\n~~~~\r\nprintf '|\\360\\237\\207\\252\\360\\237\\207\\270|'\r\n~~~~\r\n\r\nThe reason is that the kernel and utf8proc both think this character is width 1.\r\n~~~~\r\n1692644272.325423 input_top_bit_set 4 '\\360\\237\\207\\252' (width 1)\r\n1692644272.326210 input_top_bit_set 4 '\\360\\237\\207\\270' (width 1)\r\n~~~~\r\nHowever, it appears your terminal and mine both think that the character is width 2.\r\n\r\nI don't know if any terminals will make this width 1, so we could probably just force them to width 2. Try this please: [tmux-unicode-combine.diff.txt](https://github.com/tmux/tmux/files/12406546/tmux-unicode-combine.diff.txt)\r\n\r\nI think I know what is wrong with vim but I am not going to work on that right now until this is working."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-09-01T14:29:45Z",
+   "body": "I have applied this to OpenBSD now since it works for me, it will be in GitHub later. Let me know if you see any further problems with this part of it.\r\n\r\nNow I'll have a look at vim..."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-09-01T16:04:37Z",
+   "body": "I made this fix as well and now trying your script file from vim does not misbehave (I have applied this change also). Can you let me know if you still see problems either by applying it as well as the last diff, or wait until GitHub syncs?\r\n~~~~\r\n--- screen-write.c      1 Sep 2023 14:29:11 -0000       1.219\r\n+++ screen-write.c      1 Sep 2023 16:01:24 -0000\r\n@@ -1792,6 +1792,8 @@ screen_write_collect_add(struct screen_w\r\n        u_int                            sx = screen_size_x(s);\r\n        int                              collect;\r\n\r\n+       ctx->flags &= ~SCREEN_WRITE_COMBINE;\r\n+\r\n        /*\r\n         * Don't need to check that the attributes and whatnot are still the\r\n         * same - input_parse will end the collection when anything that isn't\r\n"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-09-01T18:12:39Z",
+   "body": "@participant1 The recent commits (in master) break multiple apps using utf box drawing characters. Here's a screenshot from fzf combining before and after:\r\n\r\nEDIT: This sometimes does not happen in leftmost pane for same application, but always does in right pane of a vertical split.\r\n\r\nafter change (run fzf command in tmux repo):\r\n<img width=\"942\" alt=\"Screenshot 2023-09-01 at 11 10 44 AM\" src=\"https://github.com/tmux/tmux/assets/25681815/2a859937-742b-412f-b212-cc00566d2c82\">\r\n\r\n\r\nbefore change (run fzf command in tmux repo):\r\n<img width=\"942\" alt=\"Screenshot 2023-09-01 at 11 11 27 AM\" src=\"https://github.com/tmux/tmux/assets/25681815/bea4b24e-a56e-4817-ad0a-880707f06a20\">\r\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-09-01T18:17:15Z",
+   "body": "Am I meant to guess which characters? Where are the logs?"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-09-01T18:25:47Z",
+   "body": "@participant1 Ah, I thought you would have fzf installed, since it's so famous. Here are the logs:\r\n\r\n[tmux-client-35806.log](https://github.com/tmux/tmux/files/12500683/tmux-client-35806.log)\r\n[tmux-out-35808.log](https://github.com/tmux/tmux/files/12500685/tmux-out-35808.log)\r\n[tmux-server-35808.log](https://github.com/tmux/tmux/files/12500686/tmux-server-35808.log)\r\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-09-01T18:34:33Z",
+   "body": "Does this fix it?\r\n~~~~\r\n--- a/utf8-combined.c\r\n+++ b/utf8-combined.c\r\n@@ -1114,10 +1114,8 @@ utf8_try_combined(const struct utf8_data *ud, const struct utf8_data *last,\r\n         * later; also force the width to two.\r\n         */\r\n        if (last == NULL) {\r\n-               if (utf8_find_combined_first(ud) != NULL) {\r\n-                       *width = 2;\r\n+               if (utf8_find_combined_first(ud) != NULL)\r\n                        return (UTF8_WRITE_MAYBE_COMBINE);\r\n-               }\r\n                return (UTF8_WRITE_NOW);\r\n        }\r\n\r\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-09-01T18:44:23Z",
+   "body": "Never mind, it is a different bug, please try this or wait for it to reach GitHub:\r\n~~~~\r\n--- utf8-combined.c\t1 Sep 2023 14:29:11 -0000\t1.1\r\n+++ utf8-combined.c\t1 Sep 2023 18:43:08 -0000\r\n@@ -962,7 +962,7 @@ utf8_combined_first_cmp(struct utf8_comb\r\n \t\treturn (-1);\r\n \tif (ud1->size > ud2->size)\r\n \t\treturn (1);\r\n-\treturn (memcmp(ud1->data, ud2->data, sizeof *ud1->data));\r\n+\treturn (memcmp(ud1->data, ud2->data, ud1->size));\r\n }\r\n RB_HEAD(utf8_combined_tree, utf8_combined_first);\r\n RB_GENERATE_STATIC(utf8_combined_tree, utf8_combined_first, entry,\r\n@@ -979,7 +979,7 @@ utf8_combined_second_cmp(const void *vp1\r\n \t\treturn (-1);\r\n \tif (ud1->size > ud2->size)\r\n \t\treturn (1);\r\n-\treturn (memcmp(ud1->data, ud2->data, sizeof *ud1->data));\r\n+\treturn (memcmp(ud1->data, ud2->data, ud1->size));\r\n }\r\n\r\n static int\r\n"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-09-01T18:49:59Z",
+   "body": "@participant1 Yes, the latest patch of yours fixes it. Thanks!"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-09-02T08:50:37Z",
+   "body": "I'm going to close this to get it out of the way but please let me know if you still see issues with vim and I will reopen. Thanks!"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-09-09T09:50:18Z",
+   "body": "Sorry for my (very) late reply, and thanks a lot for all your work on this, Nicholas!\r\n\r\nI tested the latest changes at `master` (f68d35c5), and there still seems to be some issues outside and inside neovim. \r\n\r\nFor outside neovim, here is exactly how to reproduce:\r\n\r\n1. Open kitty using `kitty --config NONE /bin/bash --norc --noprofile`.\r\n2. Run `printf \"Test\\t\\t|\\n'👍' Test\\t|\\n'👍🏻' Test\\t|\\n'🇪🇸' Test\\t|\\n\" > test.txt`.\r\n3. Run `cat test.txt`.\r\n4. Observe that the vertical bars are aligned properly:\r\n![image](https://github.com/tmux/tmux/assets/136172567/f55c889d-78ad-43c3-9afe-3e6e00263aee)\r\n5. Run `~/tmux/tmux -L test -f /dev/null -vv new /bin/bash --norc --noprofile`.\r\n6. Run `cat test.txt`.\r\n7. Observe that the vertical bars are not aligned:\r\n![image](https://github.com/tmux/tmux/assets/136172567/b2af1600-14e9-4316-9eda-931036e19ff5)\r\n\r\nHere are the tmux logs for this session:\r\n[tmux-client-17039.log](https://github.com/tmux/tmux/files/12565413/tmux-client-17039.log)\r\n[tmux-out-17041.log](https://github.com/tmux/tmux/files/12565414/tmux-out-17041.log)\r\n[tmux-server-17041.log](https://github.com/tmux/tmux/files/12565415/tmux-server-17041.log)\r\n\r\nFor inside neovim:\r\n\r\n1. Open kitty using `kitty --config NONE /bin/bash --norc --noprofile`.\r\n2. Run `printf \"Test\\t\\t|\\n'👍' Test\\t|\\n'👍🏻' Test\\t|\\n'🇪🇸' Test\\t|\\n\" > test.txt`.\r\n3. Run `nvim -u NONE -c 'set colorcolumn=20' test.txt`.\r\n4. Observe that the color column is aligned properly:\r\n![image](https://github.com/tmux/tmux/assets/136172567/f2eaa17e-f437-4111-afb7-9be80729e82a)\r\n5. Run `~/tmux/tmux -L test -f /dev/null -vv new /bin/bash --norc --noprofile`.\r\n6. Run `nvim -u NONE -c 'set colorcolumn=20' test.txt`.\r\n7. Observe that the color column's misalignment:\r\n![image](https://github.com/tmux/tmux/assets/136172567/8fe740c3-552e-40d6-a76b-22fdd6e8847f)\r\n\r\nHere are the tmux logs for this session:\r\n[tmux-client-34960.log](https://github.com/tmux/tmux/files/12565430/tmux-client-34960.log)\r\n[tmux-out-34962.log](https://github.com/tmux/tmux/files/12565431/tmux-out-34962.log)\r\n[tmux-server-34962.log](https://github.com/tmux/tmux/files/12565432/tmux-server-34962.log)\r\n\r\nHere are the `script` files for running neovim inside and outside tmux (recorded using `script -c 'nvim -u NONE -c \"set colorcolumn=20\" test.txt' <filename>`):\r\n\r\n[inside_tmux.script.txt](https://github.com/tmux/tmux/files/12565447/inside_tmux.script.txt)\r\n[outside_tmux.script.txt](https://github.com/tmux/tmux/files/12565448/outside_tmux.script.txt)\r\n\r\nSoftware Versions:\r\n- kitty: 0.29.2\r\n- Bash: 5.1.16(1)-release\r\n- Linux kernel: 6.4.12"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-09-09T09:59:11Z",
+   "body": "It's worth noting that the issue is not just about cosmetics. For example, when editing `text.txt` in neovim in tmux, typing `Gfe` in normal mode should position the cursor on top of the \"e\" in \"Test\" on the fourth line, but it positions it over the \"t\" instead:\r\n\r\n![image](https://github.com/tmux/tmux/assets/136172567/343de240-109d-47ef-9457-58a937e643d4).\r\n\r\nThe cursor is positioned correctly with `Gfe` when editing `test.txt` in neovim outside of tmux:\r\n\r\n![image](https://github.com/tmux/tmux/assets/136172567/ae3ce1de-765e-4afc-871d-94350e908dcc)\r\n\r\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-09-13T07:53:43Z",
+   "body": "Ah, it looks OK for me because iTerm2 has DECSLRM so the way tmux does cursor positioning is different and this hides the problem.\r\n\r\nIt was working but I broke it by accident, please try this:[x.diff.txt](https://github.com/tmux/tmux/files/12594920/x.diff.txt)\r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-09-14T20:40:47Z",
+   "body": "Thanks for the quick fix! I tried  8191c58 which contains the diff above. It fixes the misalignment of the vertical bars when `cat`ing `test.txt` inside tmux. However, the neovim [issue](https://github.com/tmux/tmux/issues/3600#issuecomment-1712471623) still persists.\r\n\r\nDo you need me to capture some logs at 8191c58? "
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-09-14T20:45:15Z",
+   "body": "No, I'll have a look at vim at some point."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-09-15T09:06:15Z",
+   "body": "Is this better? I was trying to get away from reaching into the existing data to check if we need to combine because that is going to be slow, but I think that is what we will have to do: [width.diff.txt](https://github.com/tmux/tmux/files/12617638/width.diff.txt)\r\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-09-15T09:52:23Z",
+   "body": "Don't bother with that one, it doesn;t work with actual zero width characters, will send a new one later."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-09-15T11:05:33Z",
+   "body": "Try this please: [width2.diff.txt](https://github.com/tmux/tmux/files/12618658/width2.diff.txt)\r\n\r\nI'm not wild about calling `mbtowc` to look up the character in the table but maybe it will be alright..."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-09-15T14:58:09Z",
+   "body": "Thanks for quickly looking into this, Nicholas! I applied the latest diff to 9f9156c0 and cannot reproduce the issue anymore 🎉"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-09-15T15:49:49Z",
+   "body": "OK I have applied this now, please let me know if you see any further problems."
+  },
+  {
+   "author": "github-actions[bot]",
+   "created_at": "2023-10-16T00:16:19Z",
+   "body": "This issue has been automatically locked since there has not been any recent activity after it was closed. Please open a new issue for related bugs."
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "tmux/tmux",
+  "default_branch": "master",
+  "commit_sha": "29a5dfc7c0574fcb7ff742a2a6566a8b0800adaa",
+  "as_of": "2023-06-24T06:40:08Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_tmux_tmux_3600"
+}

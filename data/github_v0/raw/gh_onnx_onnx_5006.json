@@ -1,0 +1,157 @@
+{
+ "repo": "onnx/onnx",
+ "number": 5006,
+ "url": "https://github.com/onnx/onnx/issues/5006",
+ "title": "connect two onnx models as one",
+ "state": "closed",
+ "labels": [
+  "question",
+  "stale"
+ ],
+ "reporter": "reporter",
+ "created_at": "2023-03-17T09:51:45Z",
+ "closed_at": "2024-05-31T06:42:03Z",
+ "body": "Hi, supposely i have two onnx models and i want to combine both of them to get the mean of the two output, how should i do?\r\n for example:\r\nx=onnx.load(\"x.onnx\")\r\ny=onnx.load(\"y.onnx\")\r\n\r\ni want to have one onnx model which give the same result as x+y\r\n\r\nthanks for any help",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2023-03-17T14:48:10Z",
+   "body": "I think there’s utilities in this repo that will allow you to do that. \r\n\r\n@participant3 on a side note, this makes me think when we create the high level IR, we can have some APIs loaded to the IR object that allow us  to compose graphs intuitively like we are doing math. E.g. `graph1 | graph 2`"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-03-17T16:17:46Z",
+   "body": "There are some utilities in `onnx.compose` in this repository that could help, like `onnx.compose.merge_models` - you'd need to prepare a third model which computes a mean of its inputs and then that could work.\r\n\r\nI can also recommend a solution using [Spox](https://github.com/Quantco/spox). First you'll have to find all the input/output types of the models. Then you can use `spox.inline` to put the two models in the same model. With `spox.argument` you can create placeholder model inputs that you can forward the composed model inputs with. Then you can compute a mean (like arithmetic mean).\r\n\r\n```py\r\nimport numpy as np\r\nimport onnx\r\nimport onnx.compose\r\nimport <redacted-host>.onnx.v17 as op\r\nfrom spox import argument, build, inline, Tensor\r\n\r\n# I'll assume your model inputs are some tensors a, b of these types\r\n# You can adapt this to your case\r\na = argument(Tensor(int, (256, 256, 3)))\r\nb = argument(Tensor(np.float32, ('N',)))\r\n\r\n# Load the models\r\nmodel1 = onnx.load(\"out/model1.onnx\")\r\nmodel2 = onnx.load(\"out/model2.onnx\")\r\n\r\n# Inline the models and forward the arguments\r\n# Also unwrap all the results - here assume there's just one\r\n(r1,) = inline(model1)(a, b).values()\r\n(r2,) = inline(model2)(a, b).values()\r\n\r\n# Take the arithmetic mean\r\n# This assumes the outputs are float32 (as op.constant(value_float=...) is)\r\nr = op.div(op.add(r1, r2), op.constant(value_float=2))  \r\n\r\n# Build the composed model with given model inputs and outputs (with names)\r\nmodel = build({'first': a, 'second': b}, {'result': r})\r\n# onnx.save(model, ...)\r\n```\r\n\r\nI hope you can work out a solution based on this, but let me know if I can help further (or if you have more details on the models, like what input/output types they have)."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-03-17T16:26:05Z",
+   "body": "I really like the way one can update the connections and merge graphs in the example"
+  },
+  {
+   "author": "ghost",
+   "created_at": "2023-04-06T17:22:38Z",
+   "body": "Hi @participant2 \r\nCan you also provide a sample example to combine two onnx models sequentially (i.e. output of the first model is passed as an input to the 2nd) which are of different domain (one is a sklearn onnx model and the other is a tensorflow one) "
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-04-06T18:23:08Z",
+   "body": "@participant4 \r\nWhat do you mean of different domain? Spox should attempt to do version conversion to move the models to a common opset version, you can also try to use `onnx.version_converter` yourself to do that. Is there a specific exception you are getting?\r\n\r\nFor composing sequentially you can pass the Vars returned by the first in-line call to the next one. For instance `inline(model2)(*inline(model1)(x, y, …).values())` could work, assuming the ordering of outputs of the first model is the same as the ordering of inputs in the second. You can also pass the arguments by name if you need to. I do encourage you to experiment with some simple cases, or share the model signatures you have (input and output types & names)."
+  },
+  {
+   "author": "ghost",
+   "created_at": "2023-04-07T14:29:04Z",
+   "body": "@participant1 \r\nThanks once again for your suggestion. I'm kind of new to ONNX and SPOX and I'm struggling with the in-line call\r\nDo you mind providing me a quick sample to demonstrate what you have mentioned earlier to combine two ONNX models sequentially?\r\nSo my input to model 1 is a data frame containing 8 columns that are of type String. I guess signature will be something like ['col1', 'col2', 'col3', 'col4', 'col5', 'col6', 'col7', 'col8']. I'm unable to provide an input tensor that matches this requirement\r\n\r\nI am trying to provide something like this - \r\n`(r1,) = inline(model_1)([(x, argument(Tensor(str, (None,1)))) for x in columns]).values()`\r\nbut I get the following error\r\n`TypeError: inline callback missing required arguments: {'col1', 'col2', 'col3', 'col4', 'col5', 'col6', 'col7', 'col8'}, signature ['col1', 'col2', 'col3', 'col4', 'col5', 'col6', 'col7', 'col8'] (defaults ['shape_tensor']) -> ['variable'].`\r\n\r\nModel 1 output (and also model 2 input) will be 1400 columns of type float 64\r\nI'm doing inline something like this - `(r2,) = inline(model_2)(argument(Tensor(float, (None,1400)))).values()`\r\n\r\nCan you suggest me how do I fix inline for model 1 and how should I arrange them sequentially after I get the inline models?"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-04-07T15:45:14Z",
+   "body": "Something like this should work, depending on what are the exact model input/outputs:\r\n\r\n```py\r\n# Load model_1 and model_2\r\n...\r\n\r\nfrom spox import argument, Tensor, inline, build\r\n\r\ncolumn_names = ['col1', 'col2', 'col3', 'col4', 'col5', 'col6', 'col7', 'col8']\r\n\r\n# Create a mapping of all the input columns, from strings to spox Vars (variables)\r\ninputs = {name: argument(Tensor(str, (None,))) for name in column_names}\r\n\r\n# Pass columns (inputs) by name with keyword arguments\r\n(pred,) = inline(model_1)(**inputs).values()\r\n\r\n# pred is a new Var that represents the output of model_1 \r\n# - you want to pass it to model_2 now with another inline\r\n\r\n# Pass pred as the sole argument to model2\r\n(output,) = inline(model_2)(pred).values()\r\n\r\n# output is a Var representing the output of model2 given model1's output\r\n\r\ncombined = build(inputs, {'output': output})\r\n# combined is the resulting onnx.ModelProto\r\n```\r\n\r\n---\r\n\r\nThis attempt: \r\n\r\n```py\r\ninline(model_1)([(x, argument(Tensor(str, (None,1)))) for x in columns]).values()\r\n``` \r\ndoesn't work because you are passing a list of pairs `tuple[str, Var]`. The format is either with positional or keyword arguments (`*args: Var` or `**kwargs: Var` - the keyword names are the column names). The above example passes by keyword arguments by doing `**inputs` on a `dict[str, Var]`.\r\nI also wanted to add that `Tensor(str, (None, 1))` is a type of matrix `str[?][1]` where the second dimension is 1, not a vector `str[?]`. I assume you meant `Tensor(str, (None,))` here, which is a vector rather than a matrix, but you can correct it (Spox should raise if you use the wrong type).\r\n\r\nThis error:\r\n```py\r\nTypeError: inline callback missing required arguments: {'col1', 'col2', 'col3', 'col4', 'col5', 'col6', 'col7', 'col8'}, signature ['col1', 'col2', 'col3', 'col4', 'col5', 'col6', 'col7', 'col8'] (defaults ['shape_tensor']) -> ['variable'].\r\n```\r\nindicates the model expected arguments named `['col1', 'col2', 'col3', 'col4', 'col5', 'col6', 'col7', 'col8']`, and you haven't passed any of them (there's also a message that the output is called `'variable'`). I assume you must have used a call like `inline(model_1)()` for that exact error to be raised, unless there's a bug in the message.\r\n\r\n> Model 1 output (and also model 2 input) will be 1400 columns of type float 64\r\nI'm doing inline something like this - `(r2,) = inline(model_2)(argument(Tensor(float, (None,1400)))).values()`\r\n\r\nI will note that the type `Tensor(float, (None, 1400))` represents a matrix of float64 `?` by `1400`, so `float64[?][1400]`. I assume that is what you meant to say, rather than 1400 separate columns?\r\nAlso, I want to note you shouldn't create a new `argument` here. That would indicate the input of `model_2` and the output of `model_1` are distinct. Instead, you should pass the `Var` returned from `model_1`.\r\n\r\n"
+  },
+  {
+   "author": "ghost",
+   "created_at": "2023-04-07T17:20:38Z",
+   "body": "Thank you so much @participant2 for your detailed explanation. I have followed your instructions and I'm getting this error in the final combining step - \r\n`ValidationError: Graph must be in single static assignment (SSA) form, however 'col1' has been used as output names multiple times.`\r\nI also got a warning saying - \r\n`Warning: opset domain 'ai.onnx.ml' is not supported.`\r\n\r\nCan you advice me how do i proceed forward?"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-04-07T18:06:26Z",
+   "body": "> I have followed your instructions and I'm getting this error in the final combining step - `ValidationError: Graph must be in single static assignment (SSA) form, however 'col1' has been used as output names multiple times.`\r\n\r\nUnfortunately I can't really tell what's wrong without seeing the code. Are you sure `model_1` and `model_2` are valid (they pass `onnx.checker.check_model`)? What version of Spox are you using (it should be `0.7.0`)?\r\n\r\n> I also got a warning saying - `Warning: opset domain 'ai.onnx.ml' is not supported.`\r\n\r\nI am not aware of a possible source of this warning (in particular in Spox), you'd have to give more details when it is getting raised. If both of the composed models use `ai.onnx.ml` at different versions Spox could be raising a warning about failing to convert versions, but the message would be different."
+  },
+  {
+   "author": "ghost",
+   "created_at": "2023-04-07T18:58:00Z",
+   "body": "@participant2 \r\nThank you for your prompt response. I'm using 0.7 Spox vesion itself and I have also validated individual models using `onnx.checker.check_model`\r\nThe only thing that I think I didn't handle is that the model 1 is a scikit learn and model 2 is a tensorflow model\r\n\r\nThis is my current complete code - \r\n```\r\nfrom skl2onnx.common.data_types import StringTensorType\r\nfrom skl2onnx import convert_sklearn\r\nimport tf2onnx\r\nfrom spox import argument, Tensor, inline, build\r\n\r\n# onehot_transformer is the one hot encoded model scikit learn model obtained from the previous pipeline\r\nmodel_1 = convert_sklearn(onehot_transformer, 'onehot',\r\n                             [(x, StringTensorType([None, 1])) for x in onehot_transformer.feature_names_in_])\r\n\r\n\r\n# keras model is the tensorflow deep learning classifier model obtained from previous pipeline\r\ninput_signature = [tf.TensorSpec([None, 1416], tf.float32, name='one_hot_input')]\r\nmodel_2, _ = tf2onnx.convert.from_keras(keras_model, input_signature)\r\n\r\n# Create a mapping of all the input columns, from strings to spox Vars (variables)\r\ninputs = {name: argument(Tensor(str, (None,1))) for name in onehot_transformer.feature_names_in_}\r\n# Pass columns (inputs) by name with keyword arguments\r\n(pred,) = inline(model_1)(**inputs).values()\r\n\r\n(output,) = inline(model_2)(pred).values()\r\n\r\ncombined = build(inputs, {'output': output})\r\n```\r\n\r\nCan you kindly advice me?"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-04-07T19:41:22Z",
+   "body": "Unfortunately it seems like an issue with naming that I have not caught in the past. My best guess is that `skl2onnx` or `tf2onnx` (likely the former) is using some construct that isn't getting renamed properly by `onnx.compose.add_prefix` which is used by Spox. \r\nIf possible, it would be helpful if you could share the ONNX model files (you can dump them with `onnx.save(model_1, 'model_1.onnx')`), so that I can debug and fix the underlying issue. You might be able to put it as a `.zip` attachment here in GitHub.\r\n\r\nAs a workaround, maybe producing the model with different input names will avoid the name collision. Maybe you can try something like\r\n\r\n```py\r\nbuild(**{\"__\" + k: v for k, v in inputs.items()}, {'output': output})\r\n```\r\n\r\n"
+  },
+  {
+   "author": "ghost",
+   "created_at": "2023-04-07T20:00:13Z",
+   "body": "@participant2 \r\nPlease find the ONNX models [here](https://drive.google.com/drive/folders/1asHNsQwW-Ke2aQdwicfiFJ1bwAPqctUH?usp=share_link). Somehow I'm unable to add as an attachment, kindly request for access from the link"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-04-07T20:32:04Z",
+   "body": "Thank you for providing the sample. That's an interesting bug, I'll try to create a bug fix in Spox, but I don't know the cause yet. It seems that somehow most renames are not performed at all. Please note the workaround I proposed in the previous comment seems to work, could you confirm it also does for you? \r\nThe message `Warning: opset domain 'ai.onnx.ml' is not supported.` comes from the `onnx.version_converter`, which is printing directly to STDERR even though it should not. I will try to make a fix for that here in the ONNX repo too."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-04-07T20:59:09Z",
+   "body": "I've discovered the source of the bug. The 'adapting' mechanism in Spox ensures that opset versions are consistent across all used operators when they are built. In this case, inlining also has support for this, and as your models had versions `11` and `15` adapting was performed. As it turns out, in that specific code path there is a bug which leads to renaming not being performed correctly in a version-converted model. There are two possible workarounds:\r\n\r\n1. Perform version conversion yourself, to avoid Spox's adapting to kick in. As far as I see, you can do this with `model_1 = onnx.version_converter.convert_version(model_1, 15)` before you `inline`. This is done because your first model is at version 11, and the second is at version 15. Note that this call will print the `'ai.onnx.ml'` warnings from ONNX, which I'm fixing in [this PR](https://github.com/onnx/onnx/pull/5103). \r\n2. The above workaround with performing a manual renaming yourself also helps: `build(**{\"__\" + k: v for k, v in inputs.items()}, {'output': output})` (this line prefixes all model input names with `__`)\r\n\r\nI will try and get a Spox fix ready for this specific case in the next version. Inlining is still a bit wonky as it's really tricky to 'normalise' arbitrary ONNX models, and is done on a best-effort basis."
+  },
+  {
+   "author": "ghost",
+   "created_at": "2023-04-10T16:08:42Z",
+   "body": "Thank you so much @participant2 for your suggestions. I was able to combine the model with your first suggested approach.\r\nI just have one more question.\r\nSay if I wanted to combine another tensorflow model to the above merged model (all together, I wanted to combine 3 models), what is the best way to proceed forward?\r\nSo basically the output of the model 2 will be the input for model 3\r\n"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-04-10T18:03:32Z",
+   "body": "You should be able to use the same approach as before, with calls like \r\n\r\n```py\r\n...\r\n(output2,) = inline(model_2)(pred).values()\r\n(output3,) = inline(model_3)(output2).values()\r\n...\r\n```\r\nIf you have any other `Var`s you want to pass, you can do it either positionally or by name in the `inline(model)(...)` call. Just keep in mind a new `argument(...)` becomes a separate ONNX model input, so you should reuse them as necessary.\r\n\r\nWhen it comes to using the workaround, I would still recommend doing version conversion manually until I push out a fix on the Spox side (`>0.7.0`), which might be this or next week."
+  },
+  {
+   "author": "ghost",
+   "created_at": "2023-04-25T15:29:09Z",
+   "body": "@participant2 \r\nThanks once again for all your suggestions and inputs. so the output which I'm getting from the combined ONNX model using spox is something like this \r\n\r\n```\r\n[array([[0.00705482],\r\n        [0.00969962],\r\n        [0.01086397],\r\n        [0.00536937],\r\n        [0.0105181 ]], dtype=float32)]\r\n```\r\n        \r\nwhere as my previous ONNX models (with out using spox) has an output in this format\r\n```\r\n[array([0, 0, 0, 0, 0], dtype=int64),\r\n [{0: 0.9965015649795532, 1: 0.0070548236383390},\r\n  {0: 0.9942148327827454, 1: 0.0096996253311741},\r\n  {0: 0.9957622289657593, 1: 0.0108639799052402},\r\n  {0: 0.9961720108985901, 1: 0.0053693769270831},\r\n  {0: 0.9961720108985901, 1: 0.0105181769270837}]]\r\n```\r\nMay I know if Spox has some utility helper to transform my previous onnx model output format to the current onnx model output format (basically I just need to extract the prediction probabilities corresponds to 1 from the previous onnx model)"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-04-26T15:19:47Z",
+   "body": "Hi @participant4. I'm happy to see Spox worked out for you so far. \r\n\r\nIf you're missing any outputs from the model that you were expecting to be there, maybe you didn't pass them to the outputs dict for `build`. If they are not from the final model, keep in mind you can also return outputs from preceding models. In [this](https://github.com/onnx/onnx/issues/5006#issuecomment-1500551178) code snippet of yours for instance, you could write `build(inputs, {'pred': pred, 'output': output})` to also return the output from the first model besides the second.\r\nYou could also compare the lists `model.output` (for `ModelProto`s) between the two models and see what's missing? Spox constructs a `Var` for every output, as named in that `model.output` list. You may have forgotten to pass some of them.\r\n\r\nI'm not fully sure what would generate this sort of output from ONNX Runtime in the example you give:\r\n```\r\n[array([0, 0, 0, 0, 0], dtype=int64),\r\n [{0: 0.9965015649795532, 1: 0.0070548236383390},\r\n  {0: 0.9942148327827454, 1: 0.0096996253311741},\r\n  {0: 0.9957622289657593, 1: 0.0108639799052402},\r\n  {0: 0.9961720108985901, 1: 0.0053693769270831},\r\n  {0: 0.9961720108985901, 1: 0.0105181769270837}]]\r\n```\r\nI thought that ONNX Runtime never generates dictionaries like that, unless you're using some sort of extensions, processing the result, or using another runtime. If you meant that this is the output from the original library, maybe you should file a bug for the converter that the expected outputs are missing in ONNX.\r\n\r\nIf you think you encountered a bug and some outputs are missing, do try to produce a minimal example I could take a look at."
+  },
+  {
+   "author": "ghost",
+   "created_at": "2023-04-27T21:45:51Z",
+   "body": "hi @participant2 \r\nThank you for your suggestions.\r\nSo the expected outputs are not missing from the ONNX\r\n```\r\n[array([0, 0, 0, 0, 0], dtype=int64),\r\n [{0: 0.9965015649795532, 1: 0.0070548236383390},\r\n  {0: 0.9942148327827454, 1: 0.0096996253311741},\r\n  {0: 0.9957622289657593, 1: 0.0108639799052402},\r\n  {0: 0.9961720108985901, 1: 0.0053693769270831},\r\n  {0: 0.9961720108985901, 1: 0.0105181769270837}]]\r\n```\r\nSo in the above dictionary, the value corresponding to 1 is the expected output which is the prediction probability for label 1 and I only need to extract these probabilities so that it is equivalent to the other spox model output.\r\nFor example I need to convert the above ONNX output to below way\r\n```\r\n[array([[0.00705482],\r\n        [0.00969962],\r\n        [0.01086397],\r\n        [0.00536937],\r\n        [0.0105181 ]]\r\n```\r\nThe ONNX model has been generated using sklearn pipe something[ similar to this](http://onnx.ai/sklearn-onnx/auto_examples/plot_pipeline_lightgbm.html)\r\nCan you suggest me how do I transform the above mentioned ONNX model output (using any of the SPOX utility helpers) so that this output format will be in sync with the SPOX output.\r\nI have also attached the [two ONNX models](https://drive.google.com/drive/folders/1vFTbGC_zmUFy-3fg1RgYldRilnLiOaeP?usp=sharing) for your reference"
+  },
+  {
+   "author": "ghost",
+   "created_at": "2023-05-01T12:59:43Z",
+   "body": "Hi @participant2 \r\nLet me know if my above statement is not clear. I would really appreciate if you could assist me with some SPOX utility helper to solve my problem"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-05-01T21:49:57Z",
+   "body": "@participant4 Thank you for your feedback using Spox. Apologies, but I did not have much free time to look into your issue.\r\n\r\nIt looks like your non-spox model is using `ZipMap`, which I have not seen used before in a model, as support of the `map` type in ONNX is extremely limited. Because of this, I had not implemented the type in Spox. This causes attempts to `inline` the model fails as it cannot de-serialize the output type (`ValueError: Cannot get Type from invalid protobuf (not tensor, sequence or optional)`). I'll open a PR in Spox to add `Map`, as it's a small change, but as far as I see support in ONNX itself is buggy and other exceptions are raised in e.g. shape inference. I'll also try to look into the source of this, but it will probably only be fixed in the next ONNX release cycle. \r\n\r\n---\r\n\r\nYour best bet is to remove usage of `map` entirely. As I see from your `producer_name`, you are using `skl2onnx`. Consider following [this guide](http://onnx.ai/sklearn-onnx/auto_examples/plot_convert_zipmap.html) (I am not familiar with the inner workings of `skl2onnx` myself) to remove the `ZipMap` from the model. This should also cause the output format to be closer to what you might expect.\r\n\r\nAn alternative approach from going through `skl2onnx` is to remove the `ZipMap` node yourself from the raw `non_spox.onnx` model you have and use the value called `probabilities` as the output. \r\n\r\n```py\r\nimport onnx\r\n\r\nnon = onnx.load('non_spox.onnx')\r\nnon.graph.node.pop(-5)  # Remove the 'ZipMap' node - I found it manually by looking at the node list\r\nnon.graph.output.pop(-1)  # Remove the output map - 'output_probability'\r\n# Add the probabilities as an input instead\r\nprob_type = onnx.helper.make_tensor_type_proto(onnx.TensorProto.FLOAT, (None, 2))\r\nprob_info = onnx.helper.make_value_info('probabilities', prob_type)\r\nnon.graph.output.append(prob_info)\r\nonnx.save(non, 'non_spox_no_map.onnx')\r\n```\r\n\r\nNow you will have an `? x 2` tensor in the second output called `probabilities`. To extract only the probabilities, you can add in the [`Gather`](https://github.com/onnx/onnx/blob/main/docs/Operators.md#gather) operator to select index `1` across axis `1`. You can do this manipulating the ONNX directly, or in Spox:\r\n\r\n```py\r\nimport onnx, spox\r\nimport <redacted-host>.onnx.v17 as op  # Import Spox's opset module for the default ai.onnx domain\r\n\r\n# The input names in your model\r\nnames = ['publisher_id', 'device_model', 'device_type', 'banner_size', 'creative_id', 'adomain', 'creative_type', 'bundle']\r\nargs = {name: spox.argument(spox.Tensor(str, (None, 1))) for _ in range(8) for name in names}\r\nxprob = spox.inline(onnx.load('non_spox_no_map.onnx'))(*args.values())['probabilities']\r\nprob = op.gather(xprob, op.const([1]), axis=1)  # Apply the Gather operator here\r\nmodel = spox.build(args, {'prob': prob})\r\nonnx.save(model, 'non_spox_fmt.onnx')\r\n```\r\n\r\nThis seems to result in the same output format as you have in your other example - a `? x 1` tensor of probabilities."
+  },
+  {
+   "author": "ghost",
+   "created_at": "2023-05-02T14:31:51Z",
+   "body": "Thank you so much @participant2 once again for your suggestion. Your solution solved my problem and right now my spox and non spox model are giving same outputs."
+  },
+  {
+   "author": "ghost",
+   "created_at": "2023-05-10T14:46:24Z",
+   "body": "Hi @participant2 \r\nI'm facing a weird error when following your above mentioned suggestion.\r\nWhen executing this specific line -` model = spox.build(args, {'prob': prob})`\r\nI get this error  -\r\n```\r\nValidationError: Nodes in a graph must be topologically sorted, however input 'Inline_0__argmax_output' of node: \r\nname: Inline_0__ArrayFeatureExtractor1 OpType: ArrayFeatureExtractor\r\n is not output of any previous nodes.\r\n```\r\nThe weird part of this error is, this error only comes sometimes in between and this error doesn't arise majority of the times\r\n\r\nCan you suggest me how do I solve this?"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-05-10T15:04:29Z",
+   "body": "@participant4 Does this happen on the same model files, or are you rerunning the converter too? It's possible that the converter is sometimes e.g. producing nodes in a different order and the `.pop(index)` calls invalidate the model. The solution I provided is a workaround and it's more difficult to provide one which doesn't assume what index the bad nodes are (except using the special converter flags, like I suggested, as in the skl2onnx guide).\r\nSpox itself _should_ be deterministic, but if it happens on the same models (i.e. you have them saved on disk and are just `onnx.load`-ing them) I'd be happy to look into the bug, if you can provide the model artefacts."
+  },
+  {
+   "author": "ghost",
+   "created_at": "2023-05-10T15:32:04Z",
+   "body": "@participant2 It happens when I'm rerunning the converter. I think as you have suggested the nodes must be produced in a different order.\r\nIf this is the case, how do you recommend me to solve this?"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-05-10T16:50:57Z",
+   "body": "Did you consider following the [guide](http://onnx.ai/sklearn-onnx/auto_examples/plot_convert_zipmap.html) I sent with the original solution to stop the converter from producing ZipMap nodes, instead of using the hack modifying the model in place? \r\nIf you want to, you can also file an issue/PR with the converter, as this doesn’t seem like intended or good behaviour that the ordering is not deterministic.\r\n\r\nIf you really need to, you can make the hack slightly more robust by finding the only index of the node in `non.graph.node` with `node.op_type` (string) equal to ZipMap, and pop that index. "
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "onnx/onnx",
+  "default_branch": "main",
+  "commit_sha": "90eea9c0d0d577169d4055b81f85d0ba59f6baff",
+  "as_of": "2023-03-17T09:51:45Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_onnx_onnx_5006"
+}

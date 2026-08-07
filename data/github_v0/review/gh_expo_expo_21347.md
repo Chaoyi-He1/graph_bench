@@ -9,27 +9,23 @@
 
 ```mermaid
 flowchart LR
-    N0["<b>N0 first-launch iOS reload crash reported</b><br/><small>info: 7</small>"]
-    N1["<b>N1 minimal SDK 47 reproduction described</b><br/><small>info: 8</small>"]
-    N2["<b>N2 runtime abort and startup update setup collected</b><br/><small>info: 10</small>"]
-    N3["<b>N3 SDK 48 build avoids reporter&#x27;s crash</b><br/><small>info: 11</small>"]
-    N4["<b>N4 engine difference established</b><br/><small>info: 13</small>"]
-    N_terminal["<b>terminal first-launch reload works</b><br/><small>info: 13</small>"]
+    N0["<b>N0 first-launch iOS reload crash reported</b><br/><small>info: 5</small>"]
+    N1["<b>N1 minimal SDK 47 reproduction and crash signature</b><br/><small>info: 7</small>"]
+    N2["<b>N2 SDK 48 candidate build succeeds</b><br/><small>info: 8</small>"]
+    N3["<b>N3 JavaScript engine comparison collected</b><br/><small>info: 10</small>"]
+    N_terminal["<b>terminal first-launch reload verified across affected apps</b><br/><small>info: 12</small>"]
     N0 -.->|"❓ blank_sdk47_app_reproduces_first_launch_reload_crash"| N1
     linkStyle 0 stroke:#3b82f6,stroke-width:2px
-    N1 -.->|"❓ jsc_runtime_sigabrt_dangling_api_object, automatic_startup_update_check_and_early_js_update_calls_enabled"| N2
-    linkStyle 1 stroke:#3b82f6,stroke-width:2px
-    N2 ==>|"⚡ Move the affected SDK 47 iOS app to an SDK 48 build using its default Hermes runtime, then retest a direct `reloadAsync()` on the first launch."| N3
-    linkStyle 2 stroke:#f97316,stroke-width:2px
-    N3 -.->|"❓ sdk48_working_build_uses_default_hermes"| N4
-    linkStyle 3 stroke:#3b82f6,stroke-width:2px
-    N4 ==>|"⚡ Use a current Expo native build with Hermes and ensure only one update-check path runs during startup, preventing `reloadAsync()` from tearing down the JavaScript runtime while native automatic update work is still in progress."| N_terminal
-    linkStyle 4 stroke:#f97316,stroke-width:2px
+    N1 ==>|"⚡ Build the app with Expo SDK 48 and test the same direct `reloadAsync()` action during its first launch."| N2
+    linkStyle 1 stroke:#f97316,stroke-width:2px
+    N2 -.->|"❓ sdk48_successful_build_uses_hermes, sdk48_jsc_build_crashes_but_hermes_build_succeeds"| N3
+    linkStyle 2 stroke:#3b82f6,stroke-width:2px
+    N3 ==>|"⚡ Move the affected iOS apps off the JSC configuration by using Hermes, preferably through the SDK 48 upgrade already shown to work, then verify direct first-launch reload in every rebuilt app."| N_terminal
+    linkStyle 3 stroke:#f97316,stroke-width:2px
     class N0 start
     class N1 normal
     class N2 normal
     class N3 normal
-    class N4 normal
     class N_terminal terminal
     classDef start fill:#fee2e2,stroke:#b91c1c,color:#000
     classDef terminal fill:#dcfce7,stroke:#15803d,color:#000
@@ -38,37 +34,34 @@ flowchart LR
 
 ## Opening (body)
 
-> I use `Updates.reloadAsync()` on logout so the app restarts with cleared reducers. In an iOS production build using Expo SDK 47, calling it during the app's first launch crashes the app; after reopening the same app, the same call works. Android does not appear to crash. This also happens when `reloadAsync()` is called directly without applying an update. If an update is available and I call `checkForUpdateAsync()`, `fetchUpdateAsync()`, and then `reloadAsync()`, that reload succeeds, but another direct `reloadAsync()` during that first launch can still crash. Restarting the app once prevents the crash. The app uses the managed workflow with Expo 47.0.13, React Native 0.70.5, and production builds made with EAS.
+> I use `Updates.reloadAsync()` on account removal or logout so no reducer state remains. In an iOS production build on Expo SDK 47, calling it directly during the app's first launch crashes the app. After reopening the same app, the same call works. Android does not appear to crash. If an update is available, the sequence `checkForUpdateAsync()`, `fetchUpdateAsync()`, then `reloadAsync()` can reload successfully, but a later direct `reloadAsync()` during that first launch can still crash. Restarting the app once avoids the crash. This is a managed Expo app using Expo 47.0.13 and React Native 0.70.5.
 
 ## Satisfaction conditions
 
-1. Must identify the first-start failure mechanism: the expo-updates native automatic startup check runs at the same time as the early JavaScript update calls, and a `reloadAsync()` issued inside that window aborts the process — on JSC the abort surfaces as the dangling API-object assertion the user reported.
-2. Diagnosis must be grounded in the first-launch-only behavior, the raw JSC SIGABRT assertion, the automatic-check plus JavaScript startup flow, and the SDK 48/Hermes comparison.
-3. The fix must be delivered in a new native build and must settle on a single startup update orchestration strategy: either disable normal automatic checks with `checkAutomatically: "ON_ERROR_RECOVERY"` when JavaScript manages checks, or retain automatic checking and respond through update events.
-4. Must not claim that merely changing the SDK version while explicitly retaining JSC is sufficient; an affected SDK 48 JSC build still crashed, while switching it to Hermes stopped the crash.
-5. Must not treat an available OTA update as necessary to reproduce the original direct `reloadAsync()` crash; the blank SDK 47 reproduction crashes without a pushed update.
-6. Must ask the user to verify both the first-launch direct reload and the normal check/fetch/reload path on a fresh installation of the rebuilt app before declaring resolution.
+1. Must identify the accepted cause at the level established by this chain: the direct first-launch `reloadAsync()` crash follows the iOS JSC runtime path, with the JSC dangling-API-object assertion and the JSC-versus-Hermes comparison grounding that conclusion.
+2. Must recommend rebuilding the affected iOS app with Hermes; upgrading to SDK 48 is the reporter-verified route because that build uses Hermes by default.
+3. Must distinguish this direct logout or button-triggered reload crash from the separate thread problems involving simultaneous native and JavaScript update checks, `fetchUpdateAsync()` or `checkForUpdateAsync()` hangs, update environment variables, Reanimated, and later Android behavior.
+4. Must ask the user to verify the rebuilt app by invoking the same direct `reloadAsync()` path during a fresh first launch before declaring the issue resolved.
+5. Resolution requires the observable confirmation surfaced by the graph: the reporter's affected apps reload during first launch without terminating.
 
 ## Edges
 
 | edge | type | gates / info | payload |
 |---|---|---|---|
-| `e1_N0__N1` | clarification_only | asks: blank_sdk47_app_reproduces_first_launch_reload_crash | Yes. I can create a blank SDK 47 Expo app, install and configure `expo-updates`, add an `onPress` that calls ` |
-| `e2_N1__N2` | clarification_only | asks: jsc_runtime_sigabrt_dangling_api_object, automatic_startup_update_check_and_early_js_update_calls_enabled | The iOS crash is `EXC_CRASH (SIGABRT)`. In one of our logs the assertion is `JSCRuntime destroyed with a dangl / I never set `checkAutomatically`; the `updates` section of my Expo config only has the update URL and `fallbac |
-| `e3_N2__N3` | solution_only | req_info: ios_first_launch_direct_reload_crashes_sdk47, managed_sdk47_production_environment, jsc_runtime_sigabrt_dangling_api_object, blank_sdk47_app_reproduces_first_launch_reload_crash<br>elements: upgrades_from_sdk47_to_sdk48, creates_a_new_native_build, tests_reload_on_the_first_launch | Move the affected SDK 47 iOS app to an SDK 48 build using its default Hermes runtime, then retest a direct `reloadAsync()` on the first launch. |
-| `e4_N3__N4` | clarification_only | asks: sdk48_working_build_uses_default_hermes | I did not keep JSC configured. SDK 48 uses Hermes by default, so the working build is now on Hermes. |
-| `e5_N4__N_terminal` | solution_only | req_info: ios_first_launch_direct_reload_crashes_sdk47, subsequent_launch_direct_reload_works, sdk48_new_build_first_launch_reload_does_not_crash, sdk48_with_explicit_jsc_can_still_crash, jsc_runtime_sigabrt_dangling_api_object, automatic_startup_update_check_and_early_js_update_calls_enabled, sdk48_working_build_uses_default_hermes<br>elements: identifies_overlap_between_native_automatic_updates_and_early_javascript_update_calls, chooses_one_startup_update_orchestration_path, requires_a_new_native_build_for_checkAutomatically_or_engine_changes, asks_user_to_verify_on_a_fresh_install_of_the_build_containing_the_fix | Use a current Expo native build with Hermes and ensure only one update-check path runs during startup, preventing `reloadAsync()` from tearing down the JavaScript runtime while native automatic update work is still in progress. |
+| `e1_N0__N1` | clarification_only | asks: blank_sdk47_app_reproduces_first_launch_reload_crash | Yes. I can make a blank SDK 47 app, install and configure expo-updates, add an onPress that calls `Updates.rel |
+| `e2_N1__N2` | solution_only | req_info: ios_sdk47_direct_reload_crashes_during_first_launch, same_reload_works_after_reopening_app, blank_sdk47_app_reproduces_first_launch_reload_crash<br>elements: proposes_testing_a_new_sdk48_ios_build, repeats_the_direct_reload_test_on_first_launch | Build the app with Expo SDK 48 and test the same direct `reloadAsync()` action during its first launch. |
+| `e3_N2__N3` | clarification_only | asks: sdk48_successful_build_uses_hermes, sdk48_jsc_build_crashes_but_hermes_build_succeeds | The successful SDK 48 build uses Hermes, since that is now the default. The old SDK 47 app was on the previous / In an affected SDK 48 app I had `jsEngine: 'jsc'` configured, and the button-triggered `reloadAsync()` crashed |
+| `e4_N3__terminal` | solution_only | req_info: ios_sdk47_direct_reload_crashes_during_first_launch, ios_crash_reports_jsc_runtime_dangling_api_object, android_does_not_show_same_crash, blank_sdk47_app_reproduces_first_launch_reload_crash, sdk48_successful_build_uses_hermes, sdk48_jsc_build_crashes_but_hermes_build_succeeds<br>elements: identifies_the_failure_as_specific_to_the_jsc_first_launch_reload_path, recommends_rebuilding_with_hermes, may_use_sdk48_as_the_verified_way_to_adopt_hermes, asks_user_to_verify_direct_reload_during_a_fresh_first_launch | Move the affected iOS apps off the JSC configuration by using Hermes, preferably through the SDK 48 upgrade already shown to work, then verify direct first-launch reload in every rebuilt app. |
 
 ## Nodes
 
 | node | terminal | volunteered | images | symptoms |
 |---|---|---|---|---|
-| `N0` |  | 3 | 0 | On the first launch of my iOS production build, calling `Updates.reloadAsync()` directly during logout closes the app. After I reopen the ap |
-| `N1` |  | 0 | 0 | A blank SDK 47 app with `expo-updates` closes when I press a control that calls `reloadAsync()` on its first launch; after reopening it, the |
-| `N2` |  | 0 | 0 | The iOS process aborts during the first-start reload; one crash report says `JSCRuntime destroyed with a dangling API object`. In the update |
-| `N3` |  | 1 | 0 | After upgrading the app to SDK 48 and making a new build, calling `reloadAsync()` on the first launch no longer closes the app. |
-| `N4` |  | 1 | 0 | My working SDK 48 build uses the default Hermes engine and reloads normally on first launch. In an affected SDK 48 build explicitly configur |
-| `N_terminal` | ✓ | 0 | 0 | On a fresh installation of the rebuilt iOS app, the first-launch logout reload and the check, fetch, and reload sequence both complete witho |
+| `N0` |  | 0 | 0 | On iOS, calling `Updates.reloadAsync()` directly during the first launch closes the production app. After I reopen the app, the same `reload |
+| `N1` |  | 1 | 0 | A blank SDK 47 app with expo-updates crashes when I press a control that calls `reloadAsync()` on its first launch; after reopening it, pres |
+| `N2` |  | 1 | 0 | In my new SDK 48 build, calling `Updates.reloadAsync()` during the first app launch reloads the app without crashing. The older SDK 47 build |
+| `N3` |  | 0 | 0 | My successful SDK 48 build uses Hermes. In another affected SDK 48 app, `reloadAsync()` crashed while the app was configured for JSC and sto |
+| `N_terminal` | ✓ | 1 | 0 | After rebuilding the affected apps on SDK 48 with Hermes, `Updates.reloadAsync()` works during the first launch without closing the app. |
 
 ## Machine review (audit pass, adversarially verified)
 

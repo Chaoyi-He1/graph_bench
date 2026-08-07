@@ -1,0 +1,92 @@
+{
+ "repo": "neo4j/neo4j",
+ "number": 13483,
+ "url": "https://github.com/neo4j/neo4j/issues/13483",
+ "title": "CPU Overload on Cypher Query Post-Update to Neo4j 5.20",
+ "state": "closed",
+ "labels": [
+  "bug",
+  "team-cypher"
+ ],
+ "reporter": "reporter",
+ "created_at": "2024-07-02T20:49:50Z",
+ "closed_at": "2024-07-26T09:34:15Z",
+ "body": "## Guidelines\r\n\r\n- Neo4j version: 5.20\r\n- Operating system: Ubuntu 22.04\r\n- API/Driver:  Neo4j browser\r\n\r\n## Example bug report\r\n\r\nI discovered that upon updating my database from Neo4j v4.15 to v5.20, a specific Cypher query that used to perform under a few seconds now takes forever and just hangs in the database, never returning, while taking the CPU at 100%.\r\n\r\nIn both cases, the indexes are the same.\r\n\r\n### Neo4j 5.15\r\n\r\n`Started streaming 95432 records after 241 ms and completed after 2416 ms, displaying first 1000 rows.`\r\n\r\n### Neo4j 5.20\r\n\r\nNever returns (even after one hour).\r\nNothing suspicious in the log output (no java stacktraces, exception or log message that would explain it)\r\n\r\nThis is problematic because I would have prefer a memory heap overflow or a crash, but at least that the query returns.\r\nNow I might expect my programs to hang somewhere when they perform a Cypher query.\r\n\r\n### Steps to reproduce\r\n\r\nI can share the relevant dataset as well as the query if a maintainer wishes to repro this issue..\r\n\r\nOne thing to note: I used the `EXPLAIN` keyword to obtain the execution plan, and for the same query it differs between the 2 versions, with 5.20 a **cartesian product** is inserted.\r\n\r\nI believe this is the key issue here.\r\n\r\n### Expected behavior\r\n\r\nThe query should have completed under 30 seconds.\r\n\r\n### Actual behavior\r\n\r\nThe query never returns and the CPU is maxed out to 100% forever.\r\n",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2024-07-02T21:42:44Z",
+   "body": "I believe this is a known bug, affecting Neo4j 5.19 and 5.20. This has to do with the eager analyzer, which is used during planning, and so you could test / replicate this using only the EXPLAIN of the query, without running it at all. If it hangs, then yes this is caused by the eager analyzer bug.\r\n\r\nYou should upgrade to Neo4j 5.21 for a fix.\r\n\r\nThe mitigation while you are on affected versions is to apply this to your neo4j.conf and restart.\r\n\r\n`internal.cypher.eager_analysis_implementation=IR`"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-07-02T21:49:13Z",
+   "body": "Thanks for the feedback on this issue, and confirming the bug !\r\n\r\nI'm blocked to upgrade to 5.21, as my Python app is based on `neomodel`, and the latest release pins the neo4j driver to [`v4.19` unfortunately](https://github.com/neo4j-contrib/neomodel/blob/master/pyproject.toml#L25).\r\n\r\nI will apply the config setting your mentioned in the meantime."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-07-02T22:01:53Z",
+   "body": "Now I reread your answer again:\r\n_\"so you could test / replicate this using only the EXPLAIN of the query, without running it at all. If it hangs, then yes this is caused by the eager analyzer bug\"_\r\n\r\nSo I ran the query with the `EXPLAIN` keyword, and in both cases I got the execution plan.\r\nNo hanging at all in 5.20.\r\nThat how I determined that Neo4j 5.20 was introduced a **cartesian product** in the query plan.\r\n\r\nIs this another bug ?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-07-02T22:08:57Z",
+   "body": "I would not think it is a bug, the planner has great ability to decide on the plan, and it is not guaranteed to always find the best one.\r\n\r\nGiven that you don't seem to be encountering the bug with the query analyzer, we would move on to query tuning, to see how the planner is planning this, and figure out how to nudge the planner to a a better plan.\r\n\r\nCan you share the query and the query plan with us?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-07-02T22:13:35Z",
+   "body": "> Can you share the query and the query plan with us?\r\n\r\nSure, how can i find you on discord ? or somewhere else ?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-07-02T22:17:34Z",
+   "body": "The Cypher section of the Neo4j community forums usually works for tuning issues like these.\r\nhttps://<redacted-host>/c/neo4j-graph-platform/cypher/12\r\n\r\nLet me know here when you've created an issue and provided the query and plan so we can take a look."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-07-03T10:54:48Z",
+   "body": "Thanks for the report @reporter, as Andrew suggests this might be a tuning issue. But either way I believe the query planner team would be interested in having a look at the problematic query and it's plans in the different versions if you're willing to share those?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-07-04T00:13:03Z",
+   "body": "After further investigations, I realized that the Neo4j version is not at fault (either 5.15, 5.20 or 5.21).\r\n\r\nBut I noticed that there is a \"threshold\" reached when the database grows, and the number of nodes / relationships to traverse, at which point the query planner decides to add a cartesian product into the execution plan.\r\n\r\nExample with this query:\r\n```cypher\r\nMATCH (c:Category)-[:HAS_CHILD_CATEGORY|HAS_CHILD_ITEM*]->(i:Item)\r\nWHERE c.name = $arg_name\r\nRETURN c.name\r\n```\r\n\r\nWhich should be simple and straighforward.\r\n\r\nBut instead I get this execution plan (**at a certain database size**):\r\n![plan(6)](https://github.com/neo4j/neo4j/assets/964610/32a8dc4e-7f5c-4ab4-9cd1-fc0e0ee0367c)\r\n\r\n\r\n\r\nFuthermore, I noticed that I trigger the threshold by changing the variable-lenth path quantifier:\r\n\r\n# `*0..1`\r\n\r\n![plan(7)](https://github.com/neo4j/neo4j/assets/964610/30d4bd0a-84c9-491e-aa06-5768ef2f325b)\r\n\r\n\r\n# `*0..22`\r\n\r\n![plan(8)](https://github.com/neo4j/neo4j/assets/964610/c152b82f-ac7d-4990-86af-95f5d80d77fd)\r\n\r\n# `*0..23`\r\n\r\nAnd starting at 23, we suddently have a cartesian product in the planner !\r\n![plan(9)](https://github.com/neo4j/neo4j/assets/964610/c4030fff-a3ab-40fd-8819-ef895b05ab55)\r\n\r\n\r\nIs this expected of the planner ?\r\n\r\nAll of this was on Neo4j 5.21\r\n\r\nThanks !"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-07-04T07:56:16Z",
+   "body": "At first glance both plans at least looks valid for your query. The planner has to make an educated guess which plan is the best to solve a particular query. For certain datasets the plan with cartesian product would be the fastest. I've created a ticket for our planner team to have a look though.\r\n\r\nI encourage you to follow the advice of @participant1 and turn to https://<redacted-host>/c/neo4j-graph-platform/cypher/12 to get help tuning the query. It's possible there are some tricks to avoid planning cartesian products in situations like these that I'm unaware of."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-07-06T14:19:41Z",
+   "body": "@participant2 thanks for opening a ticket !\r\nI understand the planner is trying to optimize, however I end up with an unresponsive query here, so something is not right in my opinion.\r\n\r\nI've continued my investigation and found something that might interests you.\r\n\r\nThis is my database schema:\r\n![image](https://github.com/neo4j/neo4j/assets/964610/e2aa54d8-0cc4-48ad-9d59-89ea72bfbf02)\r\n\r\n\r\nAs we have seen, this request generates a cartesian product:\r\n\r\n```cypher\r\nMATCH (c:Category)-[:HAS_CHILD_CATEGORY|HAS_CHILD_ITEM*]->(i:Item)\r\nWHERE c.name = $arg_name\r\nRETURN c.name\r\n```\r\n\r\nHowever I discovered if I add the Entity node and relationship in the match pattern, the cartesian product disappears:\r\n\r\n```cypher\r\nEXPLAIN MATCH (e:Entity)-[:HAS_CATEGORY]->(c:Category)-[:HAS_CHILD_CATEGORY|HAS_CHILD_ITEM*]->(i:Item)\r\nWHERE c.name = $arg_name\r\nRETURN c.name\r\n```\r\n\r\n![plan(11)](https://github.com/neo4j/neo4j/assets/964610/89eb99fa-113d-410f-a48c-dce6ed175e61)\r\n\r\n\r\nSo nothing has changed except adding a constraint / filter that wasn't required anyway.\r\n@participant2 Does this help you frame this issue a bit better ?\r\n\r\nThanks !"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-07-08T06:32:24Z",
+   "body": "@reporter unrelated to the bug and just jumping in from the side: Python driver 5.19.0 as used in Neo Model should be by all means compatible with Neo4j database 5.21.0. So you might just give it a shot to use a newer database version.  "
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-07-08T16:34:02Z",
+   "body": "Hi @reporter, bonjour,\r\n\r\nI see there has been quite a lot of back-and-forth on this issue between here and the community forum. Thank you for your patience and for the detailed report, it's extremely helpful. I work on the team responsible for the Cypher query planner. We've actually been investigating a similar issue internally, it looks very familiar indeed.\r\n\r\n## What is going on?\r\n\r\nBased on the statistics collected by the database, the planner estimates that expanding along a `-[:HAS_CHILD_CATEGORY|HAS_CHILD_ITEM]->` relationship will produce more than one row on average. I assume that you have a lot of relationships in your graph and relatively few nodes – specifically the sum of the number of `HAS_CHILD_CATEGORY` and `HAS_CHILD_ITEM` relationships is greater than the total number of nodes. If you repeat the expansion many times, or any number of times like in your query `-[:HAS_CHILD_CATEGORY|HAS_CHILD_ITEM*]->`, the planner will expect it to produce a lot of rows. Looking at the whole query:\r\n\r\n```cypher\r\nMATCH (c:Category)-[:HAS_CHILD_CATEGORY|HAS_CHILD_ITEM*]->(i:Item)\r\nWHERE c.name = $arg_name\r\nRETURN c.name\r\n```\r\n\r\nThe planner sees essentially two options for solving this:\r\n\r\n1. Find all `(c:Category) WHERE c.name = $arg_name`, expand any number of times along `-[:HAS_CHILD_CATEGORY|HAS_CHILD_ITEM*]->` using [`VarLengthExpand(All)`](https://neo4j.com/docs/cypher-manual/current/planning-and-tuning/operators/operators-detail/#query-plan-varlength-expand-all), and ensure that the final node `(i)` has label `Item`.\r\n2. Find the cartesian product of all `(c:Category) WHERE c.name = $arg_name` and all `(i:Item)`, and then try to join the two end together by expanding any number of times along `-[:HAS_CHILD_CATEGORY|HAS_CHILD_ITEM*]->` using [`VarLengthExpand(Into)`](https://neo4j.com/docs/cypher-manual/current/planning-and-tuning/operators/operators-detail/#query-plan-varlength-expand-into).\r\n\r\nAs you've already noticed in your case, up to 22 expansions, the first option wins, but from 23 onwards, the second one wins. This is because the planner expect so many rows coming out of the variable-length relationship that applying the `(i:Item)` predicate on top appears prohibitive. The more expansions you allow, the more expensive the first option appears. The second option comes out cheaper as it allows to apply the `(i:Item)` predicate earlier in the plan, before traversing the relationships.\r\n\r\nIt makes sense in the context of the cost model, the planner is technically working as expected, but I agree with you: I don't think it's right. We're still investigating our options, I don't want to commit to a solution at this point. We may limit the situations where the planner considers planning a `CartesianProduct + VarLengthExpand(Into)`, perhaps change the cost of `VarLengthExpand(Into)`, or maybe something entirely different.\r\n\r\n## Why does adding the `:Entity` node and relationship change the plan?\r\n\r\nI can't answer for sure as I don't have access to all the stats in your database. My theory is that the two options, `VarLengthExpand(All)` vs `CartesianProduct + VarLengthExpand(Into)`, are quite close in terms of estimated cost. The fact that it picks the first option up to 22 expansions, and only changes to the second one from 23 is a good clue. Based on the output of `EXPLAIN`, your last screenshot, the planner expects very few rows coming out of `(e:Entity)-[:HAS_CATEGORY]->(c:Category)`, fewer than one. This probably is enough to tip the balance back in favour of the first option; not by much I would assume.\r\n\r\n## How to work around it?\r\n\r\nAs I mentioned, we will probably change the behaviour of the planner in a future release, but in the meantime you will need to change the query. I can think of two solutions at this point:\r\n\r\n#### Hide the `(i:Item)` predicate from the planner\r\n\r\nAs suggested by @participant1 on the community forum, delay applying the `(i:Item)` predicate and force the planner to plan everything else first:\r\n\r\n```cypher\r\nMATCH (c:Category)-[:HAS_CHILD_CATEGORY|HAS_CHILD_ITEM*]->(i)\r\nWHERE c.name = $arg_name\r\nWITH c, i, 1 AS ignored\r\nWHERE i:Item\r\nRETURN c.name\r\n```\r\n\r\nThis makes the cartesian product of `c` and `i` more expensive as `i` matches on all the nodes in the graph up until the `WITH` clause. It is a bit heavy-handed, and frankly unfortunate, but it should work.\r\n\r\n#### Split the relationship types\r\n\r\nBased on the queries you shared, and the screenshot of your database schema, I would consider rewriting the query to something along the lines of:\r\n\r\n```cypher\r\nMATCH (c:Category)-[:HAS_CHILD_CATEGORY*]->(child_category:Category)-[:HAS_CHILD_ITEM]->(i:Item)\r\nWHERE c.name = $arg_name\r\nRETURN c.name, i.name\r\n```\r\n\r\nor if child item isn't mandatory:\r\n\r\n```cypher\r\nMATCH (c:Category)-[:HAS_CHILD_CATEGORY*]->(child_category:Category)\r\nWHERE c.name = $arg_name\r\nOPTIONAL MATCH (child_category)-[:HAS_CHILD_ITEM]->(i:Item)\r\nRETURN c.name, i.name\r\n```\r\n\r\nThis would tell the planner that when you write `-[:HAS_CHILD_CATEGORY|HAS_CHILD_ITEM*]->` you really mean traversing any number of `HAS_CHILD_CATEGORY` relationship followed by an optional `HAS_CHILD_ITEM` one. At some point we might be able to infer it automatically based on the schema when estimating the number of rows, that's something we've considered, but that would come further down the line.\r\n\r\n___\r\n\r\nI hope this gives you a better idea of what the planner is doing, and that it allows you to get correct performance consistently on your queries. Please let me know if it works or if you have any other questions.\r\n"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2024-07-26T09:34:15Z",
+   "body": "Hi @reporter,\r\nWe have improved the planner in the next version, 5.23, and believe that it should resolve issues like the one that you are experiencing. For now we will close this issue. Please let us know if @participant4 his work-arounds did not work and when the issue persists in version 5.23 or later."
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "neo4j/neo4j",
+  "default_branch": "2026.06",
+  "commit_sha": "496c641a6d8a99a64d33cbcc30e3a4795bba95da",
+  "as_of": "2024-07-02T20:49:50Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_neo4j_neo4j_13483"
+}

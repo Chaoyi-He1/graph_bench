@@ -1,0 +1,239 @@
+{
+ "repo": "supabase/supabase",
+ "number": 35021,
+ "url": "https://github.com/supabase/supabase/issues/35021",
+ "title": "fail to deploy functions that use deno workspace packages",
+ "state": "closed",
+ "labels": [
+  "bug",
+  "external-issue",
+  "to-triage"
+ ],
+ "reporter": "alita-moore",
+ "created_at": "2025-04-15T01:22:30Z",
+ "closed_at": "2025-06-27T06:23:53Z",
+ "body": "# Bug report\n\n<!-- \n\n⚠️ We receive a lot of bug reports which have already been solved or discussed. If you are looking for help, please try these first:\n\n- Docs: https://docs.supabase.com\n- Discussions: https://github.com/supabase/supabase/discussions\n- Discord: https://discord.supabase.com\n\nBefore opening a bug report, please verify the following: \n\n-->\n\n- [X] I confirm this is a bug with Supabase, not with my own application. \n- [X] I confirm I have searched the [Docs](https://docs.supabase.com), GitHub [Discussions](https://github.com/supabase/supabase/discussions), and [Discord](https://discord.supabase.com). \n\n## Describe the bug\n\nfunctions deploy fails to deploy functions with workspace dependencies\n\n## To Reproduce\n\nSee the following project: https://codesandbox.io/p/devbox/elastic-chatterjee-forked-6496py?workspaceId=ws_VGZMLHNu2hWPYZLrXEYbsU\n\nyou can see the supabase function in supabase/functions/example. Attempting to deploy this will fail. However `deno run index.ts` works as expected\n\n## Expected behavior\n\n`pnpx supabase functions deploy` deploys the function and resolves the workspace dependencies in the same way that deno does.\n\n## Screenshots\n\nIf applicable, add screenshots to help explain your problem.\n\n## System information\n\n- Version of supabase-js: 2.20.12\n- Version of Node.js: v22.14.0\n\n## Additional context\n\nnote that it fails with the following error:\n```\nRelative import path \"@wovenlibs/core\" not prefixed with / or ./ or ../ and not in import map\n```\n\nbecause deno can resolve the workspace packages without a scheme. But it seems supabase cannot resolve workspace files in the same way.\n\n",
+ "comments": [
+  {
+   "author": "alita-moore",
+   "created_at": "2025-04-15T10:20:10Z",
+   "body": "I tried enabling deno_version 2 by setting the following:\n```\n[edge_runtime]\ndeno_version = 2\n```\nin the config.toml\n\nwhich I think is on the right track, because it makes it so that I can use a package.json in the function definition. But then I get something like this despite the node_modules containing the relevant package installed (note this is installed using pnpm workspace packages)\n\n```\n/alitamoore/workspaces/monorepo/infra/supabase-core\nWARN: no SMS provider is enabled. Disabling phone login\nBundling Function: sso\nError: failed to create the graph\n\nCaused by:\n    Could not resolve \"@wovenlibs/core\", but found it in a package.json. Deno expects the node_modules/ directory to be up to date. Did you forget to run `deno install`?\n        at file:///Users/alitamoore/workspaces/monorepo/infra/supabase-core/supabase/functions/sso/index.ts:9:24\nerror running container: exit 1\nTry rerunning the command with --debug to troubleshoot the error.\n```\n\nThis could be due to the fact that the @wovenlibs/core is a symbolic link. What's weird about this is that the other npm packages are also symbolic links (e.g. express). So I'm not sure why it's failing to transfer over only the @wovenlibs/core package. "
+  },
+  {
+   "author": "alita-moore",
+   "created_at": "2025-04-15T17:22:01Z",
+   "body": "One thing I noticed is that when I downgrade my deno to version 2.0.0 I get the same error in my IDE so perhaps the deno version needs to be updated?\n\n```\nRelative import path \"@wovenlibs/core\" not prefixed with / or ./ or ../\n  hint: If you want to use a JSR or npm package, try running `deno add jsr:@wovenlibs/core` or `deno add npm:@wovenlibs/core`deno(import-prefix-missing)\n```"
+  },
+  {
+   "author": "sweatybridge",
+   "created_at": "2025-04-15T18:11:37Z",
+   "body": "@nyannyacha might have some idea on this error\n\nalso related to https://github.com/supabase/cli/issues/3047"
+  },
+  {
+   "author": "nyannyacha",
+   "created_at": "2025-04-15T19:09:24Z",
+   "body": "Hello @alita-moore 😄 Can you tell me what version of the CLI you are using?\n@kallebysantos  recently merged [a PR](https://github.com/supabase/cli/pull/3417) seems related to this, and I'd like to bisect if it's a separate issue."
+  },
+  {
+   "author": "kallebysantos",
+   "created_at": "2025-04-15T20:45:34Z",
+   "body": "Hey @nyannyacha 💚 \n> ... recently merged https://github.com/supabase/cli/pull/3417 seems related to this\n\nNot really 😔 My PR only covers the module graph for local development and requires that `imports` need to be declared inside `supabase/functions/[slug]/deno.json(c)` or in the file defined at `config.toml`. \n\n@alita-moore after looking your example, I could see that you have the following `import_map` config:\n\n<details>\n<summary>config.toml</summary>\n\n```toml\n[functions.example]\nenabled = true\nverify_jwt = true\nimport_map = \"./functions/example/deno.json\"\n```\n\n</details>\n\nI'm not sure about `Deno's workspaces` neither `@scope/` but based on my understanding the CLI will try to use this `import_map` to resolve your function deps. Also outside imports feat may requires the `--use-api` while deploying like [described here](https://github.com/orgs/supabase/discussions/33613)\n\n---\n\n<details>\n<summary>Possible fix:</summary>\n\nApply the following config to your `supabase/functions/[slug]/deno.json(c)`\n```json\n{\n    \"imports\":  {\n        \"@scope/\": \"../../../libs/\"\n    }\n}\n```\n> For large project with many functions, you can also define a global `import_map.json` then point it inside your `config.toml`. In a future release you'll be also able to define `importMap` field directly from your `supabase/functions/[slug]/deno.json(c)`\n\nLocal development:\n```\nnpx supabase@beta functions serve\n```\n\nThen deploy with:\n```\nnpx supabase functions deploy --use-api \n```\n\nI hope that it helps 💚\n\n</details>\n"
+  },
+  {
+   "author": "alita-moore",
+   "created_at": "2025-04-16T00:12:04Z",
+   "body": "@nyannyacha my cli is version 2.20.12"
+  },
+  {
+   "author": "alita-moore",
+   "created_at": "2025-04-16T00:23:29Z",
+   "body": "@kallebysantos when I use the --use-api I get the following error\n```\npnpx supabase functions deploy --use-api\nUsing workdir /Users/alitamoore/workspaces/monorepo/infra/supabase-core\nWARN: no SMS provider is enabled. Disabling phone login\nUploading asset (sso): supabase/functions/sso/deno.json\nUploading asset (sso): supabase/functions/sso/main.ts\nunexpected deploy status 400: {\"message\":\"failed to create the graph\\n\\nCaused by:\\n    Relative import path \\\"@wovenlibs/core\\\" not prefixed with / or ./ or ../ and not in import map from \\\"file:///tmp/user_fn_zqcnafevawsfysnzwsjk_b1c8021e-047a-40bd-aa26-42a21f3e080a_29/supabase/functions/sso/main.ts\\\"\\n        at file:///tmp/user_fn_zqcnafevawsfysnzwsjk_b1c8021e-047a-40bd-aa26-42a21f3e080a_29/supabase/functions/sso/main.ts:9:24\"}\n```\n\nIf I implement the fix you suggested with --use-api I get the following\n```\npnpx supabase functions deploy --use-api\nUsing workdir /Users/alitamoore/workspaces/monorepo/infra/supabase-core\nWARN: no SMS provider is enabled. Disabling phone login\nUploading asset (sso): supabase/functions/sso/deno.json\nUploading asset (sso): supabase/functions/sso/main.ts\nunexpected deploy status 400: {\"message\":\"failed to create the graph\\n\\nCaused by:\\n    Module not found \\\"file:///libs/core\\\".\\n        at file:///tmp/user_fn_zqcnafevawsfysnzwsjk_b1c8021e-047a-40bd-aa26-42a21f3e080a_29/supabase/functions/sso/main.ts:9:24\"}\nTry rerunning the command with --debug to troubleshoot the error.\n```\n\nthen without --use-api I get this\n```\npnpx supabase functions deploy          \nUsing workdir /Users/alitamoore/workspaces/monorepo/infra/supabase-core\nWARN: no SMS provider is enabled. Disabling phone login\nBundling Function: sso\nError: failed to create the graph\n\nCaused by:\n    Is a directory (os error 21)\n        at file:///Users/alitamoore/workspaces/monorepo/infra/supabase-core/supabase/functions/sso/main.ts:9:24\nerror running container: exit 1\nTry rerunning the command with --debug to troubleshoot the error.\n```"
+  },
+  {
+   "author": "alita-moore",
+   "created_at": "2025-04-16T01:04:11Z",
+   "body": "okay I made some progress, if I add the following lines to the \"imports\" in `deno.json`\n\n```\n{\n  \"imports\": {\n    \"@faker-js/faker\": \"npm:@faker-js/faker@^9.7.0\",\n    \"@std/assert\": \"jsr:@std/assert@1\",\n    \"#/\": \"./src/\",\n    \"__workspace\": \"../../../../../deno.json\",\n    \"__libs\": \"../../../../../libs\",\n    \"__domain\": \"../../../../../domain\",\n    \"express\": \"npm:express@^5.1.0\"\n  }\n}\n```\n\nand then add the package to a package.json\n```\n{\n  \"name\": \"sso\",\n  \"version\": \"1.0.0\",\n  \"description\": \"\",\n  \"main\": \"index.js\",\n  \"scripts\": {\n    \"test\": \"echo \\\"Error: no test specified\\\" && exit 1\"\n  },\n  \"keywords\": [],\n  \"author\": \"\",\n  \"license\": \"ISC\",\n  \"packageManager\": \"pnpm@10.8.1\",\n  \"dependencies\": {\n    \"@wovenlibs/core\": \"workspace:^\"\n  }\n}\n```\n\nit appears to resolve the dependency when building it, but then the resulting function gives the following error at boot\n\n```\nworker boot error: invalid eszip v2\n[\n  {\n    \"boot_time\": null,\n    \"cpu_time_used\": null,\n    \"deployment_id\": \"zqcnafevawsfysnzwsjk_b1c8021e-047a-40bd-aa26-42a21f3e080a_30\",\n    \"event_type\": \"BootFailure\",\n    \"execution_id\": \"17ac207d-fc74-430f-83ab-db89e1bcd008\",\n    \"function_id\": \"b1c8021e-047a-40bd-aa26-42a21f3e080a\",\n    \"level\": \"error\",\n    \"memory_used\": [],\n    \"project_ref\": \"zqcnafevawsfysnzwsjk\",\n    \"reason\": null,\n    \"region\": \"ap-southeast-1\",\n    \"served_by\": \"supabase-edge-runtime-1.67.3 (compatible with Deno v1.45.2)\",\n    \"timestamp\": \"2025-04-16T00:58:16.181Z\",\n    \"version\": \"30\"\n  }\n]\n```\n\n(edit: I'm noticing that the deno version here is v1, is there a way to upgrade the deno on the edge environment to v2?)\n\nit would be nice if I could also get rid of the package.json as it seems unnecessary in this case. note that when I run this locally with pnpx supabase functions serve it seems to copy the files correctly into the container  but then I get this error when it runs:\n\n```\nworker boot error: [ERR_MODULE_NOT_FOUND] Cannot find module 'file:///var/tmp/sb-compile-edge-runtime/monorepo/libs/core/index.js' imported from 'file:///var/tmp/sb-compile-edge-runtime/monorepo/infra/supabase-core/supabase/functions/sso/main.ts'\nInvalidWorkerCreation: worker boot error: [ERR_MODULE_NOT_FOUND] Cannot find module 'file:///var/tmp/sb-compile-edge-runtime/monorepo/libs/core/index.js' imported from 'file:///var/tmp/sb-compile-edge-runtime/monorepo/infra/supabase-core/supabase/functions/sso/main.ts'\n    at async Function.create (ext:user_workers/user_workers.js:143:17)\n    at async Object.handler (file:///var/tmp/sb-compile-edge-runtime/root/index.ts:157:22)\n    at async respond (ext:runtime/http.js:202:16) {\n  name: \"InvalidWorkerCreation\"\n}\n```\n\nwhich is odd because the package.json defines where it should be looking for the index file (i.e. `./dist/src/index.js`)"
+  },
+  {
+   "author": "nyannyacha",
+   "created_at": "2025-04-16T03:00:21Z",
+   "body": "> it would be nice if I could also get rid of the package.json as it seems unnecessary in this case. note that when I run this locally with pnpx supabase functions serve it seems to copy the files correctly into the container but then I get this error when it runs:\n> which is odd because the package.json defines where it should be looking for the index file (i.e. ./dist/src/index.js)\n\nNote:\nThis bug turns out to also occur in the `deno compile <SCRIPT_ARG>` command, which is the original implementation of the bundling logic of the edge runtime."
+  },
+  {
+   "author": "nyannyacha",
+   "created_at": "2025-04-16T03:08:31Z",
+   "body": "> If I implement the fix you suggested with --use-api I get the following\n\nIn this case, the backend that performs bundling is on the Supabase side and does not yet support Deno 2, so this is expected behavior.\n\ncc @laktek \n\n> it appears to resolve the dependency when building it, but then the resulting function gives the following error at boot\n\nAs mentioned above, Supabase Edge Functions does not yet support Deno 2. This is expected behavior because function bundles made in the latest version of the edge runtime (v1.68.0-develop.13, Deno 2) cannot yet be loaded by the service."
+  },
+  {
+   "author": "alita-moore",
+   "created_at": "2025-04-16T04:19:15Z",
+   "body": "I see, any idea when Deno 2 will be supported on the service? We won't be launching for another month or two, so maybe I can just develop locally if you think it'll be ready in that time?"
+  },
+  {
+   "author": "nyannyacha",
+   "created_at": "2025-04-16T04:44:55Z",
+   "body": "I think @laktek knows more about the Deno 2 release schedule than I do.\nBut I don't think it will be two months."
+  },
+  {
+   "author": "alita-moore",
+   "created_at": "2025-04-16T05:53:47Z",
+   "body": "> > it would be nice if I could also get rid of the package.json as it seems unnecessary in this case. note that when I run this locally with pnpx supabase functions serve it seems to copy the files correctly into the container but then I get this error when it runs:\n> > which is odd because the package.json defines where it should be looking for the index file (i.e. ./dist/src/index.js)\n> \n> Note: This bug turns out to also occur in the `deno compile <SCRIPT_ARG>` command, which is the original implementation of the bundling logic of the edge runtime.\n\nI am able to resolve this by setting up a `deno.json` script that points to the .js artifact in each of the package's roots. e.g.\n```\n{\n  \"name\": \"@wovendomain/core\",\n  \"exports\": {\n    \".\": \"./dist/src/index.js\"\n  },\n}\n```\n\nbut this is not ideal because it causes deno to lose its inferred types (because it points only to the .js file) and because these packages are not deno, so it adds confusion."
+  },
+  {
+   "author": "nyannyacha",
+   "created_at": "2025-04-17T02:32:49Z",
+   "body": "> and then add the package to a package.json\n\n> it would be nice if I could also get rid of the package.json as it seems unnecessary in this case. \n\nThere is no need to have package.json under `supabase/functions/example`.\n\nSimply adding dependencies to the root package.json as shown below was sufficient:\n```diff\n  \"name\": \"workspace\",\n  \"version\": \"1.0.0\",\n  \"description\": \"\",\n  \"main\": \"index.js\",\n  \"scripts\": {\n    \"test\": \"echo \\\"Error: no test specified\\\" && exit 1\"\n  },\n  \"keywords\": [],\n  \"author\": \"\",\n  \"license\": \"ISC\",\n  \"packageManager\": \"pnpm@10.8.1\",\n+ \"dependencies\": {\n+   \"@scope/lib\": \"workspace:*\"\n+ }\n```\n\nThen running `deno install` or `pnpm install` to update the node_modules folder and make a bundle and it worked fine too (both deno compile and edge runtime)."
+  },
+  {
+   "author": "alita-moore",
+   "created_at": "2025-04-17T03:46:24Z",
+   "body": "generally speaking, it's not great to place packages in the root package.json because then you're requiring all other packages to rely on the same dependency. In my local setup it seems that deno resolves the dependency even without defining it in the `package.json` at all. For example, in [this](https://codesandbox.io/p/devbox/elastic-chatterjee-forked-2tz9hf?workspaceId=ws_VGZMLHNu2hWPYZLrXEYbsU) codesandbox, I remove the `package.json` from supabase/functions/example and do not add the package to the root `package.json` and it successfully compiles. Notably, this works in both deno version `2.2.10` and `2.1.4` (the current deno version in the edge runtime). From what I can tell the edge runtime serve the functions with this setup as well. To be honest, I'm now struggling to reproduce the issue where it would claim the imports were invalid relative paths, now if I deploy using deno version 2 along with the workaround I mentioned earlier where I include the [relevant source files in the import map](https://github.com/supabase/supabase/issues/35021#issuecomment-2807906173) along with the workaround for the package entrypoint resolution mentioned [here](https://github.com/supabase/supabase/issues/35021#issuecomment-2808449435) it seems to deploy and serve properly.\n\nThat's all to say that I think there are the folllowing issues for getting this workflow up and running:\n1. support deno 2 on the edge runtime service\n2. automatically detect workspace files and include them during the deployment to avoid [this](https://github.com/supabase/supabase/issues/35021#issuecomment-2807906173) hack\n3. upgrade the edge runtime to a deno version after they fix this issue: https://github.com/denoland/deno/issues/28926"
+  },
+  {
+   "author": "alita-moore",
+   "created_at": "2025-04-17T03:55:15Z",
+   "body": "by the way, it's worth noting that the default build system using docker is including files outside of the functions directory, which is good news. Does this mean the `--use-api` experimental feature is not necessary anymore? especially if there were some way to resolve which resources were being used by deno to include them in the build automatically. cc @sweatybridge "
+  },
+  {
+   "author": "nyannyacha",
+   "created_at": "2025-04-17T06:20:26Z",
+   "body": ">  I remove the package.json from supabase/functions/example and do not add the package to the root package.json and it successfully compiles. \n\nHave you tried removing the `node_modules` folder and running `deno install` or `pnpm install` command again? I think that method likely won't work."
+  },
+  {
+   "author": "nyannyacha",
+   "created_at": "2025-04-17T06:29:29Z",
+   "body": "> okay I made some progress, if I add the following lines to the \"imports\" in deno.json\n```\n{\n  \"imports\": {\n    \"@faker-js/faker\": \"npm:@faker-js/faker@^9.7.0\",\n    \"@std/assert\": \"jsr:@std/assert@1\",\n    \"#/\": \"./src/\",\n...\n```\nActually, this part is unnecessary from the perspective of edge runtime itself — even if these things are not declared, it should work properly, but I think it's just that because the volume mount method of cli prevents the edge runtime container from finding the parent folder.\n"
+  },
+  {
+   "author": "alita-moore",
+   "created_at": "2025-04-17T06:54:50Z",
+   "body": "> > I remove the package.json from supabase/functions/example and do not add the package to the root package.json and it successfully compiles.\n> \n> Have you tried removing the `node_modules` folder and running `deno install` or `pnpm install` command again? I think that method likely won't work.\n\nI just tried it and you are correct, seems that it needs to have the module cached in node_modules"
+  },
+  {
+   "author": "alita-moore",
+   "created_at": "2025-04-17T10:16:49Z",
+   "body": "I opened a follow up issue in the deno repo regarding this problem: https://github.com/denoland/deno/issues/28942"
+  },
+  {
+   "author": "Hallidayo",
+   "created_at": "2025-04-24T21:49:58Z",
+   "body": "Hi all, going to close this one now as it seems fixed. Thanks for all your help!"
+  },
+  {
+   "author": "lilnamcor",
+   "created_at": "2025-04-26T17:42:59Z",
+   "body": "<img width=\"760\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/4c74d210-37a4-4b3f-aa0e-5c3b66b3bcd8\" />\n\nI'm actually also getting a weird issue when deploying packages with relative imports. The fact that it fails inconsistently (also locally it fails sometimes) is the weirdest thing\n\n```\n{\n  \"imports\": {\n    \"@\": \"../../../common/src\",\n    \"*\": \"../../../../common/src\",\n    \"@button/server-common\": \"../../../common/src/index.ts\",\n    \"@button/common\": \"../../../../common/src/index.ts\",\n    \"@supabase/supabase-js\": \"jsr:@supabase/supabase-js@^2.49.1\",\n    \"@sinclair/typebox\": \"npm:@sinclair/typebox@^0.34.30\",\n    \"nanoid\": \"npm:nanoid@^5.1.4\"\n  }\n}\n```"
+  },
+  {
+   "author": "kallebysantos",
+   "created_at": "2025-04-26T18:11:17Z",
+   "body": "Hi @lilnamcor 💚\nOutside imports feature may requires the `--use-api` flag while deploying like [described here](https://github.com/orgs/supabase/discussions/33613)"
+  },
+  {
+   "author": "lilnamcor",
+   "created_at": "2025-04-26T18:12:53Z",
+   "body": "Why is the behavior not consistent is my main concern\n\nAlso I just tried it with `--use-api` and it consistently isn't working whereas before it sometimes worked\n\n```\nUploading asset (external-image): supabase/functions/external-image/deno.json\nUploading asset (external-image): supabase/functions/external-image/index.ts\nunexpected deploy status 400: {\"message\":\"failed to create the graph\\n\\nCaused by:\\n    Module not found \\\"file:///tmp/user_fn_iozgamdclkgeqxcqcama_09bf2cbf-aec6-4227-b577-685893b75eed_50/common/src/index.ts\\\".\\n        at file:///tmp/user_fn_iozgamdclkgeqxcqcama_09bf2cbf-aec6-4227-b577-685893b75eed_50/supabase/functions/external-image/index.ts:8:8\"}\n```"
+  },
+  {
+   "author": "kallebysantos",
+   "created_at": "2025-04-26T18:24:51Z",
+   "body": "Hi @lilnamcor 💚\n\n> Why is the behavior not consistent is my main concern\n\nBased on my understanding the standard approach uses docker do bundle your assets in the same way of local development bundling, with a little difference that now local `serve` is also resolving the module graph PR https://github.com/supabase/cli/pull/3417  - uses the same way as `--use-api` .\n\nThe new way is by using the `--use-api`, it will apply a recursive module graph introspection to resolve your local files.\n\n> isn't working whereas before it sometimes worked\n\nMay you check your supabase cli version? as well if your imports is well defined, since there's a lot of `../` it may can be a wrong path. Also, is your project working locally with `functions serve`?"
+  },
+  {
+   "author": "lilnamcor",
+   "created_at": "2025-04-27T06:57:17Z",
+   "body": "`Supabase CLI 2.22.8`\n\nThe pathing is correct and it works locally (also inconsistent though)"
+  },
+  {
+   "author": "sweatybridge",
+   "created_at": "2025-06-11T05:49:09Z",
+   "body": "@lilnamcor this looks like an inconsistency in import map resolution. Golang doesn't guarantee the iteration order for maps so it could randomly fail due to map entries being accessed in different order. Could you file a new issue in https://github.com/supabase/cli/issues so we can take a closer look?"
+  },
+  {
+   "author": "alita-moore",
+   "created_at": "2025-06-15T23:19:10Z",
+   "body": "is deno 2 supported on the hosted edge functions yet? If not, is there any ETA for when this will be possible to enable?"
+  },
+  {
+   "author": "kallebysantos",
+   "created_at": "2025-06-16T14:13:17Z",
+   "body": "Hi @alita-moore 💚\nThe short answer is not yet. But is estimated to be within the next 4 weeks\nPls check this [comment](https://github.com/supabase/edge-runtime/issues/466#issuecomment-2974930704) for a more detailed explanation."
+  },
+  {
+   "author": "alita-moore",
+   "created_at": "2025-06-24T12:48:00Z",
+   "body": "Pleas reopen this issue it's still not working properly, it's not resolving deno worksapces packages despite the parent directories being included in the importMap"
+  },
+  {
+   "author": "alita-moore",
+   "created_at": "2025-06-24T13:02:33Z",
+   "body": "now when I do this workaround by doing something like \n```\n{\n  \"imports\": {\n    \"@faker-js/faker\": \"npm:@faker-js/faker@^9.8.0\",\n    \"__workspace\": \"../../../../../deno.json\",\n    \"__libs\": \"../../../../../libs\",\n    \"__domain\": \"../../../../../domain\",\n    \"@std/assert\": \"jsr:@std/assert@1\",\n    \"#/\": \"./src/\",\n    \"express\": \"npm:express@^5.1.0\",\n    \"formatjs\": \"npm:formatjs@^0.1.1\",\n    \"jose\": \"npm:jose@^6.0.11\",\n    \"luxon\": \"npm:luxon@^3.6.1\",\n    \"zod\": \"npm:zod@^3.25.67\",\n    \"@db\": \"../../db/index.ts\"\n  }\n}\n```\n\nthe docker container is no longer copying the relevant libs and domain directory, it's only copying the specified paths under the workdir path of the supabase root. Why was this behavior changed? This is getting quite frustrating!"
+  },
+  {
+   "author": "alita-moore",
+   "created_at": "2025-06-25T06:38:28Z",
+   "body": "btw this is a blocking problem, I'm not even able to develop locally because the supabase edge functions do not have the necessary workspaces packages to run :( I'm hoping I don't have to host my deno functions independently"
+  },
+  {
+   "author": "sweatybridge",
+   "created_at": "2025-06-26T11:12:22Z",
+   "body": "Sorry for the delayed response. @alita-moore Could you share a repo with a minimal reproducible example? It's quite difficult to debug this issue without knowing your full repo structure."
+  },
+  {
+   "author": "alita-moore",
+   "created_at": "2025-06-26T12:13:35Z",
+   "body": "@sweatybridge \n\nhttps://codesandbox.io/p/devbox/tender-goldberg-zz898x\n\nor if you prefer local development\n\n[workspace2.zip](https://github.com/user-attachments/files/20926015/workspace2.zip)\n\ndo recreate you need to go into the example folder then run `pnpx supabase serve functions` you'll notice that the libs directory is outside of the workdir and is therefore excluded\n\nTo verify this you can attach a shell in the edge runtime docker container"
+  },
+  {
+   "author": "sweatybridge",
+   "created_at": "2025-06-26T13:54:27Z",
+   "body": "Ok I see what you mean now. So you are using underscore prefixed imports as a workaround to mount additional directories to edge runtime container. ie.\n\n```json\n    \"__workspace\": \"../../../../../deno.json\",\n    \"__libs\": \"../../../../../libs\",\n```\n\nSince we removed traversing of unused imports, this became a breaking change for your use case.\n\nI can update CLI to handle the old behaviour using scopes block instead. for eg. in deno.json\n\n```json\n{\n  \"imports\": {\n    \"@faker-js/faker\": \"npm:@faker-js/faker@^9.8.0\"\n  },\n  \"scopes\": {\n    \"__workspace\": {\n      \"__libs\": \"../../../../../libs\"\n    }\n  }\n}\n```"
+  },
+  {
+   "author": "alita-moore",
+   "created_at": "2025-06-26T15:30:15Z",
+   "body": "that's awesome, thank you for the quick response! would this also work for including the parent deno.json? I needed to include it as __workspace previously"
+  },
+  {
+   "author": "sweatybridge",
+   "created_at": "2025-06-26T15:31:16Z",
+   "body": "@alita-moore could you give `npx supabase@beta functions serve` a try, after updating your deno.json to the following?\n\n```\n{\n  \"imports\": {\n    \"@faker-js/faker\": \"npm:@faker-js/faker@^9.8.0\",\n    \"@std/assert\": \"jsr:@std/assert@1\",\n    \"#/\": \"./src/\",\n    \"express\": \"npm:express@^5.1.0\",\n    \"formatjs\": \"npm:formatjs@^0.1.1\",\n    \"jose\": \"npm:jose@^6.0.11\",\n    \"luxon\": \"npm:luxon@^3.6.1\",\n    \"zod\": \"npm:zod@^3.25.67\",\n    \"@db\": \"../../db/index.ts\"\n  },\n  scopes: {\n    \"__local\": {\n      \"__workspace\": \"../../../../../deno.json\",\n      \"__libs\": \"../../../../../libs\",\n      \"__domain\": \"../../../../../domain\",\n    }\n  }\n}\n```\n\nI've verified this on your sandbox. https://codesandbox.io/p/devbox/tender-goldberg-zz898x"
+  },
+  {
+   "author": "alita-moore",
+   "created_at": "2025-06-26T15:38:57Z",
+   "body": "I've confirmed that hte edge runtime container now includes the expected source files, so that problem appears to be fixed. I haven't been able to confirm I can get the function running though because it's not detecting dependencies of dependencies. For example if the function in the example that I shared imported from zod which was only included via the package.json in the libs/lib package.  But this seems like a different issue.\n\nI think it's safe to close this issue. Thank you for your help!"
+  },
+  {
+   "author": "sweatybridge",
+   "created_at": "2025-06-27T06:23:48Z",
+   "body": "Thanks for confirming. I will close this issue then.\n\nResolving nested dependencies needs to wait for proper deno 2.0 support. Functions team will give you an update in the future."
+  },
+  {
+   "author": "alita-moore",
+   "created_at": "2025-09-08T11:36:22Z",
+   "body": "I am seeing this warning: `Warning \"scopes\" field can only be specified in the workspace root deno.json file.` is this workaround going to be removed in the future?"
+  },
+  {
+   "author": "alita-moore",
+   "created_at": "2025-09-08T11:46:48Z",
+   "body": "seems it's a warning from deno itself"
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "supabase/supabase",
+  "default_branch": "master",
+  "commit_sha": "4a311938096b3a9569d0cfd9f569abaa4ef09b88",
+  "as_of": "2025-04-15T01:22:30Z",
+  "method": "github_commits_until"
+ },
+ "images": [
+  {
+   "where": "c21",
+   "source_url": "https://github.com/user-attachments/assets/4c74d210-37a4-4b3f-aa0e-5c3b66b3bcd8",
+   "file": "gh_supabase_supabase_35021_img0.png"
+  }
+ ],
+ "slug": "gh_supabase_supabase_35021"
+}

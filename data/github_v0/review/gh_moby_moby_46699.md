@@ -9,21 +9,21 @@
 
 ```mermaid
 flowchart LR
-    N0["<b>N0 periodic local log read failure reported</b><br/><small>info: 10</small>"]
-    N1["<b>N1 distribution patch and cross-environment evidence collected</b><br/><small>info: 12</small>"]
-    N2["<b>N2 logging-driver probe completed</b><br/><small>info: 13</small>"]
-    N3["<b>N3 affected local cache supplied</b><br/><small>info: 15</small>"]
-    N4["<b>N4 environments healthy after automatic platform update</b><br/><small>info: 17</small>"]
-    N_terminal["<b>terminal local log reader recovers from corruption</b><br/><small>info: 22</small>"]
-    N0 -.->|"❓ amazon_srpm_contains_limit_logger_errors_patch, similar_large_message_failure_seen_outside_aws_with_local_driver"| N1
+    N0["<b>N0 recurring local log-read failure reported</b><br/><small>info: 10</small>"]
+    N1["<b>N1 local-driver configuration probe</b><br/><small>info: 11</small>"]
+    N2["<b>N2 affected cached log supplied</b><br/><small>info: 12</small>"]
+    N3["<b>N3 failures no longer observed after automatic platform update</b><br/><small>info: 14</small>"]
+    N4["<b>N4 cached-log corruption diagnosed</b><br/><small>info: 15</small>"]
+    N_terminal["<b>terminal fix released without reporter retest</b><br/><small>info: 19</small>"]
+    N0 -.->|"❓ local_driver_probe_remained_healthy_twenty_hours"| N1
     linkStyle 0 stroke:#3b82f6,stroke-width:2px
-    N1 -.->|"❓ temporary_local_driver_probe_remained_healthy_twenty_hours"| N2
+    N1 -.->|"❓ cached_container_log_looks_binary_and_was_sent_privately"| N2
     linkStyle 1 stroke:#3b82f6,stroke-width:2px
-    N2 -.->|"❓ affected_container_log_files_sent_privately, affected_log_file_appears_binary_in_less"| N3
+    N2 -.->|"❓ environments_became_healthy_after_automatic_platform_updates, no_application_or_logging_configuration_change"| N3
     linkStyle 2 stroke:#3b82f6,stroke-width:2px
-    N3 -.->|"❓ automatic_aws_update_to_platform_3_7_1, awslogs_configuration_unchanged_when_instances_became_healthy"| N4
-    linkStyle 3 stroke:#3b82f6,stroke-width:2px
-    N4 ==>|"⚡ Treat the huge message size as a corrupted local-log framing value, recover existing installations by removing or avoiding the damaged file, and update to Moby 27.4.0 or newer so the local-log reader skips the rest of a file after a decoding failure instead of aborting the whole log stream."| N_terminal
+    N3 ==>|"⚡ Diagnose the implausible message length as a damaged framed local log file: once the reader loses record alignment, it interprets bytes from the middle of damaged data as the next message length and cannot recover within that file."| N4
+    linkStyle 3 stroke:#f97316,stroke-width:2px
+    N4 ==>|"⚡ Use a Docker/Moby build containing the resilient local-log reader, which treats a decoding failure as corruption, skips the remainder of that damaged log file, and continues with the next file instead of terminating the entire logs request."| N_terminal
     linkStyle 4 stroke:#f97316,stroke-width:2px
     class N0 start
     class N1 normal
@@ -38,36 +38,37 @@ flowchart LR
 
 ## Opening (body)
 
-> Every couple of hours, `docker compose logs` crashes on two production AWS EC2 environments. The daemon log first contains an unmarshalling error such as `proto: LogEntry: illegal tag 0 (wire type 6)`, followed by `log message is too large` errors claiming messages are nearly 2 GB. Running `docker logs` for the affected time range produces the same error, and cached local logs can miss hours that are present in CloudWatch. Both environments use the `awslogs` driver and Docker Engine 20.10.23; one runs Kong/nginx and the other runs a Node.js application beside nginx. I could not identify an unusual application log entry or reproduce the problem in a dummy container.
+> Every couple of hours, `docker compose logs` crashes on my production servers. The daemon first reports an error such as `error unmarshalling log entry (size=108554): proto: LogEntry: illegal tag 0 (wire type 6)`, followed by repeated errors such as `log message is too large (1937007727 > 1000000)`. A manually bounded `docker logs --since ... --until ...` request can trigger the same error. This affects two AWS EC2 production environments running nginx-based workloads. They use the `awslogs` driver to send logs to CloudWatch. CloudWatch appears to receive all entries, but the locally cached logs can lose several hours after the error. I could not find a genuinely huge or unusual application log entry, reproduce the problem reliably, or import the cached files into a dummy container. The affected Docker Engine version is 20.10.23.
 
 ## Satisfaction conditions
 
-1. Must identify the direct cause as corruption of the local log file's length/protobuf framing: after synchronization is lost, older readers interpret damaged bytes as an implausibly large message length and cannot recover.
-2. Diagnosis must be grounded in the collected evidence, including the protobuf unmarshalling error, multi-gigabyte reported lengths, damaged local cache, and a similar failure outside the original Amazon awslogs setup.
-3. Must not present the Amazon `Limit-logger-errors-logged-into-daemon-logs` patch or an awslogs/local encoding mismatch as the general root cause; those were intermediate theories and do not explain the non-AWS local-driver case.
-4. Must recommend updating to a Moby release containing the resilient local-log reader, which skips the remainder of a corrupt file and continues; deleting the existing damaged file or excluding it with `--since`, `--until`, or `--tail` may be offered as recovery for old data.
-5. Must ask the user to verify `docker logs` or `docker compose logs` on an engine containing the resilient-reader fix before treating the issue as resolved.
+1. Must identify the final accepted root cause as corruption of the framed local cache log, causing the reader to lose record alignment and interpret damaged bytes as an implausibly large message length.
+2. Must explain that sudden shutdowns or power failures are the likely source of corruption because an in-progress filesystem write can leave zero-filled or incomplete data; this diagnosis must be grounded in the unmarshalling error, huge length values, missing local records, and binary-looking cached file.
+3. Must recommend updating to a build containing the resilient log reader that skips the remainder of a corrupt file and continues with the next log file; deleting or excluding the corrupt file is only a legacy recovery option.
+4. Must not present the earlier awslogs-versus-local encoding mismatch or the Amazon logger-rate-limit patch as the final root cause.
+5. Must not treat the temporary healthy local-driver probe as proof that changing logging drivers permanently fixes the underlying corruption.
+6. Must ask the reporter to verify on a build containing the reader recovery fix before declaring the issue resolved, because the reporter never confirmed that released fix.
 
 ## Edges
 
 | edge | type | gates / info | payload |
 |---|---|---|---|
-| `e1_N0__N1` | clarification_only | asks: amazon_srpm_contains_limit_logger_errors_patch, similar_large_message_failure_seen_outside_aws_with_local_driver | I ran the same commands on my instance. The extracted SRPM includes `docker-20.10.4-Limit-logger-errors-logged / I also have an affected Ubuntu 20.04-based VM on IBM Cloud using the `local` driver with compressed 20 MB rota |
-| `e2_N1__N2` | clarification_only | asks: temporary_local_driver_probe_remained_healthy_twenty_hours | I switched the driver from `awslogs` to `local`. After about twenty hours, `docker compose logs` was still run |
-| `e3_N2__N3` | clarification_only | asks: affected_container_log_files_sent_privately, affected_log_file_appears_binary_in_less | I made a fresh export from an environment that had the issue and sent the Docker container logs to the email a / The recent files look weird, and `less` considers them binary files. |
-| `e4_N3__N4` | clarification_only | asks: automatic_aws_update_to_platform_3_7_1, awslogs_configuration_unchanged_when_instances_became_healthy | My environments are all on `Docker running on 64bit Amazon Linux 2/3.7.1` now. We have automatic updates enabl / Nothing changed on our side as far as I know. We did not update our application stacks or change the logging m |
-| `e5_N4__N_terminal` | solution_only | req_info: local_log_reader_reports_illegal_protobuf_tag, reader_then_reports_implausibly_large_message, cloudwatch_has_logs_missing_from_local_cache, similar_large_message_failure_seen_outside_aws_with_local_driver, affected_log_file_appears_binary_in_less, affected_container_log_files_sent_privately, temporary_local_driver_probe_remained_healthy_twenty_hours<br>elements: identifies_corrupted_local_log_record_framing_as_direct_cause, explains_huge_size_as_corrupted_bytes_read_as_length_prefix, recommends_a_moby_release_with_the_resilient_local_log_reader, offers_delete_or_time_range_skip_for_already_corrupted_file, asks_user_to_verify_on_a_build_containing_the_fix | Treat the huge message size as a corrupted local-log framing value, recover existing installations by removing or avoiding the damaged file, and update to Moby 27.4.0 or newer so the local-log reader skips the rest of a file after a decoding failure instead of aborting the whole log stream. |
+| `e1_N0__N1` | clarification_only | asks: local_driver_probe_remained_healthy_twenty_hours | I switched the most problematic instance from `awslog` to `local`. After about twenty hours, `docker compose l |
+| `e2_N1__N2` | clarification_only | asks: cached_container_log_looks_binary_and_was_sent_privately | I downloaded a fresh export from an environment that had the issue. The logs look weird and `less` considers t |
+| `e3_N2__N3` | clarification_only | asks: environments_became_healthy_after_automatic_platform_updates, no_application_or_logging_configuration_change | All of my AWS environments are reporting healthy now. We did not update our technology stacks or change the lo / No. Nothing changed on our side as far as I am aware; we did not change the application stacks or logging mech |
+| `e4_N3__N4` | solution_only | req_info: unmarshal_illegal_tag_error_precedes_failure, implausibly_large_log_length_errors_follow, local_cached_logs_miss_hours_after_error, cached_container_log_looks_binary_and_was_sent_privately<br>elements: identifies_corrupt_local_log_framing_as_source_of_implausible_length, explains_that_reader_loses_record_alignment, offers_deleting_or_avoiding_the_corrupt_file_only_as_legacy_recovery | Diagnose the implausible message length as a damaged framed local log file: once the reader loses record alignment, it interprets bytes from the middle of damaged data as the next message length and cannot recover within that file. |
+| `e5_N4__N_terminal` | solution_only | req_info: unmarshal_illegal_tag_error_precedes_failure, implausibly_large_log_length_errors_follow, awslogs_sends_complete_logs_to_cloudwatch, local_cached_logs_miss_hours_after_error, cached_container_log_looks_binary_and_was_sent_privately<br>elements: identifies_corruption_of_the_framed_local_log_as_the_root_failure, mentions_sudden_shutdown_or_incomplete_filesystem_write_as_the_likely_corruption_source, recommends_a_build_with_reader_recovery_that_skips_the_damaged_file_remainder, asks_user_to_verify_on_a_build_containing_the_reader_recovery_fix, does_not_claim_reporter_verified_the_released_fix | Use a Docker/Moby build containing the resilient local-log reader, which treats a decoding failure as corruption, skips the remainder of that damaged log file, and continues with the next file instead of terminating the entire logs request. |
 
 ## Nodes
 
 | node | terminal | volunteered | images | symptoms |
 |---|---|---|---|---|
-| `N0` |  | 0 | 0 | Every few hours `docker compose logs` exits after an `error unmarshalling log entry` message and repeated `log message is too large` errors  |
-| `N1` |  | 0 | 0 | The unmarshalling and oversized-message errors still occur on the Amazon Linux instances. I also see a similar oversized-message failure whe |
-| `N2` |  | 0 | 0 | After temporarily switching the affected container from `awslogs` to `local`, `docker compose logs` was still running and the instance was h |
-| `N3` |  | 0 | 0 | The recent container log files look binary when I open them with `less`; I sent an affected set privately for inspection. |
-| `N4` |  | 0 | 0 | All of my environments are currently reporting healthy after automatic AWS server updates, even though I did not change the application stac |
-| `N_terminal` | ✓ | 0 | 0 | After updating to a Moby release containing the resilient local-log reader, `docker logs` moves past a damaged log file instead of repeatedl |
+| `N0` |  | 0 | 0 | `docker compose logs` crashes every couple of hours on one production environment and roughly weekly on another. The daemon reports an illeg |
+| `N1` |  | 0 | 0 | After I temporarily switched the most problematic instance to the local driver, `docker compose logs` was still running and the instance was |
+| `N2` |  | 0 | 0 | A fresh export of an affected container's cached logs looks unusual, and `less` treats it as a binary file. |
+| `N3` |  | 2 | 0 | All of my AWS environments are currently reporting healthy even though we did not change our application stacks or logging mechanism. The se |
+| `N4` |  | 0 | 0 | My environments remain healthy, but the previously exported cached file still contains the data associated with the unmarshalling and oversi |
+| `N_terminal` | ✓ | 0 | 0 | I have not retested an affected environment on a Docker build containing the new corrupt-log recovery behavior. |
 
 ## Machine review (audit pass, adversarially verified)
 

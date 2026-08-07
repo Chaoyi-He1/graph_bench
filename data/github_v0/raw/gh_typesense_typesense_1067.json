@@ -1,0 +1,156 @@
+{
+ "repo": "typesense/typesense",
+ "number": 1067,
+ "url": "https://github.com/typesense/typesense/issues/1067",
+ "title": "OOM for collection export",
+ "state": "closed",
+ "labels": [
+  "bug"
+ ],
+ "reporter": "reporter",
+ "created_at": "2023-06-22T02:14:43Z",
+ "closed_at": "2023-08-19T11:59:58Z",
+ "body": "## Description\r\n\r\nCan't export a large collection, it maxes out memory usage, hangs, then crashes. Our database is primarily one large collection (approx 4.5million documents) and the `typesense-server` binary sits at around 26Gib memory usage while idle and total system memory is 64Gib.\r\n\r\nWe thought maybe with upgrade from `0.24.0` to `0.24.1` this may not be an issue. As per patch note:\r\n> [New in v0.24.1] Improved memory footprint of export API.\r\n\r\nHowever in practice, export failed the same way for both versions. When we previously only had ~3 million records we were still able to export without issue.\r\n\r\n## Steps to reproduce\r\n\r\n1. Export a very large collection via `collections/<CollectionName>/export` endpoint.\r\n2. Memory maxes out and `typesense-server` crashes fatally.\r\n\r\n## Expected Behavior\r\n\r\n1. Make export request.\r\n2. Memory usage increases some.\r\n3. As request is processed and the data is sent, some of the already sent data is periodically free-ed from memory.\r\n4. Exported ljson file is successfully downloaded.\r\n\r\nWe'd also accept a slower export if it meant larger collections could be exported gracefully. Ideally nice if the database does not crash if OOM occurs but understand this may not be possible.\r\n\r\n## Actual Behavior\r\n\r\n1. `wget 'http://<ServerIP>:80/collections/<LargeCollection>/documents/export?x-typesense-api-key=...'`\r\n2. Memory usage increases linearly\r\n3. Memory usage maxed complete 64Gib system capacity.\r\n4. In total `wget` received around 34 Gib of collection data. Observed download rate plummeted to ~200kilobytes from ~250mbs when memory maxed out at the end. \r\n6. Incomplete collection data download and `typesense-server` crashed about a minute after memory usage was maxed out.\r\n7. Downtime of over an hour while `typesense-server` initializes and caches database back into memory.\r\n\r\n<img width=\"1606\" alt=\"Screenshot 2023-06-22 at 3 30 56 AM\" src=\"https://github.com/typesense/typesense/assets/31227781/5aff78e8-8c4d-47bd-a6ad-cdce9bc6861a\">\r\n<img width=\"120\" alt=\"Screenshot 2023-06-22 at 3 28 25 AM\" src=\"https://github.com/typesense/typesense/assets/31227781/09d8d664-e976-4a74-a905-65b9eeae9363\">\r\n\r\n**Typesense Version**:\r\n0.24.1\r\n\r\n**OS**:\r\nArch Linux (Amd-64 exec)",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2023-06-22T08:22:20Z",
+   "body": "Will investigate and update shortly."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-06-22T14:56:05Z",
+   "body": "@reporter \r\n\r\nThank you for reporting this issue. I've a patch. How do you deploy Typesense? Docker or binary? I can share the build. "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-06-22T19:17:45Z",
+   "body": "Cool @participant1 happy to try it out. \r\n\r\nWe use the ARM-64 binary executable. EG:\r\n```bash\r\ncurl -O https://<redacted-host>/releases/0.24.1/typesense-server-0.24.1-linux-amd64.tar.gz\r\n```\r\n\r\nCurious does the patch include any other updates or just the upgraded export feat?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-06-23T07:51:57Z",
+   "body": "Please [use this build](https://<redacted-host>/releases/0.25.0.rc38/typesense-server-0.25.0.rc38-linux-arm64.tar.gz).\r\n\r\n> Curious does the patch include any other updates or just the upgraded export feat?\r\n\r\nIt contains other changes from the upcoming 0.25 release as well. It's fully backward compatible with 0.24.1 and have many people already running these RC builds."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-06-23T11:45:00Z",
+   "body": "You might however still want to test it on staging or locally before proceeding just to be safe. Also once 0.25 loads the data and writes something to the data directory, 0.24.1 won't be able to read that data directory again. When we do GA release we will also release a 0.24.2 that can be used for roll backs if needed. "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-06-23T16:23:47Z",
+   "body": "Sweet! Hopefully gonna get to test it sometime over the weekend when downtime is more optimal.\r\n\r\nWe really only have the prod instance so I think I'm gonna increase the memory on the machine and try to get a clean export before we proceed with an irreversible upgrade. Though in general, your upgrades are high quality and are easy transitions. We also saw speed improvements to many queries from 24.0 => 24.1 so thanks for all the excellent improvements.\r\n\r\n---\r\n\r\nI have fairly minimal experience with snapshots though I think that API differs from export. Do you think it'd be possible to generate a snapshot with `24.1` without OOM errors we see when we attempt export? If so, maybe I'll do a snapshot and upgrade directly to the pre-release version w/o increasing system memory above 64Gib. Else if not or unsure I'll probably just increase memory first to be safe and get a clean export of data that is very recent."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-06-24T05:23:07Z",
+   "body": "If the goal is backups, then the snapshot API is certainly the best way to backup Typesense. It's also very fast and involves no memory overhead. Export is meant for smaller collections. Another way of backing up is just simply stopping the server and copying the data directory. The advantage of the snapshot API is that it allows you to backup without stopping Typesense, though. "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-06-26T17:50:52Z",
+   "body": "Neat! That's great to know. Since I'll have to reboot either way (to increase memory and/or upgrade to pre-release 0.25.0 version I'll be sure to just zip the data directory as a backup <3"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-06-27T10:09:08Z",
+   "body": "> Please [use this build](https://<redacted-host>/releases/0.25.0.rc38/typesense-server-0.25.0.rc38-linux-arm64.tar.gz).\r\n> \r\n> > Curious does the patch include any other updates or just the upgraded export feat?\r\n> \r\n> It contains other changes from the upcoming 0.25 release as well. It's fully backward compatible with 0.24.1 and have many people already running these RC builds.\r\n\r\nHey there @participant1, sorry I miss-spoke. We use the AMD-64 version, not ARM. I think I was able to enumerate the correct link: `https://<redacted-host>/releases/0.25.0.rc38/typesense-server-0.25.0.rc38-linux-amd64.tar.gz`. \r\n\r\nHope that's okay.\r\n\r\nWe backed up the DB via tar of it's `--data-dir` after it had been shut down for version upgrade. Did want a backup of it just in-case we have to rollback to 0.24.1 or suffer other data issues. \r\n\r\nFor reference, we do also need an `.ljson` export of our large collection as we use those in pipelines for batch updates with complex logic and/or misc computation.\r\n\r\nPlan to report back in 1.5 hours when the DB is up again on whether or not we're able to export with this patch 👌 "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-06-27T12:33:58Z",
+   "body": "@participant1 Good news!\r\n\r\n✅ The patch does allow us to export our very large collection. Exported all 46gib at 60-80mbs w/o hardly any memory increase 🎉 \r\n✅ Upgrade to 0.25.0.rc38 success. Seems compatible w/most of our usage as well.\r\n\r\n---\r\nLess good news\r\n\r\nOn new 0.25.0.rc38 it appears our vector searches are slower than previous 0.24.1. Significant too, 400ms to 12,000ms+. Need to check if our requests need some config adjustment to get the speed back up. Any thoughts?\r\n\r\nEDIT: For reference our request looks like `const vector_query = resnet18:(${stringVec}, k:${resultsCount})` and it doesn't appear we set any other parameters to configure the vector_query. It also appears the request results are different than before."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-06-27T15:05:20Z",
+   "body": "@reporter \r\n\r\nThat's odd. Would you be able to perhaps extract 1M vectors randomly (just the field) and then measure performance against the old and new versions and then share that dataset with me? We have to check where the regression has happened. You can share it with <email-scrubbed> ."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-06-27T15:26:26Z",
+   "body": "@participant1 \r\n\r\nDifficult to perform tests w/our current setup of 1 machine and ~approx 1.5 hrs of DB init between version switches, happy to send the full data-dir snapshot I took before upgrade if you guys wanna play around with it.\r\n\r\nIn the meantime gonna check if there's tweaks to the request itself we can do to get things back to more normal speed. and gonna report any findings back here"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-06-27T16:01:05Z",
+   "body": "UPDATE: \r\n\r\nSo in debugging the increased latency, we also found that `page` prop was being ignored on our vector queries? returned the same page of results even though page number was consistently incremented. Testing cut short because the server has become non-responsive:\r\n```\r\nLog directory is configured as: ./logs\r\nE20230627 11:23:12.680370 1019828 raft_server.cpp:649] 539 lagging entries > healthy write lag of 500\r\nE20230627 11:23:12.680444 1019864 raft_server.h:62] Peer refresh failed, error: Doing another configuration change\r\nE20230627 12:36:57.224555 1019716 auth_manager.cpp:263] Scoped API keys can only be used for searches.\r\nE20230627 12:37:11.733547 1019716 auth_manager.cpp:263] Scoped API keys can only be used for searches.\r\nE20230627 12:37:52.563654 1019716 auth_manager.cpp:263] Scoped API keys can only be used for searches.\r\nE20230627 12:38:21.172952 1019716 auth_manager.cpp:263] Scoped API keys can only be used for searches.\r\nE20230627 15:47:11.202306 1019848 collection.cpp:521] Update to disk failed. Will restore old document\r\nE20230627 15:47:11.951409 1019848 collection.cpp:521] Update to disk failed. Will restore old document\r\nE20230627 15:47:12.195371 1019848 collection.cpp:521] Update to disk failed. Will restore old document\r\nE20230627 15:47:12.277573 1019848 collection.cpp:521] Update to disk failed. Will restore old document\r\nE20230627 15:47:14.916101 1019848 collection.cpp:521] Update to disk failed. Will restore old document\r\nE20230627 15:47:16.229625 1019848 collection.cpp:521] Update to disk failed. Will restore old document\r\nE20230627 15:47:16.513746 1019834 log.cpp:1203] Fail to close old open_segment or create new open_segment path: ./dat/state/log: Too many open files [24]\r\nE20230627 15:47:16.513774 1019834 log_manager.cpp:464] Fail to append_entries, nappent=0, to_append=1\r\nE20230627 15:47:16.513880 1019834 node.cpp:1980] node default_group:10.128.0.2:8107:8108 append [15772320, 15772320] failed\r\nE20230627 15:47:16.513931 1019834 raft_server.h:279] Met peering error {type=LogError, error_code=5, error_text=`Fail to append entries'}\r\nE20230627 15:47:16.637192 1019848 collection.cpp:521] Update to disk failed. Will restore old document\r\nE20230627 15:47:18.052093 1019716 raft_server.cpp:255] Rejecting write: could not find a leader.\r\nE20230627 15:47:18.054280 1019716 raft_server.cpp:255] Rejecting write: could not find a leader.\r\nE20230627 15:47:18.058246 1019848 collection.cpp:521] Update to disk failed. Will restore old document\r\nE20230627 15:47:18.095767 1019716 raft_server.cpp:255] Rejecting write: could not find a leader.\r\nE20230627 15:47:18.095994 1019716 raft_server.cpp:255] Rejecting write: could not find a leader.\r\nE20230627 15:47:31.542179 1019848 collection.cpp:521] Update to disk failed. Will restore old document\r\nE20230627 15:47:31.653540 1019848 collection.cpp:521] Update to disk failed. Will restore old document\r\nE20230627 15:47:31.696977 1019848 collection.cpp:521] Update to disk failed. Will restore old document\r\nE20230627 15:47:32.026829 1019848 collection.cpp:521] Update to disk failed. Will restore old document\r\nE20230627 15:47:32.048123 1019848 collection.cpp:521] Update to disk failed. Will restore old document\r\nE20230627 15:47:32.093588 1019848 collection.cpp:521] Update to disk failed. Will restore old document\r\nE20230627 15:47:32.111076 1019848 collection.cpp:521] Update to disk failed. Will restore old document\r\nE20230627 15:47:32.126507 1019848 collection.cpp:521] Update to disk failed. Will restore old document\r\nE20230627 15:47:32.132615 1019848 collection.cpp:521] Update to disk failed. Will restore old document\r\n... Continues on like this with some write failures too. Disk has plenty of available space.\r\n```\r\n\r\nProbably gonna revert to 24.1"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-06-27T16:23:10Z",
+   "body": " I see:\r\n\r\n> Too many open files \r\n\r\nYou need to increase your `ulimit -n` to prevent this error. This is probably not related to this version (maybe you have been hovering on the edge of the limits). \r\n\r\nWould you be to able to share maybe 10M records and a sample query that represents your query pattern that became slow? I don't need the full dataset."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-06-27T17:58:38Z",
+   "body": "Ohh yea, you're super correct, thanks for pointing me in the right direction. Was able to modify the participant3-server process nofile limit via [prlimit](https://man7.org/linux/man-pages/man1/prlimit.1.html) and even with increased limit couldn't recover from snapshot failure that occurred after failed disk updates. Eventually had to hard `kill -9` participant3-server proc.\r\n```\r\nE20230627 16:23:16.168610 1019849 raft_server.cpp:990] Timed snapshot failed, error: FSMCaller is in bad status=`Fail to append entries', code: 22\r\nE20230627 17:23:16.886297 1019864 raft_server.cpp:990] Timed snapshot failed, error: FSMCaller is in bad status=`Fail to append entries', code: 22\r\n```\r\nHave increased system default ulimit and am gonna try to run this version again. "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-06-27T22:52:39Z",
+   "body": "Well I figured out the pagination thing. We use the multi-search endpoint (as 512 dim vectors are too large to pass regularly). Had previously set page property adjacent to searches prop. \r\n```javascript\r\nconst multiSearch = {\r\n                page:<PageNum>,\r\n\t\tsearches: [\r\n\t\t\t{\r\n\t\t\t\t...searchParams\r\n\t\t\t}\r\n\t\t]\r\n\t};\r\n```\r\nWorks fine if we move page to be set inside of searchParams directly.\r\n\r\n---\r\n\r\nUnfortunately, no idea why our vector searches have ballooned in latency from under 1 second to over 12-15 seconds. Tried a few things to see if I could figure out a work-around.\r\n- removal of filters/include_fields\r\n- limit include_fields to just doc id\r\n- decrease per_page\r\n- upgrade participant3 JS client from `1.2.2` to latest `1.5.4`\r\n- remove`k:25`\r\n\r\nLikely gonna revert to 0.24.1 to restore optimal performance. @participant1 if you send an email to <email-scrubbed> I can drop you a link to our latest 0.24.1 data-dir backup as `tar.gz` easily sometime tomorrow. Appreciate your assistance, advice and investigation."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-06-27T23:21:56Z",
+   "body": "Also discovered an interesting nuance that changes after we updated `0.24.1` to `0.25.0.rc38`. \r\n\r\nTake this example request where we specify the vector field `resnet18` in the `include_fields` prop of our request:\r\n<img width=\"419\" alt=\"Screenshot 2023-06-28 at 1 06 51 AM\" src=\"https://github.com/participant3/participant3/assets/31227781/3e361354-6d92-42aa-9d9e-f9983dd4a570\">\r\nIn the response, the documents do not contain the resnet18 vector field. Example doc response:\r\n```json\r\n{\r\n  \"document\": {\r\n    \"aiLabels\": [\r\n      \"cat\",\r\n      \"art paint\",\r\n      \"vertebrate\",\r\n      \"felidae\",\r\n      \"paint\",\r\n      \"carnivore\",\r\n      \"mammal\",\r\n      \"creative arts\",\r\n      \"art\",\r\n      \"small to medium-sized cats\"\r\n    ],\r\n    \"asset\": \"tezos/KT1JTwRv4RNs1VK4AvacfNToyHotVWsRVPzT/2.png\",\r\n    \"block\": \"2663354\",\r\n    \"chain\": \"tezos\",\r\n    \"collection\": \"Psychedelic Cats\",\r\n    \"contract\": \"KT1JTwRv4RNs1VK4AvacfNToyHotVWsRVPzT\",\r\n    \"created\": 1661753744,\r\n    \"ext\": \"png\",\r\n    \"id\": \"tezos~KT1JTwRv4RNs1VK4AvacfNToyHotVWsRVPzT~2\",\r\n    \"isNsfw\": false,\r\n    \"price\": 2.37342,\r\n    \"size\": 4454161,\r\n    \"title\": \"Omeng #3\",\r\n    \"tokenId\": \"2\",\r\n    \"type\": \"image\"\r\n  },\r\n  \"highlight\": {},\r\n  \"highlights\": [],\r\n  \"vector_distance\": 0.22438204288482666\r\n}\r\n```\r\nPreviously in `0.24.1` the vector field `resnet18` would have been included in the response docs, however in `0.25.0r38` it is mysteriously absent from the response docs. \r\n\r\nWe know the response docs have this vector field populated too because this a `vector_query` request on the `resnet18` vector field."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-06-28T08:26:18Z",
+   "body": "@reporter \r\n\r\nThank you for the investigation.\r\n\r\n> Works fine if we move page to be set inside of searchParams directly.\r\n\r\nWe've never supported search parameters outside the `searches` array in the multi_search body. I just tested the following on a **0.24.1** instance and it does not respect the `per_page` parameter mentioned outside: https://gist.github.com/participant1/769bd7606041d5c1e219ba87bdc2a7cd\r\n\r\nIs it possible for you to provide an exact gist like that which show cases the difference between 0.24.1 and 0.25 RC? You can just use a Docker container on your local machine to test.\r\n\r\n> In the response, the documents do not contain the resnet18 vector field. Example doc response:\r\n\r\nI tested the following gist on a 0.25 RC build and once again the include fields seemed to return the vector field properly: https://gist.github.com/participant1/865511899735ab23d82b29d8592751c5\r\n\r\n> Unfortunately, no idea why our vector searches have ballooned in latency\r\n\r\nI will investigate this and get back to you if I need a sample set from you."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-06-29T03:18:50Z",
+   "body": "Sweet @participant1\r\n\r\nWith ref to the page thing, not too concerned as it's an easy change and clearly not intended to work with page set the way we had it.\r\n\r\n---\r\n\r\nWith ref to the missing include_fields on `0.25.0r38`. We encountered another strange edge case where `id` is specified in the include fields however is not returned on the result documents. So it seems to not be specific to vector fields and instead simply that sometimes include fields are ignored. \r\n\r\nTake a look at this [live example req](https://<redacted-host>/collections/anime~lovers~69/documents/search?x-participant3-api-key=READ-ONLY&q=*&query_by=aiLabels,%20title,%20description,%20collection,%20attributes&filter_by=owners:[0x587b28da4701876bdb061ae624739606bd1b56f6,tz1iZxACvW5SyaC4U4WJPQB7kFszzxiUgHNW]&&isHidden:false&&chain:[tezos]&sort_by=&page=1&per_page=25&include_fields=asset,%20thumbnail,%20title,%20type,%20contract,%20chain,%20tokenId,%20size,%20ext,%20created,%20block,%20attributes,%20collection,%20isNsfw,%20id)?\r\n\r\nAfter some more experimentation, looks like the when >1 include fields are specified, the last include field is dropped. Here's some simpler examples on our live deployment:\r\n\r\n- `include_fields=chain, id` (id is absent from response docs) - [req link](https://<redacted-host>/collections/anime~lovers~69/documents/search?x-participant3-api-key=READ-ONLY&q=*&query_by=description&include_fields=chain,%20id)\r\n- `include_fields=chain, id, asset` (asset is absent from response docs) - [req link](https://<redacted-host>/collections/anime~lovers~69/documents/search?x-participant3-api-key=READ-ONLY&q=*&query_by=description&include_fields=chain,%20id,%20asset)\r\n\r\nAfter even more experimentation looks like you can remove spaces from in-between include fields and it fixes things EX:\r\n- `include_fields=chain,id,asset` (all fields present) - [req link](https://<redacted-host>/collections/anime~lovers~69/documents/search?x-participant3-api-key=READ-ONLY&q=*&query_by=description&include_fields=chain,id,asset)\r\n\r\n---\r\n\r\nWith regards to the very slow vector queries, sounds good and keep us posted 🙏 "
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-06-29T05:09:06Z",
+   "body": "@reporter \r\n\r\n> After even more experimentation looks like you can remove spaces from in-between include fields and it fixes things \r\n\r\nAh, good catch! We will fix that.\r\n\r\n> With regards to the very slow vector queries, sounds good and keep us posted 🙏\r\n\r\nI've emailed you about sharing a sample dataset with us. Details in the email."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-07-02T07:29:10Z",
+   "body": "# 1️⃣ \r\nWith regards to slow vector queries. We've sent an email that contains links to:\r\n- jsonl file of 40,000 documents with resnet18 vector field populated.\r\n- jsonl file of 400,000 documents with resnet18 vector field populated.\r\n- jsonl file with all 4,301,074 documents where resnet18 vector field populated.\r\n- Schema for Collection that matches documents in JSONL files.\r\n- Example vector query where speed went from 200ms to 12000ms+ after upgrade.\r\n- `tar.gz` file of data-dir from db prior to upgrade from `0.24.1` to `0.25.0r38`. \r\n\r\n(*Of note: We added a new facet field named `md5` after upgrade (to consolidate downtime). The field has been completely un-used/un-populated as we've had other fish to fry. My current assumption is that this new field is unrelated to our post-upgrade performance issues, though this is untested*).\r\n\r\n---\r\n\r\n# 2️⃣\r\nWe've discovered another query that has been slowed down after our upgrade from `0.24.1` to `0.25.0r38`. It is a much simpler query where we just are updating the value of a boolean property. \r\n\r\nOn `0.25.0r38` it clocks in at around 7000ms-9000ms. I don't have an exact benchmark of what it was on `0.24.1` though I can say with confidence it was under 500ms for sure.\r\n\r\nQuery looks like:\r\n```javascript\r\ntsClient.collections(<CollectionName>).documents(<AnyDocumentID>).update({isHidden:true});\r\n```\r\n\r\nOn further testing I've seen it take all the way up to 45000ms or even exceed or 60000ms timeout window. It's interesting because I'm using the same few IDs and at a time when the database is under almost no load. Seems possible setting it to false is slower but there's a lot of variance and it's difficult to tell.\r\n\r\n---\r\n\r\n# 3️⃣\r\nFinal thing (lower priority / minor) a small number of the documents in the JSONL file generated via the `0.25.0r38` export endpoint seem to be corrupted in that we were unable to parse some lines as valid JSON via standard Node-JS `JSON.parse(line)`. \r\n\r\nThis is not something we've experienced on any prior version with the export endpoint. It's also a relatively small number of documents affected (44 out of 4.5million or so). \r\n\r\n In the email correspondence, I've included:\r\n- File with subset of 10 documents from export endpoint. These were documents corrupted in a way such that they could not be parsed as valid JSON.\r\n\r\n---\r\n\r\n# 🙏\r\n\r\nHope this assists with debug and for a banger future 0.25.0 release. Keep us posted @participant1.\r\n\r\nIn the meantime, we plan to revert to 0.24.1 and increase the system memory to 128Gib as a temporary work-around for our export endpoint needs. Also to restore normal performance."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-07-04T00:49:12Z",
+   "body": "Hey @participant1 wanted to share that we were able to revert to 0.24.1 successfully 💯 \r\n\r\n✅ We're able to export now on that ver with 128Gib of memory and can double confirm that the exported jsonl file contains no un-parseable lines on `0.24.1` export.\r\n✅ Update call for a single boolean prop that took anywhere between 7000-43000ms now takes around 1000-2000ms (So not quite as fast as I thought but much better).\r\n\r\nWe appreciate the Typesense team and all the great stuff you guys do! Look forward to the official 0.25.0 release and best of luck!"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-07-07T22:43:14Z",
+   "body": "Hi @participant1 and @participant5 ,\r\n\r\nI have been trying to export documents in an index using the `export` function as below :\r\n\r\n`indexed_pages = client.collections['pages'].documents.export()`\r\n\r\nHowever, the Typesense server (I am using Docker) keeps going down. The error log is as follows :\r\n\r\n![image](https://github.com/participant3/participant3/assets/16894091/f6a0b6a7-4f7f-42fe-bdd4-bd459e13c370)\r\n\r\n![image](https://github.com/participant3/participant3/assets/16894091/44a9ccec-d556-4134-98c6-0338bf96dcb4)\r\n\r\nAnd this is the logs on my Typesense Docker container from the start until going down :\r\n\r\n![image](https://github.com/participant3/participant3/assets/16894091/a6f5e026-b3f0-42aa-a231-7edcd2523a23)\r\n\r\n![image](https://github.com/participant3/participant3/assets/16894091/5ccc976a-6183-4138-8f4c-bfb6ad76bee4)\r\n\r\n![image](https://github.com/participant3/participant3/assets/16894091/eec8747e-40e1-4c83-8772-6fe2ba2a4198)\r\n\r\n![image](https://github.com/participant3/participant3/assets/16894091/bf8404a7-0ec9-4b8d-b91c-993169887a09)\r\n\r\nAnd finally, this is the screenshot of resource usage by Typesense Docker image during the process : \r\n\r\n![image](https://github.com/participant3/participant3/assets/16894091/483da900-0f81-4ff3-a354-329feffdc270)\r\n\r\nDo you think you could help figuring out what the problem is and why the server keep falling over ? \r\n\r\nP.S. I have used Typesense `0.24.1`, `0.25.0.rc44` and `0.25.0.rc45` and the outcome has been the same.\r\n\r\n\r\n\r\n\r\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-07-08T01:18:06Z",
+   "body": "@participant2 \r\n\r\nCan you please tell me at what point in the screenshot does the export begin? "
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-07-10T19:26:18Z",
+   "body": "@participant1 \r\n\r\nThese are the screenshots of the logs right when the program starts to run until when the TS server goes down : \r\n\r\n![image](https://github.com/participant3/participant3/assets/16894091/37cb73ac-d6f8-41af-b3e7-74770b494871)\r\n\r\n![image](https://github.com/participant3/participant3/assets/16894091/3f657de0-ece7-4154-ae54-2d5b0632f9b6)\r\n\r\n![image](https://github.com/participant3/participant3/assets/16894091/b2fedd36-2c9d-4233-9ec6-2e20d2ba25ee)\r\n\r\nAnd these are screenshots of resources right when the program starts and goes for a bit. I have marked the starting point with red arrows :\r\n\r\n![image](https://github.com/participant3/participant3/assets/16894091/1aa13fcb-67ae-4f80-92b7-6da3aca76cd2)\r\n\r\n\r\nI'm unable to take more screenshots of the resources as this is the only thing it shows me before the server goes down and everything goes away.\r\n\r\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-08-19T11:59:58Z",
+   "body": "This should be comprehensively fixed in 0.25.0. Please reopen if it's not."
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "participant3/participant3",
+  "default_branch": "v31",
+  "commit_sha": "5bed247aea9958838fb0b3dde9e31253b54a8219",
+  "as_of": "2023-06-22T02:14:43Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_participant3_participant3_1067"
+}

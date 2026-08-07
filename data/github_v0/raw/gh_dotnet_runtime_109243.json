@@ -1,0 +1,322 @@
+{
+ "repo": "dotnet/runtime",
+ "number": 109243,
+ "url": "https://github.com/dotnet/runtime/issues/109243",
+ "title": ".net core TLS server certificate with private key in TPM",
+ "state": "closed",
+ "labels": [
+  "area-System.Security"
+ ],
+ "reporter": "reporter",
+ "created_at": "2024-10-25T20:11:09Z",
+ "closed_at": "2025-01-18T21:45:31Z",
+ "body": "I'm trying to do an equivalent of this command in a .net core library for doing a TLS server where the private key is in TPM with a reference of 0x8100001:\n\n`openssl s_server -cert rsa.crt -key 0x8100002-keyform engine -engine tpm2tss -accept 8`\n\nim trying for this to be running in Ubuntu on .net core. In Windows this is abstracted well by the cert store with crypto provider but the same doesn't exist in Ubuntu.\n\nDoes anyone have an example of using a package that works in Ubuntu? The below is the equivalent in windows that we use to get from cert store(the cert store abstracts the TPM access)\n\n```C#\nX509Store store = new X509Store(storeName, StoreLocation.CurrentUser);  \nstore.Open(OpenFlags.ReadOnly);  \nX509Certificate2Collection col = store.Certificates.Find(X509FindType.FindBySubjectName, commonName,false);\n```\n\nI also tried this example(https://github.com/dotnet/runtime/issues/94493) with the 0x8100002 reference but it fails as well\n\n```C#\nprivate static X509Certificate2 GetClientCert(string path, ???)\n{\n    using SafeEvpPKeyHandle keyHandle = ???;\n    using RSAOpenSsl rsa = new RSAOpenSsl(keyHandle);\n    using X509Certificate2 certOnly = new X509Certificate2(path);\n\n    return certOnly.CopyWithPrivateKey(rsa);\n}\n```",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2024-10-25T21:17:41Z",
+   "body": "Since you're using an engine (and not a provider) you should be able to do it with .NET 8+\n\n```C#\nusing (SafeEvpPKeyHandle keyHandle = SafeEvpPKeyHandle.OpenPrivateKeyFromEngine(\"tpm2tss\", \"0x8100002\"))\nusing (RSA rsa = new RSAOpenSsl(keyHandle))\nusing (X509Certificate2 certOnly = new X509Certificate2(path))\n{\n    return certOnly.CopyWithPrivateKey(rsa);\n}\n```\n\nIf instead you need an OSSL_PROVIDER (instead of an ENGINE) then you need .NET 9+, where it would look like\n\n```C#\nusing (SafeEvpPKeyHandle keyHandle = SafeEvpPKeyHandle.OpenKeyFromProvider(\"tpm2tss\", \"0x8100002\"))\nusing (RSA rsa = new RSAOpenSsl(keyHandle))\nusing (X509Certificate2 certOnly = X509CertificateLoader.LoadCertificateFromFile(path))\n{\n    return certOnly.CopyWithPrivateKey(rsa);\n}\n```"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-10-28T16:39:30Z",
+   "body": "so im using .net 8 and openssl version 1.1.1 and have this error when using the engine option as listed above\n\n`Unhandled exception. Interop+Crypto+OpenSslCryptographicException: error:13000074:engine routines::no such engine`\n\nand with openssl we have the enginer availalbe\n`openssl engine -t -c tpm2tss\n(tpm2tss) TPM2-TSS engine for OpenSSL\n[RSA, RAND]\n     [ available ]`\n\nIs there any other config needed to use this code \n`using (SafeEvpPKeyHandle keyHandle = SafeEvpPKeyHandle.OpenPrivateKeyFromEngine(\"tpm2tss\", \"0x8100002\"))\nusing (RSA rsa = new RSAOpenSsl(keyHandle))\nusing (X509Certificate2 certOnly = new X509Certificate2(path))\n{\n    return certOnly.CopyWithPrivateKey(rsa);\n}`"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-10-28T22:20:26Z",
+   "body": "Nothing special extra should be required.  The argument passed to `openssl engine` gets passed to `ENGINE_by_id`, and that's the same as we do with the `engineName` parameter.\n\n>  im using .net 8 and openssl version 1.1.1\n\nIs there more than one copy of OpenSSL on your system? (Specifically, libssl.so and libcrypto.so).  .NET is capable of using 1.1.1, but if we find 3.0 we prefer it.  So if you have a libssl.so.3/libcrypto.so.3 then .NET is almost certainly choosing that version.  You can ask what version we got by querying SafeEvpPKeyHandle.OpenSslVersion and printing that in hex... or use a debugger to see what specific copy of libcrypto.so got loaded.\n\nIf you have more than one, it's possible that the version we're binding to has a different ENGINE resolver path than the one you're interacting with using the commandline tool.\n\n--\n\nThe next thing I can think of is that the ENGINE might be loading successfully, but the ENGINE is incorrectly reporting \"no such engine\" instead of \"no such key\" if the key name needs to be formatted in a manner other than what I speculated.  That would probably require using a native debugger and seeing that our call to ENGINE_by_id succeeded, but our call to ENGINE_load_private_key failed.  We just report whatever error OpenSSL and/or the ENGINE reported, I can't tell you if it's, y'know, accurate."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-10-29T15:19:02Z",
+   "body": "My understanding is that engines are deprecated, but not removed, from OpenSSL 3 (which wants providers, but that support isn't available in .NET 8 and will come in .NET 9). However, the TPM2TSS engine installs in engines-1.1 rather than engines-3. Any idea how to get SafeEvpPKeyHandle.OpenPrivateKeyFromEngine(\"tpm2tss\", \"0x8100002\") to be looking/loading the older engine using OpenSSL 3?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-10-30T18:00:42Z",
+   "body": "I don't know if ENGINEs built against OSSL 1.1 will successfully load in OSSL 3.  OSSL 3 changed a lot of the ABI, and while the ENGINE registration and callbacks might be stable, if they call into any other OSSL functions they might have issues.  So, I've never tried to get OSSL3 to load from the engines-1.1 path, and don't know how to do it.\n\nIf you have both OSSL3 and OSSL1.1 and want .NET to load the older one, you can set an environment variable: `export CLR_OPENSSL_VERSION_OVERRIDE=1.1` (assuming your OpenSSL 1.1 has files named `libssl.so.1.1` and `libcrypto.so.1.1`; if they were `libcrypto.so.11` then you'd set the environment variable to `11` (whatever is after the `.so.`)"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-10-31T19:49:54Z",
+   "body": "That `export` command did seem to help the program access the engine, but the error changed to\n\n`Unhandled exception. Interop+Crypto+OpenSslCryptographicException: error:26096080:engine routines:ENGINE_load_private_key:failed loading private key`\n\nThat's using the `SafeEvpPKeyHandle.OpenPrivateKeyFromEngine(\"tpm2tss\", \"0x8100003\") ` form of the call. Any idea on why that might fail?\n"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-10-31T20:07:31Z",
+   "body": "An update on the same system: looks like the openssl utility **_does_** work with the handle from the command line. But, as shown above, that same handle can't be read by the .NET program.\n\nsudo sh\n\\#  export CLR_OPENSSL_VERSION_OVERRIDE=1.1\n\\#  openssl s_server -cert rsa.crt -key 0x81000003 -keyform engine -engine tpm2tss -accept 8\nengine \"tpm2tss\" set.\nEnter password for user key:\nUsing default temp DH parameters\nACCEPT\n\\#   openssl version -a\nOpenSSL 1.1.1  11 Sep 2018\nbuilt on: Tue Sep 24 17:37:19 2024 UTC\nplatform: linux-x86_64\noptions:  bn(64,64) rc4(16x,int) des(int) idea(int) blowfish(ptr) \ncompiler: gcc -fPIC -pthread -m64 -Wa,--noexecstack -Wall -O3 -DOPENSSL_USE_NODELETE -DL_ENDIAN -DOPENSSL_PIC -DOPENSSL_CPUID_OBJ -DOPENSSL_IA32_SSE2 -DOPENSSL_BN_ASM_MONT -DOPENSSL_BN_ASM_MONT5 -DOPENSSL_BN_ASM_GF2m -DSHA1_ASM -DSHA256_ASM -DSHA512_ASM -DKECCAK1600_ASM -DRC4_ASM -DMD5_ASM -DAES_ASM -DVPAES_ASM -DBSAES_ASM -DGHASH_ASM -DECP_NISTZ256_ASM -DX25519_ASM -DPADLOCK_ASM -DPOLY1305_ASM -DNDEBUG\nOPENSSLDIR: \"/usr/local/ssl\"\nENGINESDIR: \"/usr/local/lib/engines-1.1\"\nSeeding source: os-specific"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-10-31T20:19:48Z",
+   "body": "Your commandline information suggests you got password/PIN challenged, which the .NET API can't handle.  Perhaps tpm2tss wanted to report \"password required\" and that got lost in \"loading the key didn't work\"?"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-10-31T20:28:50Z",
+   "body": "There's no password on the handle. In that script above, only \"Enter\" was pressed. At least the routine that created the private key at that handle did not explicitly apply a password to it.\n"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-10-31T20:43:42Z",
+   "body": "This is the script that was run to create the key/handle that is the target we want:\n\n```\n# Step 1: Generate a private key in the TPM (RSA 2048)\necho \"Generating RSA private key in TPM...\"\ntpm2_createprimary -C o -c primary.ctx\n\necho \"------------tpm2_create -------------\"\ntpm2_create -C primary.ctx -G rsa -u key.pub -r key.priv \n\necho \"------------tpm2_load -------------\"\ntpm2_load -C primary.ctx -u key.pub -r key.priv -c key.ctx\n\n# Make the key persistent in the TPM\necho \"------------tpm2_evictcontrol -------------\"\ntpm2_evictcontrol -C o -c key.ctx 0x81000003\n```\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-11-05T16:23:33Z",
+   "body": "@participant1  is there an option to pass the empty password in the SafeEvpPKeyHandle.OpenPrivateKeyFromEngine ? I dont see that based on the documentation but based on how the openssl response is where it expects an empty password, do we need to pass that in from .net as well ? "
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-11-07T17:29:13Z",
+   "body": "> is there an option to pass the empty password in the SafeEvpPKeyHandle.OpenPrivateKeyFromEngine?\n\nNo, as you noted it doesn't take any options beyond the ENGINE name and the key name.\n\nTo identify that this is a null-vs-empty problem, you'll probably have to write a test directly against OpenSSL.  It would look something like the following (which notably never cleans up anything it allocated)... which I wrote in this text box, so likely doesn't compile, but it's a start.\n\n```C\nint main(int argc, const char** argc)\n{\n  OPENSSL_init_ssl(\n    OPENSSL_INIT_ADD_ALL_CIPHERS |\n      OPENSSL_INIT_ADD_ALL_DIGESTS |\n      OPENSSL_INIT_LOAD_CONFIG |\n      OPENSSL_INIT_NO_ATEXIT |\n      OPENSSL_INIT_LOAD_CRYPTO_STRINGS |\n      OPENSSL_INIT_LOAD_SSL_STRINGS,\n    NULL);\n\n  ENGINE* engine = ENGINE_by_id(\"tpm2tss\");\n  EVP_PKEY* pkey = NULL;\n\n  if (!engine)\n  {\n    printf(\"Engine did not load\\n\");\n    ERR_print_errors_fp(stdout);\n    return 1;\n  }\n\n  if (!ENGINE_init(engine))\n  {\n    printf(\"ENGINE_init failed.\\n\");\n    ERR_print_errors_fp(stdout);\n    return 1;\n  }\n\n  pkey = ENGINE_load_private_key(engine, \"0x81000003\", NULL, NULL);\n\n  if (pkey)\n  {\n    printf(\"Key loaded the easy way, hurrah!\\n\");\n    return 0;\n  }\n\n  printf(\"Key did not load the easy way.\\n\");\n  ERR_print_errors_fp(stdout);\n  printf(\"\\n\\n\\n\");\n\n  UI_METHOD* uimeth = UI_null();\n\n  pkey = ENGINE_load_private_key(engine, \"0x81000003\", uimeth, NULL);\n\n  if (pkey)\n  {\n    printf(\"Key loaded with UI_null\\n\");\n    return 0;\n  }\n\n  printf(\"Key did not load with UI_null.\\n\");\n  ERR_print_errors_fp(stdout);\n  printf(\"\\n\\n\\n\");\n\n  uimeth = UI_openssl();\n\n  pkey = ENGINE_load_private_key(engine, \"0x81000003\", uimeth, NULL);\n\n  if (pkey)\n  {\n    printf(\"Key loaded with UI_openssl\\n\");\n    return 0;\n  }\n\n  printf(\"Key did not load with UI_openssl.\\n\");\n  ERR_print_errors_fp(stdout);\n  printf(\"\\n\\n\\n\");\n\n  // Exercise to the reader: If you make it this far, you can try\n  // creating a custom UI_METHOD based on\n  // https://github.com/openssl/openssl/blob/b372b1f76450acdfed1e2301a39810146e28b02c/apps/apps.c#L183-L275\n\n  printf(\"Key never loaded :(\\n\");\n  return 1;\n}\n```"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-11-08T18:59:57Z",
+   "body": "Let me see if I can reproduce this and figure out what is going on."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-11-08T21:22:45Z",
+   "body": "Okay, I got as far as @participant2 (great handle btw)\n\n```\nWARNING:esys:src/tss2-esys/api/Esys_ReadPublic.c:320:Esys_ReadPublic_Finish() Received TPM Error\nERROR:esys:src/tss2-esys/esys_tr.c:231:Esys_TR_FromTPMPublic_Finish() Error ReadPublic ErrorCode (0x00000084)\nERROR:esys:src/tss2-esys/esys_tr.c:321:Esys_TR_FromTPMPublic() Error TR FromTPMPublic ErrorCode (0x00000084)\nUnhandled exception. Interop+Crypto+OpenSslCryptographicException: error:26096080:engine routines:ENGINE_load_private_key:failed loading private key\n   at Interop.Crypto.LoadPrivateKeyFromEngine(String engineName, String keyName)\n   at Program.<Main>$(String[] args) in /home/<user>/Projects/Program.cs:line 2\n```"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-11-08T22:13:09Z",
+   "body": "The problem is that we are passing in `NULL` for the `ui_method` here (the 3rd parameter to the function pointer):\n\nhttps://github.com/dotnet/runtime/blob/60b84bb13e499e0866731dbe21973b92b7abed15/src/native/libs/System.Security.Cryptography.Native/pal_evp_pkey.c#L568\n\nthe `UI_METHOD` is passed as-is to the engine here\n\nhttps://github.com/openssl/openssl/blob/b10cfd93fd58cc1e9c876be159253b5389dc11a5/crypto/engine/eng_pkey.c#L77\n\nThe `tpm2-tss-engine` rejects that, here:\n\nhttps://github.com/tpm2-software/tpm2-tss-engine/blob/3d010240b5afbabbf54c35d6c0f6e92ed0a0c0ea/src/tpm2-tss-engine.c#L80-L83\n\nThe reason it works fro the OpenSSL command line is because it uses `UI_get_default_method`, which unless someone changed, is `UI_OpenSSL`, so it passes the check in the tpm2tss engine.\n\n\n---- \n\n\nSlightly annoyingly, it's not strictly safe to pass `UI_null`. That returns a `const UI_METHOD*` whereas the engine loading API wants a non-const one, presumably because a \"bad\" engine could make the null engine do non-null things on the singleton."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-11-08T23:17:37Z",
+   "body": "@participant3 I'm fine with making a UI_METHOD that \"just doesn't do anything\" if you think that's the best path forward.  Or maybe we can convince tpm2tss to not call that an invalid state? :<nick>:"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-11-09T00:18:25Z",
+   "body": "Thanks @participant3  for analyzing this further. we are happy to try this if you have a fix from a build or someway for us to try as we got stuck on this problem for a while. Its very promising that you got to the root cause!"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-11-09T16:56:49Z",
+   "body": "@reporter in order to give you a test build of the native library I would need to know more about your environment and .NET version. The full output from `dotnet --info` would be helpful."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-11-10T01:50:02Z",
+   "body": "@participant3  I will grab that info on the target machine probably tomorrow. But its on .net 8 on Ubuntu 22.x on a x86 based processor.  we tried as self contained app. our desire is to run on .net 8"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-11-11T14:55:09Z",
+   "body": "@participant3  Here is the info from the target machine where we want to run\n\n```\n$ dotnet --info\n \nHost:\n  Version:      8.0.10\n  Architecture: x64\n  Commit:       81cabf2857\n  RID:          ubuntu.22.04-x64\n \n.NET SDKs installed:\n  No SDKs were found.\n \n.NET runtimes installed:\n  Microsoft.AspNetCore.App 8.0.10 [/usr/lib/dotnet/shared/Microsoft.AspNetCore.App]\n  Microsoft.NETCore.App 6.0.35 [/usr/lib/dotnet/shared/Microsoft.NETCore.App]\n  Microsoft.NETCore.App 8.0.10 [/usr/lib/dotnet/shared/Microsoft.NETCore.App]\n \nOther architectures found:\n  None\n \nEnvironment variables:\n  DOTNET_ROOT       [/home/<user>/.dotnet]\n \nglobal.json file:\n  Not found\n \nLearn more:\nhttps://aka.ms/dotnet/info\n \nDownload .NET:\nhttps://aka.ms/dotnet/download\n```"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-11-13T16:11:28Z",
+   "body": "Pull request #109706 will fix this for .NET 10. \n\nIf you want to try this on .NET 8, you can do the following. This should be done on the same OS (Ubuntu 22.04) as you mentioned you are using .NET from.\n\n1. Checkout the `dotnet/runtime` git repository \n    `git clone https://github.com/dotnet/runtime.git`\n2. Check out the v8.0.10 tag in the checked out repository.\n    `git checkout v8.0.10` - note, .NET 8.0.11 is released. If you upgrade to .NET 8.0.11, make sure you use that tag instead.\n3. Apply the fix.\n    `git cherry-pick -n f0896dbbfdeed482855d7bb3dae9475c09dc68f8`\n    `git cherry-pick -n 136e5f37c3fe3c825ee5086d99fcfef151cecbb5`\n\n    Those two git commit hashes correspond to the commits in this pull request. https://github.com/dotnet/runtime/pull/109782\n4. Build the repository.\n    1. See the requirements from the workflow instructions. In my experience, the 24.04 build requirements also work on 22.04. https://github.com/dotnet/runtime/blob/main/docs/workflow/requirements/linux-requirements.md#debianubuntu\n    2. Once the dependencies are installed, build with\n        `./build.sh -rc release -c release -s clr+libs.native`\n        This does a partial build of the runtime repository. It only builds the native things, since for our purposes here, we don't need a full build, which should make the build time much more reasonable.\n\n5. With the built repository with our changes, you should have a file over at `artifacts/bin/native/net8.0-linux-Release-x64/libSystem.Security.Cryptography.Native.OpenSsl.so`\n\n6. Publish your app as self-contained. `dotnet publish -c Release -p SelfContained=true`, for example.\n7. In your self contained application output in something like `bin/Release/net8.0/linux-x64/publish`, you should have `libSystem.Security.Cryptography.Native.OpenSsl.so`. Replace it with the one you built and identified in step 5.\n8. Run your self-contained application."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-11-13T21:27:43Z",
+   "body": "Thanks @participant3  . I see on the issue page that there is a backport comment. Is that in .net 8.0 ? \n\n`Started backporting to release/8.0-staging: https://github.com/dotnet/runtime/actions/runs/11820846271`"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-11-13T21:44:44Z",
+   "body": "Currently, the fix has only been merged for .NET 10.\n\nI have opened backport requests to _attempt_ to get the fixes in .NET 8.0 and .NET 9.0. The presence of a backport pull request does not guarantee anything. The request may be rejected. I will keep this issue updated with information about where the fix lands, if at all, in servicing."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-11-13T22:17:59Z",
+   "body": "Thanks @participant3 . with .net 10 its an year out for us to get this in hands. so would be good if it gets in .net 9 considering it just released. "
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-11-14T00:45:00Z",
+   "body": "@reporter The backport is more likely to happen if you can verify that it solves the problem you are having.  If there's another problem hiding behind this one we'd like to know it and put them in at the same time."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-11-14T20:40:17Z",
+   "body": "> Pull request [#109706](https://github.com/dotnet/runtime/pull/109706) will fix this for .NET 10.\n> \n> If you want to try this on .NET 8, you can do the following. This should be done on the same OS (Ubuntu 22.04) as you mentioned you are using .NET from.\n> \n> 1. Checkout the `dotnet/runtime` git repository\n>    `git clone https://github.com/dotnet/runtime.git`\n> 2. Check out the v8.0.10 tag in the checked out repository.\n>    `git checkout v8.0.10` - note, .NET 8.0.11 is released. If you upgrade to .NET 8.0.11, make sure you use that tag instead.\n> 3. Apply the fix.\n>    `git cherry-pick -n f0896dbbfdeed482855d7bb3dae9475c09dc68f8`\n>    `git cherry-pick -n 136e5f37c3fe3c825ee5086d99fcfef151cecbb5`\n>    Those two git commit hashes correspond to the commits in this pull request. [[release/8.0-staging] Re-try loading ENGINE keys with a non-NULL UI_METHOD #109782](https://github.com/dotnet/runtime/pull/109782)\n> 4. Build the repository.\n>    \n>    1. See the requirements from the workflow instructions. In my experience, the 24.04 build requirements also work on 22.04. https://github.com/dotnet/runtime/blob/main/docs/workflow/requirements/linux-requirements.md#debianubuntu\n>    2. Once the dependencies are installed, build with\n>       `./build.sh -rc release -c release -s clr+libs.native`\n>       This does a partial build of the runtime repository. It only builds the native things, since for our purposes here, we don't need a full build, which should make the build time much more reasonable.\n> 5. With the built repository with our changes, you should have a file over at `artifacts/bin/native/net8.0-linux-Release-x64/libSystem.Security.Cryptography.Native.OpenSsl.so`\n> 6. Publish your app as self-contained. `dotnet publish -c Release -p SelfContained=true`, for example.\n> 7. In your self contained application output in something like `bin/Release/net8.0/linux-x64/publish`, you should have `libSystem.Security.Cryptography.Native.OpenSsl.so`. Replace it with the one you built and identified in step 5.\n> 8. Run your self-contained application.\n\nI followed the each step for local build but it gives some error. Here is the build logs. \n\n./build.sh -rc release -c release -s clr+libs.native\n  Determining projects to restore...\n  Tool 'coverlet.console' (version '6.0.0') was restored. Available commands: coverlet\n  Tool 'dotnet-reportgenerator-globaltool' (version '5.0.2') was restored. Available commands: reportgenerator\n  Tool 'microsoft.dotnet.xharness.cli' (version '8.0.0-prerelease.24229.2') was restored. Available commands: xharness\n  Tool 'microsoft.visualstudio.slngen.tool' (version '10.0.0') was restored. Available commands: slngen\n  Tool 'dotnet-format' (version '6.0.240501') was restored. Available commands: dotnet-format\n  \n  Restore was successful.\n  Restored /home/<user>/.nuget/packages/microsoft.dotnet.arcade.sdk/8.0.0-beta.24426.2/tools/Tools.proj (in 3.63 sec).\n  Determining projects to restore...\n  Restored /home/<user>/Desktop/dotnetbuild/runtime/src/tasks/WasmBuildTasks/WasmBuildTasks.csproj (in 1.06 sec).\n  Restored /home/<user>/Desktop/dotnetbuild/runtime/src/tasks/WorkloadBuildTasks/WorkloadBuildTasks.csproj (in 1.06 sec).\n  Restored /home/<user>/Desktop/dotnetbuild/runtime/src/tasks/TestExclusionListTasks/TestExclusionListTasks.csproj (in 1.07 sec).\n  Restored /home/<user>/Desktop/dotnetbuild/runtime/src/tasks/WasmAppBuilder/WasmAppBuilder.csproj (in 1.06 sec).\n  Restored /home/<user>/Desktop/dotnetbuild/runtime/src/tasks/Microsoft.NET.WebAssembly.Webcil/Microsoft.NET.WebAssembly.Webcil.csproj (in 114 ms).\n  Restored /home/<user>/Desktop/dotnetbuild/runtime/src/tasks/MobileBuildTasks/MobileBuildTasks.csproj (in 102 ms).\n  Restored /home/<user>/Desktop/dotnetbuild/runtime/src/tasks/Microsoft.NET.Sdk.WebAssembly.Pack.Tasks/Microsoft.NET.Sdk.WebAssembly.Pack.Tasks.csproj (in 160 ms).\n  Restored /home/<user>/Desktop/dotnetbuild/runtime/src/tasks/LibraryBuilder/LibraryBuilder.csproj (in 188 ms).\n  Restored /home/<user>/Desktop/dotnetbuild/runtime/src/tasks/AppleAppBuilder/AppleAppBuilder.csproj (in 79 ms).\n  Restored /home/<user>/Desktop/dotnetbuild/runtime/src/tasks/AotCompilerTask/MonoAOTCompiler.csproj (in 150 ms).\n  Restored /home/<user>/Desktop/dotnetbuild/runtime/src/tasks/Crossgen2Tasks/Crossgen2Tasks.csproj (in 351 ms).\n  Restored /home/<user>/Desktop/dotnetbuild/runtime/src/tasks/tasks.proj (in 40 ms).\n  Restored /home/<user>/Desktop/dotnetbuild/runtime/src/tasks/AndroidAppBuilder/AndroidAppBuilder.csproj (in 88 ms).\n  Restored /home/<user>/Desktop/dotnetbuild/runtime/src/native/libs/build-native.proj (in 48 ms).\n  Restored /home/<user>/Desktop/dotnetbuild/runtime/src/native/corehost/corehost.proj (in 28 ms).\n  Restored /home/<user>/Desktop/dotnetbuild/runtime/src/libraries/native-binplace.proj (in 95 ms).\n  Restored /home/<user>/Desktop/dotnetbuild/runtime/src/tasks/installer.tasks/installer.tasks.csproj (in 484 ms).\n  Restored /home/<user>/Desktop/dotnetbuild/runtime/src/libraries/System.Runtime.InteropServices/gen/Microsoft.Interop.SourceGeneration/Microsoft.Interop.SourceGeneration.csproj (in 407 ms).\n  Restored /home/<user>/Desktop/dotnetbuild/runtime/src/libraries/System.Runtime.InteropServices/gen/LibraryImportGenerator/LibraryImportGenerator.csproj (in 271 ms).\n  Restored /home/<user>/Desktop/dotnetbuild/runtime/src/libraries/System.Private.CoreLib/ref/System.Private.CoreLib.csproj (in 14 ms).\n  Restored /home/<user>/Desktop/dotnetbuild/runtime/src/coreclr/tools/tieringtest/tieringtest.csproj (in 22 ms).\n  Restored /home/<user>/Desktop/dotnetbuild/runtime/src/coreclr/tools/runincontext/runincontext.csproj (in 22 ms).\n  Restored /home/<user>/Desktop/dotnetbuild/runtime/src/libraries/System.Private.CoreLib/gen/System.Private.CoreLib.Generators.csproj (in 99 ms).\n  Restored /home/<user>/Desktop/dotnetbuild/runtime/src/coreclr/tools/r2rdump/R2RDump.csproj (in 195 ms).\n  Restored /home/<user>/Desktop/dotnetbuild/runtime/src/coreclr/tools/r2rtest/R2RTest.csproj (in 597 ms).\n  Restored /home/<user>/Desktop/dotnetbuild/runtime/src/coreclr/tools/aot/crossgen2/crossgen2_inbuild.csproj (in 63 ms).\n  Restored /home/<user>/Desktop/dotnetbuild/runtime/src/coreclr/tools/aot/crossgen2/crossgen2.csproj (in 63 ms).\n  Restored /home/<user>/Desktop/dotnetbuild/runtime/src/coreclr/runtime-prereqs.proj (in 65 ms).\n  Restored /home/<user>/Desktop/dotnetbuild/runtime/src/coreclr/nativeaot/Test.CoreLib/src/Test.CoreLib.csproj (in 18 ms).\n  Restored /home/<user>/Desktop/dotnetbuild/runtime/src/coreclr/nativeaot/System.Private.TypeLoader/src/System.Private.TypeLoader.csproj (in 15 ms).\n  Restored /home/<user>/Desktop/dotnetbuild/runtime/src/coreclr/nativeaot/System.Private.StackTraceMetadata/src/System.Private.StackTraceMetadata.csproj (in 20 ms).\n  Restored /home/<user>/Desktop/dotnetbuild/runtime/src/coreclr/nativeaot/System.Private.Reflection.Execution/src/System.Private.Reflection.Execution.csproj (in 17 ms).\n  Restored /home/<user>/Desktop/dotnetbuild/runtime/src/coreclr/nativeaot/System.Private.DisabledReflection/src/System.Private.DisabledReflection.csproj (in 15 ms).\n  Restored /home/<user>/Desktop/dotnetbuild/runtime/src/coreclr/nativeaot/System.Private.CoreLib/src/System.Private.CoreLib.csproj (in 15 ms).\n  Restored /home/<user>/Desktop/dotnetbuild/runtime/src/coreclr/crossgen-corelib.proj (in 9 ms).\n  Restored /home/<user>/Desktop/dotnetbuild/runtime/src/coreclr/System.Private.CoreLib/System.Private.CoreLib.csproj (in 30 ms).\n  Restored /home/<user>/Desktop/dotnetbuild/runtime/src/coreclr/.nuget/coreclr-packages.proj (in 22 ms).\n  Restored /home/<user>/Desktop/dotnetbuild/runtime/src/coreclr/.nuget/Microsoft.NETCore.TestHost/Microsoft.NETCore.TestHost.proj (in 22 ms).\n  Restored /home/<user>/Desktop/dotnetbuild/runtime/src/coreclr/.nuget/Microsoft.NETCore.ILDAsm/Microsoft.NETCore.ILDAsm.proj (in 17 ms).\n  Restored /home/<user>/Desktop/dotnetbuild/runtime/src/coreclr/.nuget/Microsoft.NETCore.ILAsm/Microsoft.NETCore.ILAsm.proj (in 18 ms).\n  Restored /home/<user>/Desktop/dotnetbuild/runtime/Build.proj (in 10 ms).\n  Restored /home/<user>/Desktop/dotnetbuild/runtime/src/coreclr/tools/aot/ILCompiler/repro/repro.csproj (in 38 ms).\n  Restored /home/<user>/Desktop/dotnetbuild/runtime/src/coreclr/tools/aot/ILCompiler/ILCompiler.csproj (in 243 ms).\n  Restored /home/<user>/Desktop/dotnetbuild/runtime/src/coreclr/tools/aot/ILCompiler.TypeSystem/ILCompiler.TypeSystem.csproj (in 81 ms).\n  Restored /home/<user>/Desktop/dotnetbuild/runtime/src/coreclr/tools/aot/ILCompiler.RyuJit/ILCompiler.RyuJit.csproj (in 76 ms).\n  Restored /home/<user>/Desktop/dotnetbuild/runtime/src/coreclr/tools/dotnet-pgo/dotnet-pgo.csproj (in 1.48 sec).\n  Restored /home/<user>/Desktop/dotnetbuild/runtime/src/coreclr/tools/aot/ILCompiler.Reflection.ReadyToRun/ILCompiler.Reflection.ReadyToRun.csproj (in 100 ms).\n  Restored /home/<user>/Desktop/dotnetbuild/runtime/src/coreclr/tools/aot/ILCompiler.ReadyToRun/ILCompiler.ReadyToRun.csproj (in 114 ms).\n  Restored /home/<user>/Desktop/dotnetbuild/runtime/src/coreclr/tools/aot/ILCompiler.MetadataTransform/ILCompiler.MetadataTransform.csproj (in 73 ms).\n  Restored /home/<user>/Desktop/dotnetbuild/runtime/src/coreclr/tools/aot/ILCompiler.DependencyAnalysisFramework/ILCompiler.DependencyAnalysisFramework.csproj (in 25 ms).\n  Restored /home/<user>/Desktop/dotnetbuild/runtime/src/coreclr/tools/aot/ILCompiler.Diagnostics/ILCompiler.Diagnostics.csproj (in 66 ms).\n  Restored /home/<user>/Desktop/dotnetbuild/runtime/src/coreclr/tools/aot/ILCompiler.Build.Tasks/ILCompiler.Build.Tasks.csproj (in 69 ms).\n  Restored /home/<user>/Desktop/dotnetbuild/runtime/src/coreclr/tools/aot/ILCompiler.Compiler/ILCompiler.Compiler.csproj (in 89 ms).\n  Restored /home/<user>/Desktop/dotnetbuild/runtime/src/coreclr/tools/InjectResource/InjectResource.csproj (in 16 ms).\n  Restored /home/<user>/Desktop/dotnetbuild/runtime/src/coreclr/runtime.proj (in 12 ms).\n  Restored /home/<user>/Desktop/dotnetbuild/runtime/src/coreclr/tools/SuperFileCheck/SuperFileCheck.csproj (in 173 ms).\n  Restored /home/<user>/Desktop/dotnetbuild/runtime/src/tasks/MonoTargetsTasks/ILStrip/AssemblyStripper/AssemblyStripper.csproj (in 8.98 sec).\n  Restored /home/<user>/Desktop/dotnetbuild/runtime/src/tasks/MonoTargetsTasks/MonoTargetsTasks.csproj (in 9.14 sec).\n  System.Private.CoreLib.Generators -> /home/<user>/Desktop/dotnetbuild/runtime/artifacts/bin/System.Private.CoreLib.Generators/Release/netstandard2.0/System.Private.CoreLib.Generators.dll\n  Microsoft.Interop.SourceGeneration -> /home/<user>/Desktop/dotnetbuild/runtime/artifacts/bin/Microsoft.Interop.SourceGeneration/Release/netstandard2.0/Microsoft.Interop.SourceGeneration.dll\n  LibraryImportGenerator -> /home/<user>/Desktop/dotnetbuild/runtime/artifacts/bin/LibraryImportGenerator/Release/netstandard2.0/Microsoft.Interop.LibraryImportGenerator.dll\n  System.Private.CoreLib -> /home/<user>/Desktop/dotnetbuild/runtime/artifacts/bin/System.Private.CoreLib/ref/Release/net8.0/System.Private.CoreLib.dll\nCSC : error CS2012: Cannot open '/home/<user>/Desktop/dotnetbuild/runtime/artifacts/obj/coreclr/System.Private.CoreLib/x64/Release/System.Private.CoreLib.dll' for writing -- 'Access to the path '/home/<user>/Desktop/dotnetbuild/runtime/artifacts/obj/coreclr/System.Private.CoreLib/x64/Release/System.Private.CoreLib.dll' is denied.' [/home/<user>/Desktop/dotnetbuild/runtime/src/coreclr/System.Private.CoreLib/System.Private.CoreLib.csproj]\n\nBuild FAILED.\n\nCSC : error CS2012: Cannot open '/home/<user>/Desktop/dotnetbuild/runtime/artifacts/obj/coreclr/System.Private.CoreLib/x64/Release/System.Private.CoreLib.dll' for writing -- 'Access to the path '/home/<user>/Desktop/dotnetbuild/runtime/artifacts/obj/coreclr/System.Private.CoreLib/x64/Release/System.Private.CoreLib.dll' is denied.' [/home/<user>/Desktop/dotnetbuild/runtime/src/coreclr/System.Private.CoreLib/System.Private.CoreLib.csproj]\n    0 Warning(s)\n    1 Error(s)\n\nTime Elapsed 00:05:20.41\nBuild failed with exit code 1. Check errors above.\n![Image](https://github.com/user-attachments/assets/b05065c2-3ed9-49ab-83eb-0602f4915419)\n"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-11-14T20:44:03Z",
+   "body": "@participant4 based on `/dfs/` in your file path, I am guessing you are building on a DFS remote file system. I don't know how well the build system tolerates that - it might only build on an ext4 or similar file system."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-11-14T20:50:33Z",
+   "body": "> [@participant4](https://github.com/participant4) based on `/dfs/` in your file path, I am guessing you are building on a DFS remote file system. I don't know how well the build system tolerates that - it might only build on an ext4 or similar file system.\n\nIt's a dedicated Linux machine I connected via rdp. dfs is the user name and the folder I created on desktop. Should I build in some specific folder? \n\nI ran under sudo and the error changed. \n\n![Image](https://github.com/user-attachments/assets/6fd3b029-be01-44eb-ab54-e251916cc789)\n"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-11-14T21:12:43Z",
+   "body": "@participant3  here is the error log file it was mentioned on the console. \n![Image](https://github.com/user-attachments/assets/a3c64c61-c1a0-4408-bfb7-f9fda3c9067d)\n"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-11-14T21:51:04Z",
+   "body": "@participant4 looking at the console output behind the folder, it looks like it wants zlib. You should do `sudo apt-get install zlib1g-dev`.\n\nI forgot that .NET 8 had dependency on zlib, but .NET 9 removed the dependency, so is not listed as a build requirement anymore in our documentation."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-11-15T00:59:17Z",
+   "body": "Thanks @participant3. The build worked and we are not getting the error we got with  SafeEvpPKeyHandle.OpenPrivateKeyFromEngine before. So thats great news! But we are trying to use that cert for a TLS session and we get an error that\n\n`TCP Server started. Listening for incoming connections..\nIncoming connection from x.x.x.x\nSystem. Security.Cryptography.CryptographicException: m_safeCertContext is an invalid handle. at System.Security.Cryptography.X509Certificates.X509Certificate.ThrowIfInvalid() at System.Security.Cryptography.X509Certificates.509Certificate2.get_HasPrivateKey()\nat System.Net.Security.SslAuthenticationOptions.UpdateOptions(SslServerAuthenticationOptions s\nslServerAuthenticationoptions)\nat System.Net.Security.SslStream.AuthenticateAsServerSslServerAuthenticationOptions sslServer\nAuthenticationOptions)`\n\nthis is on OpenSSL version: 1010100F"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-11-15T01:09:18Z",
+   "body": "@reporter can you put together a small example application that demonstrates that behavior? That looks like a disposed certificate is trying to be used somewhere."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-11-16T01:18:50Z",
+   "body": "Okay, I think we got past the invalid handle error as you pointed out we had the object disposed. Now the connection handshake happens but fails with a wierd openssl error. we have set the TLS version to TLS 1.2, it might be that the certificate chain needs to be placed in a trusted root (Windows makes this easier :) ) . We are making a separate sample app and will share it with you soon,\n\n```\nSystem.Security.Authentication.AuthenticationException: Authentication failed, see inner exception.\n---> Interop+OpenSsl+SslException: SSL Handshake failed with OpenSSL error - SSL_ERROR_SSL.\n---> Interop+Crypto+OpenSslCryptographicException: error:0A00041B:SSL routines::tlsv1 alert decrypt error\n   --- End of inner exception stack trace ---\n   at Interop.OpenSsl.DoSslHandshake(SafeSslHandle context, ReadOnlySpan`1 input, Byte[]& sendBuf, Int32& sendCount)\n   at System.Net.Security.SslStreamPal.HandshakeInternal(SafeDeleteSslContext& context, ReadOnlySpan`1 inputBuffer, Byte[]& outputBuffer, SslAuthenticationOptions sslAuthenticationOptions)\n   --- End of inner exception stack trace ---\n   at System.Net.Security.SslStream.ForceAuthenticationAsync[TIOAdapter](Boolean receiveFirst, Byte[] reAuthenticationData, CancellationToken cancellationToken)\n   at System.Net.Security.SslStream.AuthenticateAsServer(SslServerAuthenticationOptions sslServerAuthenticationOptions)\n   at AServerTest.ServerNew.Listen(IPAddress ip, Int32 port) in \n```"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-11-18T16:51:27Z",
+   "body": "@participant3  also if you have a sample program that worked on .net 10 with the TPM on Ubuntu, can you share that as well please? "
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-11-18T18:31:12Z",
+   "body": "> it might be that the certificate chain needs to be placed in a trusted root\n\nIf you mean the certificate on your side of the connection, that's never required on Linux (or, really \"anything but Windows\")... we just do the right thing.\n\nIf you mean the certificate from the other side, you can add it to your system trust, or user trust, or use API to add it as contextual trust, or just write a custom validator and accept it there.\n\n>  (Windows makes this easier :) )\n\nIf you mean TLS in general, I disagree :<nick>:.  If you mean TLS with hardware-based private keys, yeah, .NET on Windows has had longer to work the problems out."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-11-18T19:34:58Z",
+   "body": "@participant1  the certificate i was referring to was the server certificate and we are using the TPM to store the private key.  and yes I meant the TLS with TPM based private keys - windows abstracts it better.  \n\nI think we are close now, only issue is the handshake error we are getting and if we get past it would be good. "
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-11-19T21:33:15Z",
+   "body": "@participant1 \n> [@reporter](https://github.com/reporter) can you put together a small example application that demonstrates that behavior? That looks like a disposed certificate is trying to be used somewhere.\n\nI created a sample Client and Server application. \n[TPMHandler](https://github.com/participant4/TPMHandler)\n\n- First I created a self signed certificated on TPM 0x81000006 handle.\n- Published self contained TPMClient and TPMServer projects on separate folders. \n- Copied self signed \"ssl_certificate.pem\" file into where TPMServer published. \n- Replaced \"libSystem.Security.Cryptography.Native.OpenSsl.so\" on TPMServer files.\n\n- I gave permission to files via \"chmod 777 *\"\n- I ran the server program ./TPMServer and later client ./TPMClient \n\nHere are the exceptions I'm getting.\n**From Server:** \nTCP Server started. Listening for incoming connections...\nIncoming connection from 127.0.0.1:53478\nSystem.Security.Authentication.AuthenticationException: Authentication failed, see inner exception.\n ---> Interop+OpenSsl+SslException: SSL Handshake failed with OpenSSL error - SSL_ERROR_SSL.\n ---> Interop+Crypto+OpenSslCryptographicException: error:0A00041B:SSL routines::tlsv1 alert decrypt error\n   --- End of inner exception stack trace ---\n   at Interop.OpenSsl.DoSslHandshake(SafeSslHandle context, ReadOnlySpan`1 input, Byte[]& sendBuf, Int32& sendCount)\n   at System.Net.Security.SslStreamPal.HandshakeInternal(SafeDeleteSslContext& context, ReadOnlySpan`1 inputBuffer, Byte[]& outputBuffer, SslAuthenticationOptions sslAuthenticationOptions)\n   --- End of inner exception stack trace ---\n   at System.Net.Security.SslStream.ForceAuthenticationAsync[TIOAdapter](Boolean receiveFirst, Byte[] reAuthenticationData, CancellationToken cancellationToken)\n   at System.Net.Security.SslStream.AuthenticateAsServer(SslServerAuthenticationOptions sslServerAuthenticationOptions)\n   at TPMServer.Server.Listen(IPAddress ip, Int32 port) in C:\\Users\\<user>\\source\\repos\\TPMHandler\\TPMServer\\Server.cs:line 79\nSystem.Security.Authentication.AuthenticationException: Authentication failed, see inner exception.\n ---> Interop+OpenSsl+SslException: SSL Handshake failed with OpenSSL error - SSL_ERROR_SSL.\n ---> Interop+Crypto+OpenSslCryptographicException: error:0A00041B:SSL routines::tlsv1 alert decrypt error\n   --- End of inner exception stack trace ---\n   at Interop.OpenSsl.DoSslHandshake(SafeSslHandle context, ReadOnlySpan`1 input, Byte[]& sendBuf, Int32& sendCount)\n   at System.Net.Security.SslStreamPal.HandshakeInternal(SafeDeleteSslContext& context, ReadOnlySpan`1 inputBuffer, Byte[]& outputBuffer, SslAuthenticationOptions sslAuthenticationOptions)\n   --- End of inner exception stack trace ---\n   at System.Net.Security.SslStream.ForceAuthenticationAsync[TIOAdapter](Boolean receiveFirst, Byte[] reAuthenticationData, CancellationToken cancellationToken)\n   at System.Net.Security.SslStream.AuthenticateAsServer(SslServerAuthenticationOptions sslServerAuthenticationOptions)\n   at TPMServer.Server.Listen(IPAddress ip, Int32 port) in C:\\Users\\<user>\\source\\repos\\TPMHandler\\TPMServer\\Server.cs:line 79\n\n\n**From Client:**\n\nClient connected.\nException: Authentication failed, see inner exception.\nInner exception: SSL Handshake failed with OpenSSL error - SSL_ERROR_SSL.\nAuthentication failed - closing the connection.\n\nAny suggestion? \n\n "
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-11-19T22:54:27Z",
+   "body": "To make sure things are deterministic, instead of subjecting them to the whims of the finalizer, you should `using` (or otherwise `.Dispose()` of) SafeEvpPKeyHandle privateKey, RSAOpenSsl rsa, and X509Certificate2 tmpCert.\n\nAfter getting the certificate back from `GetCertificate()`, try to use the private key directly:\n\n```c#\nusing (RSA rsa = cert.GetRSAPrivateKey())\n{\n    byte[] sig = rsa.SignData(Array.Empty<byte>(), HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);\n    Console.WriteLine($\"Signature of empty data: {Convert.ToHexString(sig)}\");\n}\n```\n\nIf that works, but SslStream does not, you'll probably want to run WireShark or some other network capture to see if the handshake failure had interesting details that didn't manifest in the exception."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-11-19T23:18:25Z",
+   "body": "Another thing you can do run the `TPMServer` with TSS logging. You can experiment with different levels of logging environment variables, such as `export TSS2_LOG=all+DEBUG` for debug output, or `export TSS2_LOG=all+TRACE` for trace-level output.\n\nThese are very verbose log outputs that write to `/dev/stderr`. You can use `export TSS2_LOGFILE=/some/file/path` to write to a file instead.\n\nThese logs will show commands sent and received to the TPM.\n\n_Note_ if you are using `sudo` for testing purposes to talk to the TPM, you need to use the `-E` flag with `sudo` so the environment variable propagates."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-11-20T20:24:22Z",
+   "body": "> To make sure things are deterministic, instead of subjecting them to the whims of the finalizer, you should `using` (or otherwise `.Dispose()` of) SafeEvpPKeyHandle privateKey, RSAOpenSsl rsa, and X509Certificate2 tmpCert.\n> \n> After getting the certificate back from `GetCertificate()`, try to use the private key directly:\n> \n> using (RSA rsa = cert.GetRSAPrivateKey())\n> {\n>     byte[] sig = rsa.SignData(Array.Empty<byte>(), HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);\n>     Console.WriteLine($\"Signature of empty data: {Convert.ToHexString(sig)}\");\n> }\n> If that works, but SslStream does not, you'll probably want to run WireShark or some other network capture to see if the handshake failure had interesting details that didn't manifest in the exception.\n\n@participant1 The signature part seems working.\nSignature of empty data: 57F6D1C584F9CB7BC1D0693D695452BFFBA01D5520E5F3BE4BEB5D6C5199CD9C7E3070FE1C25389E8D20608C7FA27AE5487E3F2454FCC28DD85703798245B7E3253C31D59F9305DD12663929CE30F641DAB74D43DD941A3745FF913E7D061694DC7402C746B4DDBFA15DE085D94960A70D3C8D2A0926C8464E7917BFA414250C603942DE77580FF7FBA812522C3E450B89EB412E0AA293E65D128381CF38B33F9192A98A70E55CDE16D3243AD13B07189BC2A00BC79B87C8B2FDF27A02F648387A832005BB3F00291AD8A2415BD8FE62D234D7B47A03D0125372095BB36B98700B54FA68B2EDC82C5BD426C4283C5EBBF4796040975BAABF22EE95DDEE0E2C06\n\nStill failing on the Authentication part. I added a parameter to force it to use \"enabledSslProtocols:System.Security.Authentication.SslProtocols.Tls12\" the error changed a bit I think. \n\n`Incoming connection from 127.0.0.1:49012\nSystem.Security.Authentication.AuthenticationException: Authentication failed, see inner exception.\n ---> Interop+OpenSsl+SslException: SSL Handshake failed with OpenSSL error - SSL_ERROR_SSL.\n ---> Interop+Crypto+OpenSslCryptographicException: error:0A0000F4:SSL routines::unexpected message\n   --- End of inner exception stack trace ---\n   at Interop.OpenSsl.DoSslHandshake(SafeSslHandle context, ReadOnlySpan`1 input, Byte[]& sendBuf, Int32& sendCount)\n   at System.Net.Security.SslStreamPal.HandshakeInternal(SafeDeleteSslContext& context, ReadOnlySpan`1 inputBuffer, Byte[]& outputBuffer, SslAuthenticationOptions sslAuthenticationOptions)\n   --- End of inner exception stack trace ---\n   at System.Net.Security.SslStream.ForceAuthenticationAsync[TIOAdapter](Boolean receiveFirst, Byte[] reAuthenticationData, CancellationToken cancellationToken)\n   at System.Net.Security.SslStream.AuthenticateAsServer(SslServerAuthenticationOptions sslServerAuthenticationOptions)\n   at TPMServer.Server.Listen(IPAddress ip, Int32 port) in C:\\Users\\<user>\\source\\repos\\TPMHandler\\TPMServer\\Server.cs:line 104\nSystem.Security.Authentication.AuthenticationException: Authentication failed, see inner exception.\n ---> Interop+OpenSsl+SslException: SSL Handshake failed with OpenSSL error - SSL_ERROR_SSL.\n ---> Interop+Crypto+OpenSslCryptographicException: error:0A0000F4:SSL routines::unexpected message\n   --- End of inner exception stack trace ---\n   at Interop.OpenSsl.DoSslHandshake(SafeSslHandle context, ReadOnlySpan`1 input, Byte[]& sendBuf, Int32& sendCount)\n   at System.Net.Security.SslStreamPal.HandshakeInternal(SafeDeleteSslContext& context, ReadOnlySpan`1 inputBuffer, Byte[]& outputBuffer, SslAuthenticationOptions sslAuthenticationOptions)\n   --- End of inner exception stack trace ---\n   at System.Net.Security.SslStream.ForceAuthenticationAsync[TIOAdapter](Boolean receiveFirst, Byte[] reAuthenticationData, CancellationToken cancellationToken)\n   at System.Net.Security.SslStream.AuthenticateAsServer(SslServerAuthenticationOptions sslServerAuthenticationOptions)\n   at TPMServer.Server.Listen(IPAddress ip, Int32 port) in C:\\Users\\<user>\\source\\repos\\TPMHandler\\TPMServer\\Server.cs:line 104\n`\n\n@participant3 I tried to get extended logs but wasn't helpful. \n\nI did check with wireshark this is the error I see there also. \nThis error screen for same as previously I was getting( tlsv1 alert decrypt error )\n![Image](https://github.com/user-attachments/assets/ccc353f7-3f7e-4cd0-b035-655542c12e90)\n\n"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-11-20T21:53:06Z",
+   "body": "Just to double-check, did you actually see this work with `openssl s_server`?\n\n\n```\nopenssl s_server -cert cert.pem -key 0x81000003 -keyform engine -engine tpm2tss\n```\n\nThen actually make a request to it with `curl`?\n\n```\ncurl https://localhost:4433\n```\n\nFor myself, I appear to have reached the limits of what my TPM can do. It fails with:\n\n```\nERROR:esys:src/tss2-esys/api/Esys_HashSequenceStart.c:95:Esys_HashSequenceStart() Esys Finish ErrorCode (0x000b0143) \nERROR:esys:src/tss2-esys/esys_iutil.c:1134:iesys_check_sequence_async() Esys called in bad sequence. \nERROR:esys:src/tss2-esys/api/Esys_FlushContext.c:66:Esys_FlushContext() Error in async function ErrorCode (0x00070007) \n```\n\nThe error codes map to\n\n```\ntpm2_rc_decode 0x000b0143\n> rmt:error(2.0): command code not supported\n\ntpm2_rc_decode 0x00070007\n> esapi:Function called in the wrong order\n```\n\nThat was produced with `openssl s_server`, not .NET.\n\nI _can_ use cryptographic primitives, like `SignHash`. It just falls over with TLS."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-11-20T23:09:44Z",
+   "body": "> the limits of what my TPM can do. It fails with:\n> \n> ```\n> ERROR:esys:src/tss2-esys/api/Esys_HashSequenceStart.c:95:Esys_HashSequenceStart() Esys Finish ErrorCode (0x000b0143) \n> ERROR:esys:src/tss2-esys/esys_iutil.c:1134:iesys_check_sequence_async() Esys called in bad sequence. \n> ERROR:esys:src/tss2-esys/api/Esys_FlushContext.c:66:Esys_FlushContext() Error in async function ErrorCode (0x00070007) \n> ```\n\nHere is the results for same commands as you mentioned.\n\n**Server:**\n```\nopenssl s_server -cert _ssl_certificate.pem -key 0x81000006 -keyform engine -engine tpm2tss\nengine \"tpm2tss\" set.\nEnter password for user key:\nUsing default temp DH parameters\nACCEPT\nERROR\n127543978133312:error:1409441B:SSL routines:ssl3_read_bytes:tlsv1 alert decrypt error:ssl/record/rec_layer_s3.c:1527:SSL alert number 51\nshutting down SSL\nCONNECTION CLOSED\n```\n\n**Client:**\n```\ncurl https://localhost:4433\ncurl: (35) error:02000088:rsa routines::salt length check failed\n```\n\n"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-11-20T23:40:49Z",
+   "body": "> 127543978133312:error:1409441B:SSL routines:ssl3_read_bytes:tlsv1 alert decrypt error:ssl/record/rec_layer_s3.c:1527:SSL alert number 51\n\nAt this point I think we have identified that the issue you are running in to isn't related to .NET. It looks like you are getting the same \"alert decrypt error\" from `openssl s_server` as you are in .NET.\n\nI don't think there is a way for us to proceed with any assistance here until you can at least identify a scenario in which it does work with `openssl s_server` but does not work with .NET."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-11-21T16:24:30Z",
+   "body": "> > 127543978133312:error:1409441B:SSL routines:ssl3_read_bytes:tlsv1 alert decrypt error:ssl/record/rec_layer_s3.c:1527:SSL alert number 51\n> \n> At this point I think we have identified that the issue you are running in to isn't related to .NET. It looks like you are getting the same \"alert decrypt error\" from `openssl s_server` as you are in .NET.\n> \n> I don't think there is a way for us to proceed with any assistance here until you can at least identify a scenario in which it does work with `openssl s_server` but does not work with .NET.\n\nThank you. \nCan you merge the changes you made it for .NET 10 into .NET 8 please. I think that change you made is working as expected. If we can resolve the openssl issue that part will be ready on .net8 for us. "
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-11-21T18:15:40Z",
+   "body": "> Can you merge the changes you made it for .NET 10 into .NET 8 please.\n\nCould you share your reason for that request?  Currently you're the only one asking for it, and we've seen that it won't solve your scenario.  So this would be a change in an incremental update that seemingly no one actually wants.\n\nIn general \"we should fix it just because it's broken\" is vNext-only.  We've already fixed it for .NET 10; but we'd need a reason to do servicing.  (Right now, I'd take this into the meeting and they'd ask \"Is this a security thing?\" (\"Not really, no.\") \"Is this something reported by a user, or did we find it ourselves?\" (\"User\") \"Have they verified it fixes their problem?\" (\"Sort of. They verified it fixes _a_ problem, but their problem remains unsolved, and may be unsolvable...\")... and I don't see it going well after that :<nick>:)"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-11-22T23:07:15Z",
+   "body": "@participant1  @participant3  - I think we found the root cause of the error and it translates to the cipher suite picked by OpenSSL. So now in command line we are able to successfully connect use it by this parameter\n\n```\nopenssl s_server -cert _ssl_certificate.pem -key 0x81000006 -keyform engine -engine tpm2tss -cipher AES128-GCM-SHA256 -debug -msg -min_protocol TLSv1.2 -max_protocol TLSv1.2\n \nopenssl s_client -connect localhost:4433 -cipher AES128-GCM-SHA256 -debug -msg -min_protocol TLSv1.2 -max_protocol TLSv1.2\n```\nBut with .net core code, does specifying the cipher option in parameters get picked when using with openssl ? Probably need your guidance on how we achieve the command line parameters in our code. We tried this but we get errors indicating encryption not supported but that might be not specifying the options right\n```\n\nSslServerAuthenticationOptions sslOptions = new SslServerAuthenticationOptions\n{\n    EnabledSslProtocols = SslProtocols.Tls12, // Only use these protocols\n    CipherSuitesPolicy = new CipherSuitesPolicy(new[]\n    {\n        TlsCipherSuite.TLS_AES_128_GCM_SHA256, // Include only cipher suites compatible with SHA256\n    })\n};\n```\n\nAppreciate your inputs on this!\n"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-11-22T23:18:26Z",
+   "body": "@reporter `TlsCipherSuite.TLS_AES_128_GCM_SHA256` corresponds to the TLS v1.3 cipher suite. Assuming you have an RSA certificate, try `TlsCipherSuite.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256`, or, if you are using an ECDSA certificate, `TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256`"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-11-22T23:30:24Z",
+   "body": "Thanks @participant3 . So specifying the options this way would carry down to openssl right ?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-11-22T23:30:41Z",
+   "body": "```sh\n$ openssl ciphers -v -stdname AES128-GCM-SHA256\nTLS_AES_256_GCM_SHA384                        - TLS_AES_256_GCM_SHA384         TLSv1.3 Kx=any      Au=any   Enc=AESGCM(256)            Mac=AEAD\nTLS_CHACHA20_POLY1305_SHA256                  - TLS_CHACHA20_POLY1305_SHA256   TLSv1.3 Kx=any      Au=any   Enc=CHACHA20/POLY1305(256) Mac=AEAD\nTLS_AES_128_GCM_SHA256                        - TLS_AES_128_GCM_SHA256         TLSv1.3 Kx=any      Au=any   Enc=AESGCM(128)            Mac=AEAD\nTLS_RSA_WITH_AES_128_GCM_SHA256               - AES128-GCM-SHA256              TLSv1.2 Kx=RSA      Au=RSA   Enc=AESGCM(128)            Mac=AEAD\n```\n\nThis output shows that the OpenSSL configuration name of \"AES128-GCM-SHA256\" maps to IANA's \"TLS_RSA_WITH_AES_128_GCM_SHA256\"; and we use the IANA names."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-11-22T23:39:24Z",
+   "body": "> specifying the options this way would carry down to openssl right ?\n\nYep.\n\nAlthough I'd be remiss in saying you're choosing a ciphersuite that doesn't have the Perfect Forward Secrecy (PFS) characteristic.  If that works for you, I recommend trying ECDHE-RSA-AES128-GCM-SHA256 (commandline) / TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256 (API)."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-11-23T17:41:19Z",
+   "body": "@participant3  @participant1  -we are very close but still not working! So when we try the openssl s_server command with AES_128_GCM_SHA256  and tpm handle and the ca chain and run our .net client application which was working in our device it successfully connects! So that ensures our key in tpm and access to it and openssl server being able to use it as well. Now with .net core, regardless of the options we pass we are getting the alert decrypt error.\n\nThis is the successful openssl command we had\n\n`openssl s_server -cert ssl_certificate.pem -key 0x81000006 -keyform engine -engine tpm2tss -cipher AES128-GCM-SHA256 -debug -msg -min_protocol TLSv1.2 -max_protocol TLSv1.2 -accept 4433-cert_chain cachain.pem`\n\nAnd the .net core equivalent options we tried are\n\n```\nSslServerAuthenticationOptions sslOptions = new SslServerAuthenticationOptions\n{\n    EnabledSslProtocols = SslProtocols.Tls12, // Only use these protocols\n    CipherSuitesPolicy = new CipherSuitesPolicy(new[]\n    {\n        TlsCipherSuite.TLS_RSA_WITH_AES_128_GCM_SHA256\n    }),\n    ServerCertificate = cert, //cert from 0x81000006 handle\n    ClientCertificateRequired = true,\n    EncryptionPolicy = EncryptionPolicy.RequireEncryption\n};\n\n```\n\nWith the .net core, the cipher selection now matches, but still fails to decrypt after the Client Key Exchange(checked in wireshark).  When we run the same with Openssl post the Client key exchange packet we correctly see the New Session Ticket. Not sure if there are any permissions specifically needed for .net core executable when running(even though we run with 777 ) for it to correctly have the openssl tpm permissions. "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-11-23T18:28:09Z",
+   "body": "@participant3 @participant1  When we set to OpenSSL 1.1.1 it worked correctly!  So we are now good for the merge requests!"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-12-03T17:21:11Z",
+   "body": "@participant3  @participant1  would it be possible to get an approx timeline for the .net 8 release with this fix ?"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2024-12-04T06:36:31Z",
+   "body": "@reporter Thank you for your efforts to validate this fix against your scenario. The fixes were approved for the February 2025 servicing releases of .NET 8 and .NET 9."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-01-18T21:45:31Z",
+   "body": "Backport PRs have been merged. I am going to close this out."
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "dotnet/runtime",
+  "default_branch": "main",
+  "commit_sha": "8f6ac065d5965efebe1624db2117b82dbbaa6cd3",
+  "as_of": "2024-10-25T20:11:09Z",
+  "method": "github_commits_until"
+ },
+ "images": [
+  {
+   "where": "c25",
+   "source_url": "https://github.com/user-attachments/assets/b05065c2-3ed9-49ab-83eb-0602f4915419",
+   "file": "gh_dotnet_runtime_109243_img0.png"
+  },
+  {
+   "where": "c27",
+   "source_url": "https://github.com/user-attachments/assets/6fd3b029-be01-44eb-ab54-e251916cc789",
+   "file": "gh_dotnet_runtime_109243_img1.png"
+  },
+  {
+   "where": "c28",
+   "source_url": "https://github.com/user-attachments/assets/a3c64c61-c1a0-4408-bfb7-f9fda3c9067d",
+   "file": "gh_dotnet_runtime_109243_img2.png"
+  },
+  {
+   "where": "c39",
+   "source_url": "https://github.com/user-attachments/assets/ccc353f7-3f7e-4cd0-b035-655542c12e90",
+   "file": "gh_dotnet_runtime_109243_img3.png"
+  }
+ ],
+ "slug": "gh_dotnet_runtime_109243"
+}

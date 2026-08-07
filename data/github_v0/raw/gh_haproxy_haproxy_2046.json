@@ -1,0 +1,373 @@
+{
+ "repo": "haproxy/haproxy",
+ "number": 2046,
+ "url": "https://github.com/haproxy/haproxy/issues/2046",
+ "title": "Irregular CPU load spikes with HAProxy 2.7.2",
+ "state": "closed",
+ "labels": [
+  "type: bug",
+  "status: fixed"
+ ],
+ "reporter": "reporter",
+ "created_at": "2023-02-15T12:52:45Z",
+ "closed_at": "2023-04-11T13:27:05Z",
+ "body": "### Detailed Description of the Problem\r\n\r\nWe are seeking the help of the community about a weird performance regression with our upgrade to HAProxy 2.7.2.\r\n\r\nOS: ubuntu bionic (built using [this tool](https://github.com/cloudfoundry/bosh-linux-stemcell-builder))\r\nSSL backend: openssl1\r\n\r\nWe deploy HAProxy as a load balancer in front of our platform. The backends are a stable set of routers that take care of sending the request to the right target application. We operate multiple deployments and on one of them in particular we noticed weird patterns in the CPU load. The pattern shows on other infrastructure providers as well, but it was most present on an Azure deployment. It started when we upgraded from 2.6.7 to 2.7.2. Other metrics (requests/s, sessions/s, front-/backend connections) didn't show any significant difference.\r\n\r\n![image](https://user-images.githubusercontent.com/44866320/219028275-f3202dd9-84b9-4cc7-b376-8a08c08792c0.png)\r\n\r\nAs you can see in this graph, the load went from a stable percentage that fluctuates with the daily/weekly cycles of load on the platform to a wild mess. There are timeframes in which the VMs peak at 100% load. Taking a closer look at the graphs reveals an interesting pattern:\r\n\r\n![image](https://user-images.githubusercontent.com/44866320/219028343-22b306dd-fe37-4a76-92e6-ad4b63f83ccc.png)\r\n\r\nThe HAProxies move around on certain \"levels\" of CPU load, each increase in load goes back down ~1h later. The jump up is roughly 25% which corresponds to one core on the VM. We run on 4 CPU 16 GB (or 8 GB, depending on the hyperscaler) VMs. Each VM has one HAProxy process running with `nbthread 4`. Since we have to update the `crt-list` from time to time we reload HAProxy using `SIGUSR2`. You can see the script that handles our HAProxy start/stop/reload in the [haproxy-boshrelease](https://github.com/cloudfoundry/haproxy-boshrelease/blob/master/jobs/haproxy/templates/haproxy_wrapper.erb) which is a wrapper that allows us to deploy HAProxy with [BOSH](https://bosh.io/docs/). Due to these reloads it can happen that multiple HAProxy processes are running at the same time. However, the older a reloaded process gets, the less load it sees. Overall it shouldn't get too much load in any case since most of load on our VMs is produced by TLS handshakes, which aren't done frequently on \"old\" processes.\r\n\r\nIt can also be observed that some HAProxy processes run at >300% CPU by themselves, without any additional HAProxy processes:\r\n\r\n![image](https://user-images.githubusercontent.com/44866320/219028475-79aee539-8eab-4c6c-b6da-14457bf33c92.png)\r\n\r\nLooking at such a process using the socket CLI shows that the HAProxy process itself is idle most of the time (`Idle_pct` >50%). Digging deeper and running `perf` showed this:\r\n\r\n![image](https://user-images.githubusercontent.com/44866320/219028624-3db86ea0-0735-4f16-81b5-9cceb9b7899b.png)\r\n\r\nI compared those values against an HAProxy running in a non-live isolated environment and couldn't reproduce the load pattern. However, the table that `perf` shows looks similar.\r\n\r\n### Expected Behavior\r\n\r\nCPU usage stays roughly the same (compared to before the upgrade) and there are no temporary spikes in HAProxy CPU usage.\r\n\r\n### Steps to Reproduce the Behavior\r\n\r\nUnknown\r\n\r\n### Do you have any idea what may have caused this?\r\n\r\nMost likely the upgrade to 2.7.2 since the other inputs that we observed didn't show significant changes.\r\n\r\n### Do you have an idea how to solve the issue?\r\n\r\n_No response_\r\n\r\n### What is your configuration?\r\n\r\n```haproxy\r\nglobal\r\n    log 127.0.0.1:514 len 4096 format local syslog info\r\n    daemon\r\n    ssl-default-bind-options ssl-max-ver TLSv1.2\r\n    nbthread 4\r\n    user vcap\r\n    group vcap\r\n    maxconn 500000\r\n    spread-checks 4\r\n    hard-stop-after 3h\r\n    lua-load-per-thread /var/vcap/packages/haproxy-config/reverse-proxy.lua\r\n    lua-load-per-thread /var/vcap/packages/haproxy-config/gbaas-deny.lua\r\n    lua-load-per-thread /var/vcap/packages/haproxy-config/health-check.lua\r\n    lua-load-per-thread /var/vcap/packages/haproxy-config/tls-errors.lua\r\n    tune.ssl.default-dh-param 2048\r\n    tune.bufsize 71000\r\n    tune.maxrewrite 4096\r\n    stats socket /var/vcap/sys/run/haproxy/stats.sock mode 600 expose-fd listeners level admin\r\n    stats timeout 2m\r\n    ssl-default-bind-options no-sslv3 no-tlsv10 no-tlsv11\r\n    ssl-default-bind-ciphers ECDHE-RSA-AES128-GCM-SHA256:ECDHE-RSA-AES256-GCM-SHA384:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384:DHE-RSA-AES128-SHA256:DHE-RSA-AES256-SHA256:ECDHE-RSA-AES128-SHA256:ECDHE-RSA-AES256-SHA384\r\n    ssl-default-bind-ciphersuites TLS_AES_128_GCM_SHA256:TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256\r\n    ssl-default-server-options no-sslv3 no-tlsv10 no-tlsv11\r\n    ssl-default-server-ciphers ECDHE-RSA-AES128-GCM-SHA256:ECDHE-RSA-AES256-GCM-SHA384:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384:DHE-RSA-AES128-SHA256:DHE-RSA-AES256-SHA256:ECDHE-RSA-AES128-SHA256:ECDHE-RSA-AES256-SHA384\r\n    ssl-default-server-ciphersuites TLS_AES_128_GCM_SHA256:TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256\r\n    set-var proc.h2_alpn_tag str(h2)\r\n\r\n    h1-accept-payload-with-any-method\r\n\r\n\r\ndefaults\r\n    log global\r\n    option log-health-checks\r\n    option log-separate-errors\r\n    maxconn 500000\r\n    option http-server-close\r\n    option idle-close-on-response\r\n    option httplog\r\n    option forwardfor\r\n    option contstats\r\n    timeout connect         30000ms\r\n    timeout client          960000ms\r\n    timeout server          3660000ms\r\n    timeout tunnel          3600000ms\r\n    timeout http-keep-alive 60000ms\r\n    timeout http-request    90000ms\r\n    timeout queue           30000ms\r\n\r\n# stats, frontends, backends omitted since they contain almost only confidential data in the form of ACLs\r\n# they look similar to this:\r\nfrontend foo\r\n    mode http\r\n    bind :443  ssl crt-list /var/vcap/jobs/haproxy/config/ssl/crt-list  ca-file /etc/ssl/certs/ca-certificates.crt verify optional crt-ignore-err all ca-ignore-err all  alpn h2,http/1.1 \r\n    option clitcpka\r\n    no option http-server-close\r\n\r\nbackend bar\r\n    mode http\r\n    balance roundrobin\r\n    option srvtcpka\r\n    no option http-server-close\r\n    http-reuse safe\r\n    option prefer-last-server\r\n    option httpchk GET /health\r\n    server node0 1.1.1.1:443 crt /var/vcap/jobs/haproxy/config/backend-crt.pem check inter 1000 port 8080 fall 3 rise 2 ssl verify required ca-file /var/vcap/jobs/haproxy/config/backend-ca-certs.pem verifyhost check.example.com alpn http/1.1\r\n```\r\n\r\n\r\n### Output of `haproxy -vv`\r\n\r\n```plain\r\nHAProxy version 2.7.2-7e295dd 2023/01/20 - https://haproxy.org/\r\nStatus: stable branch - will stop receiving fixes around Q1 2024.\r\nKnown bugs: http://<redacted-host>/bugs/bugs-2.7.2.html\r\nRunning on: Linux 5.4.0-135-generic #152~18.04.2-Ubuntu SMP Tue Nov 29 08:23:49 UTC 2022 x86_64\r\nBuild options :\r\n  TARGET  = linux-glibc\r\n  CPU     = generic\r\n  CC      = cc\r\n  CFLAGS  = -O2 -g -Wall -Wextra -Wundef -Wdeclaration-after-statement -Wfatal-errors -Wtype-limits -Wshift-negative-value -Wshift-overflow=2 -Wduplicated-cond -Wnull-dereference -fwrapv -Wno-address-of-packed-member -Wno-unused-label -Wno-sign-compare -Wno-unused-parameter -Wno-clobbered -Wno-missing-field-initializers -Wno-cast-function-type -Wno-string-plus-int -Wno-atomic-alignment\r\n  OPTIONS = USE_PCRE2=1 USE_PCRE2_JIT=yes USE_STATIC_PCRE2=1 USE_OPENSSL=1 USE_LUA=1 USE_ZLIB=1\r\n  DEBUG   = -DDEBUG_STRICT -DDEBUG_MEMORY_POOLS\r\n\r\nFeature list : -51DEGREES +ACCEPT4 +BACKTRACE -CLOSEFROM +CPU_AFFINITY +CRYPT_H -DEVICEATLAS +DL -ENGINE +EPOLL -EVPORTS +GETADDRINFO -KQUEUE +LIBCRYPT +LINUX_SPLICE +LINUX_TPROXY +LUA -MEMORY_PROFILING +NETFILTER +NS -OBSOLETE_LINKER +OPENSSL -OPENSSL_WOLFSSL -OT -PCRE +PCRE2 +PCRE2_JIT -PCRE_JIT +POLL +PRCTL -PROCCTL -PROMEX -PTHREAD_EMULATION -QUIC +RT +SHM_OPEN -SLZ -STATIC_PCRE +STATIC_PCRE2 -SYSTEMD +TFO +THREAD +THREAD_DUMP +TPROXY -WURFL +ZLIB\r\n\r\nDefault settings :\r\n  bufsize = 16384, maxrewrite = 1024, maxpollevents = 200\r\n\r\nBuilt with multi-threading support (MAX_TGROUPS=16, MAX_THREADS=256, default=4).\r\nBuilt with OpenSSL version : OpenSSL 1.1.1  11 Sep 2018\r\nRunning on OpenSSL version : OpenSSL 1.1.1  11 Sep 2018\r\nOpenSSL library supports TLS extensions : yes\r\nOpenSSL library supports SNI : yes\r\nOpenSSL library supports : TLSv1.0 TLSv1.1 TLSv1.2 TLSv1.3\r\nBuilt with Lua version : Lua 5.4.4\r\nBuilt with network namespace support.\r\nSupport for malloc_trim() is enabled.\r\nBuilt with zlib version : 1.2.11\r\nRunning on zlib version : 1.2.11\r\nCompression algorithms supported : identity(\"identity\"), deflate(\"deflate\"), raw-deflate(\"deflate\"), gzip(\"gzip\")\r\nBuilt with transparent proxy support using: IP_TRANSPARENT IPV6_TRANSPARENT IP_FREEBIND\r\nBuilt with PCRE2 version : 10.42 2022-12-11\r\nPCRE2 library supports JIT : yes\r\nEncrypted password support via crypt(3): yes\r\nBuilt with gcc compiler version 7.5.0\r\n\r\nAvailable polling systems :\r\n      epoll : pref=300,  test result OK\r\n       poll : pref=200,  test result OK\r\n     select : pref=150,  test result OK\r\nTotal: 3 (3 usable), will use epoll.\r\n\r\nAvailable multiplexer protocols :\r\n(protocols marked as <default> cannot be specified using 'proto' keyword)\r\n         h2 : mode=HTTP  side=FE|BE  mux=H2    flags=HTX|HOL_RISK|NO_UPG\r\n       fcgi : mode=HTTP  side=BE     mux=FCGI  flags=HTX|HOL_RISK|NO_UPG\r\n  <default> : mode=HTTP  side=FE|BE  mux=H1    flags=HTX\r\n         h1 : mode=HTTP  side=FE|BE  mux=H1    flags=HTX|NO_UPG\r\n  <default> : mode=TCP   side=FE|BE  mux=PASS  flags=\r\n       none : mode=TCP   side=FE|BE  mux=PASS  flags=NO_UPG\r\n\r\nAvailable services : none\r\n\r\nAvailable filters :\r\n\t[BWLIM] bwlim-in\r\n\t[BWLIM] bwlim-out\r\n\t[CACHE] cache\r\n\t[COMP] compression\r\n\t[FCGI] fcgi-app\r\n\t[SPOE] spoe\r\n\t[TRACE] trace\r\n```\r\n\r\n\r\n### Last Outputs and Backtraces\r\n\r\n_No response_\r\n\r\n### Additional Information\r\n\r\nWe apply one patch to our HAProxy, [available here](https://github.com/cloudfoundry/haproxy-boshrelease/blob/master/haproxy-patches/disable-rfc-6455-compliance.patch).\r\n\r\nCould be related to #1998\r\n\r\nQuestions:\r\n- Are you aware of any changes that could've caused such issues?\r\n- What do you recommend to troubleshoot such issues that cannot be reproduced on non-live environments?\r\n- Is there any metric/socket-command we should take a closer look at?\r\n- Any other third-party tool that can be used to better understand where those CPU cycles are consumed?",
+ "comments": [
+  {
+   "author": "reporter",
+   "created_at": "2023-02-15T14:21:04Z",
+   "body": "Looking at the perf output while running on a jammy (which brings openssl3 instead of openssl1) VM shows that the `BN_X931_generate_prime_ex` call is missing (which makes sense since it was removed in openssl3), however, we don't see a function that takes its place:\r\n![image](https://user-images.githubusercontent.com/44866320/219049372-87d3ddb6-9473-4d22-8add-1f923aa40143.png)\r\n\r\nCPU utilisation was still at around ~80% per core but this was done on an isolated dev deployment and also didn't show the CPU load pattern we saw in our live deployments.\r\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-02-15T20:28:05Z",
+   "body": "I suggest you stick with openssl 1.1.1, because multithreading performance in openssl 3.0 is terrible. Using openssl 3.0 here just muddies the waters and makes troubleshooting harder."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-02-17T20:59:26Z",
+   "body": "It's not the first time I'm seeing \"perf top\" outputs showing only small numbers, I have no explanation for that. However in your case one crypto function seems expensive and makes me think that maybe you're experiencing much less connection reuse on the front side (or maybe the backend since you're using SSL there as well). It would be useful to send \"show info;show activity\" on the CLI twice 10s apart on both versions. It will show us the number of wakeups of various causes and the number of SSL handshakes on each side. Also please have a look in your stats page at the \"sessions/total\" column for your backend, when you hover the value, you'll get some details per status code and the reuse rate. It would be useful to compare between the two versions. Maybe for a reason I ignore we're not reusing certain connections.\r\n\r\nLast point, since you appear to be running from the sources, please update to 2.7.3 as it fixes a vulnerability (as well as a few bugs)."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-02-22T14:53:24Z",
+   "body": "Thanks for the insights! The upgrade to 2.7.3 is already being rolled out.\r\n\r\nRegarding the TLS handshakes: We know that there are quite a few clients that don't do keepalive and contribute to the load.\r\n\r\nI ran the command you recommended but don't really understand what this is supposed to tell me. The exact command is:\r\n```sh\r\n( echo '@!30648; show info; show activity' | socat - tcp-connect:127.0.0.1:9001; sleep 10; echo '@!30648; show info; show activity' | socat - tcp-connect:127.0.0.1:9001 ) > out.log\r\n```\r\n\r\nThere are multiple HAProxies running due to reloads so I picked the one that is hogging a full core.\r\n\r\n<details>\r\n<summary>Output</summary>\r\n<pre>\r\nName: HAProxy\r\nVersion: 2.7.2-7e295dd\r\nRelease_date: 2023/01/20\r\nNbthread: 4\r\nNbproc: 1\r\nProcess_num: 1\r\nPid: 30648\r\nUptime: 0d 0h31m38s\r\nUptime_sec: 1898\r\nMemmax_MB: 0\r\nPoolAlloc_MB: 1\r\nPoolUsed_MB: 1\r\nPoolFailed: 0\r\nUlimit-n: 1000116\r\nMaxsock: 1000116\r\nMaxconn: 500000\r\nHard_maxconn: 500000\r\nCurrConns: 21\r\nCumConns: 76507\r\nCumReq: 49421\r\nMaxSslConns: 0\r\nCurrSslConns: 42\r\nCumSslConns: 48095\r\nMaxpipes: 0\r\nPipesUsed: 0\r\nPipesFree: 0\r\nConnRate: 0\r\nConnRateLimit: 0\r\nMaxConnRate: 121\r\nSessRate: 0\r\nSessRateLimit: 0\r\nMaxSessRate: 121\r\nSslRate: 0\r\nSslRateLimit: 0\r\nMaxSslRate: 120\r\nSslFrontendKeyRate: 0\r\nSslFrontendMaxKeyRate: 115\r\nSslFrontendSessionReuse_pct: 0\r\nSslBackendKeyRate: 0\r\nSslBackendMaxKeyRate: 45\r\nSslCacheLookups: 12307\r\nSslCacheMisses: 12086\r\nCompressBpsIn: 0\r\nCompressBpsOut: 0\r\nCompressBpsRateLim: 0\r\nZlibMemUsage: 0\r\nMaxZlibMemUsage: 0\r\nTasks: 120\r\nRun_queue: 1\r\nIdle_pct: 78\r\nnode: 96faee6a-e9ad-4b41-ae35-d48836c3524e\r\nStopping: 1\r\nJobs: 23\r\nUnstoppable Jobs: 1\r\nListeners: 1\r\nActivePeers: 0\r\nConnectedPeers: 0\r\nDroppedLogs: 0\r\nBusyPolling: 0\r\nFailedResolutions: 0\r\nTotalBytesOut: 1901015033\r\nTotalSplicdedBytesOut: 0\r\nBytesOutRate: 928\r\nDebugCommandsIssued: 0\r\nCumRecvLogs: 0\r\nBuild info: 2.7.2-7e295dd\r\nMemmax_bytes: 0\r\nPoolAlloc_bytes: 2018376\r\nPoolUsed_bytes: 2018376\r\nStart_time_sec: 1677075241\r\nTainted: 0\r\n</pre>\r\n<pre>\r\nthread_id: 1 (1..4)\r\ndate_now: 1677077140.295001\r\nuptime_now: 1898.763358\r\nctxsw: 710947051 [ 709785377 425496 349137 387041 ]\r\ntasksw: 362710 [ 79119 108829 77274 97488 ]\r\nempty_rq: 42237 [ 4952 9809 14397 13079 ]\r\nlong_rq: 97104348 [ 97104251 37 52 8 ]\r\nloops: 97589409 [ 97140769 162376 134273 151991 ]\r\nwake_tasks: 97169744 [ 97110379 20282 19741 19342 ]\r\nwake_signal: 4 [ 4 0 0 0 ]\r\npoll_io: 461017 [ 118515 121879 105242 115381 ]\r\npoll_exp: 415 [ 16 137 134 128 ]\r\npoll_drop_fd: 35 [ 8 8 7 12 ]\r\npoll_skip_fd: 2907 [ 817 699 638 753 ]\r\nconn_dead: 0 [ 0 0 0 0 ]\r\nstream_calls: 154013 [ 42306 36468 37145 38094 ]\r\npool_fail: 0 [ 0 0 0 0 ]\r\nbuf_wait: 0 [ 0 0 0 0 ]\r\ncpust_ms_tot: 8183 [ 2896 1642 2072 1573 ]\r\ncpust_ms_1s: 0 [ 0 0 0 0 ]\r\ncpust_ms_15s: 0 [ 0 0 0 0 ]\r\navg_loop_us: 40 [ 17 47 48 46 ]\r\naccepted: 25504 [ 13563 2176 6379 3386 ]\r\naccq_pushed: 25502 [ 6442 6489 6418 6153 ]\r\naccq_full: 0 [ 0 0 0 0 ]\r\naccq_ring: 0 [ 0 0 0 0 ]\r\nfd_takeover: 3090 [ 819 708 770 793 ]\r\n</pre>\r\n<pre>\r\nName: HAProxy\r\nVersion: 2.7.2-7e295dd\r\nRelease_date: 2023/01/20\r\nNbthread: 4\r\nNbproc: 1\r\nProcess_num: 1\r\nPid: 30648\r\nUptime: 0d 0h31m48s\r\nUptime_sec: 1908\r\nMemmax_MB: 0\r\nPoolAlloc_MB: 1\r\nPoolUsed_MB: 1\r\nPoolFailed: 0\r\nUlimit-n: 1000116\r\nMaxsock: 1000116\r\nMaxconn: 500000\r\nHard_maxconn: 500000\r\nCurrConns: 21\r\nCumConns: 76779\r\nCumReq: 49423\r\nMaxSslConns: 0\r\nCurrSslConns: 42\r\nCumSslConns: 48095\r\nMaxpipes: 0\r\nPipesUsed: 0\r\nPipesFree: 0\r\nConnRate: 0\r\nConnRateLimit: 0\r\nMaxConnRate: 121\r\nSessRate: 0\r\nSessRateLimit: 0\r\nMaxSessRate: 121\r\nSslRate: 0\r\nSslRateLimit: 0\r\nMaxSslRate: 120\r\nSslFrontendKeyRate: 0\r\nSslFrontendMaxKeyRate: 115\r\nSslFrontendSessionReuse_pct: 0\r\nSslBackendKeyRate: 0\r\nSslBackendMaxKeyRate: 45\r\nSslCacheLookups: 12307\r\nSslCacheMisses: 12086\r\nCompressBpsIn: 0\r\nCompressBpsOut: 0\r\nCompressBpsRateLim: 0\r\nZlibMemUsage: 0\r\nMaxZlibMemUsage: 0\r\nTasks: 121\r\nRun_queue: 1\r\nIdle_pct: 78\r\nnode: 96faee6a-e9ad-4b41-ae35-d48836c3524e\r\nStopping: 1\r\nJobs: 24\r\nUnstoppable Jobs: 1\r\nListeners: 1\r\nActivePeers: 0\r\nConnectedPeers: 0\r\nDroppedLogs: 0\r\nBusyPolling: 0\r\nFailedResolutions: 0\r\nTotalBytesOut: 1901029568\r\nTotalSplicdedBytesOut: 0\r\nBytesOutRate: 1184\r\nDebugCommandsIssued: 0\r\nCumRecvLogs: 0\r\nBuild info: 2.7.2-7e295dd\r\nMemmax_bytes: 0\r\nPoolAlloc_bytes: 2018376\r\nPoolUsed_bytes: 2018376\r\nStart_time_sec: 1677075241\r\nTainted: 0\r\n</pre>\r\n<pre>\r\nthread_id: 1 (1..4)\r\ndate_now: 1677077150.300177\r\nuptime_now: 1908.768534\r\nctxsw: 792408183 [ 791244727 426248 349583 387625 ]\r\ntasksw: 363538 [ 79177 109175 77430 97756 ]\r\nempty_rq: 42237 [ 4952 9809 14397 13079 ]\r\nlong_rq: 97686202 [ 97686105 37 52 8 ]\r\nloops: 98172052 [ 97722623 162719 134456 152254 ]\r\nwake_tasks: 97751598 [ 97692233 20282 19741 19342 ]\r\nwake_signal: 4 [ 4 0 0 0 ]\r\npoll_io: 461558 [ 118537 122100 105372 115549 ]\r\npoll_exp: 415 [ 16 137 134 128 ]\r\npoll_drop_fd: 35 [ 8 8 7 12 ]\r\npoll_skip_fd: 2907 [ 817 699 638 753 ]\r\nconn_dead: 0 [ 0 0 0 0 ]\r\nstream_calls: 154059 [ 42330 36474 37151 38104 ]\r\npool_fail: 0 [ 0 0 0 0 ]\r\nbuf_wait: 0 [ 0 0 0 0 ]\r\ncpust_ms_tot: 8184 [ 2897 1642 2072 1573 ]\r\ncpust_ms_1s: 0 [ 0 0 0 0 ]\r\ncpust_ms_15s: 0 [ 0 0 0 0 ]\r\navg_loop_us: 39 [ 16 47 48 46 ]\r\naccepted: 25506 [ 13565 2176 6379 3386 ]\r\naccq_pushed: 25502 [ 6442 6489 6418 6153 ]\r\naccq_full: 0 [ 0 0 0 0 ]\r\naccq_ring: 0 [ 0 0 0 0 ]\r\nfd_takeover: 3090 [ 819 708 770 793 ]\r\n</pre>\r\n</details>\r\n\r\nSince the old version isn't deployed on a live environment I can't really deliver comparable data but I will reproduce this on a dev environment as well and paste the output here."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-02-24T12:41:59Z",
+   "body": "<img width=\"851\" alt=\"image\" src=\"https://user-images.githubusercontent.com/1755853/221180978-c1e0b3b3-58fa-4e31-8ff3-e448e3bf934b.png\">\r\n\r\n@participant2 Just recorded another spike around 75% CPU where we saw almost 10% of the recorded samples were spent in the `clock_gettime` function call. This was recorded using `perf top -g -p <haproxy pid>`\r\nWe are running HAproxy in master/worker mode and selected the worker pid for perf.\r\n\r\nHave you seen anything like this before? Does it look irregular? Fishing in the dark here."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-02-24T12:58:04Z",
+   "body": "Regarding clock_gettime I found a potential kernel bug for hyper-v. Since we are running on Azure here, I assume they are still using hyper-v as their hypervisor so it could be related: https://bugzilla.kernel.org/show_bug.cgi?id=213029\r\nHowever, the bug claims the regression in kernel 5.12, however we are running \r\n```\r\nuname -r\r\n5.15.0-58-generic\r\n```"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-02-24T13:54:08Z",
+   "body": "<img width=\"842\" alt=\"image\" src=\"https://user-images.githubusercontent.com/1755853/221195448-2e3f7a63-5da0-451e-bfdd-885c8dd9bf20.png\">\r\n\r\nHere I have another perf run from a time (same config) when we don't see CPU spikes.\r\nWe don't even see HAproxy at the top. Mostly kernel doing kernel stuff, sending packets etc. as you would expect.\r\n\r\nNoticable are the absence of `run_tasks_from_lists` and `clock_gettime` calls from the top 5 function calls."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-02-24T14:07:36Z",
+   "body": "[100-cpu-thread.log](https://github.com/haproxy/haproxy/files/10824921/100-cpu-thread.log)\r\n\r\nI've uploaded a strace from one of the 100-CPU threads of HAproxy.\r\n\r\nThis pattern stands out to me:\r\n\r\n```\r\n14:05:02.073746 recvfrom(406, 0x7f3e50ba4af3, 5, 0, NULL, NULL) = -1 EAGAIN (Resource temporarily unavailable)\r\n14:05:02.073913 clock_gettime(CLOCK_THREAD_CPUTIME_ID, {tv_sec=14008, tv_nsec=218784000}) = 0\r\n14:05:02.074004 epoll_wait(18, [], 200, 0) = 0\r\n14:05:02.074120 clock_gettime(CLOCK_THREAD_CPUTIME_ID, {tv_sec=14008, tv_nsec=218843200}) = 0\r\n14:05:02.074203 clock_gettime(CLOCK_THREAD_CPUTIME_ID, {tv_sec=14008, tv_nsec=218872600}) = 0\r\n14:05:02.074284 epoll_wait(18, [], 200, 0) = 0\r\n14:05:02.074352 clock_gettime(CLOCK_THREAD_CPUTIME_ID, {tv_sec=14008, tv_nsec=218904400}) = 0\r\n14:05:02.074429 clock_gettime(CLOCK_THREAD_CPUTIME_ID, {tv_sec=14008, tv_nsec=218933000}) = 0\r\n14:05:02.074504 epoll_wait(18, [], 200, 0) = 0\r\n14:05:02.074561 clock_gettime(CLOCK_THREAD_CPUTIME_ID, {tv_sec=14008, tv_nsec=218957600}) = 0\r\n14:05:02.074674 clock_gettime(CLOCK_THREAD_CPUTIME_ID, {tv_sec=14008, tv_nsec=218995600}) = 0\r\n14:05:02.074740 epoll_wait(18, [], 200, 0) = 0\r\n14:05:02.074810 clock_gettime(CLOCK_THREAD_CPUTIME_ID, {tv_sec=14008, tv_nsec=219025800}) = 0\r\n14:05:02.074894 clock_gettime(CLOCK_THREAD_CPUTIME_ID, {tv_sec=14008, tv_nsec=219061000}) = 0\r\n14:05:02.074962 epoll_wait(18, [{events=EPOLLIN, data={u32=350, u64=350}}], 200, 0) = 1\r\n14:05:02.075037 clock_gettime(CLOCK_THREAD_CPUTIME_ID, {tv_sec=14008, tv_nsec=219093400}) = 0\r\n14:05:02.075101 recvfrom(350, \"\\27\\3\\3\\1\\303\", 5, 0, NULL, NULL) = 5\r\n14:05:02.075180 recvfrom(350, \"\\376\\307\\206\\303C\\330\\322nH#\\1\\177]a\\356\\326q\\314Qf\\235\\201\\27\\220\\374\\r\\364`\\275Q\\24\\323\"..., 451, 0, NULL, NULL) = 451\r\n14:05:02.075256 recvfrom(350, 0x7f3e50ba4af3, 5, 0, NULL, NULL) = -1 EAGAIN (Resource temporarily unavailable)\r\n14:05:02.075325 sendto(223, \"\\27\\3\\3\\1\\312>\\233Ox\\330y\\357\\230v\\215+:\\257\\24\\205ouyL\\7\\10c\\370\\363\\275\\311\\344\"..., 463, MSG_DONTWAIT|MSG_NOSIGNAL, NULL, 0) = 463\r\n14:05:02.075424 clock_gettime(CLOCK_THREAD_CPUTIME_ID, {tv_sec=14008, tv_nsec=219207600}) = 0\r\n14:05:02.075484 epoll_wait(18, [], 200, 0) = 0\r\n14:05:02.075549 clock_gettime(CLOCK_THREAD_CPUTIME_ID, {tv_sec=14008, tv_nsec=219232600}) = 0\r\n14:05:02.075626 clock_gettime(CLOCK_THREAD_CPUTIME_ID, {tv_sec=14008, tv_nsec=219259500}) = 0\r\n14:05:02.075702 epoll_wait(18, [], 200, 0) = 0\r\n14:05:02.075758 clock_gettime(CLOCK_THREAD_CPUTIME_ID, {tv_sec=14008, tv_nsec=219290000}) = 0\r\n14:05:02.075833 clock_gettime(CLOCK_THREAD_CPUTIME_ID, {tv_sec=14008, tv_nsec=219316800}) = 0\r\n14:05:02.075899 epoll_wait(18, [], 200, 0) = 0\r\n14:05:02.075982 clock_gettime(CLOCK_THREAD_CPUTIME_ID, {tv_sec=14008, tv_nsec=219344800}) = 0\r\n14:05:02.076087 clock_gettime(CLOCK_THREAD_CPUTIME_ID, {tv_sec=14008, tv_nsec=219385800}) = 0\r\n14:05:02.076163 epoll_wait(18, [], 200, 0) = 0\r\n14:05:02.076231 clock_gettime(CLOCK_THREAD_CPUTIME_ID, {tv_sec=14008, tv_nsec=219411000}) = 0\r\n14:05:02.076314 clock_gettime(CLOCK_THREAD_CPUTIME_ID, {tv_sec=14008, tv_nsec=219438600}) = 0\r\n14:05:02.076394 epoll_wait(18, [{events=EPOLLIN, data={u32=223, u64=223}}], 200, 0) = 1\r\n14:05:02.076457 clock_gettime(CLOCK_THREAD_CPUTIME_ID, {tv_sec=14008, tv_nsec=219470300}) = 0\r\n14:05:02.076568 recvfrom(223, \"\\27\\3\\3\\1\\272\", 5, 0, NULL, NULL) = 5\r\n14:05:02.076645 recvfrom(223, \"\\0\\0\\0\\0\\0\\3\\2^\\365\\304J\\263\\247^\\271\\235b\\340\\362\\30,3\\1\\263\\207\\241Ru\\250\\306\\365&\"..., 442, 0, NULL, NULL) = 442\r\n14:05:02.076727 recvfrom(223, 0x7f3e50ba4af3, 5, 0, NULL, NULL) = -1 EAGAIN (Resource temporarily unavailable)\r\n14:05:02.076797 sendto(350, \"\\27\\3\\3\\1\\263\\323\\221_\\311\\350\\232%Y\\361g\\\\\\354\\255\\214&\\247B\\0Q\\262\\31^\\\\1\\350B\\202\"..., 440, MSG_DONTWAIT|MSG_NOSIGNAL, NULL, 0) = 440\r\n14:05:02.076899 clock_gettime(CLOCK_THREAD_CPUTIME_ID, {tv_sec=14008, tv_nsec=219588300}) = 0\r\n14:05:02.076972 epoll_wait(18, [], 200, 0) = 0\r\n14:05:02.077035 clock_gettime(CLOCK_THREAD_CPUTIME_ID, {tv_sec=14008, tv_nsec=219613800}) = 0\r\n14:05:02.077119 clock_gettime(CLOCK_THREAD_CPUTIME_ID, {tv_sec=14008, tv_nsec=219640900}) = 0\r\n14:05:02.077179 epoll_wait(18, [], 200, 0) = 0\r\n14:05:02.077245 clock_gettime(CLOCK_THREAD_CPUTIME_ID, {tv_sec=14008, tv_nsec=219665100}) = 0\r\n14:05:02.077320 clock_gettime(CLOCK_THREAD_CPUTIME_ID, {tv_sec=14008, tv_nsec=219692100}) = 0\r\n14:05:02.077386 epoll_wait(18, [], 200, 0) = 0\r\n14:05:02.077445 clock_gettime(CLOCK_THREAD_CPUTIME_ID, {tv_sec=14008, tv_nsec=219716700}) = 0\r\n14:05:02.077525 clock_gettime(CLOCK_THREAD_CPUTIME_ID, {tv_sec=14008, tv_nsec=219743300}) = 0\r\n14:05:02.077590 epoll_wait(18, [], 200, 0) = 0\r\n14:05:02.077655 clock_gettime(CLOCK_THREAD_CPUTIME_ID, {tv_sec=14008, tv_nsec=219767200}) = 0\r\n14:05:02.077751 clock_gettime(CLOCK_THREAD_CPUTIME_ID, {tv_sec=14008, tv_nsec=219794300}) = 0\r\n14:05:02.077815 epoll_wait(18, [], 200, 0) = 0\r\n14:05:02.077881 clock_gettime(CLOCK_THREAD_CPUTIME_ID, {tv_sec=14008, tv_nsec=219818200}) = 0\r\n14:05:02.077956 clock_gettime(CLOCK_THREAD_CPUTIME_ID, {tv_sec=14008, tv_nsec=219844800}) = 0\r\n14:05:02.078017 epoll_wait(18, [], 200, 0) = 0\r\n14:05:02.078077 clock_gettime(CLOCK_THREAD_CPUTIME_ID, {tv_sec=14008, tv_nsec=219869000}) = 0\r\n14:05:02.078154 clock_gettime(CLOCK_THREAD_CPUTIME_ID, {tv_sec=14008, tv_nsec=219895300}) = 0\r\n14:05:02.078244 epoll_wait(18, [], 200, 0) = 0\r\n14:05:02.078320 clock_gettime(CLOCK_THREAD_CPUTIME_ID, {tv_sec=14008, tv_nsec=219919300}) = 0\r\n14:05:02.078435 clock_gettime(CLOCK_THREAD_CPUTIME_ID, {tv_sec=14008, tv_nsec=219945900}) = 0\r\n14:05:02.078562 epoll_wait(18, [{events=EPOLLIN, data={u32=447, u64=447}}], 200, 0) = 1\r\n14:05:02.078740 clock_gettime(CLOCK_THREAD_CPUTIME_ID, {tv_sec=14008, tv_nsec=219970000}) = 0\r\n14:05:02.078809 recvfrom(447, \"\\27\\3\\3\\0\\32\", 5, 0, NULL, NULL) = 5\r\n14:05:02.078893 recvfrom(447, \"\\0\\0\\0\\0\\0\\0\\3x\\340z\\350'\\201\\370\\344\\322\\204j\\f\\373\\331\\232\\204 Hq\", 26, 0, NULL, NULL) = 26\r\n14:05:02.078967 recvfrom(447, 0x7f3e50ba4af3, 5, 0, NULL, NULL) = -1 EAGAIN (Resource temporarily unavailable)\r\n\r\n(...)\r\n```\r\n\r\nLooks like this is where all the `clock_gettime` calls are coming from.\r\n"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-02-24T15:21:01Z",
+   "body": "@participant3 your captures are extremely instructive! You're facing a bug by which a set of tasks wake up, do nothing and go back to sleep to instantly wake up again. The context-switch rate indicates 8.2 million such wakeups per second, and 58185 polling loops per second that are interrupted due to this activity. The long_rq indicator tells us that we're leaving process_runnable_tasks() with active tasks after having exhausted the maximum budget, but the run_queue indicates there's a single runnable task. So it makes me think that in fact there is exactly one task waking itself up so that it constantly has something to do and is wasting time there.\r\n\r\nBy issuing `show tasks` on this process you should see one function name taking roughly 100% of the CPU and it will tell us what this task is.\r\n\r\nGiven that perf top shows `sc_conn_io_cb()` taking a non-null amount of CPU, I strongly suspect it will be this one, and that it's involved in `h1_process_demux()` presence. However I have no idea why that would be the case at the moment!\r\n\r\nRegarding your finding about `clock_gettime()` that's good to know. Here however it's just a byproduct of the loop being called a lot, hence the syscall is called a lot as well."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-02-24T20:17:58Z",
+   "body": "@participant2 Ran it a couple times while we are at 100% CPU right now (4 threads, 4 CPUs):\r\n```\r\nha_proxy_z1/238c88ea-5327-4635-86f4-c505243f0f2a:/var/vcap/sys/run/haproxy# echo \"show tasks\" | socat - ./stats.sock\r\nRunning tasks: 3 (4 threads)\r\n  function                     places     %    lat_tot   lat_avg\r\n  h1_io_cb                          1   33.3      -         -\r\n  ssl_sock_io_cb                    1   33.3      -         -\r\n  sc_conn_io_cb                     1   33.3      -         -\r\n\r\nha_proxy_z1/238c88ea-5327-4635-86f4-c505243f0f2a:/var/vcap/sys/run/haproxy# echo \"show tasks\" | socat - ./stats.sock\r\nRunning tasks: 5 (4 threads)\r\n  function                     places     %    lat_tot   lat_avg\r\n  h1_io_cb                          2   40.0      -         -\r\n  accept_queue_process              1   20.0      -         -\r\n  process_stream                    1   20.0      -         -\r\n  ssl_sock_io_cb                    1   20.0      -         -\r\n\r\nha_proxy_z1/238c88ea-5327-4635-86f4-c505243f0f2a:/var/vcap/sys/run/haproxy# echo \"show tasks\" | socat - ./stats.sock\r\nRunning tasks: 3 (4 threads)\r\n  function                     places     %    lat_tot   lat_avg\r\n  h1_io_cb                          1   33.3      -         -\r\n  ssl_sock_io_cb                    1   33.3      -         -\r\n  sc_conn_io_cb                     1   33.3      -         -\r\n\r\nha_proxy_z1/238c88ea-5327-4635-86f4-c505243f0f2a:/var/vcap/sys/run/haproxy# echo \"show tasks\" | socat - ./stats.sock\r\nRunning tasks: 5 (4 threads)\r\n  function                     places     %    lat_tot   lat_avg\r\n  ssl_sock_io_cb                    3   60.0      -         -\r\n  h1_io_cb                          1   20.0      -         -\r\n  sc_conn_io_cb                     1   20.0      -         -\r\n\r\nha_proxy_z1/238c88ea-5327-4635-86f4-c505243f0f2a:/var/vcap/sys/run/haproxy# echo \"show tasks\" | socat - ./stats.sock\r\nRunning tasks: 3 (4 threads)\r\n  function                     places     %    lat_tot   lat_avg\r\n  sc_conn_io_cb                     2   66.6      -         -\r\n  h1_io_cb                          1   33.3      -         -\r\n\r\nha_proxy_z1/238c88ea-5327-4635-86f4-c505243f0f2a:/var/vcap/sys/run/haproxy# echo \"show tasks\" | socat - ./stats.sock\r\nRunning tasks: 3 (4 threads)\r\n  function                     places     %    lat_tot   lat_avg\r\n  h1_io_cb                          2   66.6      -         -\r\n  ssl_sock_io_cb                    1   33.3      -         -\r\n\r\nha_proxy_z1/238c88ea-5327-4635-86f4-c505243f0f2a:/var/vcap/sys/run/haproxy# echo \"show tasks\" | socat - ./stats.sock\r\nRunning tasks: 12 (4 threads)\r\n  function                     places     %    lat_tot   lat_avg\r\n  ssl_sock_io_cb                    5   41.6      -         -\r\n  h1_io_cb                          3   25.0      -         -\r\n  h1_timeout_task                   2   16.6      -         -\r\n  process_stream                    1    8.3      -         -\r\n  sc_conn_io_cb                     1    8.3      -         -\r\n\r\nha_proxy_z1/238c88ea-5327-4635-86f4-c505243f0f2a:/var/vcap/sys/run/haproxy# echo \"show tasks\" | socat - ./stats.sock\r\nRunning tasks: 3 (4 threads)\r\n  function                     places     %    lat_tot   lat_avg\r\n  sc_conn_io_cb                     2   66.6      -         -\r\n  ssl_sock_io_cb                    1   33.3      -         -\r\n\r\nha_proxy_z1/238c88ea-5327-4635-86f4-c505243f0f2a:/var/vcap/sys/run/haproxy# echo \"show tasks\" | socat - ./stats.sock\r\nRunning tasks: 3 (4 threads)\r\n  function                     places     %    lat_tot   lat_avg\r\n  ssl_sock_io_cb                    2   66.6      -         -\r\n  h1_io_cb                          1   33.3      -         -\r\n\r\nha_proxy_z1/238c88ea-5327-4635-86f4-c505243f0f2a:/var/vcap/sys/run/haproxy# echo \"show tasks\" | socat - ./stats.sock\r\nRunning tasks: 3 (4 threads)\r\n  function                     places     %    lat_tot   lat_avg\r\n  ssl_sock_io_cb                    2   66.6      -         -\r\n  sc_conn_io_cb                     1   33.3      -         -\r\n```\r\n\r\nnot sure if there is a way to collect a statistic over time here..\r\n\r\nseems the h1_io_cb and ssl_sock_io_cb are standing out"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-02-24T20:21:59Z",
+   "body": "Maybe it helps to know we are doing a lot of reloads right now:\r\n\r\n<img width=\"855\" alt=\"image\" src=\"https://user-images.githubusercontent.com/1755853/221283813-fa1f5399-0197-46c1-98ac-d18c2d94dfae.png\">\r\n"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-02-24T20:25:30Z",
+   "body": "<img width=\"841\" alt=\"image\" src=\"https://user-images.githubusercontent.com/1755853/221284409-d89d39a3-f97f-4644-b521-35b0f5b472af.png\">\r\n\r\n\r\nhatop shows me barely any connections coming in, yet lots of tasks? queue also not 0\r\n"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-02-24T20:27:44Z",
+   "body": "<img width=\"823\" alt=\"image\" src=\"https://user-images.githubusercontent.com/1755853/221284854-17673627-7c00-4539-9ca8-4eba7652229a.png\">\r\n\r\nHTTP layer also. Only about 80 req/s so nothing going on."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-02-24T20:42:41Z",
+   "body": "It makes me think there's likely an improperly caught event (e.g. error, shutdown etc) on an H1 connection. There's likely still an FD attached on which we could possibly figure what's wrong. May you please also send \"show fd\" there ? \"show sess all\" could also be helpful, however it may reveal some private info (IP addresses etc). If needed you can switch to anon mode using \"set anon on\" before sending \"show sess all\" so that IP addresses and element names are replaced by short hashes."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-02-24T20:59:58Z",
+   "body": "Here is show fd:\r\n\r\n(meanwhile the CPU spike has passed, we are now at about 30% CPU in one process)\r\nhatop still shows about 800-1000 tasks, basically no requests going in now. (about 80 req/s)\r\n\r\n[show-fd.log](https://github.com/haproxy/haproxy/files/10828728/show-fd.log)\r\n"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-02-24T21:02:59Z",
+   "body": "Here is show sess all (anonymised) \r\n\r\n[show-sess-all.log](https://github.com/haproxy/haproxy/files/10828747/show-sess-all.log)\r\n"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-02-24T21:26:44Z",
+   "body": "Meanwhile only one process remains, but it is hogging CPU again:\r\n\r\n<img width=\"859\" alt=\"image\" src=\"https://user-images.githubusercontent.com/1755853/221295124-785149d2-b166-4884-b042-189796b1e6e4.png\">\r\n\r\n\r\nhatop showing over 1800 tasks\r\n\r\n<img width=\"839\" alt=\"image\" src=\"https://user-images.githubusercontent.com/1755853/221295254-798380de-4843-4ce8-9d78-b4fe4a9d61cb.png\">\r\n\r\n\r\n\"show tasks\" shows only 2 tasks running\r\n\r\n<img width=\"486\" alt=\"image\" src=\"https://user-images.githubusercontent.com/1755853/221295373-05bfce32-aa75-48b7-9d99-5a9c4451337d.png\">\r\n\r\n\"show fd\" shows over 1400 fds now:\r\n\r\n[show-fd-2.log](https://github.com/haproxy/haproxy/files/10828867/show-fd-2.log)\r\n\r\n\r\n\"show sess all\" (anonymous):\r\n\r\n[show-sess-all-2.log](https://github.com/haproxy/haproxy/files/10828880/show-sess-all-2.log)\r\n"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-02-27T10:06:07Z",
+   "body": "FYI, we also saw an increase of 504s with \"sH--\" termination state during the CPU spikes, indicating a server timeout. \r\nThat's interesting, because we have a very high \"timeout server\" setting of 1h. \r\nSo my assumption is that HAproxy could be busy with the bogus tasks above, looping forever so that it can't consume the server response in time and runs into its own timeout? Something like that."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2023-02-27T10:30:28Z",
+   "body": "As you mention frequent reloads / many old workers running at the same time. Depending on the number of backends / servers and the frequency of health checks, possibly this is related: #1874?"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-02-27T13:33:32Z",
+   "body": "@participant4 thanks for the hint. During our investigations we didn't see the old workers consume particularly much CPU, so I don't think this is the root cause. The issue you mentioned is still fair, though. Our main issue seems to be only one or two workers consuming all of the CPU without doing much at all."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-02-27T14:26:46Z",
+   "body": "We now have about two dozen haproxy VMs in one deployment pinned to 100%, we tried restarting them but they go up to 100% immediately. We can see that CPU is only consumed by a single HAProxy process. If there are other (old) processes running they do not contribute significantly to the load. This data is from a VM with only a single worker process, HATop:\r\n![image](https://user-images.githubusercontent.com/44866320/221588807-3b2656d5-84cb-4a1c-9f99-1f4761e8ac3a.png)\r\n![image](https://user-images.githubusercontent.com/44866320/221588874-448e4296-d575-4da2-9171-71f92c83ab3d.png)\r\n\r\n`show fd`\r\n[fds.txt](https://github.com/haproxy/haproxy/files/10840552/fds.txt)\r\n`show sess all`\r\n[sess-all.txt](https://github.com/haproxy/haproxy/files/10840572/sess-all.txt)\r\n\r\n"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-03-02T09:12:06Z",
+   "body": "FYI, we have since reverted to HAproxy v2.6.9 and the issues are gone now:\r\n\r\n![Screenshot 2023-03-02 at 10 08 50](https://user-images.githubusercontent.com/1755853/222383844-63ea9f12-8178-462f-9382-06e3bfa4b2c8.png)\r\n"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-03-12T12:43:16Z",
+   "body": "Hi @participant3 \r\nI had not noticed your latest message, being busy on a painful bug, sorry. Your observation is as usual very informative. The aspect of the graph shows that something's definitely wrong on 2.7 here. The issues I recently fixed could possibly cause that sort of thing to happen by preventing a poller from being woken up on an FD, but it's not certain it's related. You may be interested in giving 2.7.4 a try at least to rule this out. One thing that could be helpful would be to enable -DDEBUG_FD in your build so that we get event counts on each FD. The number of calls per FD will then be emitted in the \"show fd\" output. This way we'll know if some are looping, and if so, in what state.\r\n\r\nI've looked at your \"show sess all\" output and am not noticing stuck streams, which is already great. On your graphs it looks like something is eating CPU for the whole duration of a timeout. I still can't find anything else to ask you for now. "
+  },
+  {
+   "author": "participant5",
+   "created_at": "2023-03-12T14:42:26Z",
+   "body": "> Thanks for the insights! The upgrade to 2.7.3 is already being rolled out.\r\n> \r\n> Regarding the TLS handshakes: We know that there are quite a few clients that don't do keepalive and contribute to the load.\r\n> \r\n> I ran the command you recommended but don't really understand what this is supposed to tell me. The exact command is:\r\n> \r\n> ```shell\r\n> ( echo '@!30648; show info; show activity' | socat - tcp-connect:127.0.0.1:9001; sleep 10; echo '@!30648; show info; show activity' | socat - tcp-connect:127.0.0.1:9001 ) > out.log\r\n> ```\r\n> \r\n> There are multiple HAProxies running due to reloads so I picked the one that is hogging a full core.\r\n> \r\n> Output\r\n> Since the old version isn't deployed on a live environment I can't really deliver comparable data but I will reproduce this on a dev environment as well and paste the output here.\r\n\r\nthere're two kinds of \"keepalive\", i.e. tcp-level keepalive and tls-level keepalive, also called \"abbrevated handshake\". in your perf it looks like clients do not do abbrevated tls handshakes. is it expected load pattern ?"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-03-13T08:56:37Z",
+   "body": "@participant2 how much impact does the -DDEBUG_FD flag have on performance? Can we roll this out to the entire fleet or is it better to only build one instance with the flag set and pull the \"show fd\" from there?"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-03-13T09:50:46Z",
+   "body": "It will be almost imperceptible, the only thing is that it will double the memory consumption of the file descriptor table, using 128 bytes per socket instead of 64. So if you have 1 million FD it will take 64 extra MB of RAM. As long as you don't worry for a few tens of MB of RAM, it's safe to deploy."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-03-14T07:37:41Z",
+   "body": "Your \"show task\" output above shows 31 active tasks (all handling FD activities), and in the \"show fd\" output, guess what ? among the different connection flags combinations I'm also seeing one value appearing 31 times, and these are the only ones reporting an error!\r\n```\r\n      4 cflg=0x00000302\r\n      5 cflg=0x00040300\r\n     17 cflg=0x08800300\r\n     31 cflg=0x80100300 <<< CO_FL_XPRT_TRACKED | CO_FL_ERROR | CO_FL_XPRT_READY | CO_FL_CTRL_READY\r\n     55 cflg=0x00000301\r\n    223 cflg=0x00000300\r\n    947 cflg=0x80000300\r\n```\r\nI'm fine with having a few spurious errors during a dump, but not that many, especially when it seems to match what seems to be eating the CPU.\r\n\r\nAll these connections have the following characteristics in common:\r\n- front connections\r\n- made over H1/SSL\r\n- POST requests\r\n- request still being uploaded\r\n- response not sent yet\r\n- h1c=0x400 (H1C_F_ERROR)\r\n- 27 saw a hangup, 3 a hangup and error, 1 nothing\r\n- empty ibuf/obuf\r\n- no expires\r\n- all have an err_pending on their stream descriptor (0x02860001) and a few are not on their first request (0x02861001)\r\n- no wait event above\r\n\r\nI think that with this we should have enough to try to reproduce it, so it's probably not needed to waste your time on a new deployment yet if you have not started."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-03-14T09:02:59Z",
+   "body": "Thanks @participant2 ! We always wondered why this only showed in production and not on dev / test / staging before. It seems to be a very specific characteristic in the connections. Once you are able to reproduce them, please tell us how so we can add a regression test in our test environments :)"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-03-14T09:38:26Z",
+   "body": "For now I can't reproduce, whatever I try, but Christopher is also looking at it. Maybe today we'll be able to send you some patches to try (either to verify suppositions or to collect more required info)."
+  },
+  {
+   "author": "participant6",
+   "created_at": "2023-03-14T16:49:00Z",
+   "body": "I don't know how to reproduce this case but I suspect you get a pure SSL error while the underlying raw socket is still alive. If this happens, only `CO_FL_ERROR` flag is set on the connection. `CO_FL_SOCk_RD_SH` flag is not set. Thus, in the H1 multiplexer, the error will be detected. But without the shutdown, we will wait. However, on the connection side, because an error was reported, nothing more is performed.\r\n\r\nTo validate my theory, you can apply this patch on top of the 2.7.4. If it is possible of course :)\r\n\r\n```diff\r\ndiff --git a/src/ssl_sock.c b/src/ssl_sock.c\r\nindex 9d23b4f91..b7adf81a7 100644\r\n--- a/src/ssl_sock.c\r\n+++ b/src/ssl_sock.c\r\n@@ -6687,7 +6687,7 @@ static size_t ssl_sock_to_buf(struct connection *conn, void *xprt_ctx, struct bu\r\n        goto leave;\r\n \r\n  out_error:\r\n-       conn->flags |= CO_FL_ERROR;\r\n+       conn->flags |= CO_FL_ERROR | CO_FL_SOCK_RD_SH | CO_FL_SOCK_WR_SH;\r\n        /* Clear openssl global errors stack */\r\n        ssl_sock_dump_errors(conn, NULL);\r\n        ERR_clear_error();\r\n@@ -6848,7 +6848,7 @@ static size_t ssl_sock_from_buf(struct connection *conn, void *xprt_ctx, const s\r\n        ssl_sock_dump_errors(conn, NULL);\r\n        ERR_clear_error();\r\n \r\n-       conn->flags |= CO_FL_ERROR;\r\n+       conn->flags |= CO_FL_ERROR | CO_FL_SOCK_RD_SH | CO_FL_SOCK_WR_SH;\r\n        goto leave;\r\n }\r\n```\r\n\r\n "
+  },
+  {
+   "author": "participant6",
+   "created_at": "2023-03-14T17:29:55Z",
+   "body": "By hacking the trace filter, I'm able to reproduce the bug and I can confirm my patch fixes it. You can safely apply it. We must now figure out the best way to really fix the bug."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-03-14T17:41:31Z",
+   "body": "This means there are defective TLS stacks on clients triggering it or occasional corruption that's not covered by TCP checksums and that makes the TLS decoding fail. But at least now we have an explanation!"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-03-15T08:24:09Z",
+   "body": "@participant6 is there a way to force the bug using a crafted http client? I am looking to apply your patch to our release process and would like to add a regression test that provokes the bug.\r\nAnd yes, we have some **very** old clients, still speaking HTTP/1.0 without SNI etc. there's a good chance their TLS implementations are bugged. What's still confusing me is why this never showed in HAproxy 2.6.x before.\r\nHave there been any changes to 2.7.x in the `ssl_sock.c` that would trigger the bug?"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-03-15T09:08:06Z",
+   "body": "Sadly it's very difficult to provoke the problem, it requires to mangle a valid TLS stream on the fly and that's not a part you can access from a regular client, here it required to chain multiple tools with dedicated code :-/\r\n\r\nThe reason for this triggering in 2.7 is that error reporting in 2.7 was improved and made more hierarchical exactly in order to address such corner cases, and it just proves that some corner cases do still exist and have become more visible once what was hiding them is uncovered."
+  },
+  {
+   "author": "participant7",
+   "created_at": "2023-03-15T21:32:39Z",
+   "body": "_Regarding 2.6.x vs 2.7_: We are facing a very similar bug in 2.6.9 (and 2.6.10) where:\r\n1. We reload very frequently (~5-10 seconds)\r\n2. We see the same repeated output in strace\r\n```\r\n14:05:02.077881 clock_gettime(CLOCK_THREAD_CPUTIME_ID, {tv_sec=14008, tv_nsec=219818200}) = 0\r\n14:05:02.077956 clock_gettime(CLOCK_THREAD_CPUTIME_ID, {tv_sec=14008, tv_nsec=219844800}) = 0\r\n14:05:02.078017 epoll_wait(18, [], 200, 0) = 0\r\n...\r\n```\r\n3. One or two rogue Haproxy process (not all of them) is taking a whole CPU, repeatedly waking up, and appearing to do nothing\r\n4. Haproxy can stay in high CPU state indefinitely (we saw for more than 24 hours).  \r\n\r\nHowever, we are using 2.6.9. The bug reporter here said 2.6.9 solved this issue, but we seem to be seeing something very similar. We can reproduce, but very slowly, it takes 3-12 hours of testing to trigger this scenario. It's a painful reproducer.\r\n\r\n@participant6 Could you possibly provide your reproducer to trigger this scenario for me to experiment with? Or could you run your reproducer on 2.6.9 or 2.6.10 to see if the same bug is triggered? Any help to confirm this bug only applies to 2.7 is appreciated."
+  },
+  {
+   "author": "participant6",
+   "created_at": "2023-03-16T08:00:05Z",
+   "body": "I pushed a fix that should solve this issue. I've finally fix the bug in the H1 multiplexer.\r\n\r\n@participant7, symptoms are similar but it cannot be the same issue. The 2.6 is not affected by this one. So it is another bug. Could you open a new issue with more info ?"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-03-16T08:05:45Z",
+   "body": "Also @participant7 if you still have access to the old process via the master CLI, it would be useful to issue \"show task\" there."
+  },
+  {
+   "author": "participant6",
+   "created_at": "2023-03-16T08:27:32Z",
+   "body": "The fix was pushed to 2.7. @participant3, I will wait your feedback before closing, to be sure."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-03-16T09:02:01Z",
+   "body": "@participant6 As we only see the issue in production, we can't easily verify because we are hesitant to apply patches on live systems unless absolutely necessary. We would prefer to get a new release (2.7.5 probably) and roll it out as usual. It will take about 4 weeks to reach production, can you keep the bug open until then? Otherwise we may re-open or open a new issue and link this one."
+  },
+  {
+   "author": "participant6",
+   "created_at": "2023-03-16T09:06:55Z",
+   "body": "Of course, I'm fine with that. No reason to open a new issue. We will keep it open to be sure to keep an eye on it. Thanks !"
+  },
+  {
+   "author": "participant6",
+   "created_at": "2023-03-20T06:41:21Z",
+   "body": "FYI, the 2.7.5 was released."
+  },
+  {
+   "author": "participant8",
+   "created_at": "2023-03-20T08:08:15Z",
+   "body": "Thx for this fast release!\r\nWe will report back results in ~3 weeks"
+  },
+  {
+   "author": "participant8",
+   "created_at": "2023-04-11T13:25:01Z",
+   "body": "Hi everyone, our load pattern looks good after the 2.7.5 upgrade!\r\nThanks a lot for the fast and helpful support+release 👌 "
+  },
+  {
+   "author": "participant6",
+   "created_at": "2023-04-11T13:27:04Z",
+   "body": "Cool ! I'm closing now. Thanks !"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-04-13T06:11:04Z",
+   "body": "@participant6 we noticed that we have another issue with 2.7.6 that could be related. On our larger landscapes we observed more than 300 crashes per day with the message:\r\n```\r\nApr 12, 2023 @ 15:05:44.000\t040f77b4-f350-4b16-b5bc-a9ab29930f5c\tA bogus STREAM [0x7f17890ce290] is spinning at 190124 calls per second and refuses to die, aborting now! Please report this error to developers [strm=0x7f17890ce290,4284a src=<redacted> fe=https-in be=http-routers-http1 dst=node6 txn=0x7f1788be47d0,0 txn.req=MSG_ERROR,e txn.rsp=MSG_DONE,d rqf=8ca064 rqa=0 rpf=c0048000 rpa=0 scf=0x7f1788e235b0,EST,0 scb=0x7f1788f93030,EST,1 af=(nil),0 sab=(nil),0 cof=0x55a4f19c9670,80040300:H1(0x7f1788c64fd0)/SSL(0x7f178904a4d0)/tcpv4(2221) cob=0x7f17880825b0,1c0300:H1(0x7f1788225930)/SSL(0x7f178947d010)/tcpv4(1571) filters={}]\r\n```\r\n\r\nShould I open a new bug for this? If you need more of these error messages I can provide them.\r\n\r\nEdit: We don't have data from the previous issue anymore but we are pretty sure that those crashes didn't occur back then."
+  },
+  {
+   "author": "participant6",
+   "created_at": "2023-04-13T06:39:26Z",
+   "body": "@reporter there are already 2 issues with this kind of crashes: #2088 and #2111. You can add info on the last one. Especially if you have some coredump files. A GDB backtrace could be really useful.  I'm working on a fix. But on my side, I'm unable to reproduce the issue. I can freeze a session, but I have no spinning loop."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-04-13T08:47:33Z",
+   "body": "Thanks! Sorry for not checking the other issues first.\r\n\r\nI will try to collect some additional data from our side and provide it in the other issue."
+  },
+  {
+   "author": "participant8",
+   "created_at": "2023-04-17T07:03:29Z",
+   "body": "Hi @participant6 , you mentioned [reverting an offending commit](https://github.com/haproxy/haproxy/issues/2111#issuecomment-1508783334) from stable versions. Will this also include creating a 2.7.7 release excluding this commit? We are depending on 2.7.x as we need to set large CA files via socket which was not backported to the LTS versions (https://github.com/haproxy/haproxy/issues/1805)"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2023-04-17T08:29:40Z",
+   "body": "> Will this also include creating a 2.7.7 release excluding this commit?\r\n\r\nThe commit is already reverted in git for 2.7: https://<redacted-host>/?p=haproxy-2.7.git;a=<reviewer>;h=a266d4a924325feb1f250989b767ddf46f20912a"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-04-18T07:55:22Z",
+   "body": "@participant6 @participant2 is this commit related the the original issue reported? E.g. do we risk running into the 100% CPU spikes if we deploy HAProxy with this commit reverted?"
+  },
+  {
+   "author": "participant6",
+   "created_at": "2023-04-18T08:36:20Z",
+   "body": "This commit revealed hidden bugs leading at least to session freezes and most probably to crashes because of spinning loops. It is hard to be 100% sure because I was unable to reproduce any loops on my side.  However it is not related to the original issue. It affects sessions with unresponsive clients, still uploading data while the response was already fully received. At least, it is my current analysis. 2.7.4, 2.7.5 and 2.7.6 are affected by this bug."
+  },
+  {
+   "author": "participant8",
+   "created_at": "2023-04-26T06:39:30Z",
+   "body": "Hi @participant6, when will 2.7.7 be released with this revert?\r\nWe are currently locked on an older 2.6 release due to the crashes mentioned above "
+  },
+  {
+   "author": "participant6",
+   "created_at": "2023-04-26T06:40:41Z",
+   "body": "Yes and it should be released soon. Most probably this week."
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "haproxy/haproxy",
+  "default_branch": "master",
+  "commit_sha": "c80560bae7e09c3117e309bf9ea69920cc2f7743",
+  "as_of": "2023-02-15T12:52:45Z",
+  "method": "github_commits_until"
+ },
+ "images": [
+  {
+   "where": "opening",
+   "source_url": "https://user-images.githubusercontent.com/44866320/219028275-f3202dd9-84b9-4cc7-b376-8a08c08792c0.png",
+   "file": "gh_haproxy_haproxy_2046_img0.png"
+  },
+  {
+   "where": "opening",
+   "source_url": "https://user-images.githubusercontent.com/44866320/219028343-22b306dd-fe37-4a76-92e6-ad4b63f83ccc.png",
+   "file": "gh_haproxy_haproxy_2046_img1.png"
+  },
+  {
+   "where": "opening",
+   "source_url": "https://user-images.githubusercontent.com/44866320/219028475-79aee539-8eab-4c6c-b6da-14457bf33c92.png",
+   "file": "gh_haproxy_haproxy_2046_img2.png"
+  },
+  {
+   "where": "opening",
+   "source_url": "https://user-images.githubusercontent.com/44866320/219028624-3db86ea0-0735-4f16-81b5-9cceb9b7899b.png",
+   "file": "gh_haproxy_haproxy_2046_img3.png"
+  },
+  {
+   "where": "c0",
+   "source_url": "https://user-images.githubusercontent.com/44866320/219049372-87d3ddb6-9473-4d22-8add-1f923aa40143.png",
+   "file": "gh_haproxy_haproxy_2046_img4.png"
+  },
+  {
+   "where": "c4",
+   "source_url": "https://user-images.githubusercontent.com/1755853/221180978-c1e0b3b3-58fa-4e31-8ff3-e448e3bf934b.png",
+   "file": "gh_haproxy_haproxy_2046_img5.png"
+  },
+  {
+   "where": "c6",
+   "source_url": "https://user-images.githubusercontent.com/1755853/221195448-2e3f7a63-5da0-451e-bfdd-885c8dd9bf20.png",
+   "file": "gh_haproxy_haproxy_2046_img6.png"
+  },
+  {
+   "where": "c10",
+   "source_url": "https://user-images.githubusercontent.com/1755853/221283813-fa1f5399-0197-46c1-98ac-d18c2d94dfae.png",
+   "file": "gh_haproxy_haproxy_2046_img7.png"
+  },
+  {
+   "where": "c11",
+   "source_url": "https://user-images.githubusercontent.com/1755853/221284409-d89d39a3-f97f-4644-b521-35b0f5b472af.png",
+   "file": "gh_haproxy_haproxy_2046_img8.png"
+  },
+  {
+   "where": "c12",
+   "source_url": "https://user-images.githubusercontent.com/1755853/221284854-17673627-7c00-4539-9ca8-4eba7652229a.png",
+   "file": "gh_haproxy_haproxy_2046_img9.png"
+  },
+  {
+   "where": "c16",
+   "source_url": "https://user-images.githubusercontent.com/1755853/221295124-785149d2-b166-4884-b042-189796b1e6e4.png",
+   "file": "gh_haproxy_haproxy_2046_img10.png"
+  },
+  {
+   "where": "c16",
+   "source_url": "https://user-images.githubusercontent.com/1755853/221295254-798380de-4843-4ce8-9d78-b4fe4a9d61cb.png",
+   "file": "gh_haproxy_haproxy_2046_img11.png"
+  },
+  {
+   "where": "c16",
+   "source_url": "https://user-images.githubusercontent.com/1755853/221295373-05bfce32-aa75-48b7-9d99-5a9c4451337d.png",
+   "file": "gh_haproxy_haproxy_2046_img12.png"
+  },
+  {
+   "where": "c20",
+   "source_url": "https://user-images.githubusercontent.com/44866320/221588807-3b2656d5-84cb-4a1c-9f99-1f4761e8ac3a.png",
+   "file": "gh_haproxy_haproxy_2046_img13.png"
+  },
+  {
+   "where": "c20",
+   "source_url": "https://user-images.githubusercontent.com/44866320/221588874-448e4296-d575-4da2-9171-71f92c83ab3d.png",
+   "file": "gh_haproxy_haproxy_2046_img14.png"
+  },
+  {
+   "where": "c21",
+   "source_url": "https://user-images.githubusercontent.com/1755853/222383844-63ea9f12-8178-462f-9382-06e3bfa4b2c8.png",
+   "file": "gh_haproxy_haproxy_2046_img15.png"
+  }
+ ],
+ "slug": "gh_haproxy_haproxy_2046"
+}

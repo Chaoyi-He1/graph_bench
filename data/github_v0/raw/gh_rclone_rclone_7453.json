@@ -1,0 +1,198 @@
+{
+ "repo": "rclone/rclone",
+ "number": 7453,
+ "url": "https://github.com/rclone/rclone/issues/7453",
+ "title": "serve s3: uses too much memory on multipart uploads",
+ "state": "closed",
+ "labels": [
+  "bug",
+  "serve s3"
+ ],
+ "reporter": "reporter",
+ "created_at": "2023-11-24T15:17:39Z",
+ "closed_at": "2026-06-11T11:30:35Z",
+ "body": "When uploading multipart files `serve s3` holds all the parts in memory. This is a documented limitaton of the library rclone uses for serving S3.\r\n\r\n#### How to use GitHub\r\n\r\n* Please use the 👍 [reaction](https://blog.github.com/2016-03-10-add-reactions-to-pull-requests-issues-and-comments/) to show that you are affected by the same issue.\r\n* Please don't comment if you have no relevant information to add. It's just extra noise for everyone subscribed to this issue.\r\n* Subscribe to receive notifications on status change and new comments.\r\n",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2023-12-17T09:03:39Z",
+   "body": "if it helps in [s3m](https://s3m.stream/) - https://github.com/s3m/s3m/ when reading from `STDIN`, I use a file buffer from there I take the checksums and then stream it, I would like to use named pipes but the problem is that I need to know the checksums before doing the upload because of the S3 signature."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-03-07T12:07:36Z",
+   "body": "Seems to me that's an issue with the gofakes3 lib rclone is using.\r\n\r\nSee at https://github.com/Mikubill/gofakes3/blob/master/uploader.go\r\n`func (mpu *multipartUpload) AddPart(partNumber int, at time.Time, body []byte) (etag string, err error) {\r\n\tif partNumber > MaxUploadPartNumber {\r\n\t\treturn \"\", ErrInvalidPart\r\n\t}\r\n\r\n\tmpu.mu.Lock()\r\n\tdefer mpu.mu.Unlock()\r\n\r\n\t// What the ETag actually is is not specified, so let's just invent any old thing\r\n\t// from guaranteed unique input:\r\n\thash := md5.New()\r\n\thash.Write([]byte(body))\r\n\tetag = fmt.Sprintf(`\"%s\"`, hex.EncodeToString(hash.Sum(nil)))\r\n\r\n\tpart := multipartUploadPart{\r\n\t\tPartNumber:   partNumber,\r\n\t\tBody:         body,\r\n\t\tETag:         etag,\r\n\t\tLastModified: NewContentTime(at),\r\n\t}\r\n\tif partNumber >= len(mpu.parts) {\r\n\t\tmpu.parts = append(mpu.parts, make([]*multipartUploadPart, partNumber-len(mpu.parts)+1)...)\r\n\t}\r\n\tmpu.parts[partNumber] = &part\r\n\treturn etag, nil\r\n}`\r\n\r\nThe body of a part is stored in memory.\r\n\r\nThe suggestions that I can make is as rclone serve s3 is considering the root path as root of all buckets :\r\n\r\n- Either we use local cache file to implement `mpu.parts[partNumber]` ,\r\n- Either we use /uploads/bucket-name/multipart-upload-{id}/part_{id}.\r\n\r\nThis could be done with an option to provide an existing path to VFS.\r\n\r\nBTW would be wise to integrate gofakes3 lib into rclone repo as it is not widely used / reviewed and could be an target of choice for a malicious actor.\r\n\r\nMissed sth : I can provide with a PR if this approach is ok for you."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-03-08T11:16:57Z",
+   "body": "> Seems to me that's an issue with the gofakes3 lib rclone is using.\r\n\r\nYes it is.\r\n\r\n> The body of a part is stored in memory.\r\n> \r\n> The suggestions that I can make is as rclone serve s3 is considering the root path as root of all buckets :\r\n> \r\n> * Either we use local cache file to implement `mpu.parts[partNumber]` ,\r\n\r\nThis could be done very easily using `--vfs-cache-mode writes` - this would assemble the file on disk then upload it when it was finished. This has the disadvantage that you need local disk space and that the file doesn't get uploaded until the end. It would work with all backends though.\r\n\r\n> * Either we use /uploads/bucket-name/multipart-upload-{id}/part_{id}.\r\n\r\nWe have the problem then that we need to join the chunks back together when they are downloaded. This isn't impossible but it is quite a bit of extra work.\r\n\r\nA third option would be for backends which support [OpenChunkWriter](https://github.com/rclone/rclone/blob/4e07a72dc7f9cdd2b458f5c0f382f00147a0bd9b/fs/features.go#L176) or [OpenWriterAt](https://github.com/rclone/rclone/blob/4e07a72dc7f9cdd2b458f5c0f382f00147a0bd9b/fs/features.go#L169) to send the chunks directly to the backend. This was my original plan and would work very well with backends which support that, but not at all with other backends.\r\n\r\n> This could be done with an option to provide an existing path to VFS.\r\n> \r\n> BTW would be wise to integrate gofakes3 lib into rclone repo as it is not widely used / reviewed and could be an target of choice for a malicious actor.\r\n\r\n@participant5 we discussed transferring the gofakes3 fork to the rclone organisation - would you still like to do that? If so let me know and I'll send you instructions.\r\n\r\n> Missed sth : I can provide with a PR if this approach is ok for you.\r\n\r\nOffer of a PR is great! I think we need to sort out the right approach and where gofakes3 is living first but yes - thank you.\r\n\r\n"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-03-08T12:41:02Z",
+   "body": "> Offer of a PR is great! I think we need to sort out the right approach and where gofakes3 is living first but yes - thank you.\r\n\r\nAgreed. Lets wait for @participant5 answer first."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-05-23T12:08:35Z",
+   "body": "bump, gofakes3 is under rclone now "
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-06-03T19:39:32Z",
+   "body": "Ok cool, I will see when I get time, to implement this thing."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-05-13T14:07:07Z",
+   "body": "I have made a stab at making this work. The chunks are sent straight to the backend and aren't buffered in memory or on disk. Only the chunks being received are buffered in memory until they have been written to the backend.\n\n[v1.75.0-beta.9734.52dd8ad4a.fix-7453-s3-serve-multipart](https://<redacted-host>/branch/fix-7453-s3-serve-multipart/v1.75.0-beta.9734.52dd8ad4a.fix-7453-s3-serve-multipart/) on branch [fix-7453-s3-serve-multipart](https://github.com/rclone/rclone/tree/fix-7453-s3-serve-multipart) (uploaded in 15-30 mins)\n\nTesting appreciated :-)\n\nNote that it only supports backends which support OpenChunkWriter or OpenWriterAt. This includes s3, b2, azureblob, oracleobjectstorage, drime, filen, archive, sftp, local and azurefiles I think.\n\nFor all other backends it will fall back to buffering in memory like it does at the moment."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2026-05-27T10:55:29Z",
+   "body": "This is something that happens to us from time to time, so we would love to see this fixed!"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-05-27T14:29:48Z",
+   "body": "@participant4 it would help it getting merged if you can try out the code linked above."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2026-06-01T11:18:02Z",
+   "body": "I did try out the code linked above in our dev environment.\n\nWe do not set RCLONE_S3_CHUNK_SIZE so it ought to be the default 5Mi.\nWe do not set RCLONE_S3_USE_MULTIPART_UPLOADS so it ought to be unset and thus Multipart Uploads ought to be used.\n\nMy findings with your container [(https://github.com/rclone/rclone/pkgs/container/rclone/862189017?tag=fix-7453-s3-serve-multipart)](https://github.com/rclone/rclone/pkgs/container/rclone/862189017?tag=fix-7453-s3-serve-multipart) are as follows:\n\nThe serves3 functionality works but i suspect the multipart upload fix is not working as intended. \n\nOur backup creates a memory usage of 640Mi in the container. \n\nTo simulate our container crashing due to memory limits being pushed by the backup I set the memory limit of the container to 400 Mi when to see if the multipart upload might change something.\n\nThe container pushes its memory limit and fails all the same.\n\nI suspect it is not garbage collecting? Maybe it is also not splitting the upload in multiple parts because it is too small. The size of the backup is around 300 MB."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-06-02T07:46:53Z",
+   "body": "To see if this is the garbage collector, try adding the environment variable `GOGC=20` which will tell the garbage collector to work harder.\n\nYou can also try --use-mmap which will cause memory to be released immediately.\n\nYou can also use --max-buffer-memory to cap the total memory use"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2026-06-02T09:01:07Z",
+   "body": "It seems I have confused \"rclone serve s3\" with \"rclone s3\". \n\n\"The chunks are sent straight to the backend and aren't buffered in memory or on disk.\"\n\nChunk size for PG-Barman is the same as rclone, 5Mi for s3 backends.\n\nI'll check with the flags you sent me here and let you know of our findings."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2026-06-02T10:06:09Z",
+   "body": "No dice. \n\nGOGC=20 for environment vars => no change, still uses 640M of RAM\n\n--use-mmap => no change, still uses 640M of RAM (container gives it back slightly earlier than before after finishing the job, though)\n\n--max-buffer-memory=200 => no change, still goes to 640M\n\n<img width=\"1441\" height=\"204\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/ab2e1718-e373-4c6d-9fcc-c3c68aa10f40\" />"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2026-06-02T11:03:19Z",
+   "body": "Using a container memory limit does not force the process to use less memory by creating pressure, either.\n\nThis is what it looks like when I set GOGC=20, --use-mmap, --max-buffer-memory=200 and limit the container to 400Mi:\n\n<img width=\"394\" height=\"245\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/aa412b9f-b5cc-4aa7-9691-049f87d19d2f\" />\n\nThe container uses up his memory and fails at 400, as before.\n\nI checked the Cloudnative-PG sidecar container which creates the backup via Barmancloud and it does, in fact, upload in 14 parts. With a size of around 290 MB that means 20 MB per part. This is done via 2 worker processes.\n\n\"The chunks are sent straight to the backend and aren't buffered in memory or on disk. Only the chunks being received are buffered in memory until they have been written to the backend.\"\n\nIf I understand the goal and method of your fix right then the upload should not create more than 40M of overhead since rclone will just stream the backup data through and not keep it in memory, right?"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2026-06-02T11:51:49Z",
+   "body": "How can I make sure that https://github.com/rclone/rclone/pkgs/container/rclone/862189017?tag=fix-7453-s3-serve-multipart is the right container? Since it behaves the same as the other container, maybe it was built once when branching off and never again since?\n\nEdit: Okay, should not be an issue. I checked: https://github.com/rclone/rclone/actions/runs/25804124706"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-06-02T16:29:40Z",
+   "body": "@participant4 from what you are saying and the memory use it looks as if it isn't working at all.\n\nCan you confirm \n\n- The exact rclone `serve s3` command\n- What remote is being served (eg Google Drive wrapped in crypt)\n- And `rclone version` from inside the running container, to confirm the image actually has the fix\n\nThank you"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2026-06-03T06:48:39Z",
+   "body": "**The exact rclone serve s3 command:**\n`rclone serve s3 --addr $(SERVES3_ENDPOINT) --vfs-fast-fingerprint --auth-key $(RCLONE_S3PROXY_ACCESS_KEY_ID),$(RCLONE_S3PROXY_SECRET_ACCESS_KEY) $(SERVES3_BACKEND):`\n\nVariables are added to the kubernetes pod by environment (via configmap and secret)\n\n**What remote is being served:** We are using rclone as an encryption proxy for Ceph RGW S3 API.\n\n**The rclone version from inside the running container:**\n```\n/data # rclone version\nrclone v1.75.0-beta.9734.52dd8ad4a.fix-7453-s3-serve-multipart\n- os/version: alpine 3.23.4 (64 bit)\n- os/kernel: 6.8.0-100-generic (aarch64)\n- os/type: linux\n- os/arch: arm64 (ARMv8 compatible)\n- go/version: go1.26.3\n- go/linking: static\n- go/tags: none\n```"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-06-03T07:40:11Z",
+   "body": "@participant4 is $(SERVES3_BACKEND) a plain S3 backend, or something else?"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2026-06-03T09:00:43Z",
+   "body": "SERVES3_BACKEND is an s3 remote backend (provided via Ceph RGW) where our rclone serve s3  is writing files to, encrypting them. Hence, \"encryption proxy\"."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-06-03T09:26:41Z",
+   "body": "What is doing the encryption? Rclone? So it is an s3 backend wrapped in a crypt? If it is a plain s3 backend then it should be working, if it is wrapped in crypt then that explains why it doesn't work as crypt doesn't support the multpart upload interface. Maybe you could send the output of `rclone config redacted` so I can see exactly what you mean - Thanks"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2026-06-03T11:14:15Z",
+   "body": "Yes. Rcone is doing the encryption as PG-Barman does not do it for us. That is the initial reason we use Rclone as our encryption proxy – we need to encrypt our Cloudnative Postgres backups.\n\nRegarding config data: We do not use an Rclone config file but rather env vars for rclone runtime configuration (easier that way in Kubernetes).\n\nExcerpt from the configmap:\n\n```\n  RCLONE_CONFIG_CRYPTED_REMOTE: s3remote:test-bucket\n  RCLONE_CONFIG_CRYPTED_TYPE: crypt\n  RCLONE_CONFIG_S3REMOTE_ENDPOINT: https://rgw.test.xyz\n  RCLONE_CONFIG_S3REMOTE_PROVIDER: Ceph\n  RCLONE_CONFIG_S3REMOTE_TYPE: s3\n  RCLONE_CRYPT_DIRECTORY_NAME_ENCRYPTION: \"false\"\n  RCLONE_CRYPT_FILENAME_ENCRYPTION: \"off\"\n  S3REMOTE_BUCKET: test-bucket\n  SERVES3_BACKEND: crypted\n  SERVES3_ENDPOINT: 0.0.0.0:8088\n  SERVES3_VIRTUAL_BUCKET: encrypted-backups\n```\n\nAccess Keys for the s3 remote backend and the serve s3 as well as encryption PW +  Encryption Hash are being used via Kubernetes secret, but i omitted them, naturally.\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-06-04T09:58:37Z",
+   "body": "Ah, if you are using crypt then it won't work as-is. Here is a patch which does work with crypt\n\n[v1.75.0-beta.9735.56e88cfd9.fix-7453-s3-serve-multipart](https://<redacted-host>/branch/fix-7453-s3-serve-multipart/v1.75.0-beta.9735.56e88cfd9.fix-7453-s3-serve-multipart/) on branch [fix-7453-s3-serve-multipart](https://github.com/rclone/rclone/tree/fix-7453-s3-serve-multipart) (uploaded in 15-30 mins)\n\nThat was quite a lot of changes so consider it experimental."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2026-06-08T07:40:12Z",
+   "body": "i will test it for you and let you know my findings :)"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2026-06-08T09:28:31Z",
+   "body": "the multipart upload is failing right out the gate like this:\n\n```\nrclone-s3-proxy 2026/06/08 09:23:03 ERROR : serve s3: failed to upload chunk 1 with 21501088 bytes: operation error S3: UploadPart, serialization failed: crypt: partEncrypter unsupported seek\nrclone-s3-proxy 2026/06/08 09:23:04 ERROR : serve s3: crypt: overlapping multipart parts - all parts except the last must be the same size\nrclone-s3-proxy 2026/06/08 09:23:04 ERROR : serve s3: crypt: overlapping multipart parts - all parts except the last must be the same size\nrclone-s3-proxy 2026/06/08 09:23:06 ERROR : serve s3: crypt: overlapping multipart parts - all parts except the last must be the same size\nrclone-s3-proxy 2026/06/08 09:23:14 ERROR : serve s3: crypt: overlapping multipart parts - all parts except the last must be the same size\n```\n\ncommand i run rclone with:\n\n`rclone serve s3 --addr $(SERVES3_ENDPOINT) --vfs-fast-fingerprint --auth-key $(RCLONE_S3PROXY_ACCESS_KEY_ID),$(RCLONE_S3PROXY_SECRET_ACCESS_KEY) $(SERVES3_BACKEND):`\n\nrclone config (sans access keys, of course):\n\n```\n  RCLONE_CONFIG_CRYPTED_REMOTE: s3remote:test-bucket\n  RCLONE_CONFIG_CRYPTED_TYPE: crypt\n  RCLONE_CONFIG_S3REMOTE_ENDPOINT: https://rgw.test.xyz\n  RCLONE_CONFIG_S3REMOTE_PROVIDER: Ceph\n  RCLONE_CONFIG_S3REMOTE_TYPE: s3\n  RCLONE_CRYPT_DIRECTORY_NAME_ENCRYPTION: \"false\"\n  RCLONE_CRYPT_FILENAME_ENCRYPTION: \"off\"\n  S3REMOTE_BUCKET: test-bucket\n  SERVES3_BACKEND: crypted\n  SERVES3_ENDPOINT: 0.0.0.0:8088\n  SERVES3_VIRTUAL_BUCKET: encrypted-backups\n```\n\nAt  the same time, the archiving of WAL files seems to work just fine, as it is writing the single WAL files to the objectstore. These are only mebibytes in size, though, so not multipart.\n\n\nThe problem seems to be as following: PG-Barman has a size overshoot when putting data in chunks, so it seems to not be able  to create uniform chunks.\n\n```\ndef write(self, buf):\n    if self.buffer and self.buffer.tell() > self.chunk_size:\n        self.flush()\n```\n\nThe write buffer on PG-Barman flushes whenever the buffer exceeds chunk_size  (5 Mi), producing variably sized upload parts.\n\nIs there a way to implement the fix on rclone side without having to resort to uniform chunk sizes? Evidently, many applications do not natively write in fixed size chunks."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-06-09T09:58:18Z",
+   "body": "Thanks for the testing @participant4 \n\nIt looks like it is back to the drawing board if we can't have uniform chunk sizes!\n\nI've simplified the code a lot and it should work with nearly every backend now - please give this a go\n\n[v1.75.0-beta.9734.1f8e6616c.fix-7453-s3-serve-multipart](https://<redacted-host>/branch/fix-7453-s3-serve-multipart/v1.75.0-beta.9734.1f8e6616c.fix-7453-s3-serve-multipart/) on branch [fix-7453-s3-serve-multipart](https://github.com/rclone/rclone/tree/fix-7453-s3-serve-multipart) (uploaded in 15-30 mins)"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2026-06-10T07:40:28Z",
+   "body": "On it. Thank you for your work on this!"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2026-06-10T09:33:27Z",
+   "body": "That worked well! Same Backup as before now creates a way smaller memory imprint:\n\n<img width=\"277\" height=\"223\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/5727f2ec-5add-4c6f-b04c-35785e38378a\" />\n\nChecking also with just shooting 2 GiB of raw data through the encryption proxy as a \"Bottleneck\" with the container limit at 400 MiB RAM:\n\n- Just the serve s3 command: Container went OOM, crashed and restarted. \n- Adding --max-buffer-memory=200M: Did not crash, but did not transmit data fast enough.\n- Tried with just --use-mmap alone: Did crash again.\n\nTrying with --use-mmap and --max-buffer-memory=200M together...\n\n"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2026-06-10T09:50:48Z",
+   "body": "The upload of the 2Gi file stalls at exactly 322 MiB (≈64 parts of 5 MiB) with nothing in the serve s3 log. No error, just a complete stop. Might be like a goroutine deadlock in the chunk writer queue after 64 parts.\n\nChecking with --s3-upload-concurrency 1 for the sender process.\nEdit: That seems to work fine even at --tpslimit=0 (default)."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2026-06-10T11:17:31Z",
+   "body": "Further 2Gi-file-copy testing:\n\nSetting the copying client to --s3-upload-concurrency=2  (Analogous to PG-Barman Upload Job) works well, too.\n\nSetting the configuration parameters to our current defaults, meaning sans --use-mmap and --max-buffer-memory, also works fine for this.\n\nSeems like the issue with the 2Gi testing was on client side. Potentially just too many requests that came from that pod. Potentially also locked the CPU limits.\n\nMD5sum check looks good too.\n\n```\n/data $ rclone md5sum --config /config/rclone.conf testfile.bin\n7e1e0c88057047b9d4912dc409a8e55f  testfile.bin\n\n/data $ rclone md5sum --config /config/rclone.conf --s3-access-key-id=$RCLONE_ACCESS_KEY_ID --s3-secret-access-key=$RCLONE_SECRET_ACCESS_KEY serves3:testbucket/testfile.bin\n7e1e0c88057047b9d4912dc409a8e55f  testfile.bin\n```\n\nI'd say the new feature works well for our usecase of rclone as s3-encryption-proxy!\n\nThank you so much for your work on this!"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2026-06-11T11:31:42Z",
+   "body": "Thanks for testing @participant4 it has been really helpful having a real use case to work against.\n\nI've merged this to master now which means it will be in [the latest beta](https://<redacted-host>/) in 15-30 minutes and released in v1.75 "
+  },
+  {
+   "author": "participant4",
+   "created_at": "2026-06-11T11:43:23Z",
+   "body": "Thanks! It was great that I could help!"
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "rclone/rclone",
+  "default_branch": "master",
+  "commit_sha": "8f47b6746d0b81bb597ad330cb700559f1674fbc",
+  "as_of": "2023-11-24T15:17:39Z",
+  "method": "github_commits_until"
+ },
+ "images": [
+  {
+   "where": "c12",
+   "source_url": "https://github.com/user-attachments/assets/ab2e1718-e373-4c6d-9fcc-c3c68aa10f40",
+   "file": "gh_rclone_rclone_7453_img0.png"
+  },
+  {
+   "where": "c13",
+   "source_url": "https://github.com/user-attachments/assets/aa412b9f-b5cc-4aa7-9691-049f87d19d2f",
+   "file": "gh_rclone_rclone_7453_img1.png"
+  },
+  {
+   "where": "c26",
+   "source_url": "https://github.com/user-attachments/assets/5727f2ec-5add-4c6f-b04c-35785e38378a",
+   "file": "gh_rclone_rclone_7453_img2.png"
+  }
+ ],
+ "slug": "gh_rclone_rclone_7453"
+}

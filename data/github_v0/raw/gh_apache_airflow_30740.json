@@ -1,0 +1,250 @@
+{
+ "repo": "apache/airflow",
+ "number": 30740,
+ "url": "https://github.com/apache/airflow/issues/30740",
+ "title": "Google Stackdriver logging not working",
+ "state": "closed",
+ "labels": [
+  "kind:bug",
+  "provider:google",
+  "area:providers",
+  "Stale Bug Report"
+ ],
+ "reporter": "matteosdocsity",
+ "created_at": "2023-04-19T12:24:28Z",
+ "closed_at": "2026-01-27T07:05:38Z",
+ "body": "### Apache Airflow version\n\n2.5.3\n\n### What happened\n\nUsing the steps in the [documentation](https://airflow.apache.org/docs/apache-airflow-providers-google/stable/logging/stackdriver.html) within Airflow Helm Chart 1.9 with KubernetesExecutor does not show neither `print(\"This is a print logging message\")` or\r\n```\r\nimport logging\r\nlogger = logging.getLogger(\"airflow.task\")\r\nlogger.info(\"This is a log message\")\r\n```\r\nAuthentication is based with `GOOGLE_APPLICATION_CREDENTIALS` having also the role `roles/logging.admin` and having the config enabled via values.yaml in the helm  and `apache-airflow-providers-google==9.0.0` chart with:\r\n\r\n```\r\nconfig:\r\n  logging:\r\n    remote_logging: 'True'\r\n    remote_base_log_folder: 'stackdriver://airflow-tasks'\r\n```\r\n\r\nThe only logs viewable in the UI and both in Google Stackdriver console are related to be only internal, like:\r\n\r\n> [2023-04-19, 06:39:04 UTC] {taskinstance.py:1309} INFO - Executing <Task(TemplatedPythonOperator): hello-task> on 2023-02-15 00:00:00+00:00 [2023-04-19, 06:39:04 UTC] {standard_task_runner.py:55} INFO - Started process 36 to run task [2023-04-19, 06:40:15 UTC] {local_task_job.py:276} WARNING - State of this instance has been externally set to success. Terminating instance. [2023-04-19, 06:40:15 UTC] {process_utils.py:129} INFO - Sending Signals.SIGTERM to group 36. PIDs of all processes in the group: [36] [2023-04-19, 06:40:15 UTC] {process_utils.py:84} INFO - Sending the signal Signals.SIGTERM to group 36 [2023-04-19, 06:40:16 UTC] {process_utils.py:79} INFO - Process psutil.Process(pid=36, status='terminated', exitcode=0, started='06:39:04') (36) terminated with exit code 0\n\n### What you think should happen instead\n\nThe Stackdriver remote logging should output the logs in the Web UI and Stackdriver console.\n\n### How to reproduce\n\nUse of:\r\n\r\n- `GOOGLE_APPLICATION_CREDENTIALS` with role `roles/logging.admin`\r\n-  `Helm 1.9` \r\n-  KubernetesExecutor\r\n- `apache-airflow-providers-google==9.0.0`\r\n- Values Helm in the chart :\r\n\r\n```\r\nconfig:\r\n  logging:\r\n    remote_logging: 'True'\r\n    remote_base_log_folder: 'stackdriver://airflow-tasks'\r\n```\n\n### Operating System\n\nHelm 1.9\n\n### Versions of Apache Airflow Providers\n\napache-airflow-providers-google==9.0.0\n\n### Deployment\n\nOfficial Apache Airflow Helm Chart\n\n### Deployment details\n\nUsing official Helm Chart 1.9 (also reproducible with 1.8, 1.7) \n\n### Anything else\n\n_No response_\n\n### Are you willing to submit PR?\n\n- [ ] Yes I am willing to submit a PR!\n\n### Code of Conduct\n\n- [X] I agree to follow this project's [Code of Conduct](https://github.com/apache/airflow/blob/main/CODE_OF_CONDUCT.md)\n",
+ "comments": [
+  {
+   "author": "potiuk",
+   "created_at": "2023-04-19T16:20:46Z",
+   "body": "Cc: @dstandish  - this looks suspiciously like related to the logging changes as it looks some logs (the internal ones) are properly sent "
+  },
+  {
+   "author": "potiuk",
+   "created_at": "2023-04-19T16:22:51Z",
+   "body": "bTw @matteosdocsity - did you log it from inside your task ? Can you please share more code of your DAG showing how you are doing it (and BtW i calrified with Daniel that you should be able to use ANY logger - see the new PR i just created "
+  },
+  {
+   "author": "potiuk",
+   "created_at": "2023-04-19T16:23:54Z",
+   "body": "https://github.com/apache/airflow/pull/30746"
+  },
+  {
+   "author": "matteosdocsity",
+   "created_at": "2023-04-19T17:13:47Z",
+   "body": "@potiuk sure this is the task code\r\n```\r\ndef print_hello_world(ds):\r\n    # with default airflow logging settings, DEBUG logs are ignored\r\n    logger.info(\"This log is at the level of INFO\")\r\n\r\n    # each of these lines produces a log statement\r\n    print(\"This log is created with a print statement\")\r\n\r\n    time.sleep(120)\r\n    print('Again, Hello World!')\r\n    return 'OK'\r\n```\r\n\r\nand below the dag code\r\n\r\n```\r\nimport sys\r\nfrom os import path\r\nfrom airflow import DAG\r\nfrom airflow.models import Variable\r\nfrom airflow.operators.python import PythonOperator\r\n\r\nsys.path.append(path.dirname(path.abspath(__file__)))\r\nfrom custom_operators.hello_world import print_hello_world\r\nsys.path.append(path.dirname(path.dirname(path.dirname(path.abspath(__file__)))))\r\n\r\n\r\nENV = (Variable.get('ENV', default_var='dev') or 'test').lower()\r\nfrom datetime import datetime, timedelta\r\nyesterday = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')\r\nstart_date = datetime.strptime(Variable.get('DEFAULT_START_DATE', default_var=yesterday),'%Y-%m-%d')\r\ntest = 1\r\n\r\nargs = {'owner': 'airflow', 'start_date': start_date, 'depends_on_past': False}\r\n\r\nresource_config = {\"KubernetesExecutor\": {\"request_memory\": \"500Mi\",\r\n                                          \"limit_memory\": \"500Mi\",\r\n                                          \"request_cpu\": \"250m\",\r\n                                          \"limit_cpu\": \"250m\"}}\r\n\r\nwith DAG(\r\n    dag_id='dag_for_test',\r\n    default_args=args,\r\n    schedule_interval='@once',\r\n    max_active_runs=1,\r\n    catchup=True, description=\"Simple task\",\r\n    tags=['test']\r\n) as dag:\r\n    suffix = '{{ macros.ds_add(ds, 1) | replace(\"-\",\"/\") }}'\r\n\r\n    hello = PythonOperator(\r\n        task_id='hello-task',\r\n        provide_context=True,\r\n        python_callable=print_hello_world,\r\n        op_kwargs={'suffix': suffix},\r\n        executor_config=resource_config,\r\n        dag=dag\r\n    )\r\n```"
+  },
+  {
+   "author": "dstandish",
+   "created_at": "2023-04-19T17:14:14Z",
+   "body": "hi, lemme catch up here"
+  },
+  {
+   "author": "dstandish",
+   "created_at": "2023-04-19T17:24:45Z",
+   "body": "question for you... what's the last good version that this worked with?  provider+airflow.\r\n\r\ne.g. if you use 2.5.3 and 8.9.0 does it work?  if it's related to trigger logging change, then it should work with 8.9.0 and not work with 8.10.0\r\n\r\nseparately, there's an issue with k8s executor pod logging that is hopefully resolved in 2.6 by this PR https://github.com/apache/airflow/pull/28440.  probably not related but, just in case.... the issue there was related to ensuring that in k8s executor scenario, task logging is echoed to stdout and not just file, since webserver tries to read from pod stdout when task running.\r\n"
+  },
+  {
+   "author": "dstandish",
+   "created_at": "2023-04-19T17:39:46Z",
+   "body": "yeah so going back more through the history ... the trigger logging changes in core aren't out yet. and i don't think it's likely that the provider changes in 8.10 are likely a cause... but there were some other logging related changes that came out, some related to k8s executor, in 2.5.x --- so @matteosdocsity  if you could help narrow it down that would be appreciated -- what's the last version combination that works e.g. does it work with provider 9.0.0 and airflow 2.5.0, or 2.5.1, or 2.5.2?"
+  },
+  {
+   "author": "dstandish",
+   "created_at": "2023-04-19T17:42:14Z",
+   "body": "@potiuk \r\n\r\n> Cc: @dstandish - this looks suspiciously like related to the logging changes as it looks some logs (the internal ones) are properly sent\r\n\r\nyeah that actually looks suspiciously related to the phenomenon addressed by https://github.com/apache/airflow/pull/28440 but not sure we need some more info about last good version to narrow down i think"
+  },
+  {
+   "author": "matteosdocsity",
+   "created_at": "2023-04-19T19:14:23Z",
+   "body": "@dstandish unfortunately I've just started working with Stackdriver in order to get streaming logs with GKE, and that's because I understand it's one of the best method in this cloud environment (GCP). I've tested with latest helm 1.9, but also the same with 1.8, and Airflow version 2.5.1,2.5.2 and 2.5.3 (and also with `apache-airflow-providers-google==8.10.0`) without any chance. \r\nIs there something of previous combinations of versions that you believe it deserves to be tested? I'd be happy to help if I can"
+  },
+  {
+   "author": "dstandish",
+   "created_at": "2023-04-19T19:51:43Z",
+   "body": "yes can you try with provider 8.9.0? and then, if that doesn't work, maybe 8.9.0 and airflow < 2.5.\r\n\r\nso sounds like you're not sure it ever worked.\r\n\r\nand am i correct that it's only a problem when using k8s executor?  and is it only a problem to view logs _while task running_?  or, even after task completes, logs not there?"
+  },
+  {
+   "author": "matteosdocsity",
+   "created_at": "2023-04-19T20:23:52Z",
+   "body": "@dstandish tested now with provider 8.9.0 with no success. Don't know if the problem is related with k8s executor only even if the mentioned stdout problem by you before could also be...As reported I can see both logs (even if when the task is running and not only for task completion) viewable in the UI and both in Google Stackdriver console are related to be only internal, like:\r\n\r\n`[2023-04-19, 06:39:04 UTC] {taskinstance.py:1309} INFO - Executing <Task(TemplatedPythonOperator): hello-task> on 2023-02-15 00:00:00+00:00 [2023-04-19, 06:39:04 UTC] {standard_task_runner.py:55} INFO - Started process 36 to run task [2023-04-19, 06:40:15 UTC] {local_task_job.py:276} WARNING - State of this instance has been externally set to success. Terminating instance. [2023-04-19, 06:40:15 UTC] {process_utils.py:129} INFO - Sending Signals.SIGTERM to group 36. PIDs of all processes in the group: [36] [2023-04-19, 06:40:15 UTC] {process_utils.py:84} INFO - Sending the signal Signals.SIGTERM to group 36 [2023-04-19, 06:40:16 UTC] {process_utils.py:79} INFO - Process psutil.Process(pid=36, status='terminated', exitcode=0, started='06:39:04') (36) terminated with exit code 0`\r\n\r\nI've tested also on 2.5.3 with **docker-compose** (no helm) with both Sequential and Local executors with no success.\r\n\r\nGoing to test now with airflow 2.4.3"
+  },
+  {
+   "author": "matteosdocsity",
+   "created_at": "2023-04-19T21:11:30Z",
+   "body": "@dstandish no success also with airflow 2.4.3"
+  },
+  {
+   "author": "potiuk",
+   "created_at": "2023-04-19T21:30:03Z",
+   "body": "@matteosdocsity \r\n\r\n```\r\ndef print_hello_world(ds):\r\n    # with default airflow logging settings, DEBUG logs are ignored\r\n    logger.info(\"This log is at the level of INFO\")\r\n```\r\n\r\nHow do you get the logger here ? Is it just the `logger = logging.getLogger(__name__)` ? or logging.getLogger(\"airflow.task\")?\r\n\r\nNote that in my first PR /doc I used \"airflow.task\" but `__name__` is generally better approach. Can you check with it?"
+  },
+  {
+   "author": "potiuk",
+   "created_at": "2023-04-19T21:31:16Z",
+   "body": "And - can you create the logger inside the function ? I wonder if it makes a difference?\r\n\r\n```\r\ndef print_hello_world(ds):\r\n    logger = logging.getLogger(__name__) \r\n    # with default airflow logging settings, DEBUG logs are ignored\r\n    logger.info(\"This log is at the level of INFO\")\r\n```"
+  },
+  {
+   "author": "matteosdocsity",
+   "created_at": "2023-04-19T21:40:27Z",
+   "body": "@potiuk the logger was created before function globally with `logging.getLogger(\"airflow.task\")`, even with your code having `logger = logging.getLogger(__name__) ` inside the function  still produces no results"
+  },
+  {
+   "author": "potiuk",
+   "created_at": "2023-04-19T21:51:31Z",
+   "body": "> @potiuk the logger was created before function globally with `logging.getLogger(\"airflow.task\")`, even with your code having `logger = logging.getLogger(__name__) ` inside the function still produces no results\r\n\r\nOk. thanks. That's weird."
+  },
+  {
+   "author": "dstandish",
+   "created_at": "2023-04-19T22:00:21Z",
+   "body": "Here's a note i have from trigger logging dev time:\r\n<img width=\"548\" alt=\"image\" src=\"https://user-images.githubusercontent.com/15932138/233208920-f976ecf3-e859-48c8-b61b-56ffb5c37c99.png\">\r\n\r\nIt rung a bit of a bell and I'm not sure it was actually working.  Though I def had it working in my local env by the time of merging the trigger logging change into main.  Though I don't know what exactly was wrong with it.  You could look at that [commit](https://github.com/apache/airflow/commit/f9e9d23457cba5d3e18b5bdb7b65ecc63735b65b) and might reveal something.   Or you might try running locally from main and see what you get.  I am gone through end of this weekend.  By that time we might have a 2.6 RC you could try"
+  },
+  {
+   "author": "matteosdocsity",
+   "created_at": "2023-04-26T12:25:21Z",
+   "body": "@dstandish @josh-fell @potiuk tested with `apache-airflow==2.6.0rc1` and `apache-airflow-providers-google==10.0.0` but nothing changed. Like before I can see only internal logs, but no prints or loggings.\r\n\r\n```\r\n[2023-04-26, 12:21:20 UTC] {taskinstance.py:1125} INFO - Dependencies all met for dep_context=non-requeueable deps ti=<TaskInstance: hello-temp.hello-task scheduled__2023-04-24T22:00:00+00:00 [queued]>\r\n[2023-04-26, 12:21:20 UTC] {taskinstance.py:1125} INFO - Dependencies all met for dep_context=requeueable deps ti=<TaskInstance: hello-temp.hello-task scheduled__2023-04-24T22:00:00+00:00 [queued]>\r\n[2023-04-26, 12:21:20 UTC] {taskinstance.py:1331} INFO - Starting attempt 2 of 2\r\n[2023-04-26, 12:21:20 UTC] {taskinstance.py:1350} INFO - Executing <Task(TemplatedPythonOperator): hello-task> on 2023-04-24 22:00:00+00:00\r\n[2023-04-26, 12:21:20 UTC] {standard_task_runner.py:57} INFO - Started process 30270 to run task\r\n[2023-04-26, 12:21:30 UTC] {local_task_job_runner.py:298} WARNING - State of this instance has been externally set to success. Terminating instance.\r\n[2023-04-26, 12:21:30 UTC] {process_utils.py:131} INFO - Sending Signals.SIGTERM to group 30270. PIDs of all processes in the group: [30270]\r\n[2023-04-26, 12:21:30 UTC] {process_utils.py:86} INFO - Sending the signal Signals.SIGTERM to group 30270\r\n[2023-04-26, 12:21:30 UTC] {process_utils.py:79} INFO - Process psutil.Process(pid=30270, status='terminated', exitcode=0, started='12:21:19') (30270) terminated with exit code 0\r\n```\r\nany other ideas or way that I could try to give help?"
+  },
+  {
+   "author": "brokenjacobs",
+   "created_at": "2023-04-28T19:46:10Z",
+   "body": "I'll bring attention to this here, sounds like the same issue I'm encountering:\r\nhttps://github.com/apache/airflow/discussions/21837\r\n\r\nI'm also running in GKE, but using the CeleryExecutor and seeing the same sort of behavior. I don't think the execution engine is the issue here, it has to be something else."
+  },
+  {
+   "author": "brokenjacobs",
+   "created_at": "2023-04-28T20:48:24Z",
+   "body": "pretty sure the google-cloud-logging software has an issue with fork()"
+  },
+  {
+   "author": "potiuk",
+   "created_at": "2023-04-28T20:54:02Z",
+   "body": "> pretty sure the google-cloud-logging software has an issue with fork()\r\n\r\nDo you have some sources to back it up?"
+  },
+  {
+   "author": "dstandish",
+   "created_at": "2023-04-28T21:03:22Z",
+   "body": "Yeah i think there's something perhaps with the way stackdriver uses threads that may be incompatible with the way we run tasks\r\n\r\nit uses class BackgroundThreadTransport\r\n\r\nour tasks are run as (usually) forked subrocesses and probably the subprocess messages get lost. "
+  },
+  {
+   "author": "brokenjacobs",
+   "created_at": "2023-04-28T22:19:13Z",
+   "body": "> > pretty sure the google-cloud-logging software has an issue with fork()\r\n> \r\n> Do you have some sources to back it up?\r\n\r\nhttps://github.com/googleapis/python-logging/issues/550\r\n\r\nSo I guess good news this isn't an airflow issue! Bad news, this has been broken for a long while and no one noticed.\r\n"
+  },
+  {
+   "author": "brokenjacobs",
+   "created_at": "2023-04-28T22:25:59Z",
+   "body": "One workaround that (should) work, haven't tested yet, is to use the Sync handler instead of the Async one. But stackdriver is already so slow... I don't think that would tolerable.  Although if the issue is that the fork() does something to their socket and the code doesn't recover, the Sync handler won't matter either."
+  },
+  {
+   "author": "matteosdocsity",
+   "created_at": "2023-05-12T11:11:37Z",
+   "body": "hi are there any updates? even if the official googleapis is not working I believe there is something strange...I mean how Google Cloud Composer could log into Stackdriver? Any clue?"
+  },
+  {
+   "author": "dstandish",
+   "created_at": "2023-05-12T22:05:08Z",
+   "body": "If GCC has it working perhaps they could contribute fix to OSS.  I'm not sure how they have it configured.  @potiuk you have contacts there?\r\n\r\nAnd yeah sync would be worth trying.  If that works, maybe there could be a way to solve using the queuelistener pattern.\r\n"
+  },
+  {
+   "author": "potiuk",
+   "created_at": "2023-05-13T13:52:57Z",
+   "body": "> If GCC has it working perhaps they could contribute fix to OSS. I'm not sure how they have it configured. @potiuk you have contacts there?\r\n> \r\n> And yeah sync would be worth trying. If that works, maybe there could be a way to solve using the queuelistener pattern.\r\n\r\nThis I do not know but @kosteev @mhenc @bkossakowska  might be able to answer that?\r\n\r\nI don't even know if this is not some kind of misconfiguration.\r\n"
+  },
+  {
+   "author": "kosteev",
+   "created_at": "2023-05-15T12:54:53Z",
+   "body": "Last time (~1 year ago) I checked stackdriver_task_handler, it was broken in community Airflow. In Cloud Composer there is a separate internally-written task handler which writes/reads logs from Cloud Logging."
+  },
+  {
+   "author": "dstandish",
+   "created_at": "2023-05-15T17:42:29Z",
+   "body": "@kosteev any chance google team woud contribute the handler?  (might you be able to nudge appropriate persons?)"
+  },
+  {
+   "author": "potiuk",
+   "created_at": "2023-05-15T19:11:55Z",
+   "body": "> @kosteev any chance google team woud contribute the handler? (might you be able to nudge appropriate persons?)\r\n\r\nFWIW. I think it is based on the fact that Airflow is actually run on GKE and log integration is not done through our handler mechanism, so it's not \"generic use\" by anyone. "
+  },
+  {
+   "author": "dstandish",
+   "created_at": "2023-05-15T19:45:31Z",
+   "body": "Ah, that makes sense. "
+  },
+  {
+   "author": "dstandish",
+   "created_at": "2023-05-15T19:45:59Z",
+   "body": "So that would be the answer for @matteosdocsity "
+  },
+  {
+   "author": "dstandish",
+   "created_at": "2023-05-15T19:46:46Z",
+   "body": "@matteosdocsity @brokenjacobs if you want to try to come up with a solution I'm happy to advise"
+  },
+  {
+   "author": "matteosdocsity",
+   "created_at": "2023-05-22T12:02:31Z",
+   "body": "so are we aware to the fact that no custom task handler is built on Cloud Composer? I agree with @potiuk that GKE expose logs by default...but the integration within Airflow UI is related to something custom made"
+  },
+  {
+   "author": "kosteev",
+   "created_at": "2023-05-22T18:12:17Z",
+   "body": "There is a feature in Cloud Composer about \"Airflow Task Logs in Cloud Logging\" which is done via custom task handler that reads/writes from/to Cloud Logging. This feature is public and enabled per customer need.\r\nIt can be a good idea to contribute it to community."
+  },
+  {
+   "author": "kosteev",
+   "created_at": "2023-05-22T18:13:52Z",
+   "body": "Btw, here is source code https://github.com/GoogleCloudPlatform/composer-airflow/blob/2.5.1/airflow/composer/composer_task_handler.py"
+  },
+  {
+   "author": "kosteev",
+   "created_at": "2023-05-22T18:18:01Z",
+   "body": "Actually this task handler only reads logs from Cloud Logging. Writing logs to Cloud Logging is done involving GKE logs + Fluentd https://cloud.google.com/composer/docs/composer-2/environment-architecture."
+  },
+  {
+   "author": "github-actions[bot]",
+   "created_at": "2024-05-23T06:14:22Z",
+   "body": "This issue has been automatically marked as stale because it has been open for 365 days without any activity. There has been several Airflow releases since last activity on this issue. Kindly asking to recheck the report against latest Airflow version and let us know if the issue is reproducible. The issue will be closed in next 30 days if no further activity occurs from the issue author."
+  },
+  {
+   "author": "matteosdocsity",
+   "created_at": "2024-05-23T06:35:35Z",
+   "body": "even with last version of `apache-airflow` and `apache-airflow-providers-google` , if there's no way to both write and read to google stackdriver, maybe it's better to remove stackdriver as a logging option"
+  },
+  {
+   "author": "github-actions[bot]",
+   "created_at": "2025-06-05T07:01:13Z",
+   "body": "This issue has been automatically marked as stale because it has been open for 365 days without any activity. There has been several Airflow releases since last activity on this issue. Kindly asking to recheck the report against latest Airflow version and let us know if the issue is reproducible. The issue will be closed in next 30 days if no further activity occurs from the issue author."
+  },
+  {
+   "author": "ndinger-pexon",
+   "created_at": "2025-08-22T14:20:52Z",
+   "body": "This is still affecting us with Airflow Version 3.0.5 and Helm Chart Version 1.18\nDocumentation also does not mention any incompatibility"
+  },
+  {
+   "author": "potiuk",
+   "created_at": "2025-08-22T20:42:32Z",
+   "body": "Please test 3.0.6rc1 and repoert a separate issue. A lot of things changed since 2.5 and likely your issue is differen @uwieuwe4 . If things do not work. open a new issue with as many details describing your problem as possible. "
+  },
+  {
+   "author": "github-actions[bot]",
+   "created_at": "2026-01-27T07:05:38Z",
+   "body": "This issue has been closed because it has not received response from the issue author."
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "apache/airflow",
+  "default_branch": "main",
+  "commit_sha": "b4d6e83686ecfa81d4badbefc4f60a03d9f3c571",
+  "as_of": "2023-04-19T12:24:28Z",
+  "method": "github_commits_until"
+ },
+ "images": [
+  {
+   "where": "c16",
+   "source_url": "https://user-images.githubusercontent.com/15932138/233208920-f976ecf3-e859-48c8-b61b-56ffb5c37c99.png",
+   "file": "gh_apache_airflow_30740_img0.png"
+  }
+ ],
+ "slug": "gh_apache_airflow_30740"
+}

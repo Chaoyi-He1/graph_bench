@@ -1,0 +1,101 @@
+{
+ "repo": "weaviate/weaviate",
+ "number": 3319,
+ "url": "https://github.com/weaviate/weaviate/issues/3319",
+ "title": "Improved `NotEqual` operator",
+ "state": "closed",
+ "labels": [
+  "backlog"
+ ],
+ "reporter": "reporter",
+ "created_at": "2023-07-31T09:45:14Z",
+ "closed_at": "2024-02-15T14:31:42Z",
+ "body": "The current `NotEqual` operator has two issues:\r\n\r\n1. It's slow and doesn't scale as it performs a full-scan on the inverted index\r\n2. It's incorrect on tokenized text, e.g. `I like Wikipedia` is tokenized into `I`, `like`, `wikipedia`. All point to the same document. Therefore searching for `NotEqual \"Wikipedia\"` returns the document.\r\n\r\n## Proposed improvements\r\n\r\nAs discussed with @participant5, we could use bitmaps. Pre-populate a bitmap with all possible doc-ids from 0 to max_doc_id. Then subtract the matches. This will lead to some false positives (e.g. IDs that don't exist anymore). This is not a problem for filtered vector search (where we only build an allow list), but it is a problem for pure `where` filters, where we could end up with too few matches. As discussed with @participant5 this could be mitigated by iterating over ids rather than having a fixed cut off in such a scenario.\r\n\r\n## Acceptance Criteria\r\n\r\n- Open a PR following the implementation suggested above - any alternative implementation needs to be approved by us first.\r\n- The patch needs to be objectively faster than the old solution. This means some performance tests should be included with results, proving that the change is truly an improvement. \r\n- There should be unit and acceptance tests demonstrating that queries with tokenized text work correctly.\r\n- The solution must work with pure-filtered and vector-filtered search.\r\n    - See [here](https://github.com/weaviate/weaviate/issues/3319#issuecomment-1787065036) for more context\r\n- The preview docker image of your branch should pass the [chaos pipeline](https://github.com/weaviate/weaviate-chaos-engineering) (we will do this internally as a final validation step).",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2023-10-26T17:42:36Z",
+   "body": "@reporter Can i pick this up ?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-10-28T13:23:06Z",
+   "body": "@participant1 yes, gladly. Do you have a good understanding of how the current version works and how bitmaps work in Weaviate? Does the \"Proposed Improvements\" section above give you enough context?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-10-28T19:16:20Z",
+   "body": "@reporter Let me share my understanding:\r\n\r\nSince inverted index is optimised for searching documents which **contains** a specific text, in case of **Not Equal** operator, we have to perform the fullscan of inverted index which is not optimal. Also the operator does not work correctly for tokenised search\r\n\r\nAs per the suggestion, we will have a bitmap whose bits will contain all the docIds and whose value will either be 0 (in case the ID does not exist) or 1 (in case it exist). On running the Not Equal operator whichever docIds we will get, we will mark the values of those as 0 in our pre-populated bitmap. This will leave us with all the docIds which does not satisfy Not Equal condition but there is a possibility that those docIds might not exist anymore (might be deleted by someone when we were performing bitmap operation)\r\n\r\nI have not completely understood **This is not a problem for filtered vector search (where we only build an allow list), but it is a problem for pure where filters, where we could end up with too few matches.** part. If possible, can you please elaborate on this or if there is a doc, i can also refer to that. \r\n\r\nThanks.\r\nPrince"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-10-29T07:38:37Z",
+   "body": "Thanks for elaborating. It sounds like you have a good understanding of the problem and we can help you on the parts that aren't clear yet. We'll come back to those points shortly. "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-10-29T07:40:51Z",
+   "body": "In the meantime, please also take a look at [this branch](https://github.com/weaviate/weaviate/commits/not-equal-bitmap) where @participant5 and I already got started on this. You can reuse this for your contribution. I think it's already most of the way there, we just need to deal with some of the edge cases and add plenty more tests. "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-10-31T11:51:40Z",
+   "body": "> I have not completely understood This is not a problem for filtered vector search (where we only build an allow list), but it is a problem for pure where filters, where we could end up with too few matches\r\n\r\nLet me explain in more detail:\r\n\r\nThe approach outlined above and also on branch `not-equal-bitmap` is that we take the highest possible doc id and populate it with all possible values between 0 and `max_doc_id`. For example, if the max doc is 99, the bit map would look something like\r\n\r\n| bit | 0 | 1 | 2 | 3 | 4 | ... | 95 | 96 | 97 | 98 | 99 |\r\n| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\r\n| value | 1 | 1 | 1 | 1 | 1 | ... | 1 | 1 | 1 | 1 | 1 | \r\n\r\nIt contains 100 `1`s and 0 `0`s\r\n\r\nThen we substract all the matches for an Equal filter. For the sake of simplicitly, let's say the Equal filter matched every even doc id. After substracting all even doc ids our bitmap looks something like this:\r\n\r\n| bit | 0 | 1 | 2 | 3 | 4 | ... | 95 | 96 | 97 | 98 | 99 |\r\n| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\r\n| value | 0 | 1 | 0 | 1 | 0 | ... | 1 | 0 | 1 | 0 | 1 |\r\n\r\nThe bitmap now contains 50 `1`s and 50 `0`s.\r\n\r\nHowever, there is one other problem. We just assumed in step that every ID between 0 and 99 exists. This is not guaranteed to be true. For example, a user could have deleted all ids between 0-9. We have no way of knowing this. So in our bitmaps we actually have a few false positives. The ids 1,3,5,7,9 refer to objects that no longer exists.\r\n\r\nAbove we said this is not a problem for a filtered vector seach, but it is a problem for a pure filter search? Why is that? – Let me explain.\r\n\r\nIn the case of a filtered vector search we only ever use the bitmap as an allow list. In other words the vector search alogrithm would ask the bitmap \"am I allowed to use id 42?\" the bitmap would say \"no\", \"am I allowed to use id 43?\", the bitmap would say \"yes\". The fact that there are false positives on the bitmap doesn't matter because no one will ever ask for them.\r\n\r\nWhen we do a pure filtered search (without a vector search), this is different: Now the bitmap becomes the source of objects to return. For example if the user sets a limit of 10, we would take the first 10 items on the bitmap. In our case, they would be: 1,3,5,7,9,11,13,15,17,19. We identified previously that the first 5 of those no longer exist. So the user would only see 5 results (11,13,15,17,19) because 1,3,5,7,9 don't exist. This would be a problem because the user asked for 10 results.\r\n\r\nTo fix this, we cannot apply the limit this early. Instead we need to change the algorithm to be a simple cursor on the bitmap with a dynamic exit condition. It should not stop after retrieving 10 ids, but rather it should stop after it retrieved 10 ids that could resolve to an actual object. In our example above that would require retrieving 15 ids. \r\n\r\nHope this helps!"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-10-31T20:52:16Z",
+   "body": "Thanks a lot @reporter for the explanation. This logic is now crystal clear to me."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-11-13T18:10:34Z",
+   "body": "Hi @participant1. I was curious if you were able to make any progress on this or if you need any more help. Thanks."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-11-16T15:38:05Z",
+   "body": "Some additional depth about the root cause of the tokenized text issue with the current implementation:\r\n\r\nGiven the phrase `\"I like Wikipedia\"` from document `X` and tokenizing it -> `[\"I\", \"like\", \"Wikipedia\"]`, each token is indexed separately, and each inverted index entry contains `X` in the posting list:\r\n\r\n```\r\n\"I\"         -> [..., X, ...]\r\n\"like\"      -> [..., X, ...]\r\n\"Wikipedia\" -> [..., X, ...]\r\n```\r\n\r\nThe current `NotEqual` implementation will consider each inverted index entry separately. Because all three tokens in this example map to a posting list containing document `X`, the current algorithm will place `X` back into the results list once all three inverted index entries have been analyzed.\r\n\r\nIn other words, let's say that in our example, documents containing the token `\"I\"` are excluded from the result set, so `X` is rightly left out. But then, when analyzing documents that don't contain `\"like:\"`, `\"I\"` is not equal to `\"like\"`, so `X` is added back to the result set, and so the process continues.\r\n\r\nThe proposed solution is expected to produce a result set such that `X` is excluded irrespective of the total set of input tokens."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-11-16T15:43:33Z",
+   "body": "Hi @participant1, if you are still working on this, please let us know before the end of the week. Otherwise, we assume that this issue is up for grabs for someone else. Thanks."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-01-25T11:57:12Z",
+   "body": "Any update here?"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-01-25T12:35:36Z",
+   "body": "@participant3 actively under development. Will be included in the 1.24 release targeted for mid-Feb"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-02-15T14:31:42Z",
+   "body": "Fixed by #4122"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-02-15T17:21:31Z",
+   "body": "Will this include this requested feature: https://github.com/weaviate/weaviate/issues/3683 ?"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-02-15T21:14:36Z",
+   "body": "@participant4 the groundwork for implementing such a feature has been implemented with #4122, but the exact behavior expressed as desired in #3683 has not.\r\n\r\nLikely we will apply a similar approach as we did with `Equal`/`NotEqual` to `Like`, by introducing a `NotLike` operator, rather than an independent `Not` operator, but still need more discussion surrounding the specifics of the implementation."
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "weaviate/weaviate",
+  "default_branch": "main",
+  "commit_sha": "4330864abea314cecd20ba447e726d59a782b410",
+  "as_of": "2023-07-31T09:45:14Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_weaviate_weaviate_3319"
+}

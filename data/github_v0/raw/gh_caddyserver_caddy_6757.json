@@ -1,0 +1,176 @@
+{
+ "repo": "caddyserver/caddy",
+ "number": 6757,
+ "url": "https://github.com/caddyserver/caddy/issues/6757",
+ "title": "Regression: Caddy 2.9.0 returns 411 Length Required for some sites",
+ "state": "closed",
+ "labels": [
+  "bug :<nick>:"
+ ],
+ "reporter": "reporter",
+ "created_at": "2025-01-01T08:13:59Z",
+ "closed_at": "2025-01-02T18:18:26Z",
+ "body": "After upgrading from Caddy 2.8.4 to 2.9.0, Joomla sites started returning HTTP 411 (\"Length Required\") errors for certain requests. Downgrading to Caddy 2.8.4 resolves the issue, indicating a regression or stricter enforcement of request header handling in 2.9.0.\n\nThe problem seems related to:\n\n1. Handling of requests without a Content-Length header.\n\n. Requests that were previously allowed in Caddy 2.8.4 now fail in 2.9.0.\n\n2. Interaction with Joomla's rewrites.\n\n. Joomla relies on rewrites for dynamic routing (e.g., /index.php?{query}). The rewrites still work, but certain requests (possibly POST or other non-GET methods) fail with 411.\n\n**Steps to Reproduce**:\n\nConfigure a Joomla site with the following minimal Caddyfile:\n\n```\nexample.com {\n    root * /var/www/samplesite\n    php_fastcgi unix//run/php/php7.4-fpm.sock\n    file_server\n\n    @participant15 {\n        not file {path}\n        not file {path}/index.php\n    }\n    rewrite @participant15 /index.php?{query}\n}\n```\n\n\nMake a POST request without a Content-Length header:\n\n`curl -X POST https://<redacted-host>/path -d '' -v`\n\nObserve a 411 response in Caddy 2.9.0. The same configuration works in Caddy 2.8.4.\n\nExpected Behavior: Caddy should handle requests without a Content-Length header the same way as in version 2.8.4 or provide clear guidance on how to adapt the configuration.\n\n**Observed Behavior**: Caddy 2.9.0 returns 411 errors for requests that worked in 2.8.4, breaking Joomla functionality.\n\n**Additional Details**:\n\nJoomla uses rewrites heavily, and the issue seems tied to how Caddy processes requests during rewrites.\nThe problem was tested with PHP-FPM and occurs even with minimal configurations.\nCaddy logs show no additional details besides the 411 response.\nDowngrading to Caddy 2.8.4 immediately resolves the issue.\n\n**Environment**:\n\nCaddy Version: 2.9.0\nPHP Version: 7.4 (PHP-FPM)\nJoomla Version: (3.10)\nOS: (Ubuntu 20.04)\n\n**Suggestions for Debugging**:\n\nReview changes in Caddy 2.9.0 related to request handling or HTTP compliance.\nInvestigate interactions between the rewrite directive and PHP-FPM.",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2025-01-01T08:48:12Z",
+   "body": "Issue also affects Laravel applications running with Caddy."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-01-01T08:52:02Z",
+   "body": "I cannot setup my laravel project using Caddy 2.9.0"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-01-01T09:54:06Z",
+   "body": "Same thing happening to my WordPress site. I have only observed this in Firefox though. Downgrading fixed it."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-01-01T10:46:51Z",
+   "body": "Same issue.\nI think I found the reason.\nThe following two PRs are the reasons.\n\nhttps://github.com/caddyserver/caddy/pull/6638\nhttps://github.com/caddyserver/caddy/pull/6661\n\nI revoked these two PRs and compiled manually again, and the problem was solved.\n"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2025-01-01T12:43:24Z",
+   "body": "Add [`request_buffers`](https://caddyserver.com/docs/caddyfile/directives/reverse_proxy#request_buffers) to your reverse proxy configuration and see if the problem is fixed. \n\n@participant4 [6638](https://github.com/caddyserver/caddy/pull/6638) is not the cause, that actually fixes the buffering problem. Revert [6661](https://github.com/caddyserver/caddy/pull/6661) and see if it will happen.\n\nThese two patches are implemented to solve the [ddos](https://github.com/caddyserver/caddy/issues/5420#issuecomment-2415943516) attacks reported. However, request buffering will be needed if content length is not specified.\n\nAny access logs will be appreciated to see if any alternative approaches without enabling explicit request buffering can be done.\n\n"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-01-01T12:57:50Z",
+   "body": "@participant5 \n\nYes, revert [#6661](https://github.com/caddyserver/caddy/pull/6661) and problem was solved."
+  },
+  {
+   "author": "participant6",
+   "created_at": "2025-01-01T21:01:47Z",
+   "body": "Ubuntu 22 (ARM), PHP 8.3. \nSame problem - after upgrading to 2.9.0 from 2.8.4 all websites return 411 error, also when making GET request from Chrome 132.\nDowngrading back to 2.8.4 solved this issue."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2025-01-02T02:09:47Z",
+   "body": "@participant4 Can you test if `xcaddy build fastcgi_buffer` fixes this issue?"
+  },
+  {
+   "author": "participant7",
+   "created_at": "2025-01-02T02:57:50Z",
+   "body": "I am having this issue, but oddly only on a few select servers. Downgrading has not fixed it for me. Tried Firefox and the first request went through, but subsequent ones did not. This is very odd"
+  },
+  {
+   "author": "participant8",
+   "created_at": "2025-01-02T03:56:52Z",
+   "body": "Encountered this issue on my basic HTML+CSS+PHP sites. Was fixed by reverting #6661."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2025-01-02T04:07:43Z",
+   "body": "@participant8 Can you test if xcaddy build fastcgi_buffer fixes this issue?"
+  },
+  {
+   "author": "participant9",
+   "created_at": "2025-01-02T04:18:29Z",
+   "body": "@participant4 @participant7 @participant6 @participant3 @reporter We know that downgrading fixes the issue; it's already an established regression -- but please notice @participant5 is asking if others can verify whether #6759 fixes it without having to revert and downgrade. If no one experiencing the issue can verify this then we cannot release a patch. Weidi has even provided instructions multiple times now for an easy way to compile Caddy with the proposed patch: `xcaddy build fastcgi_buffer` -- we would greatly appreciate that you try it so we can release a proper patch. 🙂  Thank you!"
+  },
+  {
+   "author": "participant7",
+   "created_at": "2025-01-02T05:51:12Z",
+   "body": "Yes, I added request_buffers 100m inside my php_fastcgi block and it did fix it. Very weird on why this only happened on one server (regardless of PHP being used for the actual subdomain). I have one local VM that builds caddy with xcaddy and deploying it to all of those went fine. On a few servers that I just update with apt, some had issues and some didn't. They all have the same Caddy configuration. Very weird that downgrading didn't fix it for me, but adding that block did fix it.\n\nEdit: The fix did work. You can ignore everything else. I am definitely very tired and have everything mixed up. I did not realize that the caddy add-package command upgraded you to 2.9.0 even though I had downgraded with apt. Basically, all the servers I deployed a self built caddy binary worked. Some upgraded fine with apt, some did not. I realize now that all the inconsistencies were my use of the add-package command on the servers that install caddy from apt."
+  },
+  {
+   "author": "participant8",
+   "created_at": "2025-01-02T06:49:58Z",
+   "body": "@participant5 The build seems to be failing due to an import cycle when I try that. Haven't used xcaddy before (I've just been building with `go build`). All I did was install it and run your suggested command, so I'm not sure if I did something wrong. Tried on two different computers using xcaddy from the Alpine repos and from the AUR.\n\n```\n2025/01/02 01:47:43 [INFO] exec (timeout=0s): /usr/bin/go build -o /home/<user>/caddy/caddy -ldflags -w -s -trimpath -tags nobadger,nomysql,nopgx \npackage caddy\n        imports github.com/caddyserver/caddy/v2/modules/standard\n        imports github.com/caddyserver/caddy/v2/modules/caddyhttp/standard\n        imports github.com/caddyserver/caddy/v2/modules/caddyhttp/reverseproxy\n        imports github.com/caddyserver/caddy/v2/modules/caddyhttp/reverseproxy/fastcgi\n        imports github.com/caddyserver/caddy/v2/modules/caddyhttp/reverseproxy: import cycle not allowed\n```\n\nEdit: Though this could probably be assumed, I thought I should specify that it does build fine without specifying `fastcgi_buffer`."
+  },
+  {
+   "author": "participant10",
+   "created_at": "2025-01-02T08:11:38Z",
+   "body": "I have the same problem. After upgrading from Caddy 2.8.4 -> 2.9.0 the site was broken/unresponsive. I can confirm that after adding `request_buffers 4k` to the `php_fastcgi` directive everything is fine.\nSorry, I couldn't do the build.\n\n```\nzwerimex.com {\n    root * /var/www/zw_test01\n    encode zstd gzip\n    try_files {path} {path}.php {path}.html\n\n    file_server\n\n    php_fastcgi unix//run/php/php8.3-fpm.sock {\n        request_buffers 4k\n    }\n\n    header {\n        Permissions-Policy \"accelerometer=(), autoplay=(), camera=(), geolocation=(self), gyroscope=(), magnetometer=(), microphone=(), payment=(), serial=(), usb=()\"\n        Strict-Transport-Security \"max-age=31536000; includeSubDomains; preload\"\n        X-Frame-Options \"deny\"\n        X-Content-Type-Options \"nosniff\"\n        Referrer-Policy \"no-referrer-when-downgrade\"\n    }\n}\n```\n"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-01-02T08:59:23Z",
+   "body": "> [@participant4](https://github.com/participant4) [@participant7](https://github.com/participant7) [@participant6](https://github.com/participant6) [@participant3](https://github.com/participant3) [@reporter](https://github.com/reporter) We know that downgrading fixes the issue; it's already an established regression -- but please notice [@participant5](https://github.com/participant5) is asking if others can verify whether [#6759](https://github.com/caddyserver/caddy/pull/6759) fixes it without having to revert and downgrade. If no one experiencing the issue can verify this then we cannot release a patch. Weidi has even provided instructions multiple times now for an easy way to compile Caddy with the proposed patch: `xcaddy build fastcgi_buffer` -- we would greatly appreciate that you try it so we can release a proper patch. 🙂 Thank you!\n\nAfter https://github.com/caddyserver/caddy/pull/6759 commit https://github.com/caddyserver/caddy/commit/3ba88fe13d43615830020ff2b09f8779f1267935\nI tested again.\nAll the issues I found were resolved. LGTM.\nI hope there will be more tests and merge into the master as soon as possible."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-01-02T11:07:57Z",
+   "body": "Thanks a ton! #6759 LGTM too! God bless you abundantly in all that concerns you! "
+  },
+  {
+   "author": "participant11",
+   "created_at": "2025-01-02T12:56:01Z",
+   "body": "Happy to report that fastcgi_buffer fixes HTTP/3 error 411 problems from nextcloud via HTTP/3 for me."
+  },
+  {
+   "author": "participant12",
+   "created_at": "2025-01-02T17:39:24Z",
+   "body": "> Happy to report that fastcgi_buffer fixes HTTP/3 error 411 problems from nextcloud via HTTP/3 for me.\n\nI am unable to use xCaddy on my Almalinux 9 server to build with fastcgi_buffer. Instead I tried adding the syntax request_buffers 100m or request_buffers 4k both didn't solved the issue. \n\n```\n        php_fastcgi unix//run/php-fpm/www.sock {\n        request_buffers 100m\n        }\n```\nAll images stopped displaying in WordPress admin before or after I used request_buffers syntax. Difference is that previously it wasn't displaying and after it didn't loaded."
+  },
+  {
+   "author": "participant9",
+   "created_at": "2025-01-02T18:01:34Z",
+   "body": "Thank you to everyone who tested @participant5's hotfix! (And huge thanks to Weidi for the quick PR.) We will probably rework the details of the patch later but for now it seems like it does the job."
+  },
+  {
+   "author": "participant13",
+   "created_at": "2025-01-05T19:50:07Z",
+   "body": "The upgrade to 2.9.0 broke accessing the web-interface of my self-hosted nextcloud instance over HTTP/3. HTTP/2 still worked, also the nextcloud desktop clients worked.  Adding `request_buffers` to the `php_fastcgi` section seemed to work:\n```diff\n     php_fastcgi 127.0.0.1:9000 {\n+        request_buffers 4096\n```\n\nBut then I got an error when trying to log in and the desktop clients stopped working properly.\n\nReverting to 2.8.4 fixed the issue."
+  },
+  {
+   "author": "participant12",
+   "created_at": "2025-01-05T20:31:02Z",
+   "body": "> The upgrade to 2.9.0 broke accessing the web-interface of my self-hosted nextcloud instance over HTTP/3. HTTP/2 still worked, also the nextcloud desktop clients worked. Adding `request_buffers` to the `php_fastcgi` section seemed to work:\n> \n>      php_fastcgi 127.0.0.1:9000 {\n> +        request_buffers 4096\n> But then I got an error when trying to log in and the desktop clients stopped working properly.\n> \n> Reverting to 2.8.4 fixed the issue.\n\nReverting back to v2.8.4 didn't worked for me and I still had to add request buffers 10m. It did worked then but thumbnails aren't displaying in WordPress media library."
+  },
+  {
+   "author": "participant7",
+   "created_at": "2025-01-05T21:49:10Z",
+   "body": "Yeah, Pterodactyl (PHP Laravel) broke under 2.9.0 even with the request buffers fix. I (correctly) downgraded to 2.8.4 and everything started working again. "
+  },
+  {
+   "author": "participant12",
+   "created_at": "2025-01-06T06:42:19Z",
+   "body": "> Yeah, Pterodactyl (PHP Laravel) broke under 2.9.0 even with the request buffers fix. I (correctly) downgraded to 2.8.4 and everything started working again.\n\nHow to correctly downgrade to 2.8.4? Thanks"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-01-06T06:58:38Z",
+   "body": "> > Yeah, Pterodactyl (PHP Laravel) broke under 2.9.0 even with the request buffers fix. I (correctly) downgraded to 2.8.4 and everything started working again.\n> \n> How to correctly downgrade to 2.8.4? Thanks\n\nI did like this with ChatGPT's help - on Ubuntu 22.04\n\n\nTo test the PR #6759 on your system, you'll need to build Caddy from the specific branch or commit associated with the pull request. Here's how you can do it step-by-step:\n\nSteps to Test PR #6759\nClone the Caddy Repository: If you haven't already cloned the repository, do so:\n\n```\ngit clone https://github.com/caddyserver/caddy.git\ncd caddy\n```\nFetch and Checkout the PR Branch: Fetch the pull request's branch and check it out locally:\n\n\n```\ngit fetch origin pull/6759/head:pr-6759\ngit checkout pr-6759\n```\nThis command fetches the pull request into a local branch named pr-6759.\n\nBuild Caddy from Source: Ensure you have Go installed (at least version 1.19) to build Caddy. Then, run the following commands:\n\n```\ngo mod tidy\ngo build -o caddy\n```\nThe caddy binary will be created in the current directory.\n\nReplace the Existing Caddy Binary: Stop the currently running Caddy service:\n\n`sudo systemctl stop caddy`\nReplace the existing binary with your newly built binary:\n\n`sudo cp ./caddy /usr/bin/caddy`\nEnsure the binary has executable permissions:\n\n`sudo chmod +x /usr/bin/caddy`\nRestart the Caddy Service: Start Caddy with the new binary:\n\n`sudo systemctl start caddy`\nTest Your Site\n"
+  },
+  {
+   "author": "participant13",
+   "created_at": "2025-01-06T08:54:25Z",
+   "body": "> How to correctly downgrade to 2.8.4? Thanks\n\nOn Debian based systems it should be as easy as `sudo apt-get install caddy=2.8.4`"
+  },
+  {
+   "author": "participant7",
+   "created_at": "2025-01-06T19:28:32Z",
+   "body": "If you installed with apt, then yes, the command above works. If you built with xcaddy then it's as simple as `xcaddy build v2.8.4` and moving the binary to `/usr/bin`.\n\nIf you're on Debian you will need `go`. You can easily install the latest version from snap with the following\n```\nsudo apt install snapd -y\nsudo snap install --classic go\nln -s /snap/bin/go /usr/bin/go \n```\n\nThen install xcaddy (commands pulled from official documentation)\n```\nsudo apt install -y debian-keyring debian-archive-keyring apt-transport-https\ncurl -1sLf 'https://<redacted-host>/public/caddy/xcaddy/gpg.key' | sudo gpg --dearmor -o /usr/share/keyrings/caddy-xcaddy-archive-keyring.gpg\ncurl -1sLf 'https://<redacted-host>/public/caddy/xcaddy/debian.deb.txt' | sudo tee /etc/apt/sources.list.d/caddy-xcaddy.list\nsudo apt update\nsudo apt install xcaddy\n```\n\nThen run `xcaddy build v2.8.4` and then `mv caddy /usr/bin`.\nOr, you can build the master branch which has the fix: `xcaddy build master` then `mv caddy /usr/bin`.\n\nYou should already have a caddy user and group but if you don't, then:\n```\nsudo groupadd --system caddy\nsudo useradd --system \\\n    --gid caddy \\\n    --create-home \\\n    --home-dir /var/lib/caddy \\\n    --shell /usr/sbin/nologin \\\n    --comment \"Caddy web server\" \\\n    caddy\n```\n\nIf you don't already have a caddy service then:\nIn `/etc/systemd/system` make a new file `caddy.service` and paste https://github.com/caddyserver/dist/blob/master/init/caddy.service in\n\nThen you can finally run\n```\nsudo systemctl daemon-reload\nsudo systemctl enable --now caddy\n```\n\nand now you have Caddy custom built with xcaddy from scratch! Since I deploy it to so many servers at once, you can make a script to SCP it over automatically to all of your servers."
+  },
+  {
+   "author": "participant14",
+   "created_at": "2025-01-07T10:12:01Z",
+   "body": "Building using `xcaddy fastcgi_buffer` did not solve my issue. Still getting 411 responses on http3."
+  },
+  {
+   "author": "participant7",
+   "created_at": "2025-01-07T14:49:00Z",
+   "body": "> Building using `xcaddy fastcgi_buffer` did not solve my issue. Still getting 411 responses on http3.\n\nTry building the master branch. And make sure your restart caddy after moving the binary"
+  },
+  {
+   "author": "participant14",
+   "created_at": "2025-01-07T15:32:00Z",
+   "body": "> > Building using `xcaddy fastcgi_buffer` did not solve my issue. Still getting 411 responses on http3.\n> \n> Try building the master branch. And make sure your restart caddy after moving the binary\n\nThanks, that works without issue."
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "caddyserver/caddy",
+  "default_branch": "master",
+  "commit_sha": "34cff4af7db1365bba6decc647ccfb6bf1b21afd",
+  "as_of": "2025-01-01T08:13:59Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_caddyserver_caddy_6757"
+}

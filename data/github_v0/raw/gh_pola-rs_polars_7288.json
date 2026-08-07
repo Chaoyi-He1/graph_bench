@@ -1,0 +1,179 @@
+{
+ "repo": "pola-rs/polars",
+ "number": 7288,
+ "url": "https://github.com/pola-rs/polars/issues/7288",
+ "title": "Support `Float16` data type",
+ "state": "closed",
+ "labels": [
+  "enhancement",
+  "A-api",
+  "A-dtype",
+  "wish"
+ ],
+ "reporter": "wlongxiang",
+ "created_at": "2023-03-01T21:49:21Z",
+ "closed_at": "2025-11-26T08:25:55Z",
+ "body": "### Problem description\r\n\r\nHi there,\r\n\r\nIs there any plan to add support for float16, I recently run into a situation where I have to optimize the memory footprint of my dataframe to some extreme due to the memory limit of our k8s clusters. The biggest area for improvement in my case would be to downcast many of the float32 columns to float16.\r\n\r\nI can imagine this can be useful for many such resource constrained scenarios too.\r\n\r\nThanks.\r\n",
+ "comments": [
+  {
+   "author": "alexander-beedie",
+   "created_at": "2023-03-02T16:45:30Z",
+   "body": "Float16 is a _very_ limited type, and for many (most?) use-cases it's quite inaccurate; do you know that your data would actually work with it? (Genuinely curious here, as there aren't that many times where you'd really want to do this ;)"
+  },
+  {
+   "author": "kocas",
+   "created_at": "2023-03-02T17:48:23Z",
+   "body": "I would also be happy to see f16 support.\r\n\r\nWe use f16 for storage and transfer of large feature data. Conversion is trivial. For majority of the tasks, memory saving is a massive plus. Loss of precision (especially during arithmetics) is something to think about, but I guess that goes for f32 as well if you push enough :)"
+  },
+  {
+   "author": "ghuls",
+   "created_at": "2023-03-02T18:47:36Z",
+   "body": "There is also no native (IEEE half precision) Float16 calculation support for CPUs, so conversions to float32 have to be done.\r\nhttps://scicomp.stackexchange.com/questions/35187/is-half-precision-supported-by-modern-architecture\r\n\r\nIf you don't need most of the float16 column for calculations (with Polars), you can encode those float16 columns as uint16 or int16 and after filtering, groupby, ... operations on other columns of the dataframe, convert them back to float16:\r\n\r\n```python\r\ndf = pl.DataFrame(\r\n    {\r\n        \"a\": [\"some\", \"text\", \"!\"],\r\n        \"b\": np.array([5.0, 7.0, 3.0], dtype=np.float16).view(np.uint16)\r\n    }\r\n)\r\n\r\n\r\ndf.filter(pl.col(\"a\").str.contains(\"e\"))\r\n\r\nOut[218]:\r\nshape: (2, 2)\r\n┌──────┬───────┐\r\n│ a    ┆ b     │\r\n│ ---  ┆ ---   │\r\n│ str  ┆ u16   │\r\n╞══════╪═══════╡\r\n│ some ┆ 17664 │\r\n│ text ┆ 18176 │\r\n└──────┴───────┘\r\n\r\n\r\n\r\ndf.filter(\r\n    # Filter some columns, grouby, ...\r\n    pl.col(\"a\").str.contains(\"e\")\r\n)\r\n.with_columns(\r\n    # Convert all encoded Float16 (UInt16) columns to Float32 Polars Series.\r\n    pl.col(pl.UInt16).map(\r\n        lambda x: pl.Series(x.to_numpy().view(np.float16).astype(np.float32))\r\n    )\r\n)\r\n\r\nOut[219]:\r\nshape: (2, 2)\r\n┌──────┬─────┐\r\n│ a    ┆ b   │\r\n│ ---  ┆ --- │\r\n│ str  ┆ f32 │\r\n╞══════╪═════╡\r\n│ some ┆ 5.0 │\r\n│ text ┆ 7.0 │\r\n└──────┴─────┘\r\n```"
+  },
+  {
+   "author": "slonik-az",
+   "created_at": "2023-03-02T20:54:01Z",
+   "body": "> you can encode those float16 columns as uint16 or int16 and after filtering, groupby, ... operations on other columns of the dataframe, convert them back to float16\r\n\r\nDoes this f16 -> u16 conversion preserve ordering? In other words can one filter `u16` using `<` or `>` and get the same results as filtering  `f16` numbers?\r\n"
+  },
+  {
+   "author": "mcrumiller",
+   "created_at": "2023-03-02T21:51:37Z",
+   "body": "> Does this f16 -> u16 conversion preserve ordering\r\n\r\nThey should for all positive `f16` but with negative I'm not so sure, based on the way negative integers are stored via 2's complement.\r\n\r\nTo expand on that, the first bit (sign bit) is 1 if the floating point value is negative, and 0 if not. For unsigned integers, this bit would be the most significant, so this would definitely disrupt ordering in that if you have `a = -1.0` and `b = 1.0`, when viewed as floats you have `a < b` but when viewed as unsigned ints you'll have `a < b`."
+  },
+  {
+   "author": "ghuls",
+   "created_at": "2023-03-02T22:05:32Z",
+   "body": "If you want to keep the ordering, you need some additional manipulation as is done when ordering Float32 values in Rust by their integer representation:\r\n\r\nhttps://doc.rust-lang.org/src/core/num/f32.rs.html#1338\r\n\r\n```python\r\nIn [86]: x = np.array([-200.0, -180.00008, -8.0, -5.0, -0.000002, 0.0, 0.0000002, 3.0, 5.0, 7.0, 200.0], dtype=np.float16).view(np.int16)\r\n\r\nIn [87]: x\r\nOut[87]: \r\narray([ -9664,  -9824, -14336, -15104, -32734,      0,      3,  16896,\r\n        17664,  18176,  23104], dtype=int16)\r\n\r\nIn [88]: x ^ (((x >> 15).view(np.uint16) >> 1)).view(np.int16)\r\nOut[88]: \r\narray([-23105, -22945, -18433, -17665,    -35,      0,      3,  16896,\r\n        17664,  18176,  23104], dtype=int16)\r\n```\r\n"
+  },
+  {
+   "author": "ghuls",
+   "created_at": "2023-03-02T22:20:44Z",
+   "body": "Here are some encoding and decoding functions that will keep the ordering of float16 when converted to int16:\r\n\r\n```python\r\nIn [106]: def encode_float16_array_as_ordered_int16_series(array_f16):\r\n     ...:     x = array_f16.view(np.int16)\r\n     ...:     total_order_float16_as_int16 = x ^ (((x >> 15).view(np.uint16) >> 1)).view(np.int16)\r\n     ...:     return pl.Series(\"\", total_order_float16_as_int16)\r\n     ...: \r\n\r\nIn [107]: def decode_ordered_int16_series_to_float16_array(series_int16):\r\n     ...:     x = series_int16.to_numpy().view(np.int16)\r\n     ...:     array_float16 = (x ^ (((x >> 15).view(np.uint16) >> 1)).view(np.int16)).view(np.float16)\r\n     ...:     return array_float16\r\n     ...: \r\n\r\nIn [108]: x = np.array([-200.0, -180.00008, -8.0, -5.0, -0.000002, 0.0, 0.0000002, 3.0, 5.0, 7.0, 200.0], dtype=np.float16)\r\n\r\nIn [109]: x\r\nOut[109]: \r\narray([-2.0e+02, -1.8e+02, -8.0e+00, -5.0e+00, -2.0e-06,  0.0e+00,\r\n        1.8e-07,  3.0e+00,  5.0e+00,  7.0e+00,  2.0e+02], dtype=float16)\r\n\r\nIn [110]: s = encode_float16_array_as_ordered_int16_series(x)\r\n\r\nIn [111]: s\r\nOut[111]: \r\nshape: (11,)\r\nSeries: '' [i16]\r\n[\r\n        -23105\r\n        -22945\r\n        -18433\r\n        -17665\r\n        -35\r\n        0\r\n        3\r\n        16896\r\n        17664\r\n        18176\r\n        23104\r\n]\r\n\r\nIn [112]: decode_ordered_int16_series_to_float16_array(s)\r\nOut[112]: \r\narray([-2.0e+02, -1.8e+02, -8.0e+00, -5.0e+00, -2.0e-06,  0.0e+00,\r\n        1.8e-07,  3.0e+00,  5.0e+00,  7.0e+00,  2.0e+02], dtype=float16)\r\n```"
+  },
+  {
+   "author": "wlongxiang",
+   "created_at": "2023-03-03T08:37:08Z",
+   "body": "> Float16 is a _very_ limited type, and for many (most?) use-cases it's quite inaccurate; do you know that your data would actually work with it? (Genuinely curious here, as there aren't that many times where you'd really want to do this ;)\r\n\r\nWe have a slew of 0 to 1 score columns generated by ML for ranking purposes. In our case, the numerical precision does not matter too much, as long as it doesn't change the ranking, but the reduction in memory footprint is significant."
+  },
+  {
+   "author": "slonik-az",
+   "created_at": "2023-03-03T10:56:33Z",
+   "body": "> We have a slew of 0 to 1 score columns generated by ML for ranking purposes. In our case, the numerical precision does not matter too much ... \r\n\r\nCan use scale the score to `[0, 255]` range and cast to `u8`? You will save twice the memory compared to `f16`.\r\n\r\n\r\n"
+  },
+  {
+   "author": "itamarst",
+   "created_at": "2024-02-15T14:13:52Z",
+   "body": "**Context:** I have some paid time to work on Polars. My client would like float16 support.\r\n\r\nAs a general principle, it seems like \"pass through data unchanged from inputs\" is worth doing, especially given Polars now supports extension plugins.\r\n\r\nIn this specific case,  I know @ritchie46 has been skeptical in the past, so I would like to suggest as a starting point a minimal implementation that would have low maintenance overhead, with the presumption that I do the work:\r\n\r\n1. When loading data formats that are `float16`, they continue to be stored as `float16`.\r\n2. When writing to data formats that support `float16`, it gets written as `float16`.\r\n3. There is support for explicit casting between `float16` to `float32`/`float64` (and perhaps ints and strings).\r\n4. Implicit conversion only happens when outputting to formats that don't support float16 (e.g. JSON), which I assume is pretty straightforward given that's already happening for e.g. float32.\r\n\r\nThat's it. So e.g. `df.select((pl.col(\"thisisfloat16\").cast(pl.Float32) * 2).cast(pl.Float16))` would work.\r\n\r\nBenefits:\r\n\r\n* Data can just be passed through unchanged and untouched, a likely use case in some cases, and plausibly something Polars should be able to do. I believe one format currently converts to float32 at load?\r\n* Coupled with streaming, one can preserve the memory footprint benefits while still doing calculations.\r\n* Limited scope of implementation footprint, since doing any calculations require casting.\r\n"
+  },
+  {
+   "author": "stinodego",
+   "created_at": "2024-02-16T08:24:05Z",
+   "body": "> As a general principle, it seems like \"pass through data unchanged from inputs\" is worth doing, especially given Polars now supports extension plugins.\r\n\r\nI don't think so. I don't know the ins and outs of half floats, but from a usability perspective, I am not happy with a data type that doesn't support the full Polars API.\r\n\r\nWe will get a host of issues of \"why does `sum` work on Float32 but not Float16?\". And if we were to implement it internally through a conversion to Float32, we will get a host of issues like \"why is Float16 not as efficient as Float32\"?\r\n\r\nWe can include a bunch of caveats in our documentation, but I'm not happy with caveats. If we don't want to fully support Float16, we should not have it as a data type.\r\n\r\nI can see the potential benefits of allowing a Float16 data type as a 'passenger'. But I think the downsides are too significant. Just my 2 cents though."
+  },
+  {
+   "author": "itamarst",
+   "created_at": "2024-02-16T13:26:51Z",
+   "body": "A comparison to another case may be useful in thinking this through.\r\n\r\nArrow supports extension types, which e.g. how the geoarrow work is being done: https://github.com/geoarrow/geoarrow/blob/main/extension-types.md. There are four things you'd want to do with extension typed data:\r\n\r\n* Load it from a file. You might need do this with a third-party library, to some extent, but for something like Feather that is supposed to be Arrow-on-the-disk this would be annoying and/or wasteful, since you'd have to load the same file twice.\r\n* Save it to a file. Similar to loading.\r\n* Chop columns up due to filtering/grouping/etc based on the contents of other columns. The data is treated as opaque, but Polars _must_ support this or it's impossible to do third-party GeoArrow support for Polars.\r\n* Transform the data. Presumably done by via the new plugin API, so you'd do `pl.col(\"geocol\").geo.change_coordinate_system(new_coord)` or something.\r\n\r\nThe above suggests that at minimum Polars must support having columns whose data types it can't handle internally, otherwise it would break an important third-party use case. Loading and saving these data types from e.g. Feather is probably worth doing too, and perhaps some sort of registry mechanism for mapping between Parquet and Arrow extensions for things like GeoParquet <-> GeoArrow.\r\n\r\nFloat16 is a slightly special case in that it's not a custom extension type, it's more built-in to Arrow, but similar concerns apply. And I can see plenty of good reasons for Polars to say it doesn't want to have any Float16 processing, or even casting code, as @stinodego suggests.\r\n\r\nAnd that's fine, since casting could be done via a third-party extension namespace... but only if Polars is willing have column types it doesn't know about, and ideally to load and save the data. Otherwise you're vetoing everyone else from supporting the use case."
+  },
+  {
+   "author": "itamarst",
+   "created_at": "2024-02-16T13:31:00Z",
+   "body": "Might be useful to have e.g. @kylebarron weigh in on the above, in case I'm wrong about the requirements from Polars for GeoArrow support."
+  },
+  {
+   "author": "orlp",
+   "created_at": "2024-02-16T14:25:49Z",
+   "body": "@itamarst My 2 cents is that we could reasonably support a `BFloat16` type, but never `Float16`. `Float16` has inconsistent hardware support, so it would basically be impossible to do in a cross-platform way, whereas `BFloat16` is easy to support cross-platform. Nevertheless it's unclear if it's a good idea to do at this stage."
+  },
+  {
+   "author": "kylebarron",
+   "created_at": "2024-02-16T14:29:01Z",
+   "body": "tl;dr: Similar to what I think @itamarst is advocating for, I would _love_ an arbitrary series implementation defined as something like `Vec<Box<dyn Array>>` where it's essentially an \"Arrow-typed black box\". It would be a \"second class citizen\" for polars operations but would \"tag along\" on the dataframe for use by extensions. Potentially operations on the Float16 support in this issue could also be primarily implemented by a polars extension.\r\n\r\nLonger digression for GeoArrow: sometimes it's necessary to represent _union types_. In geospatial you have boolean operations like \"intersection\". When intersecting two polygons, the output could be any of:\r\n\r\n- Empty: No intersection between polygons\r\n- A Point: The boundary of the two polygons intersects at exactly one point\r\n- A MultiPoint: The boundary of the two polygons intersects at multiple non-continuous points\r\n- A LineString: The boundary of the two polygons is shared for a continuous sequence of points\r\n- A MultiLineString: The boundary of the two polygons is shared for a continuous sequence of points, with a break between overlapping sections\r\n- A polygon: The polygons intersect in one contiguous area\r\n- A MultiPolygon: The polygons intersect in multiple contiguous areas that don't overlap.\r\n\r\nTo handle this, you need to be able to represent a column of mixed geometries. GeoArrow [will almost certainly represent this as an Arrow union type](https://github.com/geoarrow/geoarrow/pull/43). (I've also [already implemented it](https://docs.rs/geoarrow/latest/geoarrow/array/struct.MixedGeometryArray.html) on a union type.) Unsurprisingly, polars [doesn't want to support that natively](https://github.com/pola-rs/polars/issues/10827). But then polars is unable to represent the output of \"intersects\".\r\n\r\n(I'm trying to stabilize https://github.com/geoarrow/geoarrow-rs a bit more before dusting off my work on https://github.com/geopolars/geopolars (which will be \"just a wrapper\" around geoarrow-rs), but I absolutely see geopolars as the way to get my work on geoarrow-rs to a wider audience. And >400 stars on a project that isn't currently functional implies users do want such a thing.)"
+  },
+  {
+   "author": "itamarst",
+   "created_at": "2024-02-16T14:52:37Z",
+   "body": "> @itamarst My 2 cents is that we could reasonably support a `BFloat16` type, but never `Float16`. `Float16` has inconsistent hardware support, so it would basically be impossible to do in a cross-platform way, whereas `BFloat16` is easy to support cross-platform. Nevertheless it's unclear if it's a good idea to do at this stage.\r\n\r\nI am suggesting an opaque `float16` type with support for casting to Float32/Float64, not full support, for the reasons you mention."
+  },
+  {
+   "author": "orlp",
+   "created_at": "2024-02-16T15:51:01Z",
+   "body": "> I am suggesting an opaque float16 type with support for casting to Float32/Float64, not full support, for the reasons you mention.\r\n\r\n@itamarst Such a cast operation would still need to know whether it's `bfloat16` or IEEE 754 `float16` half-precision data. It can't be 'opaque'."
+  },
+  {
+   "author": "itamarst",
+   "created_at": "2024-02-16T16:30:02Z",
+   "body": "> > I am suggesting an opaque float16 type with support for casting to Float32/Float64, not full support, for the reasons you mention.\r\n> \r\n> @itamarst Such a cast operation would still need to know whether it's `bfloat16` or IEEE 754 `float16` half-precision data. It can't be 'opaque'.\r\n\r\nThe Arrow standard has `float16` type which I believe is IEEE 754 `float16` (here is a Java implementation: https://github.com/apache/arrow/blob/a03d957b5b8d0425f9d5b6c98b6ee1efa56a1248/java/memory/memory-core/src/main/java/org/apache/arrow/memory/util/Float16.java#L57). `bfloat16` would be done as an extension type. So you can tell which it is by the type.\r\n\r\nWhen I say \"opaque\" I mean \"you can't do math or other operations on it directly\", in the same way a GeoArrow column would be opaque to Polars."
+  },
+  {
+   "author": "itamarst",
+   "created_at": "2024-02-21T17:59:05Z",
+   "body": "To summarize the discussion so far, and maybe make more explicit some of the options:\r\n\r\n### What to do about loading unsupported data types\r\n\r\nAn unsupported data type is a type that Polars can't do operations on. Examples given were `float16` (CPUs don't support it) and the various GeoArrow extension types.\r\n\r\nThere are three options for unsupported data types:\r\n\r\n* **LOAD-DISALLOW:** If Polars can't fully support a data type for a loaded file, don't load it, so as to make the user experience for users as straightforward as possible. If it loads, it works, it if it doesn't work it doesn't load.\r\n* **LOAD-PASSTHROUGH:** Allow loading data types, pass them through various transformations that require no understanding of the contents e.g. group-bys on other columns, and write them to to output files if possible. This is what a 3rd party GeoArrow Polars plugin would require, or a 3rd party float16 plugin.\r\n* **LOAD-TRANSFORM:** Convert the unsupported data type into a supported one; this is what happens currently with float16 when loaded from Arrow IPC/Feather v2, it gets converted into float32 at load time.\r\n\r\n### What to about about float16\r\n\r\nOptions include:\r\n\r\n| Strategy         | Required loading strategy | Notes                                                                                                                                                                           |\r\n|------------------|---------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|\r\n| F16-TRANSFORM     | LOAD-TRANSFORM            | The status quo, float16 is converted to float32 when loaded from Arrow IPC.                                                                                                     |\r\n| F16-CAST-ONLY    | LOAD-PASSTHROUGH          | This was my original proposal: float16 stays float16, Polars adds casting to/from `float32` and `float64`                                                                       |\r\n| F16-FULL-SUPPORT | LOAD-PASSTHROUGH          | Make float16 work the same as float32/float64, but using a software implementation of the floating point logic. This is a large project, probably not worth doing it as first pass (or second pass either). |\r\n| F16-DISALLOW     | LOAD-DISALLOW             | Reject `float16` altogether at load time.                                                                                                                                                     |\r\n| F16-PLUGIN       | LOAD-PASSTHROUGH          | Support for casting to/from `float32/float64` is done by a third-party plugin. This would still require some work in Polars, to switch to a `LOAD-PASSTHROUGH` strategy.                                                                                                                                                                                |\r\n| F16-TRANSMUTE | ??? | Transmute to u16 as a passthrough mechanism |"
+  },
+  {
+   "author": "itamarst",
+   "created_at": "2024-03-04T13:14:34Z",
+   "body": "Any thoughts on the above? I should be able to do the work, but there needs to be a some policy decisions first."
+  },
+  {
+   "author": "rok",
+   "created_at": "2024-05-08T12:00:25Z",
+   "body": "Would an [extension type](https://github.com/pola-rs/polars/issues/9112) over binary storage be expressive enough for everyone's usecases?\r\nI suppose that would cover the LOAD-PASSTHROUGH / F16-CAST-ONLY option."
+  },
+  {
+   "author": "stinodego",
+   "created_at": "2024-05-24T12:12:34Z",
+   "body": "I think the decision is \"not yet\". Adding additional data types brings a maintainance burden, and we're not prepared to take that on for the limited benefit that a Float16 type offers right now.\r\n\r\nI'll leave this open as we would like to support this at some point in the future."
+  },
+  {
+   "author": "itamarst",
+   "created_at": "2024-06-03T14:14:29Z",
+   "body": "Given this is not yet, the question is what users can do for now. I could create a temporary third party extension library... but there's still the problem of Polars automatic conversion of float16 to float32 at load time, and inability to write float16.\r\n\r\nFor `read_parquet()/write_parquet()`, this can be worked around using PyArrow. However, for `scan_parquet()/sink_parquet()` that is not an option.\r\n\r\nHow would you feel about a minimal patch that just allows as an option loading float16 as 2-length binary, and allows converting 2-length binary to float16 at write time? That means no new data types, just a little conversion logic, and then all the rest can be in a third-party extension. You could also imagine a generic mapping facility, similar to https://arrow.apache.org/docs/python/generated/pyarrow.Array.html#pyarrow.Array.view but applied at load/save time, which might be more broadly useful."
+  },
+  {
+   "author": "itamarst",
+   "created_at": "2024-06-03T14:16:03Z",
+   "body": "I'd also be happy with any other suggestion maintainers would find acceptable to make `scan_parquet()` / `sink_parquet()` work with third-party extension for float16."
+  },
+  {
+   "author": "stinodego",
+   "created_at": "2024-06-03T15:02:46Z",
+   "body": "> How would you feel about a minimal patch that just allows as an option loading float16 as 2-length binary, and allows converting 2-length binary to float16 at write time?\r\n\r\nI would want to keep casting `Float16` to `Float32` by default when reading a Parquet file, as I would say it is generally more useful than a `Binary` representation.\r\n\r\nNot sure what the API would be for allowing reading `Float16` as `Binary`.\r\n\r\nWe don't want `schema` to cast data types - it should represent the schema of the original file, so specifying `schema_overrides={\"my_float16_col\": pl.Binary}` shouldn't be supported.\r\n\r\nAdding a `float16_as_binary` boolean flag could theoretically work, but this is not very general so then we would need to add a similar flag for every unsupported data type. And on the writing side `binary_as_float16` wouldn't work as a binary flag as it would affect potentially non-float16 `Binary` columns, so then this would need to accept a list of column names, which is awkward.\r\n\r\nPlus any solution we come up with is going into the bin once we do support Float16. So I don't really see it.\r\n\r\nWhat would your proposed API be?"
+  },
+  {
+   "author": "mcrumiller",
+   "created_at": "2024-06-03T15:08:05Z",
+   "body": "Maybe I'm off base, but wouldn't using or having something similiar to `pl.Array(pl.Binary, n)` solve problems like these, where data comes in a format we don't recognize, but the user does not want transformations? This would basically be equivalent to `pl.Array(pl.UInt8, n)` representing some fixed-size bytes that we simply don't interpret?"
+  },
+  {
+   "author": "itamarst",
+   "created_at": "2024-06-03T15:19:57Z",
+   "body": "My thought was basically what @mcrumiller suggested, if going for a general API. Documentation would match how PyArrow describes equivalent feature, \"Return zero-copy “view” of array as another data type.\"\r\n\r\n```\r\nlazy_df = pl.scan_parquet(..., columns_view={\"column_that_is_f16\": pl.Array(pl.Binary, 2)}, ...)\r\n```\r\n\r\nThe equivalent would also be needed for `sink_parquet()`.  A bit trickier there is no `pl.Float16` at the moment so it's not clear how to express that transformation...\r\n\r\nThis is only a blocker for lazy/streaming operations. For just reading a Parquet file I can use PyArrow, use the `view()` API I mentioned above and then do the reverse when writing. So if it's being added would be nice to have it on all APIs, but not strictly necessary.\r\n"
+  },
+  {
+   "author": "itamarst",
+   "created_at": "2024-06-03T15:20:37Z",
+   "body": "The goal, just to reiterate, is to then have float16 operations in a third party plugin. The problem is that lacking the ability to load (and ideally save) the data, a third party plugin is impossible."
+  },
+  {
+   "author": "RmStorm",
+   "created_at": "2024-11-18T10:31:53Z",
+   "body": "> I think the decision is \"not yet\". Adding additional data types brings a maintainance burden, and we're not prepared to take that on for the limited benefit that a Float16 type offers right now.\r\n> \r\n> I'll leave this open as we would like to support this at some point in the future.\r\n\r\nHey Stijn, it's not just a Float16 type being gated behind additional data types. Proper support of geo types is also gated behind it. See Kyle's remark [here](https://github.com/geopolars/geopolars/issues/234#issuecomment-2012603791) and in particular [here](https://github.com/geopolars/geopolars/pull/240#issue-2472131255). GeoPolars coming of age would be _very_ good Polars!\r\n\r\nI think seriously considering a way for Polars to support custom data types would be very good. As of right now I use Polars for pretty much all of my data analysis and then for the Geo bits I have to cast back to Pandas and leverage geopandas and then cast back. These bits of my workflows are predictably slow."
+  },
+  {
+   "author": "stinodego",
+   "created_at": "2024-11-18T10:41:34Z",
+   "body": "@RmStorm I think you're talking about extension types - there's a separate issue for that here: https://github.com/pola-rs/polars/issues/9112\r\n\r\nWe do plan to support this in the future. We are excited about the prospect of GeoPolars and definitely see the value there. But as mentioned before, supporting additional data types is not a small thing. It adds a lot of maintenance burden and we're a small team. Currently we're focused on different features."
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "pola-rs/polars",
+  "default_branch": "main",
+  "commit_sha": "a979252232418509de5bef85b1691921781d3082",
+  "as_of": "2023-03-01T21:49:21Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_pola-rs_polars_7288"
+}

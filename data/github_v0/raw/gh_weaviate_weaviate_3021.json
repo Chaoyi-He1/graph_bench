@@ -1,0 +1,139 @@
+{
+ "repo": "weaviate/weaviate",
+ "number": 3021,
+ "url": "https://github.com/weaviate/weaviate/issues/3021",
+ "title": "Helm upgrade failing",
+ "state": "closed",
+ "labels": [],
+ "reporter": "reporter",
+ "created_at": "2023-05-15T12:41:14Z",
+ "closed_at": "2023-05-18T16:34:26Z",
+ "body": "Upgrading from 1.16.0 to 1.19.1:\r\n`UPGRADE FAILED: cannot patch \"weaviate\" with kind StatefulSet: StatefulSet.apps \"weaviate\" is invalid: spec: Forbidden: updates to statefulset spec for fields other than 'replicas', 'template', 'updateStrategy', 'persistentVolumeClaimRetentionPolicy' and 'minReadySeconds' are forbidden`\r\n\r\nThe error does not mention which statefulset field has been changed in the newest release...\r\n\r\n(Related to #2556 )\r\n\r\n",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2023-05-17T15:48:53Z",
+   "body": "Which version of Helm are you using? the latest version is [v16.3.0](https://github.com/weaviate/weaviate-helm/releases/tag/v16.3.0)\r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-05-17T15:50:08Z",
+   "body": "I'm using chart v16.3.0."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-05-17T15:55:27Z",
+   "body": "My script:\r\n\r\n```\r\n#!/bin/bash\r\n\r\n# Set the Weaviate chart version\r\nexport CHART_VERSION=\"v16.3.0\"\r\n# Download the Weaviate Helm chart\r\nwget -O downloads/weaviate.tgz https://github.com/semi-technologies/weaviate-helm/releases/download/$CHART_VERSION/weaviate.tgz\r\n# Download an example values.yml (with the default configuration)\r\nwget -O downloads/values.yaml https://raw.githubusercontent.com/semi-technologies/weaviate-helm/$CHART_VERSION/weaviate/values.yaml\r\n\r\n######################### GCloud login ################################\r\ngcloud container clusters get-credentials weaviate-1 --region europe-west1 --project weaviate-374814\r\n######################### GCloud login ################################\r\n\r\n# set the desired Weaviate version\r\nexport WEAVIATE_VERSION=\"1.19.4\"\r\n\r\n# set the desired namespace\r\nexport K8S_NAMESPACE=\"wpsolr-prod\"\r\n\r\n# Deploy\r\nhelm upgrade \\\r\n  \"weaviate\" \\\r\n  downloads/weaviate.tgz \\\r\n  --install \\\r\n  --namespace \"$K8S_NAMESPACE\" \\\r\n  --create-namespace \\\r\n  --values downloads/values.yaml \\\r\n  --values values-wpsolr-prod.yaml \\\r\n  --set \"image.tag=$WEAVIATE_VERSION\"\r\n\r\n```\r\n\r\nMy values-wpsolr-prod.yaml, to add the text2vec-palm (in comments right now)\r\n```\r\nreplicas: 2\r\n\r\nenv:\r\n  AUTOSCHEMA_ENABLED: false\r\n\r\nmodules:\r\n  text2vec-openai:\r\n    enabled: true\r\n\r\n  text2vec-cohere:\r\n    enabled: true\r\n\r\n  multi2vec-clip:\r\n    enabled: true\r\n\r\n  qna-openai:\r\n    enabled: true\r\n\r\n#  text2vec-palm:\r\n#    enabled: false\r\n\r\n```\r\n\r\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-05-17T15:55:44Z",
+   "body": "You didn't change anything in your `values.yaml` yes?\r\n\r\nLooks like helm is adding extra settings to `StatefulSet` which is forbidden when doing updates (look this issue [here](https://github.com/helm/helm/issues/7998)) It might be connected to the changes that we made. Do you happen to remember which version of helm charts you used before?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-05-17T15:59:32Z",
+   "body": "No changes in values, no.\r\n\r\nPrevious versions:\r\n- chart v15.2.0\r\n- weaviate 1.17.4"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-05-17T16:15:19Z",
+   "body": "(I copied my script and values above; the only changes where the chart and Weaviate versions)"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-05-18T08:28:15Z",
+   "body": "@reporter in `v16.x.x` we have introduced new setting in `Statefulset` (`serviceAccountName`) and this change is producing this error. In this situation in order to successfully perform upgrade you need to delete `Statefulset` (this operation will not delete the data, only the `Statefulset`) and after the delete you can re-run the `helm command` it should be successful then.\r\n\r\nTL;DR;\r\n1. remove Statefulset\r\n```\r\nkubectl -n wpsolr-prod delete statefulsets.apps weaviate\r\n```\r\n2. re-run your deployment script"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-05-18T10:11:51Z",
+   "body": "@participant1 Thanks you so much.\r\n\r\nThere are good news and bad news ...\r\n\r\nGood news:\r\nIt worked and upgraded the Weaviate cluster to 1.19.4, with the new PalM vectorizer. And I could index my WooCommerce demo: \r\n\r\nBad news:\r\nAll demos on the cluster exhibit errors, even after reindexing:\r\n\r\n`Fatal error: Uncaught Exception: Error sent from Weaviate: interface conversion: interface {} is *neartext.NearTextParams, not *neartext.NearTextParams (types from different packages)`\r\n\r\n`\r\nFatal error: Uncaught Exception: Error sent from Weaviate: shard CjNNLx4jAn4q: unexpected status code 500 (shard proddemo2kopenai_CjNNLx4jAn4q: identify groups: hybrid search: dense search: aggregate grouped dense search: vector lengths don't match: 1536 vs 512`\r\n\r\nIt looks like the storage is corrupted after the upgrade."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-05-18T10:37:36Z",
+   "body": "@participant1 I downgraded to Weaviate 1.19.0, and I could index.\r\n\r\nIt looks like v1.19.4 has major issues !"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-05-18T11:58:36Z",
+   "body": "@reporter which modules do you have enabled?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-05-18T12:01:42Z",
+   "body": "@participant1 \r\n\r\n```\r\nmodules:\r\n  text2vec-openai:\r\n    enabled: true\r\n\r\n  text2vec-cohere:\r\n    enabled: true\r\n\r\n  multi2vec-clip:\r\n    enabled: true\r\n\r\n  qna-openai:\r\n    enabled: true\r\n\r\n#  text2vec-palm:\r\n#    enabled: false\r\n\r\n```"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-05-18T12:26:05Z",
+   "body": "@reporter and you try to do a `nearText` on a class that was vectorised with which module? or can you share with me schema of of that class?\r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-05-18T12:38:20Z",
+   "body": "@participant1 All demo classes (indices) failed, each one based on one module.\r\n\r\n[wpsolr-cluster-schemas.txt](https://github.com/weaviate/weaviate/files/11507840/wpsolr-cluster-schemas.txt)\r\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-05-18T13:26:19Z",
+   "body": "@reporter I will be looking into this today / tomorrow, will try to get back to you on this ASAP."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-05-18T13:41:14Z",
+   "body": "@participant1 Thanks. My live demos are safe now, after reverting to 1.19.0"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-05-18T13:41:56Z",
+   "body": "@participant1 Also notice #3040 "
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-05-18T14:40:25Z",
+   "body": "@reporter I have found a bug, it was in my latest fix :( I will make a patch release tomorrow"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-05-18T15:53:46Z",
+   "body": "@reporter we have release `v1.19.5` version of Weaviate which resolves this bug. Please upgrade and let me know if all is OK"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-05-18T15:56:57Z",
+   "body": "@participant1 Did you also check https://github.com/weaviate/weaviate/issues/3040 ?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-05-18T16:02:30Z",
+   "body": "@reporter I will look into this as my next task, now just wanted to make a release and fix that critical bug in `v1.19.4`"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-05-18T16:05:00Z",
+   "body": "@participant1 Understood. I'll wait then, or I fear the update could fail for https://github.com/weaviate/weaviate/issues/3040"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-05-18T16:29:54Z",
+   "body": "ok @reporter then let's move with the discussion to #3040 and let's close this issue :)"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-05-18T16:34:26Z",
+   "body": "@participant1 I tested 1.19.5 on a new schema, with OpenAI and PalM. All is good !\r\n\r\nOne stone, 2 birds...\r\n\r\nThe PalM WooCommerce demo: https://<redacted-host>/shop/"
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "weaviate/weaviate",
+  "default_branch": "main",
+  "commit_sha": "2d1f96b15cd6031a1b3a849a2451150c9b329ae5",
+  "as_of": "2023-05-15T12:41:14Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_weaviate_weaviate_3021"
+}

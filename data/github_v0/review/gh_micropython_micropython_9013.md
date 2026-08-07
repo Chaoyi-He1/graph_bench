@@ -10,27 +10,29 @@
 ```mermaid
 flowchart LR
     N0["<b>N0 duplicate WIZNET5K sources reported</b><br/><small>info: 5</small>"]
-    N1["<b>N1 real WIZNET build requirements established</b><br/><small>info: 9</small>"]
-    N2_x["<b>N2_x partial migration compiles without lwIP</b><br/><small>info: 11</small>"]
-    N3["<b>N3 partial migration fails hardware and lwIP tests</b><br/><small>info: 13</small>"]
-    N4["<b>N4 complete STM32 integration candidate</b><br/><small>info: 16</small>"]
+    N1_x["<b>N1_x simple source replacement aftermath</b><br/><small>info: 7</small>"]
+    N2["<b>N2 migrated STM32 configuration compiles</b><br/><small>info: 10</small>"]
+    N3["<b>N3 hardware and lwIP testing expose integration failures</b><br/><small>info: 13</small>"]
+    N4["<b>N4 corrected STM32 integration ready for test</b><br/><small>info: 16</small>"]
     N5["<b>N5 candidate verified on STM32 hardware</b><br/><small>info: 18</small>"]
-    N_terminal["<b>terminal duplicate driver removed and STM32 integration working</b><br/><small>info: 18</small>"]
-    N0 -.->|"❓ default_build_did_not_enable_wiznet_driver, wiznet_enabled_build_requires_explicit_make_option, new_library_has_case_and_interface_differences"| N1
-    linkStyle 0 stroke:#3b82f6,stroke-width:2px
-    N1 ==>|"💥 blind: Perform a direct source-tree migration: remove the old WIZNET5K and STM32-specific driver files, point the STM32 Makefile at lib/wiznet5k and extmod/network_wiznet5k.c, correct source-path capitalization, and alias machine_spi_type to machine_hard_spi_type."| N2_x
-    linkStyle 1 stroke:#ef4444,stroke-width:2px
-    N2_x -.->|"❓ w5500_activation_without_lwip_raises_oserror_16, lwip_build_reports_missing_pin_interrupt_api"| N3
+    N_terminal["<b>terminal migration accepted after hardware verification</b><br/><small>info: 19</small>"]
+    N0 ==>|"💥 blind: Remove drivers/wiznet5k and merely replace the STM32 references with lib/wiznet5k paths."| N1_x
+    linkStyle 0 stroke:#ef4444,stroke-width:2px
+    N1_x ==>|"⚡ Complete the compile-time STM32 migration to the newer library by using extmod/network_wiznet5k.c, updating the Makefile's current library paths and filename case, and providing the expected STM32 SPI type name."| N2
+    linkStyle 1 stroke:#f97316,stroke-width:2px
+    N2 -.->|"❓ pybv11_w5500_active_raises_oserror_16, w5500_attempts_perform_no_spi_transfer, lwip_build_reports_missing_pin_interrupt_api"| N3
     linkStyle 2 stroke:#3b82f6,stroke-width:2px
-    N3 ==>|"⚡ Complete the STM32 migration by adapting the SPI object passed to the shared WIZNET driver and adding the STM32 pin-interrupt definitions needed by its lwIP mode, while retaining the consolidation on lib/wiznet5k and extmod/network_wiznet5k.c."| N4
+    N3 ==>|"⚡ Adapt the shared WIZNET driver to STM32's actual SPI object representation and add the STM32 pin-interrupt definitions required by the lwIP mode."| N4
     linkStyle 3 stroke:#f97316,stroke-width:2px
-    N4 -.->|"❓ candidate_verified_on_pybv11_w5500, candidate_verified_with_lwip_interrupt_mode"| N5
+    N4 -.->|"❓ candidate_verified_on_pybv11_w5500, interrupt_mode_network_ping_verified"| N5
     linkStyle 4 stroke:#3b82f6,stroke-width:2px
-    N5 ==>|"⚡ Land the verified consolidation: remove the obsolete duplicate WIZNET5K driver and STM32-specific implementation, use the maintained lib/wiznet5k plus shared extmod driver, and include the STM32 SPI and interrupt compatibility changes proven on W5500 hardware."| N_terminal
+    N5 ==>|"⚡ Land the verified consolidation: remove the obsolete duplicate WIZNET driver, use the current library and shared extmod driver for STM32, and retain the STM32 SPI and interrupt compatibility work proven on hardware."| N_terminal
     linkStyle 5 stroke:#f97316,stroke-width:2px
+    N0 ==>|"🚀 Perform a complete, compatibility-aware consolidation of STM32 onto the current WIZNET library and shared driver, including compile-time and runtime port adaptations, then verify it on STM32/WIZNET hardware before removal of the old copy is accepted. (skip 8)"| N_terminal
+    linkStyle 6 stroke:#0ea5e9,stroke-width:2px
     class N0 start
-    class N1 normal
-    class N2_x normal
+    class N1_x normal
+    class N2 normal
     class N3 normal
     class N4 normal
     class N5 normal
@@ -42,39 +44,39 @@ flowchart LR
 
 ## Opening (body)
 
-> I noticed that the WIZNET5K files are duplicated in the tree. The copy in lib/wiznet5k appears to be the latest and linked to the WIZNET development branch, while drivers/wiznet5k contains a similar but very old set taken from the W5500_EVB ioLibrary in August 2014. Should the older files be removed and dependent builds changed to use the newer copy? Apparently only the stm32 port relies on the old version. I can modify its Makefile and network_wiznet5k.c references, but I have no STM32 platform on which to test.
+> I noticed that the WIZNET5K files are duplicated in the tree. The copy in lib/wiznet5k appears current and linked to WIZNET development, while drivers/wiznet5k says it was taken from the W5500 EVB ioLibrary in August 2014. It looks like only the STM32 port still relies on the old copy. Should the old files be removed and STM32 changed to use lib/wiznet5k instead? I have no STM32 platform on which to test the change.
 
 ## Satisfaction conditions
 
-1. Must identify the accepted resolution as consolidating STM32 on the maintained lib/wiznet5k sources and shared extmod/network_wiznet5k.c implementation, allowing the obsolete duplicate driver and STM32-specific WIZNET files to be removed.
-2. Must explain that a directory replacement and machine_spi_type alias were insufficient: on STM32 the migrated driver passed the wrong SPI object level, so no SPI transfer occurred and W5500 activation raised OSError: 16.
-3. Must account for the separate lwIP integration requirement: STM32 needed the pin-interrupt function and trigger definitions expected by the shared WIZNET driver.
-4. Diagnosis must be grounded in the explicitly enabled WIZNET build, the W5500 hardware activation result, and the lwIP compiler output rather than the successful default or no-lwIP compilation alone.
-5. Must not present the initial compile-only migration as the complete fix; it was falsified by hardware and lwIP testing.
-6. Must have the consolidated candidate verified on real STM32/W5500 hardware, including the interrupt-enabled path, before treating the issue as resolved.
+1. Must identify the accepted resolution as consolidating STM32 onto lib/wiznet5k and the shared extmod WIZNET driver, allowing the obsolete duplicate driver copy to be removed.
+2. Must explain that changing source paths alone is insufficient: the STM32 integration also needs the current library layout, SPI object compatibility, and pin-interrupt support used by lwIP.
+3. Diagnosis must be grounded in the feature-enabled build results, the PYBV11/W5500 OSError 16 with no SPI transfers, and the lwIP missing-interrupt compile output.
+4. Must not treat a successful default STM32 build as proof of the fix because that build did not enable WIZNET5K.
+5. Must require verification on actual STM32 and WIZNET hardware, including interface activation and network traffic, before treating the consolidation as resolved.
 
 ## Edges
 
 | edge | type | gates / info | payload |
 |---|---|---|---|
-| `e1_N0__N1` | clarification_only | asks: default_build_did_not_enable_wiznet_driver, wiznet_enabled_build_requires_explicit_make_option, new_library_has_case_and_interface_differences | My first successful PYBV11 build was just the default build, so it was not compiling the WIZNET5K path. I then / I rebuilt with `make BOARD=PYBV11 MICROPY_PY_NETWORK_WIZNET5K=5500`. The new library has paths such as `Ethern / No. The newer tree uses different path capitalization, such as `Ethernet/W5500`, and the STM32-specific module |
-| `e2_N1__N2_x` | solution_only **BLIND** | req_info: wiznet5k_sources_duplicated_in_lib_and_drivers, stm32_appears_only_port_using_old_copy, new_library_has_case_and_interface_differences, wiznet_enabled_build_requires_explicit_make_option<br>elements: removes_old_duplicate_sources, switches_stm32_to_shared_lib_and_extmod_driver, updates_case_sensitive_source_paths, adds_spi_type_compile_alias | Perform a direct source-tree migration: remove the old WIZNET5K and STM32-specific driver files, point the STM32 Makefile at lib/wiznet5k and extmod/network_wiznet5k.c, correct source-path capitalization, and alias machine_spi_type to machine_hard_spi_type. |
-| `e3_N2_x__N3` | clarification_only | asks: w5500_activation_without_lwip_raises_oserror_16, lwip_build_reports_missing_pin_interrupt_api | I tested the no-lwIP build on a PYBV11 with a W5500 breakout. Calling `nic.active(True)` gives `OSError: 16`,  / With lwIP enabled, compilation stops in extmod/network_wiznet5k.c. It says `mp_hal_pin_interrupt` is implicitl |
-| `e4_N3__N4` | solution_only | req_info: wiznet5k_sources_duplicated_in_lib_and_drivers, extmod_network_wiznet5k_needed_instead_of_stm32_module, w5500_activation_without_lwip_raises_oserror_16, lwip_build_reports_missing_pin_interrupt_api<br>elements: preserves_migration_to_shared_wiznet_sources, corrects_stm32_spi_object_handling, adds_stm32_pin_interrupt_support_for_lwip, does_not_treat_compile_only_alias_as_complete_fix | Complete the STM32 migration by adapting the SPI object passed to the shared WIZNET driver and adding the STM32 pin-interrupt definitions needed by its lwIP mode, while retaining the consolidation on lib/wiznet5k and extmod/network_wiznet5k.c. |
-| `e5_N4__N5` | clarification_only | asks: candidate_verified_on_pybv11_w5500, candidate_verified_with_lwip_interrupt_mode | I tested it on my PYBV11 with the W5500 breakout. The interface activates and communicates now; the previous O / Yes. The interrupt-enabled configuration works. After increasing SPI to 20 MHz, I measured about 0.75 ms ping  |
-| `e6_N5__N_terminal` | solution_only | req_info: wiznet5k_sources_duplicated_in_lib_and_drivers, lib_wiznet5k_is_newer_upstream_linked_copy, stm32_appears_only_port_using_old_copy, new_library_has_case_and_interface_differences, extmod_network_wiznet5k_needed_instead_of_stm32_module, wiznet_enabled_build_requires_explicit_make_option, w5500_activation_without_lwip_raises_oserror_16, lwip_build_reports_missing_pin_interrupt_api, candidate_verified_on_pybv11_w5500, candidate_verified_with_lwip_interrupt_mode<br>elements: removes_the_obsolete_duplicate_driver, migrates_stm32_to_lib_wiznet5k_and_shared_extmod_driver, includes_the_spi_object_handling_fix, includes_lwip_pin_interrupt_support, requires_verification_on_real_stm32_wiznet_hardware_before_resolution | Land the verified consolidation: remove the obsolete duplicate WIZNET5K driver and STM32-specific implementation, use the maintained lib/wiznet5k plus shared extmod driver, and include the STM32 SPI and interrupt compatibility changes proven on W5500 hardware. |
+| `e1_N0__N1_x` | solution_only **BLIND** | req_info: wiznet5k_sources_duplicated_in_drivers_and_lib, stm32_appears_only_port_using_old_copy<br>elements: only_replaces_old_wiznet_source_paths | Remove drivers/wiznet5k and merely replace the STM32 references with lib/wiznet5k paths. |
+| `e2_N1_x__N2` | solution_only | req_info: wiznet5k_sources_duplicated_in_drivers_and_lib, stm32_appears_only_port_using_old_copy, simple_path_replacement_has_feature_enabled_compile_errors<br>elements: uses_shared_extmod_wiznet_driver, updates_makefile_for_current_library_layout, adapts_expected_spi_type_name | Complete the compile-time STM32 migration to the newer library by using extmod/network_wiznet5k.c, updating the Makefile's current library paths and filename case, and providing the expected STM32 SPI type name. |
+| `e3_N2__N3` | clarification_only | asks: pybv11_w5500_active_raises_oserror_16, w5500_attempts_perform_no_spi_transfer, lwip_build_reports_missing_pin_interrupt_api | I tested it on my PYBV11 with a W5500 breakout. The build succeeds without lwIP, but nic.active(True) raises ` / Every attempt to communicate with the W5500 fails, and no SPI transfer takes place. / With lwIP enabled, extmod/network_wiznet5k.c fails to compile because `mp_hal_pin_interrupt`, `MP_HAL_PIN_TRIG |
+| `e4_N3__N4` | solution_only | req_info: w5500_attempts_perform_no_spi_transfer, pybv11_w5500_active_raises_oserror_16, lwip_build_reports_missing_pin_interrupt_api<br>elements: corrects_stm32_spi_object_handling, adds_interrupt_pin_support_for_lwip, preserves_shared_extmod_driver_migration | Adapt the shared WIZNET driver to STM32's actual SPI object representation and add the STM32 pin-interrupt definitions required by the lwIP mode. |
+| `e5_N4__N5` | clarification_only | asks: candidate_verified_on_pybv11_w5500, interrupt_mode_network_ping_verified | The revised branch works on my PYBV11 with the W5500. `nic.active(1)` succeeds, I can configure the interface, / With the interrupt pin and SPI at 20 MHz, ping times are about 0.75 ms from outside and 1.3 ms from inside. |
+| `e6_N5__N_terminal` | solution_only | req_info: wiznet5k_sources_duplicated_in_drivers_and_lib, lib_wiznet5k_is_newer_upstream_linked_copy, drivers_wiznet5k_is_old_2014_copy, stm32_appears_only_port_using_old_copy, feature_enabled_w5200_and_w5500_builds_link, pybv11_w5500_active_raises_oserror_16, lwip_build_reports_missing_pin_interrupt_api, candidate_verified_on_pybv11_w5500, interrupt_mode_network_ping_verified<br>elements: removes_obsolete_duplicate_wiznet_sources, migrates_stm32_to_current_library_and_shared_driver, includes_spi_object_and_lwip_interrupt_adaptations, uses_feature_enabled_builds_and_real_hardware_verification_before_resolution | Land the verified consolidation: remove the obsolete duplicate WIZNET driver, use the current library and shared extmod driver for STM32, and retain the STM32 SPI and interrupt compatibility work proven on hardware. |
+| `e7_N0__N_terminal` | solution_only | req_info: wiznet5k_sources_duplicated_in_drivers_and_lib, lib_wiznet5k_is_newer_upstream_linked_copy, stm32_appears_only_port_using_old_copy, reporter_has_no_stm32_hardware<br>elements: recognizes_path_replacement_alone_is_insufficient, migrates_to_current_library_and_shared_driver, accounts_for_stm32_spi_and_interrupt_compatibility, requests_feature_enabled_compile_and_hardware_verification | Perform a complete, compatibility-aware consolidation of STM32 onto the current WIZNET library and shared driver, including compile-time and runtime port adaptations, then verify it on STM32/WIZNET hardware before removal of the old copy is accepted. |
 
 ## Nodes
 
 | node | terminal | volunteered | images | symptoms |
 |---|---|---|---|---|
-| `N0` |  | 2 | 0 | I can see two similar WIZNET5K source trees: a newer copy under lib/wiznet5k and an old 2014 copy under drivers/wiznet5k. The stm32 port sti |
-| `N1` |  | 1 | 0 | My initial default PYBV11 build succeeded, but it had not enabled the WIZNET5K driver. When the WIZNET5K sources are actually enabled, simpl |
-| `N2_x` |  | 1 | 0 | After removing the old WIZNET5K sources, switching the Makefile to lib/wiznet5k and extmod/network_wiznet5k.c, and adding the SPI type alias |
-| `N3` |  | 0 | 0 | On a PYBV11 with a W5500 breakout, nic.active(True) raises OSError: 16 and prints 'MPY: enabling IRQs'. With lwIP enabled, extmod/network_wi |
-| `N4` |  | 0 | 0 | The updated candidate branch builds with the STM32-specific SPI and interrupt adaptations included. |
-| `N5` |  | 0 | 0 | On my PYBV11 with a W5500 breakout, the candidate can activate the interface and communicate instead of raising OSError: 16. The lwIP interr |
-| `N_terminal` | ✓ | 0 | 0 | The tree uses the shared lib/wiznet5k and extmod driver instead of the duplicate old STM32 copy, and W5500 networking works on PYBV11 with t |
+| `N0` |  | 0 | 0 | The tree contains two similar WIZNET5K source sets: a newer copy under lib/wiznet5k and an old 2014 copy under drivers/wiznet5k. |
+| `N1_x` |  | 2 | 0 | A default PYBV11 build produces firmware after changing the source paths, but building with MICROPY_PY_NETWORK_WIZNET5K=5500 exposes compile |
+| `N2` |  | 1 | 0 | Clean PYBV11 builds with MICROPY_PY_NETWORK_WIZNET5K=5200 and =5500 now compile and link using lib/wiznet5k. |
+| `N3` |  | 0 | 0 | On a PYBV11 with a W5500 breakout, nic.active(True) raises OSError: 16 and no SPI communication occurs. The lwIP-enabled build reports that  |
+| `N4` |  | 0 | 0 | The earlier migrated build still raises OSError: 16 when activating the W5500; a revised candidate branch is ready for another hardware test |
+| `N5` |  | 0 | 0 | On the PYBV11 with the W5500 breakout, the revised branch activates the interface and communicates over the network without OSError: 16. Wit |
+| `N_terminal` | ✓ | 1 | 0 | The consolidated WIZNET5K implementation builds for STM32 and operates on the tested PYBV11 and W5500 hardware without the activation error. |
 
 ## Machine review (audit pass, adversarially verified)
 

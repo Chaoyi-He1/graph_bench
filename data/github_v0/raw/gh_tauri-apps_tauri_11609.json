@@ -1,0 +1,194 @@
+{
+ "repo": "tauri-apps/tauri",
+ "number": 11609,
+ "url": "https://github.com/tauri-apps/tauri/issues/11609",
+ "title": "[bug] In Android MainActivity is leaked if a foreground service is running and makes the app unusable on next launch",
+ "state": "closed",
+ "labels": [
+  "type: bug",
+  "status: needs triage",
+  "platform: Android"
+ ],
+ "reporter": "reporter",
+ "created_at": "2024-11-07T06:58:10Z",
+ "closed_at": "2025-07-28T10:48:53Z",
+ "body": "### Describe the bug\r\n\r\nIt seems that Tauri Android app don't expect the application process to outlive the MainActivity, which is common in android world if you are running a foreground service\r\n\r\nIn this case when you relaunch the app, Tauri has two instances of MainActivity and RustWebview which causes __TAURI_INVOKE_KEY__ mismatch causing the app to become unsuable.\r\n\r\n### Reproduction\r\n\r\nDownload and build the [sample project](https://github.com/m-byondlabs/screenshare-mobile-tauri). Please build it in release mode, as the repro steps require killing the app. Be sure to add your release key and configure local.properties to set up signing keys. Link to the repo: https://github.com/m-byondlabs/screenshare-mobile-tauri\r\n\r\nLaunch the app, click the \"Start Share\" button, and allow the prompt to start screen sharing.\r\n\r\nYou should see a screencast icon indicating that the foreground service is actively capturing the screen recording.\r\n\r\nSwipe up to close the MainActivity; you’ll notice that the foreground service continues capturing the screen (this is intended and expected behavior).\r\n\r\nReopen the app and click \"Start Share\" or \"Stop Share.\" You will observe a log indicating a __TAURI_INVOKE_KEY__ mismatch.\r\n\r\nIf you generate a heap dump, you’ll find two instances of MainActivity, meaning the previous activity is leaked and remains in memory.\r\n\r\nI've verified that my code does not retain any references to the activity, so it appears that the Tauri Plugin manager or another code path in Tauri may be holding onto that instance.\r\n\r\n### Expected behavior\r\n\r\nOnce the activity is destroyed, it should not stay in the memory \r\n\r\n### Full `tauri info` output\r\n\r\n```text\r\n[✔] Environment\r\n    - OS: Mac OS 14.6.1 arm64 (X64)\r\n    ✔ Xcode Command Line Tools: installed\r\n    ✔ rustc: 1.81.0 (eeb90cda1 2024-09-04)\r\n    ✔ cargo: 1.81.0 (2dbb1af80 2024-08-20)\r\n    ✔ rustup: 1.27.1 (54dd3d00f 2024-04-24)\r\n    ✔ Rust toolchain: stable-aarch64-apple-darwin (environment override by RUSTUP_TOOLCHAIN)\r\n    - node: 20.17.0\r\n    - npm: 10.8.2\r\n\r\n[-] Packages\r\n    - tauri 🦀: 2.0.4\r\n    - tauri-build 🦀: 2.0.1\r\n    - wry 🦀: 0.46.1\r\n    - tao 🦀: 0.30.3\r\n    - tauri-cli 🦀: 2.0.2\r\n    - @tauri-apps/api : 2.0.2 (outdated, latest: 2.0.3)\r\n    - @tauri-apps/cli : 2.0.2 (outdated, latest: 2.0.4)\r\n\r\n[-] Plugins\r\n    - tauri-plugin-shell 🦀: 2.0.1\r\n    - @tauri-apps/plugin-shell : 2.0.0 (outdated, latest: 2.0.1)\r\n\r\n[-] App\r\n    - build-type: bundle\r\n    - CSP: unset\r\n    - frontendDist: ../dist\r\n    - devUrl: http://localhost:1420/\r\n    - framework: React\r\n    - bundler: Vite\r\n```\r\n\r\n\r\n### Stack trace\r\n\r\n_No response_\r\n\r\n### Additional context\r\n\r\n_No response_",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2024-11-08T12:02:27Z",
+   "body": "we're creating a [global reference](https://docs.rs/jni/latest/jni/objects/struct.GlobalRef.html) to the activity [here](https://github.com/tauri-apps/tao/blob/dev/src/platform_impl/android/ndk_glue.rs#L202) so we probably need to find a way to clean it up."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-11-08T12:42:17Z",
+   "body": "the problem with the invoke keys is [wry statics](https://github.com/tauri-apps/wry/blob/7c4f2b7299d408234b7ea67e6cb82a680e945764/src/android/mod.rs#L63) which is a lifecycle issue in this case - since your app is still open in the foreground, the Rust code is still running - and the process is reused when the app is reopened."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-11-08T13:27:51Z",
+   "body": "i'm trying some changes for the memory leak, no luck yet."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-11-08T14:16:44Z",
+   "body": "I think i've fixed it. If you wanna early try it,  add the following to the Cargo.toml file:\r\n\r\n```toml\r\n[patch.crates-io]\r\ntauri = { git = \"https://github.com/tauri-apps/tauri\", branch = \"dev\" }\r\ntauri-plugin = { git = \"https://github.com/tauri-apps/tauri\", branch = \"dev\" }\r\ntauri-build = { git = \"https://github.com/tauri-apps/tauri\", branch = \"dev\" }\r\ntao = { git = \"https://github.com/tauri-apps/tao\", branch = \"fix/android-leak\" }\r\nwry = { git = \"https://github.com/participant1/wry\", branch = \"fix/android\" }\r\n```\r\n\r\n(to validate if the patches are properly applied, you can see if there's no `[patch.unused]` in the cargo.lock file"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-01-31T11:31:50Z",
+   "body": "@participant1 fyi ever since https://github.com/tauri-apps/wry/pull/1414 there have been reports of android apps crashing due to Borrow errors.\n\nPlease look into https://github.com/tauri-apps/wry/issues/1420"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-03-31T13:49:03Z",
+   "body": "> [@participant1](https://github.com/participant1) fyi ever since [tauri-apps/wry#1414](https://github.com/tauri-apps/wry/pull/1414) there have been reports of android apps crashing due to Borrow errors.\n> \n> Please look into [tauri-apps/wry#1420](https://github.com/tauri-apps/wry/issues/1420)\n\nComments on this issue mentioned it being fixed in 0.50, am I correct to assume that this issue has been resolved?"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-04-02T15:06:43Z",
+   "body": "It sadly seems like this issue is still open, I still have the `__TAURI_INVOKE_KEY__ expected X but received Y` errors when reopening an app that has a foreground service running."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-07-24T17:01:19Z",
+   "body": "A workaround is to turn on the brownfield pattern"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-07-24T17:07:19Z",
+   "body": "Also, this is fixed"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2025-07-24T17:26:34Z",
+   "body": "> A workaround is to turn off the brownfield pattern\n\nThis makes no sense to me. What do you mean by that?"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-07-25T02:13:15Z",
+   "body": "> > A workaround is to turn off the brownfield pattern\n> \n> This makes no sense to me. What do you mean by that?\n\nJust realized I said to turn off brownfield pattern, when i meant to turn it on \n\nI meant this one [brownfield](https://tauri.app/concept/inter-process-communication/brownfield)"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2025-07-25T06:29:39Z",
+   "body": "Hmm I assume most are using that over the isolation pattern."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2025-07-25T06:30:29Z",
+   "body": "> It sadly seems like this issue is still open, I still have the __TAURI_INVOKE_KEY__ expected X but received Y errors when reopening an app that has a foreground service running.\n\nDoes that actually cause issues though?"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-07-25T06:45:44Z",
+   "body": "Also seems like the pull requests have been merged in tao and wry. So isn't it fixed already? "
+  },
+  {
+   "author": "participant5",
+   "created_at": "2025-07-25T18:56:36Z",
+   "body": "@participant3's message was after all related PRs were merged so apparently not? Maybe fixing the memory leak didn't include fixing the invoke key and whatever else is broken.\n\nOP's reproduction does not exist anymore so a new one would be appreciated :)"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-07-25T19:46:46Z",
+   "body": "Hey Lars!\n\nI am afraid I won't be able to get the reproduction anymore since I am not working on the project anymore.\nHowever the issue was definitely still there!\n\nI am fairly sure you could make it happen by having a background service that could launch the main activity and closing the app, then reopening it with the service still there. Something along those lines. It seemed like there were 2 references to the main activity at the same time.\nAnd it did cause crashes and unintended behaviour.\n\nI worked around it by forcefully closing the service when the app closes with lifecycle listeners. Which I thought was an alright solution but it wasn't perfect. If in any case the service was still active and the app was closed, the app would be completely unusable.\n\nI made a background location plugin which worked fine but only with the lifecycle listeners."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2025-07-25T20:13:35Z",
+   "body": "Thanks for the prompt reaction. I'll leave this issue open then - i can't work on this myself so idk how long it'll stay open either x)"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-07-25T21:49:48Z",
+   "body": "I won't be able to share the full project code but I found a few incomplete snippets that I can share.\nThe lifecycles I added were necessary or the app would get in a broken state.\nLast time I ran it, it was on latest (I even checked out a branch with another fix I believe, which didn't help). So for me it definitely wasn't fixed.\n\nIn my opinion is it normal that you can't really launch the app like that anymore when the app is closed and a service is lingering but devs shouldn't have to deal with an app ending up in a broken state when you do though :)\n\nThe code is incomplete and fairly poorly written but hopefully it is enough to create a reproduction from, really hope it helps! :)\n\n```kotlin\nclass ExamplePlugin(private val activity: Activity) : Plugin(activity) {\n    private lateinit var implementation: Example\n    private var locationService: LocationService? = null\n    private var watchers = hashMapOf<Long, Pair<Invoke, WatchArgs>>()\n\n    private val connection = object : ServiceConnection {\n        override fun onServiceConnected(className: ComponentName?, service: IBinder?) {\n            Log.i(\"App\", \"DEBUG: start called + service connected\")\n            val binder = service as LocationService.LocalBinder\n            locationService = binder.getService()\n            locationService?.watchers = watchers\n            locationService?.activityToLaunch = activity::class.java\n        }\n\n        override fun onServiceDisconnected(arg0: ComponentName?) {\n            locationService?.watchers = null\n        }\n    }\n\n    // Location service commands\n    @participant6(\"NewApi\")\n    @participant7\n    fun start(invoke: Invoke) {\n        Log.i(\"App\", \"DEBUG: start called\")\n        val args = invoke.parseArgs(StartArgs::class.java)\n        var t = Intent(activity.applicationContext, LocationService::class.java).apply {\n            action = LocationService.ACTION_START\n            putExtra(\"totalDistance\", args.totalDistance)\n            activity.startForegroundService(this)\n        }\n        activity.bindService(t, connection, Context.BIND_ADJUST_WITH_ACTIVITY);\n        invoke.resolve()\n    }\n\n    @participant6(\"NewApi\")\n    @participant7\n    fun stop(invoke: Invoke) {\n        Log.i(\"App\", \"DEBUG: stop called\")\n        Intent(activity.applicationContext, LocationService::class.java).apply {\n            action = LocationService.ACTION_STOP\n            activity.startForegroundService(this)\n        }\n        invoke.resolve()\n    }\n\n    @participant7\n    fun watchDistance(invoke: Invoke) {\n        Log.i(\"App\", \"DEBUG: watch distance!\" + this.locationService.toString())\n        val args = invoke.parseArgs(WatchArgs::class.java)\n        startWatch(invoke, args)\n        invoke.resolve()\n    }\n\n    private fun startWatch(invoke: Invoke, args: WatchArgs) {\n        watchers[args.channel.id] = Pair(invoke, args)\n    }\n\n    @participant7\n    fun clearWatch(invoke: Invoke) {\n        val args = invoke.parseArgs(ClearWatchArgs::class.java)\n        watchers.remove(args.channelId)\n        invoke.resolve()\n    }\n}\n\n\nclass AppLifecycleTracker(private var activity: Activity) : ActivityLifecycleCallbacks {\n    override fun onActivityCreated(activity: Activity, savedInstanceState: Bundle?) {}\n\n    override fun onActivityStarted(activity: Activity) {}\n\n    override fun onActivityResumed(activity: Activity) {}\n\n    override fun onActivityPaused(activity: Activity) {}\n\n    override fun onActivityStopped(activity: Activity) {}\n\n    override fun onActivitySaveInstanceState(activity: Activity, outState: Bundle) {}\n\n    // NOTE: See https://github.com/tauri-apps/tauri/issues/11609\n    // We destroy the service ourselves so that the application doesn't linger\n    // causing issues on next launch\n    @participant8(Build.VERSION_CODES.O)\n    override fun onActivityDestroyed(activity: Activity) {\n        Intent(activity.applicationContext, LocationService::class.java).apply {\n            action = LocationService.ACTION_STOP\n            activity.startForegroundService(this)\n        }\n        activity.stopService(Intent(activity.applicationContext, LocationService::class.java))\n    }\n}\n```\n\n```kotlin\n\nclass LocationService() : Service() {\n    var totalDistance: Float = 0f\n        private set\n\n    val distanceJSObject: JSObject\n        get() {\n            val ret = JSObject()\n            ret.put(\"totalDistance\", this.totalDistance)\n            return ret\n        }\n\n    var watchers: HashMap<Long, Pair<Invoke, WatchArgs>>? = null\n    var activityToLaunch: Class<out Activity>? = null\n    private var isForeground = false\n    private val binder = LocalBinder()\n\n    inner class LocalBinder : Binder() {\n        // Return this instance of LocalService so clients can call public methods.\n        fun getService(): LocationService = this@participant9\n    }\n\n\n    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)\n    private lateinit var locationClient: LocationClient\n    override fun onBind(p0: Intent?): IBinder {\n        return binder\n    }\n\n    override fun onCreate() {\n        super.onCreate()\n        locationClient =\n            LocationClient(\n                applicationContext,\n                LocationServices.getFusedLocationProviderClient(applicationContext)\n            )\n    }\n\n    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {\n        Log.i(\"App\", \"DEBUG: Start command intent for service\")\n        when (intent?.action) {\n            ACTION_START -> {\n                val totalDistance = intent.extras?.getFloat(\"totalDistance\")\n            }\n\n            ACTION_STOP -> stop()\n        }\n        return super.onStartCommand(intent, flags, startId)\n    }\n\n    @participant6(\"InlinedApi\")\n    private fun start(\n        totalDistance: Float, milestoneTarget: Float, milestoneProgress: Float\n    ) {\n        this.totalDistance = totalDistance\n        notifyWatchers()\n\n        if (isForeground) return\n\n        val notification =\n            NotificationCompat.Builder(this, LOCATION_CHANNEL)\n                .setContentTitle(\"Tracking Location\")\n                .setContentText(\"Location: null\")\n                .setSmallIcon(R.drawable.ic_media_play)\n                .setOngoing(true)\n                .setSilent(true)\n        val notificationManager =\n            getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager\n\n        notificationManager?.notify(1, notification.build())\n\n        var prevLocation: Location? = null;\n\n        locationClient\n            .getLocationUpdates(10L)\n            .catch { e -> e.printStackTrace() }\n            .onEach {\n                val distanceMoved = prevLocation?.distanceTo(it) ?: 0f\n                this.totalDistance += distanceMoved\n\n                // Notification update\n                val lat = it.latitude.toString()\n                val long = it.longitude.toString()\n                notification.setContentText(\"Location: ($lat, $long)\")\n                notificationManager?.notify(1, notification.build())\n\n                notifyWatchers()\n                prevLocation = it;\n            }\n            .launchIn(serviceScope)\n\n        startForeground(1, notification.build(), ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)\n        isForeground = true\n    }\n\n    @participant6(\"NewApi\")\n    private fun stop() {\n        if (isForeground) {\n            serviceScope.cancel()\n            stopForeground(STOP_FOREGROUND_DETACH)\n            stopSelf()\n            val notificationManager =\n                getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager\n            notificationManager.cancel(1)\n            isForeground = false\n        }\n    }\n\n    private fun notifyWatchers() {\n        this.watchers?.forEach { (_, watcherData) ->\n            val channel = watcherData.second.channel\n            channel.send(this.distanceJSObject)\n        }\n    }\n\n    override fun onDestroy() {\n        super.onDestroy()\n        serviceScope.cancel()\n    }\n\n    companion object {\n        const val ACTION_START = \"ACTION_START\"\n        const val ACTION_STOP = \"ACTION_STOP\"\n    }\n}\n```"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2025-07-25T21:55:28Z",
+   "body": "thanks again, really appreciate that!"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-07-26T05:54:49Z",
+   "body": "I am currently writing an app that will utilize foreground service quite soon. I think it'll be done by a few weeks and then I can test it myself if it bugs out "
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-07-27T15:40:08Z",
+   "body": "# DEBUG APP\nIt partially works when running a foreground service. Basically the app does not load correctly if you cold start the activity. But if you start it after closing the activity. It works \n\n![Screenshot_20250727-210620_AHQ Store.jpg](https://github.com/user-attachments/assets/bb6b577e-ba3a-44d8-b39a-52f7d2de5130)\n\n![Screenshot_20250727-210742_AHQ Store.jpg](https://github.com/user-attachments/assets/d2d70338-1e68-4ee9-83d0-8cbbef7a19e4)\n\n\n\n\n"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-07-27T15:40:26Z",
+   "body": "I'm building a release build to test "
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-07-27T15:42:37Z",
+   "body": "\n```\n2025-07-27 21:11:50.730 15057-15057 DecorView               com.ahqstore.app                     I  [INFO] isPopOver=false, config=true\n2025-07-27 21:11:50.731 15057-15057 DecorView               com.ahqstore.app                     I  updateCaptionType >> DecorView@participant10[], isFloating=false, isApplication=true, hasWindowControllerCallback=true, hasWindowDecorCaption=false\n2025-07-27 21:11:50.731 15057-15057 DecorView               com.ahqstore.app                     D  setCaptionType = 0, this = DecorView@participant10[]\n2025-07-27 21:11:50.745 15057-15057 DecorView               com.ahqstore.app                     I  getCurrentDensityDpi: from real metrics. densityDpi=280 msg=resources_loaded\n2025-07-27 21:11:50.832 15057-15057 ViewRootIm...nActivity] com.ahqstore.app                     I  setView = <redacted-host>.policy.DecorView@participant10 TM=true\n2025-07-27 21:11:50.922 15057-15057 ViewRootIm...nActivity] com.ahqstore.app                     I  Relayout returned: old=(0,0,720,1600) new=(0,0,720,1600) req=(720,1600)0 dur=55 res=0x7 s={true 4121916416} ch=true fn=-1\n2025-07-27 21:11:50.930 15057-15162 OpenGLRenderer          com.ahqstore.app                     D  eglCreateWindowSurface\n2025-07-27 21:11:50.934 15057-15057 ViewRootIm...nActivity] com.ahqstore.app                     I  [DP] dp(1) 1 android.view.ViewRootImpl.reportNextDraw:11420 android.view.ViewRootImpl.performTraversals:4193 android.view.ViewRootImpl.doTraversal:2919 \n2025-07-27 21:11:50.934 15057-15057 ViewRootIm...nActivity] com.ahqstore.app                     D  Creating frameDrawingCallback nextDrawUseBlastSync=false reportNextDraw=true hasBlurUpdates=false\n2025-07-27 21:11:50.935 15057-15057 ViewRootIm...nActivity] com.ahqstore.app                     D  Creating frameCompleteCallback\n2025-07-27 21:11:50.943 15057-15298 ViewRootIm...nActivity] com.ahqstore.app                     D  Received frameDrawingCallback frameNum=1. Creating transactionCompleteCallback=false\n2025-07-27 21:11:50.950 15057-15162 ViewRootIm...nActivity] com.ahqstore.app                     D  Received frameCompleteCallback  lastAcquiredFrameNum=1 lastAttemptedDrawFrameNum=1\n2025-07-27 21:11:50.954 15057-15057 Tauri/Plugin            com.ahqstore.app                     V  Tauri plugin: pluginId: path, command: getCacheDir\n2025-07-27 21:11:50.958 15057-15057 ViewRootIm...nActivity] com.ahqstore.app                     I  [DP] pdf(0) 1 android.view.ViewRootImpl.lambda$addFrameCompleteCallbackIfNeeded$3$ViewRootImpl:4995 android.view.ViewRootImpl$$ExternalSyntheticLambda16.run:6 android.os.Handler.handleCallback:938 \n2025-07-27 21:11:50.958 15057-15057 ViewRootIm...nActivity] com.ahqstore.app                     I  [DP] rdf()\n2025-07-27 21:11:50.958 15057-15057 ViewRootIm...nActivity] com.ahqstore.app                     D  reportDrawFinished (fn: -1) \n2025-07-27 21:11:50.959 15057-15057 InsetsSourceConsumer    com.ahqstore.app                     D  ensureControlAlpha: for ITYPE_NAVIGATION_BAR on com.ahqstore.app/com.ahqstore.app.MainActivity\n2025-07-27 21:11:50.961 15057-15057 InsetsSourceConsumer    com.ahqstore.app                     D  ensureControlAlpha: for ITYPE_STATUS_BAR on com.ahqstore.app/com.ahqstore.app.MainActivity\n2025-07-27 21:11:50.978 15057-15057 Tauri/Plugin            com.ahqstore.app                     V  Tauri plugin: pluginId: deep-link, command: setEventHandler\n2025-07-27 21:11:51.009 15057-15057 ViewRootIm...nActivity] com.ahqstore.app                     I  MSG_WINDOW_FOCUS_CHANGED 1 1\n2025-07-27 21:11:51.011 15057-15057 InputMethodManager      com.ahqstore.app                     D  startInputInner - Id : 0\n2025-07-27 21:11:51.011 15057-15057 InputMethodManager      com.ahqstore.app                     I  startInputInner - mService.startInputOrWindowGainedFocus\n2025-07-27 21:11:52.068 15057-15057 Tauri/Console           com.ahqstore.app                     E  File: http://tauri.localhost/static/js/vendors-node_modules_pnpm_fluentui_react-icons_2_0_306_react_18_3_1_node_modules_fluentui_rea-596b74.js - Line 31008 - Msg: [HMR] WebSocket connection error, attempting direct fallback.\n2025-07-27 21:11:53.747 15057-32556 RustStdoutStderr        com.ahqstore.app                     I  [INFO] Running Desktop Setup\n2025-07-27 21:11:53.747 15057-32556 RustStdoutStderr        com.ahqstore.app                     I  [INFO] Running\n2025-07-27 21:11:53.957 15057-15057 Enqueued                com.ahqstore.app                     W  Periodic Work Running\n2025-07-27 21:11:53.965 15057-15057 Enqueued                com.ahqstore.app                     W  Periodic Work Registered\n2025-07-27 21:11:56.779 15057-15057 Tauri/Console           com.ahqstore.app                     I  File: http://tauri.localhost/static/js/vendors-node_modules_pnpm_fluentui_react-icons_2_0_306_react_18_3_1_node_modules_fluentui_rea-596b74.js - Line 31000 - Msg: [HMR] disconnected. Attempting to reconnect.\n```"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-07-27T15:42:52Z",
+   "body": "The logs are during the point when the activity doesn't load"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-07-27T16:18:15Z",
+   "body": "# Release Build\n\nAbsolutely no issues\n\n\n## Conclusion\n\nThe issue has been fixed successfully "
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-07-27T20:09:23Z",
+   "body": "I'd argue that if things don't work as expected in debug mode it isn't resolved.\nDevelopers are gonna worry or debug hours for why something isn't working as expected."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-07-28T01:55:22Z",
+   "body": "Though also I am using rsbuild and in console logs the reason the app\r\ndoesn't run in that activity is due to hmr error. So, it's not in the scope\r\nof tauri itself\r\n\r\nOn Mon, 28 Jul 2025, 1:39 am Peter, ***@***.***> wrote:\r\n\r\n> *participant3* left a comment (tauri-apps/tauri#11609)\r\n> <https://github.com/tauri-apps/tauri/issues/11609#issuecomment-3124699562>\r\n>\r\n> I'd argue that if things don't work as expected in debug mode it isn't\r\n> resolved.\r\n> Developers are gonna worry or debug hours for why something isn't working\r\n> as expected.\r\n>\r\n> —\r\n> Reply to this email directly, view it on GitHub\r\n> <https://github.com/tauri-apps/tauri/issues/11609#issuecomment-3124699562>,\r\n> or unsubscribe\r\n> <https://github.com/notifications/unsubscribe-auth/AUE3X6PBM4PTY5GIIORBEIL3KUWYVAVCNFSM6AAAAABRKPVTBGVHI2DSMVQWIX3LMV43OSLTON2WKQ3PNVWWK3TUHMZTCMRUGY4TSNJWGI>\r\n> .\r\n> You are receiving this because you commented.Message ID:\r\n> ***@***.***>\r\n>\r\n"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-07-28T02:10:56Z",
+   "body": "![Screenshot_20250728-074033_GitHub.jpg](https://github.com/user-attachments/assets/b87f63ff-706c-491b-87a0-a7f7fefc1126)\n\nHere "
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-07-28T08:38:17Z",
+   "body": "Oh I see, in that case it would be resolved.  \nI just recall that in my case the screen would completely white and the app would be unresponsive with the error log: `__TAURI_INVOKE_KEY__ expected ...`\n\nIf it doesn't happen anymore then no point in keeping the issue open."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2025-07-28T10:48:53Z",
+   "body": "hmm let's close it for now then and re-open if needed :)"
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "tauri-apps/tauri",
+  "default_branch": "dev",
+  "commit_sha": "f550a3f47176f7aa97917cff99a9b214e0e2833e",
+  "as_of": "2024-11-07T06:58:10Z",
+  "method": "github_commits_until"
+ },
+ "images": [
+  {
+   "where": "c20",
+   "source_url": "https://github.com/user-attachments/assets/bb6b577e-ba3a-44d8-b39a-52f7d2de5130",
+   "file": "gh_tauri-apps_tauri_11609_img0.jpg"
+  },
+  {
+   "where": "c20",
+   "source_url": "https://github.com/user-attachments/assets/d2d70338-1e68-4ee9-83d0-8cbbef7a19e4",
+   "file": "gh_tauri-apps_tauri_11609_img1.jpg"
+  },
+  {
+   "where": "c27",
+   "source_url": "https://github.com/user-attachments/assets/b87f63ff-706c-491b-87a0-a7f7fefc1126",
+   "file": "gh_tauri-apps_tauri_11609_img2.jpg"
+  }
+ ],
+ "slug": "gh_tauri-apps_tauri_11609"
+}

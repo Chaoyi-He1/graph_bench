@@ -1,0 +1,233 @@
+{
+ "repo": "apache/superset",
+ "number": 31408,
+ "url": "https://github.com/apache/superset/issues/31408",
+ "title": "[SIP-149] Proposal for Kubernetes Operator for Apache Superset",
+ "state": "closed",
+ "labels": [
+  "sip",
+  "design:proposal"
+ ],
+ "reporter": "villebro",
+ "created_at": "2024-12-11T19:56:39Z",
+ "closed_at": "2025-02-11T11:49:15Z",
+ "body": "## [SIP-149] Proposal for Kubernetes Operator for Apache Superset\n\n### Motivation\n\nApache Superset's Helm chart [[1]](https://github.com/apache/superset/tree/master/helm/superset) [[2]](https://apache.github.io/superset/index.yaml) is widely used and receives regular contributions, reflecting the popularity of Kubernetes-based deployments within the community. However, Helm's reliance on static templates, duplicated code, lack of built-in testing frameworks, and limited support for advanced lifecycle management makes maintenance of the Helm chart opaque, error prone, and can cause significant downtime risks in large scale deployments relying on it.\n\nThis proposal introduces a Kubernetes Operator [[3]](https://kubernetes.io/docs/concepts/extend-kubernetes/operator/) (hereafter referred to as \"the Operator\"), offering a Kubernetes-native approach to managing Superset deployments. The Operator will provide similar configuration options to the Helm chart, while addressing its limitations and introducing features like better testing, observability and automation. This proposal aligns with the approach taken by other Apache projects, such as Apache Flink [[4]](https://nightlies.apache.org/flink/flink-kubernetes-operator-docs-main/) [[5]](https://github.com/apache/flink-kubernetes-operator) and Apache Druid [[6]](https://druid.apache.org/docs/latest/operations/kubernetes/) [[7]](https://github.com/datainfrahq/druid-operator), whose communities have embraced operators to manage their deployments more effectively.\n\n### Proposed Change\n\nThe Operator will introduce a Custom Resource Definition (CRD) [[8]](https://kubernetes.io/docs/concepts/extend-kubernetes/api-extension/custom-resources/#customresourcedefinitions) for managing Superset deployments declaratively. Key features include:\n\n1. **Helm-Aligned Configuration**: A configuration model similar to the Helm chart, exposing commonly needed configuration options.\n1. **Enhanced Observability**: Built-in support for metrics collection, making it easier to monitor key operator related metrics (reconciliation successes/failures, durations etc).\n1. **Improved Lifecycle Management**: All resources created by the operator will include an owner reference to the custom resource (CR), ensuring that the Kubernetes Garbage Collector automatically cleans up these resources when the CR is deleted. The operator also lays the groundwork for advanced features like staged upgrades, rollbacks, and downgrades, which are currently not possible using the Helm chart. \n1. **Enhanced Testing**: The Operator will leverage the Operator SDK [[9]](https://sdk.operatorframework.io/) testing framework, making it easier to validate bug fixes and improvements while ensuring greater reliability and maintainability over time.\n\nThe Operator would be placed in a separate repo under the Apache GitHub org, preferably `/apache/superset-kubernetes-operator`. While the ASF doesn't explicitly stamp Docker images or other convenience releases, the constraints that are imposed by the ASF on their repos will provide an added layer of security for ensuring that the built and released artifacts are legit, and have met the strict requirements of the ASF. Having a dedicated repo would also make it easier to maintain dedicated CI workflows, and would also decrease traffic on the main repo by having its own set of Releases, PRs, Issues and Discussions.\n\n### New or Changed Public Interfaces\n\n1. **Kubernetes CRDs**: A Superset CRD for declarative configuration of the deployment. This structure will be similar to the `values.yaml` in the current Helm chart. For key components in the Superset deployment, like the workers and scheduler, there will be separate CRDs to capture specific details of those components.\n1. **Operator Image**: Docker image for the Operator, built using the Go-based Operator SDK.\n1. **Deployment Artifacts**: YAML manifests for deploying the Operator, with optional OLM support.\n\n![image](https://github.com/user-attachments/assets/2f286067-494b-4efc-8299-3cf68a031646)\n_**Figure 1.** A Superset deployment based on the current Helm Chart, where Helm renders manifests based on the `values.yaml` file and Helm chart, and applies them to the target namespace._\n\n![image](https://github.com/user-attachments/assets/4864ae0e-1ade-4f81-8445-004804ffd7d3)\n_**Figure 2.** Diagram depicting the proposed operator based flow, where the Operator is deployed in its own namespace, and continuously reconciles the desired state in the custom Superset resources. The CRD ensures that the Superset manifests are valid and applies defaults as needed._\n\nThe Operator will consist of a main controller that reconciles the main Superset CR, and component specific controllers to manage the core Superset components (currently the Web Worker, Async Worker and Async Scheduler). The main controller will reconcile common shared resources, like Ingress/Gateway, Service, ConfigMaps, and will also reconcile CRs for the core Superset components. These will then in turn be reconciled by their respective controllers, which ultimately create the Deployments running the application components. Having a main Superset CRD with separate CRDs for the main components has the following advantages:\n- **Simplicity**: Having a single CR will ensure shared properties are defined only once.\n- **Modularity**: As new components are introduced, these will be introduced as new CRDs and controllers that focus on reconciling a single component. This gives admins the freedom to define Superset components directly without interacting via the main Superset CRD. This would be similar to creating a `ReplicaSet` without first creating a `Deployment`.\n- **Transparency**: Having separate resources will make it easier to check the specific status of each component, as they may fail independently.\n\n### Changes to SIP and Release Process\n\nTo ensure breaking changes to Superset are handled by the Operator, the following changes would need to be done to existing processes:\n\n1. **SIP process**: A section for required changes to the Operator would be added to the SIP template. Most changes don't impact the infrastructure deployment process, but some do, like the addition/removal of workers or critical components, like the Celery scheduler. These changes would need to be made to the development version of the Operator before the changes are made generally available.\n2. **Release process**: In case that a breaking change is introduced that requires changes to the Operator, the official Operator images would be updated as follows:\n   - **Previous release**: Checks for upper bounds for the Superset version would be added to the Operator to report a warning/error if an unsupported version is chosen. This would be reported both in the CR's status and via a metric.\n   - **Next release**: Similar lower bound checks would be added to the Operator if the new version is incapable of supporting a deprecated/removed feature on an old Superset version.\n\nTo keep the releases of Superset and the Operator aligned, we would ensure that that all currently supported Superset versions are backed up by an Operator release. As we're officially maintaining \"the latest minor of the last two majors\" [[10]](https://github.com/apache/superset/wiki/Release-Process#schedule), the Operator would also support these. At the time of writing that would mean 4.1 and 3.1. Note that the Operator version would not track the official Superset version, as breaking changes that require changes to the Operator are fairly uncommon.\n\n### New dependencies\n\nThe Operator will rely on the **Go-based Operator SDK** [[11]](https://sdk.operatorframework.io/docs/building-operators/golang/quickstart/) for its implementation and testing framework. Beyond this, it will share the same core dependencies as the existing Helm chart, such as Kubernetes APIs and configurations, but without requiring Helm as a dependency.\n\n### Migration Plan and Compatibility\n\nMigrating from the Helm chart to the Operator will be straightforward, as the Operator’s CRD will closely align with the structure of the current `values.yaml` used in the Helm chart. Additionally, the resources created by the Operator will closely mimic those generated by the Helm chart, ensuring consistency and familiarity. Administrators already familiar with managing Superset via Helm will find the transition intuitive.\n\n#### Benefits\n\n1. **Kubernetes-Native Management**: A set of clean CRDs and continuous reconciliation provide a more natural Kubernetes experience.\n4. **Dynamic Lifecycle Features**: The Operator lays the foundation for advanced features like staged upgrades and automated recovery. These are difficult to achieve using the current Helm-based approach.\n5. **Enhanced Observability**: Prometheus-compatible metrics make it easy to monitor the Operator and Superset deployments.\n6. **Improved Testing**: Operator SDK enables comprehensive testing, both full integration tests and light weight unit tests, improving reliability.\n7. **Helm Independence**: Users can deploy Superset without relying on Helm.\n\n#### Proposed Operator Scope and Deprecation of Helm Chart\n\nWe propose **deprecating the Helm chart once the Operator is deemed stable** to avoid the burden of maintaining both. The Operator will also **exclude reconciliation support for PostgreSQL and Redis**. Users can continue using Helm for these services or adopt dedicated operators [[12]](https://github.com/zalando/postgres-operator) [[13]](https://operatorhub.io/operator/redis-operator), ensuring a more focused approach for managing Superset.\n\n### Rejected Alternatives\n\n1. **Enhancing the Helm Chart**: Helm is limited in its ability to support advanced lifecycle features, testing, dynamic reconciliation, and observability.\n1. **Standalone Scripts**: Scripts lack maintainability and alignment with Kubernetes-native workflows.\n1. **Existing operators**: No open-source operators provide a clean CRD or are aligned with Superset’s Helm chart configurations.\n",
+ "comments": [
+  {
+   "author": "michael-s-molina",
+   "created_at": "2024-12-13T17:45:14Z",
+   "body": "Thank you for the proposal @villebro. Do we plan to officially support this operator for official releases? If yes, could you enhance the SIP explaining how the [Release Process](https://github.com/apache/superset/wiki/Release-Process) would be affected?"
+  },
+  {
+   "author": "villebro",
+   "created_at": "2024-12-13T17:50:33Z",
+   "body": "@michael-s-molina thanks for the feedback. Version support has not been a major issue in the current Helm chart, as it's mostly decoupled from the Superset release process. However, you're right that major changes, like the introduction/removal of new worker types, would definitely cause a breaking change in the operator, too. I will add a section to cover this."
+  },
+  {
+   "author": "michael-s-molina",
+   "created_at": "2024-12-13T17:53:15Z",
+   "body": "> I will add a section to cover this.\r\n\r\nThanks. Please consider any necessary changes to [RELEASING/README.md](https://github.com/apache/superset/blob/master/RELEASING/README.md).\r\n"
+  },
+  {
+   "author": "villebro",
+   "created_at": "2024-12-13T18:27:54Z",
+   "body": "> > I will add a section to cover this.\r\n> \r\n> Thanks. Please consider any necessary changes to [RELEASING/README.md](https://github.com/apache/superset/blob/master/RELEASING/README.md).\r\n\r\n@michael-s-molina I think it's actually mostly relevant for the SIP process, rather than the release process. Any major breaking changes or new advanced features that affect how Superset is deployed may affect how the Docker image is built, our Docker Compose flows, and ultimately the Kubernetes deployment model. A few examples:\r\n- **Global Async Queries using Websockets**: there is an unofficial `oneacrefund/superset-websocket` image that requires an extra deployment on Kubenetes, which is currently supported by Helm. In retrospect, [[SIP-43]](https://github.com/apache/superset/issues/9190) should have addressed how this would be supported in all the currently existing deployment models.\r\n- **Addition/removal of a critical component**: Assuming we were to replace Celery Beat with another scheduler, that would need to be considered during the SIP review, as it would likely require changing what the scheduler [Deployment](https://kubernetes.io/docs/concepts/workloads/controllers/deployment/) looks like.\r\n\r\nTherefore, major changes should be handled as follows:\r\n1. Infra related breaking changes will need to be raised during the SIP process to ensure they're considered before the vote.\r\n2. Support for accepted SIPs will need to be added to the dev version of the Operator, so that a clear warning/error can be emitted if the chosen Superset version is unsupported. Note that will be easier to support in the Operator, but more difficult in Helm, as Helm doesn't easily support this type of logic.\r\n3. Once the new version is released that introduces the breaking change, the affected versions of the operator should be patched with logic to check if they are compatible with the newly introduced version or not."
+  },
+  {
+   "author": "mistercrunch",
+   "created_at": "2024-12-13T20:39:32Z",
+   "body": "Do these typically live in mono-repo or in their own repo?"
+  },
+  {
+   "author": "villebro",
+   "created_at": "2024-12-13T20:46:26Z",
+   "body": "@mistercrunch I would place this in a separate repo, similar to what Flink is doing: https://github.com/apache/flink-kubernetes-operator (I would suggest following this pattern: `apache/superset-kubernetes-operator`). Then we wouldn't have to burden the main repo's CI, and could let both repos evolve in their own directions as needed.\r\n\r\nEdit: I added a note about this in the proposal."
+  },
+  {
+   "author": "mistercrunch",
+   "created_at": "2024-12-13T21:22:21Z",
+   "body": "Probably fine to use https://github.com/apache-superset/ org for this, that way you get admin rights and we don't have to consider this tool/repo as an ASF-sanctioned thing that provides all the ASF-related-type constrainst & guarantees"
+  },
+  {
+   "author": "mistercrunch",
+   "created_at": "2024-12-13T21:24:28Z",
+   "body": "In some ways this would also make it such that we don't really require a SIP or the SIP process. "
+  },
+  {
+   "author": "villebro",
+   "created_at": "2024-12-13T21:37:30Z",
+   "body": "Some pros/cons that come to mind:\r\n- Since this is directly tied to Apache Superset, it seems logical to have it reside under the ASF umbrella to give the strong quality guarantees that the ASF process provides. Some orgs may not be able to use the code/assets unless they're governed by the ASF.\r\n- There's definitely extra overhead for setting this up under the ASF. However, since Flink has been able to get it working, I'm sure we can make it work, too.\r\n- Druid has decided to go the way of a non-ASF repo (https://github.com/datainfrahq/druid-operator), so that's apparently ok, too.\r\n\r\nI would personally vote to keep this under the [ASF GitHub org](https://github.com/apache), but I'm not super opinionated, so I can probably be convinced the other way, too."
+  },
+  {
+   "author": "mistercrunch",
+   "created_at": "2024-12-14T22:16:26Z",
+   "body": "Makes sense, though from my understanding the ASF and its participant can't really officially stamp things like a docker image since it include all sorts of other binaries that we can't/shouldn't certify for legal reasons. The only binaries that are official are the tarballs. As long as it's a \"recipe\" and not a meal it's fine, meaning say a Dockerfile is fair game, but the docker image itself with a bunch of other binaries in it we can't officially certify or distribute. Guessing the k8s Operator would be mostly a recipe, which would be fine."
+  },
+  {
+   "author": "Synarcs",
+   "created_at": "2024-12-26T13:45:51Z",
+   "body": "@villebro , I believe this proposal is getting away from the helm finalizers as well and add custom finalizers, ownerreferences  for each superset deployment-able manifest for complete  lifecycle management of the state  as mentioned in crd.\r\nIn addition,  what are the plans for gateway networking, , I believe it would be agnostic to underlying ingress routing policy in the cluster. but will the operator also own support for deploying ingress resources for cluster running older ingress api, or resources for cluster running  k8s gateway api (istio, contour, traeflik) etc.\r\n"
+  },
+  {
+   "author": "villebro",
+   "created_at": "2025-01-06T21:31:20Z",
+   "body": "> I believe this proposal is getting away from the helm finalizers as well and add custom finalizers, ownerreferences for each superset deployment-able manifest for complete lifecycle management of the state as mentioned in crd.\r\n\r\n@Synarcs I didn't mention it in the SIP, but you're right, the custom resource would be the owner of all spawned resources. In other words, when you delete the CR, it will let the k8s GC remove all child resources. I added this clarification to the SIP.\r\n\r\nCustom finalizers could be introduced as needed. However, for the first version, I think we can get by without any custom finalizers, as the GC will handle the majority of cleanup (most admins will probably prefer to clean up their metastore etc manually).\r\n\r\n> In addition, what are the plans for gateway networking, , I believe it would be agnostic to underlying ingress routing policy in the cluster. but will the operator also own support for deploying ingress resources for cluster running older ingress api, or resources for cluster running k8s gateway api (istio, contour, traeflik) etc.\r\n\r\nI see no reason why we can't support both `Gateway` and `Ingress`, the latter which is currently supported by the Helm chart. For this we could just add an optional `gateway` property on the CRD, making it possible to choose that one instead of `ingress` where needed. To get this effort started, I think we can add it to the Helm chart first (disabled by default), and then just use a similar structure on the CRD as in the `values.yaml`. Over time we would then deprecate `ingress`, and only support `gateway` once feature parity is firmly established."
+  },
+  {
+   "author": "villebro",
+   "created_at": "2025-01-08T22:50:53Z",
+   "body": "> Probably fine to use https://github.com/apache-superset/ org for this, that way you get admin rights and we don't have to consider this tool/repo as an ASF-sanctioned thing that provides all the ASF-related-type constrainst & guarantees\r\n\r\n@mistercrunch I've carefully considered the ASF vs non-ASF repo option, and here's some further thoughts:\r\n\r\n- For scripts and other general recipes like a Helm chart, which are easy to audit, hosting on a non-ASF repo should be fine. However, a Golang based operator, with a complex build process that results in a Docker image, will not be easy to audit before use.\r\n- While the ASF doesn't explicitly stamp Docker images or other convenience releases, the battle tested constraints & guarantees that are imposed by the ASF on their repos will provide an added layer of security for ensuring that the built and released artifacts are legit, and have met the strict requirements of the ASF.\r\n-  Kubernetes operators are deployed on highly critical infrastructure, and are able to both provision and destroy resources not only on the Kubernetes cluster, but even outside the cluster (e.g. load balancers via Ingress/Gateway resources). For this reason, many orgs will have security and compliance policies preventing them from deploying OSS operators that originate from non-ASF sanctioned repos.\r\n- The ASF already has a number of actively maintained [operator repos](https://github.com/search?q=org%3Aapache+operator&type=repositories) for top projects. This implies that this is a typical pattern for ASF projects, and will likely not receive pushback from the ASF.\r\n\r\nFor the reasons listed above I maintain my recommendation of hosting the operator on the ASF GitHub org. I added a summary of the above in the SIP."
+  },
+  {
+   "author": "rusackas",
+   "created_at": "2025-01-15T17:20:41Z",
+   "body": "@villebro I think we defer to you as to where this lives, and otherwise, this seems ready for a VOTE :)"
+  },
+  {
+   "author": "villebro",
+   "created_at": "2025-01-15T17:47:46Z",
+   "body": "Thanks @rusackas! Let me ping the dev list once more to let people know the discussion has settled and to urge anyone who hasn't spoken up yet to do so now.\n\nEdit: Sent an email to the Dev list: https://lists.apache.org/thread/ylycmvy3vbygnmk6xw5jqmndryvt02om"
+  },
+  {
+   "author": "mistercrunch",
+   "created_at": "2025-01-15T18:17:07Z",
+   "body": "I'm cool with on or off `apache` or `apache-superset`, but feel strongly about keeping it out of the \"monorepo\". If we do start a new repo for that purpose though, do you think `helm/` should also live there? In its own repo?"
+  },
+  {
+   "author": "villebro",
+   "created_at": "2025-01-15T23:42:57Z",
+   "body": "> I'm cool with on or off `apache` or `apache-superset`, but feel strongly about keeping it out of the \"monorepo\". If we do start a new repo for that purpose though, do you think `helm/` should also live there? In its own repo?\n\n@mistercrunch the proposal is to deprecate the Helm chart once the operator reaches maturity to avoid duplicated effort. At the end of the day they do the same thing - the operator is just more \"Kubernetes native\" than the Helm chart. The community would be free to fork the Helm chart and start maintaining it in a separate repo if they so wish."
+  },
+  {
+   "author": "Synarcs",
+   "created_at": "2025-01-16T00:02:43Z",
+   "body": "I feel in operator for ease of use each superset architecture component to be managed by its isolated controller in controller runtime, with a single controller (superset-controller) managing all these components with their respective controllers via ownerreference. \nThis would allow isolation and scale the controllers for each component in superset architecture as individual components evolve with superset versions.\n"
+  },
+  {
+   "author": "villebro",
+   "created_at": "2025-01-16T01:21:23Z",
+   "body": "> I feel in operator for ease of use each superset architecture component to be managed by its isolated controller in controller runtime, with a single controller (superset-controller) managing all these components with their respective controllers via ownerreference. This would allow isolation and scale the controllers for each component in superset architecture as individual components evolve with superset versions.\n\n@Synarcs are you proposing having separate CRDs and controllers for each component, like the web worker, async worker, scheduler etc? In theory this does sound appealing. However, I see the following problems:\n- The workers currently map fairly cleanly into vanilla `Deployment` resources. Having separate CRDs and controllers for each worker would only add an extra layer to the chain of resources (WebWorker -> Deployment -> ReplicaSet -> Pod) without adding that much value. It would essentially be a worker-specific `Deployment` wrapper.\n- The workers and scheduler will need identical image tags, environment variables, mounts, service references etc. Having separate CRDs (and consequently CRs) for all these will cause significant duplication and make the management of the cluster as a whole more complex. \n- Separating the individual components would also make it more logical to split out `Ingress`/`Gateway` and `Service`s. However, the exact structure of these, especially the main service, tend to be uninteresting to the typical admin. Breaking these out would make it more difficult to get a Superset deployment up and running.\n\nIf any of the above changes in the future, I see no reason why we can't break up the operator into separate CRDs and controllers. However, given the current architecture, I feel having a single CRD is the most convenient means of abstracting Superset as a whole."
+  },
+  {
+   "author": "Synarcs",
+   "created_at": "2025-01-16T09:43:13Z",
+   "body": "@villebro this makes sense, considering keeping the operator as a single monolith, with the single controller handling reconciliation for all the various combinations end-users may select to deploy superset in their environment.\nSome thoughts on this, maybe it would be useful in future,\n\n- We need to consider if there is a single CRD all options offered now will be converted in spec sections, specifically breaking spec section for resource into chunks to ensure each resource is configurable (following same hierarchy we keep in values for superset helm). For each section any child resources it creates would be added using proper ownerreferences, and finalizers for better gc by the superset operator.\n- Each of this spec subsection resembling superset architecture component can have its status as the standard way for operators to ensure the superset operator to properly reconcile and deploy each architecture component of superset.\n\nFinally, I feel, if any subsection in resource spec needs a lot much custom configuration for deployment, it would be better we break it into an isolate CRD with its own controller managed by the main superset controller to ensure the parent CRD does not become too large and difficult to manage, and the isolated component CRD in the architecture can evolve with its custom configuration.\n\n"
+  },
+  {
+   "author": "villebro",
+   "created_at": "2025-01-16T16:37:56Z",
+   "body": "@Synarcs you raised a good point about the having separate statuses for the different components. I agree that it will be clearer if we can split out the individual components into separate CRs, even if we have a single monolith at the top. So let's say we would have the following hierarchy (each node representing a separate resource type):\n\n```\nSuperset\n  SupersetWebWorker\n    Deployment\n      ReplicaSet\n        Pod\n  SupersetAsyncWorker\n    Deployment\n      ReplicaSet\n        Pod\n  SupersetAsyncScheduler\n    Deployment\n      ReplicaSet\n        Pod\n  Ingress/Gateway\n  Service\n  ConfigMap\n  ...\n```\n\nThis would make it possible to do `kubectl describe superset my-superset` to see the status at high level, but then drill down into the individual workers by doing `kubectl describe supersetwebworker my-superset` etc, where a more detailed status could be seen. This aligns with how `Deployment` branches out into a single `ReplicaSet`, which initially may seem like unnecessary overhead, but makes sense once you consider what they represent.\n\nTherefore, we'd still have a single monolithic CRD for Superset, but we'd introduce separate CRDs and controllers for the various worker types and reconcile then in separate reconciliation loops. So the `Superset` controller/reconciler would create `SupersetWebWorker`, and that one would then in turn create the actual `Deployment` etc. While most admins would just use the `Superset` CRD, this way you'd also have the option of spawning a `SupersetWebWorker` without a top level `Superset` CR if you really want to.\n\nIf you agree with this approach I'll update the proposal to reflect this structure."
+  },
+  {
+   "author": "Synarcs",
+   "created_at": "2025-01-22T01:50:04Z",
+   "body": "@villebro this looks clean and can evolve as different core superset components evolve. \nFor now, I believe the same way kubebuilder or operator sdk provides way to package the operator into helm chart, the main parent controller of the (superset operator) can be packaged into helm, by providing initial interface / templates for users to deploy superset with operator in accordance how it was done with helm before making it easy transition for helm users to explore the operator to deploy resources, and in future the helm chart can be completely decommissioned if required as operator ensures proper deployments of each superset release.\n"
+  },
+  {
+   "author": "villebro",
+   "created_at": "2025-01-22T18:26:48Z",
+   "body": "@Synarcs I agree, a Helm chart could indeed be included that makes it easier to deploy the operator. However, I think Operator SDK mainly provides manifests to deploy the operator (I haven't checked if it can also generate a Helm chart). But at any rate, we'll definitely aim to make the deployment process as easy as possible, both by adding good documentation, and providing good deployment templates (be it a Helm chart or manifests)."
+  },
+  {
+   "author": "villebro",
+   "created_at": "2025-01-22T21:20:11Z",
+   "body": "Vote sent to mailing list: https://lists.apache.org/thread/j32styh48lwrjzkpvqk4mnvrmvklvz3d"
+  },
+  {
+   "author": "abhioncbr",
+   "created_at": "2025-01-24T15:17:49Z",
+   "body": "This sounds interesting to me. I want to contribute to building the operator. "
+  },
+  {
+   "author": "villebro",
+   "created_at": "2025-01-26T18:41:31Z",
+   "body": "The vote has PASSED with 6 binding +1, 2 non-binding + 1 and 0 -1 votes.\n\nResult thread: https://lists.apache.org/thread/cdol8xrokk04klvg4tpxmk3y245zwx80\n"
+  },
+  {
+   "author": "abhioncbr",
+   "created_at": "2025-01-27T16:12:30Z",
+   "body": "Since the vote has PASSED. What would be the next steps? "
+  },
+  {
+   "author": "villebro",
+   "created_at": "2025-01-27T16:31:45Z",
+   "body": "> Since the vote has PASSED. What would be the next steps?\n\nI will start preparations for establishing the initial codebase for the operator. I'll drop a note on the dev list when we have the next steps ready."
+  },
+  {
+   "author": "michael-s-molina",
+   "created_at": "2025-02-11T11:49:16Z",
+   "body": "Closing the SIP as it was approved."
+  },
+  {
+   "author": "Damanotra",
+   "created_at": "2025-06-26T06:11:01Z",
+   "body": "Hi team, anyone knows how to contribute to Superset Operator?"
+  },
+  {
+   "author": "villebro",
+   "created_at": "2025-07-09T16:51:11Z",
+   "body": "Hi @Damanotra , work to implement the operator is expected to start shortly. I will update here when the work starts in earnest."
+  },
+  {
+   "author": "derickkaiser",
+   "created_at": "2025-09-17T11:39:13Z",
+   "body": "Hello!\nAs it was not mentioned in the SIP, probably is not planned, but do you guys think is useful to use the Superset Operator to import dashboards? For example, CRDs for SupersetDashboard, SupersetDatasources and SupersetDatasets instead of connect to the Superset pod to use superset-cli for import dashboards. As well as Kafka Operator provides CRDs for KafkaBroker, KafkaTopic to use Kubernetes manifests to deploy Kafka resources in the cluster node.\n\nThanks!"
+  },
+  {
+   "author": "mwinters0",
+   "created_at": "2026-04-03T20:33:15Z",
+   "body": "FYI for others watching this thread: https://github.com/apache/superset-kubernetes-operator though there's just a README today."
+  },
+  {
+   "author": "villebro",
+   "created_at": "2026-04-03T20:45:20Z",
+   "body": "FYI @mwinters0 the code is ready but is undergoing some final reviews before being opened up to the public. I apologize for the delay, but this should hopefully be cleared up shortly."
+  },
+  {
+   "author": "fowlerp397-tech",
+   "created_at": "2026-04-03T22:46:24Z",
+   "body": "Thanks for the update! Looking forward to the release once reviews are\r\ncomplete\r\n\r\nOn Fri, Apr 3, 2026, 3:45 PM Ville Brofeldt ***@***.***>\r\nwrote:\r\n\r\n> *villebro* left a comment (apache/superset#31408)\r\n> <https://github.com/apache/superset/issues/31408#issuecomment-4185132935>\r\n>\r\n> FYI @mwinters0 <https://github.com/mwinters0> the code is ready but is\r\n> undergoing some final reviews before being opened up to the public. I\r\n> apologize for the delay, but this should hopefully be cleared up shortly.\r\n>\r\n> —\r\n> Reply to this email directly, view it on GitHub\r\n> <https://github.com/apache/superset/issues/31408?email_source=notifications&email_token=B72HASNJ3WCZH3CMXRKKYVT4UAPHXA5CNFSNUABFM5UWIORPF5TWS5BNNB2WEL2JONZXKZKDN5WW2ZLOOQXTIMJYGUYTGMRZGM22M4TFMFZW63VKON2WE43DOJUWEZLEUVSXMZLOOSWGM33PORSXEX3DNRUWG2Y#issuecomment-4185132935>,\r\n> or unsubscribe\r\n> <https://github.com/notifications/unsubscribe-auth/B72HASMHF62R5IXQJHNHHDL4UAPHXAVCNFSM6AAAAACXMDZKZSVHI2DSMVQWIX3LMV43OSLTON2WKQ3PNVWWK3TUHM2DCOBVGEZTEOJTGU>\r\n> .\r\n> You are receiving this because you are subscribed to this thread.Message\r\n> ID: ***@***.***>\r\n>\r\n"
+  },
+  {
+   "author": "villebro",
+   "created_at": "2026-04-29T19:08:35Z",
+   "body": "FYI: The initial upload for the operator code has been done: https://github.com/apache/superset-kubernetes-operator . I'm going to work on setting up CI, docs etc. Please be patient while I get all these things sorted.\n\nThanks again to all the people that helped shape the outcome of this SIP!"
+  },
+  {
+   "author": "villebro",
+   "created_at": "2026-04-30T22:14:42Z",
+   "body": "We've opened a new channel [#kubernetes-operator](https://apache-superset.slack.com/archives/C0B10DFNM1Q) on the Superset Slack, please drop by if you have questions or want to get involved."
+  },
+  {
+   "author": "villebro",
+   "created_at": "2026-05-31T15:56:49Z",
+   "body": "A status update on the operator proposed in this SIP: The initial development work is complete, and we're approaching the first release (0.1.0), which will go through an ASF release vote. The operator lives at https://github.com/apache/superset-kubernetes-operator, with docs at https://apache.github.io/superset-kubernetes-operator/. Thanks to everyone who contributed to the discussion here, as it greatly helped shape the initial development work.\n\nI want to call out two major changes since the SIP and discussion here:\n\n1. **No per-component child CRDs**: The SIP discussed separate CRDs for the individual components (web server, Celery workers, Beat, Flower, etc.). We tried this approach, but during implementation this turned out to add significant complexity with very limited value (see motivations below). Similar to the Helm chart, there is a single public Superset CRD, which the parent controller resolves into all parent-owned resources (Deployments, Services, ConfigMaps, lifecycle Jobs, HPAs, PDBs, networking, monitoring). Per-component configuration lives under that one resource.\n2. **More focus on lifecycle operations**: The operator runs database migrations on upgrade, database cloning for staging environments, application init, and secret-key rotation as [sequenced](https://apache.github.io/superset-kubernetes-operator/user-guide/lifecycle/#lifecycle-flow), status-tracked tasks. This was an area where the Helm chart was most lacking, and where an operator can really bring added value. We plan to expand and refine the lifecycle operations further in future versions.\n\nThe two are connected, and both follow from how Superset actually works. Its components (web server, Celery workers, Beat, Flower, MCP) are parts of a single platform that share one secret key, metastore, and database schema; they aren't independently deployable services, so modeling each as its own CRD doesn't match how Superset is operated. Lifecycle tasks make this concrete: they need coordination across all of an instance's components, and independently-reconciled child CRs would fragment that. For example, the operator drains components by default during migrations, because old pods serving against a database whose schema is mid-migration can deadlock. This didn't come up in the SIP, but it's a problem we've seen over years of running Superset (see example [here](https://github.com/apache/superset/issues/33252)). During the drain the operator can serve a customizable maintenance page, and restores traffic once the new version is healthy. Rolling updates remain supported but are opt-in, and generally not recommended.\n\nThe resulting model is close to the existing Apache Superset Helm chart, so the component layout and configuration should be familiar to current chart users, and migration is largely a matter of translating values.\n\nThe operator is built on current tooling (Go 1.26, built with latest Operator SDK and controller-runtime) and tracks new Kubernetes releases (1.34 and 1.35): CI covers the two most recent minors, plus best-effort coverage for the newest when Kind releases aren't in sync with the latest k8s version (1.36 at the time of writing).\n\nTry it on a local kind cluster:\n\n1. Install the operator (the chart bundles the CRD, with [version](https://apache.github.io/superset-kubernetes-operator/reference/downloads/?h=versions#chart-versions) `0.0.0-dev` tracking `main` branch on the repo):\n  ```shell\n  helm install superset-operator \\\n    oci://ghcr.io/apache/superset-kubernetes-operator/charts/superset-operator \\\n    --version 0.0.0-dev --namespace superset-operator-system --create-namespace\n  ```\n2. From a checkout of the repo, bring up the dev dependencies (Postgres + Valkey) and a comprehensive Superset instance (web servers, Celery beat, Celery workers, Celery Flower, MCP):\n  ```shell\n  kubectl apply -f config/samples/dev-dependencies.yaml\n  kubectl apply -f config/samples/superset_v1alpha1_superset_dev_full.yaml\n  ```\n3. Once the migrate/init tasks finish, open the UI and log in with admin / admin:\n  ```shell\n  kubectl port-forward svc/superset-dev-web-server 8088:8088\n  ```\n\nHow you can help:\n\n- The API is still `v1alpha1`, so issues and design feedback now will help shape the 0.1.0 API.\n- If you currently run Superset via the official Helm chart, please review the [Helm migration guide](https://apache.github.io/superset-kubernetes-operator/user-guide/migration/). It's written against chart 0.15.5 / appVersion: 5.0.0 and documents the deliberate differences (bring-your-own database and cache, Secret-based secrets, managed lifecycle tasks, Gateway-API-first routing) and known parity gaps.\n\nFeedback before the vote is welcome."
+  },
+  {
+   "author": "villebro",
+   "created_at": "2026-06-07T21:43:51Z",
+   "body": "FYI: The first release candidate for 0.1.0 has been put up for vote: https://lists.apache.org/thread/2wnycnmy7zjcwksj5wkd8h423nbl9cz6"
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "apache/superset",
+  "default_branch": "master",
+  "commit_sha": "423a0fefa5e024db9fbf75301997c511b3ec992f",
+  "as_of": "2024-12-11T19:56:39Z",
+  "method": "github_commits_until"
+ },
+ "images": [
+  {
+   "where": "opening",
+   "source_url": "https://github.com/user-attachments/assets/2f286067-494b-4efc-8299-3cf68a031646",
+   "file": "gh_apache_superset_31408_img0.png"
+  },
+  {
+   "where": "opening",
+   "source_url": "https://github.com/user-attachments/assets/4864ae0e-1ade-4f81-8445-004804ffd7d3",
+   "file": "gh_apache_superset_31408_img1.png"
+  }
+ ],
+ "slug": "gh_apache_superset_31408"
+}

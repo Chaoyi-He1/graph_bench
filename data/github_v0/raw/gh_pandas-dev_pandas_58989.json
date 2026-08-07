@@ -1,0 +1,228 @@
+{
+ "repo": "pandas-dev/pandas",
+ "number": 58989,
+ "url": "https://github.com/pandas-dev/pandas/issues/58989",
+ "title": "API: timestamp resolution inference - default to one unit (if possible) instead of being data-dependent?",
+ "state": "closed",
+ "labels": [
+  "Datetime",
+  "Non-Nano",
+  "Timestamp"
+ ],
+ "reporter": "reporter",
+ "created_at": "2024-06-12T18:26:30Z",
+ "closed_at": "2025-11-19T01:25:39Z",
+ "body": "After https://github.com/pandas-dev/pandas/pull/55901, we now do inference of the best resolution, and so allow to create non-nanosecond data by default (instead of raising for out of bounds data). \r\n\r\nTo be clear, it is a _very_ nice improvement to stop raising those OutOfBounds errors while the timestamp would perfectly fit in another resolution. But I do think we could maybe reconsider the exact logic of how to determine the resolution.\r\n\r\nWith the latest changes you get the following:\r\n\r\n```python\r\n>>> pd.to_datetime([\"2024-03-22 11:43:01\"]).dtype\r\ndtype('<M8[s]')\r\n>>> pd.to_datetime([\"2024-03-22 11:43:01.002\"]).dtype\r\ndtype('<M8[ms]')\r\n>>> pd.to_datetime([\"2024-03-22 11:43:01.002003\"]).dtype\r\ndtype('<M8[us]')\r\n```\r\n\r\nThe resulting dtype instance depends on the exact input value (not type). I do think this has some downsides:\r\n\r\n- The result dtype becomes very data dependent (while in general we want to avoid value dependent behavior)\r\n- You can very easily get multiple datetime dtypes in a workflow, causing more casting (to different unit) than necessary\r\n\r\nThe fact that pandas by default truncates the string repr of datetimes (i.e. we don't show the subsecond parts if they are all zero, regardless of the actual resolution), in contrast to numpy, also means that round-tripping through a text representation (eg CSV) will very often lead to a change in dtype.\r\n\r\nAs a potential alternative, we could also decide to have a fixed _default resolution_ (e.g. microseconds), and then the logic for inferring the resolution could be: try to use the default resolution, and only if that does not work (either out of bounds or too much precision, i.e. nanoseconds present), use the inferred resolution from the data. \r\n\r\nThat still gives some values dependent behaviour, but I think this would make it _a lot_ less common to see. And using a resolution like microseconds is sufficient for by far most use cases (in terms of bounds it supports: [290301 BC, 294241 AD])",
+ "comments": [
+  {
+   "author": "reporter",
+   "created_at": "2024-06-17T13:46:04Z",
+   "body": "cc @pandas-dev/pandas-core "
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-06-17T14:10:56Z",
+   "body": "This sounds reasonable and I think could help simplify the implementation"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-06-17T14:31:26Z",
+   "body": "I think this would be an improvement.  Seems like a good idea that anyone working with human times (say down to second precision) with a range of the modern era would get the same basis for the timestamp. "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-06-17T15:43:56Z",
+   "body": "> I think could help simplify the implementation\r\n\r\nI don't think it will simplify things generally, because we still need the current inference logic when the default unit does not fit, but from looking a bit into it, I also don't think it should make the code much more complex."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-07-19T19:10:51Z",
+   "body": "take"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-07-19T19:12:47Z",
+   "body": "Based on discussions, I will update [`to_datetime`](https://github.com/pandas-dev/pandas/blob/fe9ff741c4f0ed612250f2a36874406d0453f99b/pandas/core/tools/datetimes.py#L667) to always use nanoseconds in the given scenarios. "
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-08-02T21:16:59Z",
+   "body": "@reporter would updating the `to_datetime` function to accept a default `unit='ns'` be a feasible solution for this? Or are there cases where it wouldn't make sense to default to nanoseconds?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-08-03T19:41:44Z",
+   "body": "@participant3 nanoseconds is what we used previously, so I don't think we want to go back to that. The OP suggests microseconds as a default resolution, although I'm not sure its as simple as changing the to_datetime signature either.\r\n\r\nBefore diving into the details I think should get some more agreement from the pandas core team. @participant4 is our datetime guru so let's see if he has any thoughts first"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-08-04T00:24:23Z",
+   "body": "I’m fine with OP suggestion as long as we are internally consistent, I.e. Timestamp constructor"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-08-06T22:17:24Z",
+   "body": "@participant4 what do you mean by timestamp constructor? If we set the default value of `unit='us'` in `to_datetime`, it resolves the example that the OP mentioned but would require changing many test cases in `tests/tools/test_to_datetime.py`."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2024-08-16T19:25:13Z",
+   "body": "I would prefer going even further: don't automatically fallback if `us` is not suitable - require the user to manually override if they are dealing with dates beyond that range. That said, I'm still in favor of the OP as-is being what I see as a step in the right direction.\r\n\r\n@participant3 - I believe there are many places this would need to change in pandas to be consistent beyond just `to_datetime`."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-08-16T20:17:59Z",
+   "body": "> @participant3 - I believe there are many places this would need to change in pandas to be consistent beyond just `to_datetime`.\r\n\r\nI believe the scope of this work is outside my knowledge as this is my first issues with pandas. If it's helpful to future assignees, I found that the `to_datetime` function would default to the appropriate unit if no unit was passed in, but if `us` was passed in as the unit, it would create an object with dtype `ns` inside the `_to_datetime_with_unit` function. "
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-06-23T17:33:41Z",
+   "body": "If we do change the behavior, wouldn't it make more sense to keep \"ns\" as the default for backward compat?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-08-03T07:37:59Z",
+   "body": "> If we do change the behavior, wouldn't it make more sense to keep \"ns\" as the default for backward compat?\n\nThat would also be an option, yes. I think long term, microseconds is a better default (a larger fraction of use cases will fit in the default resolution, better compatibility with other tools), so personally I would like to switch to that at some point. But that doesn't necessarily have to happen now (e.g. could also when we would switch to a nullable extension dtype for datetime64).\n\nI had actually started looking at this a year ago when I opened the issue, but never got around opening a PR for it. I revived that branch and got it to a basic working state -> https://github.com/pandas-dev/pandas/pull/62031. \nCurrently that PR uses microseconds, but it should be relatively easy to change it to default to nanoseconds (with the logic of falling back to us when it does not fit in the range)."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2025-08-08T20:00:34Z",
+   "body": "> better compatibility with other tools\n\nNumPy, PySpark, and Polars all default to microseconds, and PySpark doesn't support nano. This has been a bit of an annoyance for me personally at times (particularly PySpark). I'm positive on switching pandas over to micro, but I have no sense as to how big of a code change this would be."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-08-09T07:02:30Z",
+   "body": "> I'm positive on switching pandas over to micro, but I have no sense as to how big of a code change this would be.\n\nFor pandas itself, it is not that big, you can check it in https://github.com/pandas-dev/pandas/pull/62031 (that PR is not yet entirely complete, but already changes the default for most cases in `pd.to_datetime` and `pd.Timestamp`. Most additional code changes will be needed in updating tests)"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-08-13T19:46:47Z",
+   "body": "@participant5 suggested at the dev meeting to make this change more gradually (because no longer inferring nanoseconds by default is a breaking change if you relied on the integer representation; although this already happens if you data source has type information that we preserve, eg reading a Parquet file that uses non-nanosecond resolution will already be read as such in pandas 2.x)\n\nThe idea would be to still default to nanoseconds (when converting from strings, stdlib datetime objecs, etc) as in pandas 2.x, but introduce a future flag to globally enable the future default of microseconds.\n\nGeneral thoughts on that?\n\nSome practical questions here:\n\n- How do we want to name this? Something like `pd.options.future.infer_microseconds = True`? (is that clear enough that it is about datetimelike data? it could also control the timedelta64 behaviour when that is implemented, so it can also be a plus that it is not too specific)\n- What to do for cases that currently raise an Out-of-Bounds error for nanoseconds (for example, `pd.to_datetime(\"2300-01-01\")`) Options:\n  - Since this is currently raising an error, it is less of a backwards compatibility issue to already start using microseconds here by default. And this already enables the nice improvement to more easily handle out-of-bounds timestamps in pandas 3.0 by default (without having to enable a feature flag)\n  - Keep raising an error as we do for 2.x, but then we can update the error message to point the user to enable the future flag to have it work,\n- For `pd.Timestamp(\"..\")`, the data-dependent resolution inference was actually already released in pandas 2.x. In the current PR I made for defaulting to microseconds, I also updated this constructor to consistently use microseconds (if possible). If we change to keep defaulting to nanoseconds and put the microseconds behind a future flag, I would also update the `pd.Timestamp(\"..\")` to follow this (but this does mean a bit of back and forth for the behaviour of this constructor ..)\n- If we do this, how do we test it? Add one build that enables the future default? I assume so, but given the amount of test changes currently in [#62031](https://github.com/pandas-dev/pandas/pull/62031), that might add a lot of if/else cases in the tests .. (although in some tests that are not about testing the default, we could probably fix the unit of the input data to not have it depend on the default inference)"
+  },
+  {
+   "author": "participant6",
+   "created_at": "2025-08-13T21:07:17Z",
+   "body": "My answers:\n\n- I do think the change should be gradual.\n- Maybe `pd.options.future.default_microseconds` might communicate it better?\n- Don't raise if we don't have to\n- I think any place where we are inferring a default resolution should be changed based on the flag.  So if `to_datetime()` is changed, then `Timestamp` and `Timedelta` should probably be changed as well.\n- On testing, I looked at a few of the tests that you changed, and I'm not sure that the test needed to be changed.  If a test specified a `dtype` of `datetime64[s]`, that should work independent of this change of default resolution.  I think it would be best to really determine which test results are dependent on the default resolution (I would hope very few!), duplicate those tests to another test file, and turn on the option within that file.  I guess it would depend on how many tests are really dependent on this resolution.\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-08-14T06:18:40Z",
+   "body": "> I think it would be best to really determine which test results are dependent on the default resolution (I would hope very few!),\n\nIn practice we have a lot of tests that depend on the default resolution, but just because they create test data (or expected result) using strings/timestamps/datetimes, and the conversion of that thus depends on the default resolution. But typically for what is being tested itself it does not matter, so in some cases we can indeed specify the dtype to not have it dependent on the default.\n"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2025-08-18T01:04:32Z",
+   "body": "> * Maybe `pd.options.future.default_microseconds` might communicate it better?\n\nAgree on `default` over `infer`. I don't see it as inference when a user does `pd.Series([dt.timedelta(20)])`."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-08-18T15:26:00Z",
+   "body": ">  I don't see it as inference when a user does pd.Series([dt.timedelta(20)]).\n\nnitpicky heads-up: resolution inference is implemented for datetime64 but not for timedelta64"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-10-16T20:58:13Z",
+   "body": "IIUC the discussed behavior is \"Default to nanoseconds, but give closest-available in cases where that would raise OutOfBoundsDatetime.  But also implement an option to change the default to microseconds\"\n\nI think @reporter mentioned in a recent dev call that actually implementing this is proving difficult.  In order to get 3.0 out the door, what if we drop the \"option\" part of this and just go back to nanoseconds in all not-out-of-bounds cases?  Then we can look at adding the option/deprecation for 3.x?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-10-20T15:44:36Z",
+   "body": "Sounds good. And to be clear, I don't think the option would be technically hard (essentially it is keeping the changes in my PR but putting them behind an `if` check for the option value). But adding an option is not critical for 3.0, we can also add that later for 3.1. \n\nThe difficult part was mostly the \"default to nanoseconds but use microseconds if it is out of bounds\" logic, and I assume this is also certainly possible, it is just that our current conversion machinery is not set up for that out of the box (because if you default to nanoseconds from the start, and then have to fallback to microseconds, we need to keep track of whether the previous values just used nanoseconds because it was the default, or used it because it was required for the resolution of those values. That piece of information is currently not tracked, so that would have to be added)"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-10-20T21:14:29Z",
+   "body": "I'm working on a branch to implement this.  The first sticking point:\n\n```\nser = pd.Series(..., dtype=M8[us]\")\nresult = ser - datetime(2016, 1, 1)\n```\n\nWe cast the datetime object to a Timestamp, which in main has \"us\" unit.  Then `result` retains \"us\" unit.  In the new branch, we're the Timestamp has \"ns\" unit, so `result` has \"ns\" unit.  Which is less-good.  Everyone OK with that?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-10-21T08:07:45Z",
+   "body": "FWIW, the same issue happens right now on main if you would use a resolution of s or ms for `ser`, which then gets converted to us. \n\nEither we always cast stdlib `datetime` objects to the default resolution, and then this is the consequence of that. \nOr we do the casting taking the other operand's type into account. Right now the cast from datetime to Timestamp happens in `maybe_prepare_scalar_for_op` called from `IndexOpsMixin._arith_method`. We currently pass the shape of the array operand, but could also pass the dtype to take the unit into account.\n \nThis reminds me a bit about numpy's NEP50, where they consider Python scalars as \"weakly typed\" and the Python scalar gets converted to the numpy dtype when combined with a numpy array. We could do something conceptually similar here, although no idea how complicated this might become ..\n\n(but this can probably be left for a separate discussion, and short term just accept the consequences of the current rule on main?)\n"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-10-21T15:18:31Z",
+   "body": "> (but this can probably be left for a separate discussion, and short term just accept the consequences of the current rule on main?)\n\nSure.  In the branch I have now I've implemented the nano-with-fallback behavior for the Timestamp scalar). For vectors have reverted from infer to nano, raising OutOfBoundsDatetime for now until I can implement the fallback behavior.  In the process of updating tests."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-10-23T16:16:22Z",
+   "body": "Discussed again on yesterday's dev call, in particular the difficulty of implementing the fallback behavior discussed above.  I proposed an alternative that is effectively \"keep the inference behavior from main, but for strings infer 'us' in cases that would previously infer 's' or 'ms'\".  @reporter  pointed out that this was very close to his OP suggestion.  Besides the nice API, the hope was that it would be more straightforward to implement than other paths.  Participants agreed it was worth a shot  (someone wrote in the call notes \"Whatever Brock can get working is fine\").\n\nIt turned out to be easy to implement: #62801"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-10-27T21:33:17Z",
+   "body": "I might have misunderstood the exact proposal during the call (or not have thought it properly through), but how is this supposed to address the concern from above about using microseconds instead of nanoseconds being a breaking change? (and also not yet entirely supported everywhere, eg the json issue)\n\n\n"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-10-27T22:22:17Z",
+   "body": "> but how is this supposed to address the concern from above about using microseconds instead of nanoseconds being a breaking change?\n\nIt doesn't.  The proposal is a breaking change from 2.x."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2025-10-28T10:39:01Z",
+   "body": "From https://github.com/pandas-dev/pandas/issues/58989#issuecomment-3453418444\n\n> eg the json issue\n\nWhat is the json issue?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-10-28T13:04:24Z",
+   "body": "> What is the json issue?\n\nVery quick, but I think it is https://github.com/pandas-dev/pandas/issues/55827\n\nFor some reason I thought what we discussed during the dev meeting (although we discussed different options .. ;)) was not going to be a breaking change, because I seem to remember we said something like \"then the json issue is less pressing and we only have to solve that for 4.0\" (when we would change the default precision)"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-10-28T14:53:08Z",
+   "body": "Yes, #55827 is the JSON issue joris referred to.  On the last dev call we discussed it briefly.  The upshot I recall was 1) we should push users away from datetimes as ints so that the ambiguity is avoided, 2) the problem exists in 2.x but is not hit often bc users don't get non-nano often, 3) it will occur more often if we change the default behaviors in 3.0, 4) reverting to all-nano for 3.0 would avoid exaserbating the issue, 5) (the part that joris and i may be remembering differently) it is not that big a deal and is OK to punt on"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-10-28T14:54:33Z",
+   "body": "> For some reason I thought what we discussed during the dev meeting (although we discussed different options .. ;)) was not going to be a breaking change\n\nWe did discuss a bunch of options and it is easy to get wires crossed.  My concern is increasingly that we're getting bogged down again and never going to get a release out."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-10-29T15:15:40Z",
+   "body": "To avoid getting lost in details about what might have been discussed (or differently remembered) in the meetings, trying to make an explicit list of the different options that have been discussed:\n\n1. As originally proposed in this issue, use microseconds as the default resolution in general (i.e. for inference, but when the data already has a resolution, such as numpy datetime64, we preserve that)\n2. For concern of backwards compatibility, use nanoseconds as the default instead of microseconds\n3. Like 2, but also already provide the automatic use of microseconds for cases that would give out-of-bounds errors for nanoseconds\n\nThe first option is what I started to implement in https://github.com/pandas-dev/pandas/pull/62031. \nThen the concern was raised that this would be a breaking change for people assuming to get nanoseconds when interpreting our datetime64 columns as integer (to be clear, this is also an issue for the current behaviour in main using data-dependent resolutions), and that we wanted to do this change of the default resolution more slowly: still default to nanoseconds for 3.0, and add a future option so we can then change the default in 4.0 (https://github.com/pandas-dev/pandas/issues/58989#issuecomment-3185400255).\n\nBecause I wanted to keep the benefit of already (automatically) getting rid of the out-of-bounds errors when parsing strings, I tried to update my PR to implement option 3. That is what I then mentioned as turning out to be more complex.\n\nTherefore we said, let's just go back to nanoseconds for now just to get things going, i.e. option 2 (Brock's comment at https://github.com/pandas-dev/pandas/issues/58989#issuecomment-3412816537, which was thumbed up). \nBrock started to implement that, but then last week proposed to again go for microseconds because of the difficulty about the fallback (while I thought we decided we were OK to not have the fallback for now?).\n\n---\n\nI initially worked on moving to microseconds, so I think I am still fine with that. I just want to be explicit that I don't think going for just nanoseconds (option 2, not 3) in much harder. \n\nAnd given the previous decision to provide a slower migration away from the nanoseconds default, I would like to see some explicit support that we are now fine _not_ doing that (i.e. I think mostly @participant5 and @participant6 argued for that in the meeting, but I might remember incorrectly)\n\nNot yet moving to microseconds for 3.0 has the additional benefit of causing less of an issue with JSON roundtrip (https://github.com/pandas-dev/pandas/issues/55827), and also gives the possibility to change the default timedelta resolution at the same time as datetime (since timedelta right now is still nanoseconds)\n\n"
+  },
+  {
+   "author": "participant6",
+   "created_at": "2025-10-31T14:05:06Z",
+   "body": "> And given the previous decision to provide a slower migration away from the nanoseconds default, I would like to see some explicit support that we are now fine _not_ doing that (i.e. I think mostly [@participant5](https://github.com/participant5) and [@participant6](https://github.com/participant6) argued for that in the meeting, but I might remember incorrectly)\n\nMy main concern here is if someone has code that converts time objects to integers and assumes that those integers represent nanoseconds.\n\ne.g. pd.Series([pd.Timestamp(\"2025-10-31 9:57\")]).astype(int) will now return a different result.\n\nSo that makes me think we can't fully change the default - that we need a gradual transition.  On the other hand, if we document how to handle that case, I think we'd be OK."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-10-31T15:59:08Z",
+   "body": "> On the other hand, if we document how to handle that case, I think we'd be OK.\n\nWhere do you have in mind for this?  A sentence in the whatsnew section about this pointing out int implications?"
+  },
+  {
+   "author": "participant6",
+   "created_at": "2025-10-31T16:50:39Z",
+   "body": "> > On the other hand, if we document how to handle that case, I think we'd be OK.\n> \n> Where do you have in mind for this? A sentence in the whatsnew section about this pointing out int implications?\n\nYes, but I also think that https://<redacted-host>/docs/user_guide/timeseries.html needs to be updated to indicate the newly proposed behavior."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-10-31T18:19:38Z",
+   "body": "Added a line in the whatsnew.  Looked in timeseries.html and the section about \"From timestamps to epoch\" is already robust to this change\n\n```\nWe subtract the epoch (midnight at January 1, 1970 UTC) and then floor divide by the\n\"unit\" (1 second).\n\n.. ipython:: python\n\n   (stamps - pd.Timestamp(\"1970-01-01\")) // pd.Timedelta(\"1s\")\n\n```"
+  },
+  {
+   "author": "participant6",
+   "created_at": "2025-10-31T18:43:35Z",
+   "body": "> Added a line in the whatsnew. Looked in timeseries.html and the section about \"From timestamps to epoch\" is already robust to this change\n\nI still think that file needs to be updated to indicate that the resolution you get from parsing strings varies based on the input.  And there are other places in that file where the proposed change in behavior indicates a possible doc change.  E.g., there is a section on \"Representing out-of-bound spans\" and  the overview talks about the pandas data type being defaulted to `ns`.\n"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-10-31T20:13:25Z",
+   "body": "> I still think that file needs to be updated to indicate that the resolution you get from parsing strings varies based on the input.\n\nUpdated.\n\n> Representing out-of-bound spans\n\nThat section is about Periods.  We can add information about non-nano support, but that can be done separately."
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "pandas-dev/pandas",
+  "default_branch": "main",
+  "commit_sha": "cce2f66b3ce82979d143f57e8ba1656957538073",
+  "as_of": "2024-06-12T18:26:30Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_pandas-dev_pandas_58989"
+}

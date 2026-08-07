@@ -1,0 +1,108 @@
+{
+ "repo": "keras-team/keras",
+ "number": 19048,
+ "url": "https://github.com/keras-team/keras/issues/19048",
+ "title": "JAX backend - exporting to TF savedmodel via JAX2TF errors (Cannot convert '(b, t, 1)' to a shape. Found invalid entry 't' AND ValueError: Invalid dtype: _DimExpr)",
+ "state": "closed",
+ "labels": [
+  "To investigate",
+  "stat:awaiting keras-eng",
+  "backend:jax"
+ ],
+ "reporter": "reporter",
+ "created_at": "2024-01-10T16:53:26Z",
+ "closed_at": "2024-04-12T00:18:54Z",
+ "body": "I would like to develop a model using keras with the JAX backend, but then export it as a TensorFlow savedmodel.\r\n\r\nThis was already broken with keras-core==0.1.7, and is even-more-broken in keras==3.0.2.\r\n\r\n# Code to reproduce\r\n\r\n```\r\nimport os\r\nos.environ['KERAS_BACKEND'] = 'jax'\r\nimport keras_core as keras # import keras directly to use keras==3.0.2\r\nimport numpy as np\r\n\r\nwindow_size = 100\r\ninference_window_size = None\r\n\r\nX = np.random.random((1024, window_size, 1))\r\nY = np.random.random((1024, window_size, 1))\r\n\r\nmodel = keras.Sequential([keras.layers.Dense(128, activation='relu'),\r\n                          keras.layers.Dense(64, activation='relu'),\r\n                          keras.layers.Dense(1, activation='relu'),\r\n                          ])\r\n\r\nmodel.compile(optimizer=keras.optimizers.Adam(), loss=keras.losses.mean_squared_error)\r\n\r\nmodel.fit(X, Y, batch_size=32)\r\n\r\nmodel.summary()\r\n\r\nimport tensorflow as tf\r\n\r\nmodule = tf.Module()\r\nmodule.model = model\r\n\r\nif 'KERAS_BACKEND' in os.environ and os.environ['KERAS_BACKEND'] == 'jax':\r\n    from jax.experimental import jax2tf\r\n\r\n    poly_shape_window_size = 't' if inference_window_size is None else inference_window_size\r\n    poly_shape = jax2tf.PolyShape('b', poly_shape_window_size, 1)\r\n\r\n    print(f'poly_shape: {poly_shape}')\r\n\r\n    predict_fn = jax2tf.convert(module.model.call,\r\n                                native_serialization_platforms=('cpu',),\r\n                                polymorphic_shapes=str(poly_shape),\r\n                                )\r\nelse:\r\n    predict_fn = module.model.call\r\n\r\n\r\n@tf.function(autograph=False, input_signature=[tf.TensorSpec(shape=(None, inference_window_size, 1), dtype=tf.float32)])\r\ndef fn(x):\r\n    outputs = predict_fn(x)\r\n    return outputs\r\n\r\n\r\nmodule.fn = fn\r\n\r\ntf.saved_model.save(module, 'model.tf', signatures={'serving_default': module.fn})\r\n```\r\n\r\n# Package versions - keras-core\r\ntensorflow==2.15\r\njax[cpu]==0.4.16\r\nkeras-core==0.1.7\r\n\r\n## Throws\r\n```\r\nFile \"repro_github.py\", line 47, in fn\r\n    outputs = predict_fn(x)\r\n  File \"venv_repro\\lib\\site-packages\\jax\\experimental\\jax2tf\\jax2tf.py\", line 402, in converted_fun_tf\r\n    impl.before_conversion()\r\n  File \"venv_repro\\lib\\site-packages\\jax\\experimental\\jax2tf\\jax2tf.py\", line 506, in before_conversion\r\n    self.exported = export.export(\r\n  File \"venv_repro\\lib\\site-packages\\jax\\experimental\\export\\export.py\", line 422, in do_export\r\n    lowered = wrapped_fun_jax.lower(\r\n  File \"venv_repro\\lib\\site-packages\\keras_core\\src\\models\\sequential.py\", line 187, in call\r\n    return self._functional.call(inputs, training=training, mask=mask)\r\n  File \"venv_repro\\lib\\site-packages\\keras_core\\src\\models\\functional.py\", line 188, in call\r\n    outputs = self._run_through_graph(\r\n  File \"venv_repro\\lib\\site-packages\\keras_core\\src\\ops\\function.py\", line 140, in _run_through_graph\r\n    outputs = operation_fn(node.operation)(*args, **kwargs)\r\n  File \"venv_repro\\lib\\site-packages\\keras_core\\src\\models\\functional.py\", line 574, in call\r\n    return operation(*args, **kwargs)\r\n  File \"venv_repro\\lib\\site-packages\\keras_core\\src\\utils\\traceback_utils.py\", line 123, in error_handler\r\n    raise e.with_traceback(filtered_tb) from None\r\n  File \"venv_repro\\lib\\site-packages\\keras_core\\src\\backend\\common\\variables.py\", line 437, in standardize_shape\r\n    raise ValueError(\r\nValueError: Cannot convert '(b, t, 1)' to a shape. Found invalid entry 't'.\r\n\r\n```\r\nLooking at the keras code, this part seems to assume that the only polymorphic shape \"marker\" is the letter **b**, but in fact it can be any letter, as far as I understood from the [jax2tf documentation](https://github.com/google/jax/blob/main/jax/experimental/jax2tf/README.md).  For example, in my case, I have an unknown batch dimension (**b**) and time dimension (**t**), and these are not the same to each other (which I think JAX would imply if I were to use **b** to identify both of them).\r\n\r\nI had originally opened this as a JAX bug (https://github.com/google/jax/issues/17803) but I suspect it's actually a Keras bug.\r\n\r\nLooking at the keras3 code, it seems this bug is still present.  There unfortunately seems to be an additional one as well, which breaks earlier, and which follows:\r\n\r\n# Package versions - keras3\r\ntensorflow==2.15\r\njax[cpu]==0.4.16\r\nkeras-core==3.0.2\r\n\r\n## Throws\r\n```\r\n  File \"repro_github.py\", line 47, in fn\r\n    outputs = predict_fn(x)\r\n  File \"venv\\lib\\site-packages\\jax\\experimental\\jax2tf\\jax2tf.py\", line 402, in converted_fun_tf\r\n    impl.before_conversion()\r\n  File \"venv\\lib\\site-packages\\jax\\experimental\\jax2tf\\jax2tf.py\", line 500, in before_conversion\r\n    self.exported = export.export(\r\n  File \"venv\\lib\\site-packages\\jax\\experimental\\export\\export.py\", line 470, in do_export\r\n    lowered = wrapped_fun_jax.lower(\r\n  File \"venv\\lib\\site-packages\\keras\\src\\models\\sequential.py\", line 203, in call\r\n    return self._functional.call(inputs, training=training, mask=mask)\r\n  File \"venv\\lib\\site-packages\\keras\\src\\models\\functional.py\", line 188, in call\r\n    outputs = self._run_through_graph(\r\n  File \"venv\\lib\\site-packages\\keras\\src\\ops\\function.py\", line 153, in _run_through_graph\r\n    outputs = operation_fn(node.operation)(*args, **kwargs)\r\n  File \"venv\\lib\\site-packages\\keras\\src\\models\\functional.py\", line 572, in call\r\n    return operation(*args, **kwargs)\r\n  File \"venv\\lib\\site-packages\\keras\\src\\utils\\traceback_utils.py\", line 123, in error_handler\r\n    raise e.with_traceback(filtered_tb) from None\r\n  File \"venv\\lib\\site-packages\\keras\\src\\backend\\common\\variables.py\", line 396, in standardize_dtype\r\n    raise ValueError(f\"Invalid dtype: {dtype}\")\r\nValueError: Invalid dtype: _DimExpr\r\n```\r\nFor this latter issue I don't have immediate ideas...\r\n\r\nLet me know if you need any more information.\r\n\r\nThanks.\r\n",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2024-01-11T03:20:47Z",
+   "body": "\r\n1. Save in keras format\r\n```\r\nimport os\r\nos.environ['KERAS_BACKEND'] = 'jax'\r\nimport keras\r\nimport numpy as np\r\n\r\nwindow_size = 100\r\ninference_window_size = None\r\n\r\nX = np.random.random((1024, window_size, 1))\r\nY = np.random.random((1024, window_size, 1))\r\n\r\nmodel = keras.Sequential([keras.layers.Dense(128, activation='relu'),\r\n                          keras.layers.Dense(64, activation='relu'),\r\n                          keras.layers.Dense(1, activation='relu'),\r\n                          ])\r\n\r\nmodel.compile(optimizer=keras.optimizers.Adam(), loss=keras.losses.mean_squared_error)\r\n\r\nmodel.fit(X, Y, batch_size=32)\r\n\r\nmodel.summary()\r\nmodel.save(\"keras_model.keras\")\r\n```\r\n2. Then change the backend to tensorflow\r\nAnd reboot it again\r\nThis time we save it using `tf.saved_model.save`\r\n```\r\nimport os\r\nos.environ['KERAS_BACKEND'] = 'tensorflow'\r\nimport keras\r\nimport tensorflow as tf\r\n\r\nmodel = keras.saving.load_model(\"keras_model.keras\")\r\nmodel.summary()\r\n\r\ntf.saved_model.save(model, \"saved_model_dir\")\r\n```"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-01-11T06:57:22Z",
+   "body": "Hi @reporter ,\r\n\r\nThanks for reporting the issue. I do replicate the issue with keras3.0.2 with `tf.function` annotation.\r\nIf I remove `tf.function` annotation for `'fn(x)'` and save the model it works fine. Please refer attached [gist](https://colab.sandbox.google.com/gist/participant2/d59756a379021957079da38bdf1fe032/19048.ipynb#scrollTo=RY82efOCA4oj).\r\n\r\nThe `ValueError: Invalid dtype: _DimExpr` generated from `standardize_dtype()` indicates that the dtype from serialized config is passed as `_DimExpr` which may be generated from Jax API itself.\r\n\r\n"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-01-11T06:59:27Z",
+   "body": "I also tested with tf_keras(keras 2.x) and got a different error.Attached [gist](https://colab.sandbox.google.com/gist/participant2/72c02b2c1bee6d7cd37295eee925ba75/19048_tf_keras.ipynb#scrollTo=zeQR1z23IHmS) for same\r\n\r\n`AttributeError: 'DynamicJaxprTracer' object has no attribute '_keras_mask'\r\n`"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-01-11T08:47:05Z",
+   "body": "> 1. Save in keras format\r\n> \r\n> \r\n> ```\r\n> import os\r\n> os.environ['KERAS_BACKEND'] = 'jax'\r\n> import keras\r\n> import numpy as np\r\n> \r\n> window_size = 100\r\n> inference_window_size = None\r\n> \r\n> X = np.random.random((1024, window_size, 1))\r\n> Y = np.random.random((1024, window_size, 1))\r\n> \r\n> model = keras.Sequential([keras.layers.Dense(128, activation='relu'),\r\n>                           keras.layers.Dense(64, activation='relu'),\r\n>                           keras.layers.Dense(1, activation='relu'),\r\n>                           ])\r\n> \r\n> model.compile(optimizer=keras.optimizers.Adam(), loss=keras.losses.mean_squared_error)\r\n> \r\n> model.fit(X, Y, batch_size=32)\r\n> \r\n> model.summary()\r\n> model.save(\"keras_model.keras\")\r\n> ```\r\n> \r\n>     2. Then change the backend to tensorflow\r\n>        And reboot it again\r\n>        This time we save it using `tf.saved_model.save`\r\n> \r\n> \r\n> ```\r\n> import os\r\n> os.environ['KERAS_BACKEND'] = 'tensorflow'\r\n> import keras\r\n> import tensorflow as tf\r\n> \r\n> model = keras.saving.load_model(\"keras_model.keras\")\r\n> model.summary()\r\n> \r\n> tf.saved_model.save(model, \"saved_model_dir\")\r\n> ```\r\n\r\nSorry I should have been more explicit in my original issue . The reason I can't take this approach is that in my real use-case, I am using a fairly complex custom keras layer, for which I only have jax-backend implementation.  So reloading the model with the tensorflow backend is not an option."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-01-12T07:48:40Z",
+   "body": "Similar issue with `torch` backend. https://github.com/keras-team/keras/issues/19017"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-01-12T07:52:54Z",
+   "body": "> Similar issue with `torch` backend. #19017\r\n\r\nI suspect that https://github.com/keras-team/keras/issues/19017 is impossible by design, it would require quite a lot of magic on keras' part!\r\n\r\nThis issue, however, leverages JAX's jax2tf, so in principle what I am trying to do should be possible.\r\n\r\nOne of the two issues I found (Cannot convert '(b, t, 1)' to a shape. Found invalid entry 't') is also clearly triggered by a part of keras that is unique to the JAX backend integration."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-01-12T20:24:14Z",
+   "body": "Hi @reporter,\r\n\r\nIt seems that your workflow with jax2tf and TF SavedModel is exactly what the `model.export()` API is useful for.\r\nYou can simply do `model.export(\"my_model\")` or have more customization with ExportArchive, here some reference tutorial on it: https://keras.io/api/models/model_saving_apis/export/"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-01-15T13:05:39Z",
+   "body": "> Hi @reporter,\r\n> \r\n> It seems that your workflow with jax2tf and TF SavedModel is exactly what the `model.export()` API is useful for. You can simply do `model.export(\"my_model\")` or have more customization with ExportArchive, here some reference tutorial on it: https://keras.io/api/models/model_saving_apis/export/\r\n\r\nDoes model.export() automatically turn my JAX-backend-keras-model (with custom layers that use JAX ops) into a TF savedmodel?  I'd be very surprised if it did?  The documentation you link looks like it might only be valid for keras 2, or when using keras with the tensorflow backend?"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-01-16T16:49:37Z",
+   "body": "Yes, `model.export()` does turn a JAX-backend Keras model into a TF SavedModel. The API is not as mature for JAX-backend as it is for TF (hence why docs have not been updated yet), but it does work for the case specified in this issue, as I was able to run `model.export(\"my_model\")`: https://colab.sandbox.google.com/gist/participant4/9d8d3cd435611fd2fca45f2635d0cd30/jax_export.ipynb"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-01-17T11:26:17Z",
+   "body": "Ah excellent!  I see it here https://github.com/keras-team/keras/blob/c4dd4fab5bd9491b32b4ab1e360d290ad8e8a238/keras/export/export_lib.py#L267 \r\nIt's roughly doing what I was trying to do \"by hand\", and manages to get the model exported.  But the exported model is broken, because of this:\r\nhttps://github.com/keras-team/keras/blob/c4dd4fab5bd9491b32b4ab1e360d290ad8e8a238/keras/export/export_lib.py#L460\r\nIt's not correct to replace all \"None\" dimensions with \"b\", as this would imply that all the unknown dimensions have same length (ref. https://github.com/google/jax/blob/main/jax/experimental/jax2tf/README.md)\r\n\r\nUpdated code to reproduce (much neater now, thank you very much for the pointers!)\r\n\r\n```\r\nimport os\r\nos.environ['KERAS_BACKEND'] = 'jax'\r\nimport keras\r\nimport numpy as np\r\n\r\nwindow_size = 100\r\ninference_batch_size = None\r\ninference_window_size = None\r\n\r\nX = np.random.random((1024, window_size, 1))\r\nY = np.random.random((1024, window_size, 1))\r\n\r\nmodel = keras.Sequential([keras.layers.Input(batch_shape=(inference_batch_size , inference_window_size , 1)),\r\n                          keras.layers.Dense(128, activation='relu'),\r\n                          keras.layers.Dense(64, activation='relu'),\r\n                          keras.layers.Dense(1, activation='relu'),\r\n                          ])\r\n\r\nmodel.compile(optimizer=keras.optimizers.Adam(), loss=keras.losses.mean_squared_error)\r\n\r\nmodel.summary()\r\n\r\nmodel.fit(X, Y, batch_size=32)\r\n\r\nmodel.export(f'model_export.tf')\r\n\r\n\r\nimport tensorflow as tf\r\n\r\n# load model\r\ntf_model = tf.saved_model.load('model_export.tf')\r\n\r\n# call tf_model\r\ntf_model_fn = tf_model.signatures['serving_default']\r\n\r\n# This works\r\nout = tf_model_fn(tf.constant(X[:<nick>, ...], dtype=tf.float32))\r\n\r\n# And this does not\r\nout = tf_model_fn(tf.constant(X, dtype=tf.float32))\r\n```\r\n\r\nThrows the error:\r\n\r\n```\r\nDetected at node XlaCallModule defined at (most recent call last):\r\n<stack traces unavailable>\r\nModule shape refinement failed: UNKNOWN: \\venv\\lib\\site-packages\\keras\\src\\layers\\core\\dense.py:112:0: error: 'stablehlo.add' op requires compatible types for all operands and results\r\n\\venv\\lib\\site-packages\\keras\\src\\layers\\core\\dense.py:112:0: note: see current operation: %18 = \"stablehlo.add\"(%15, %17) : (tensor<1024x100x128xf32>, tensor<1024x1024x128xf32>) -> tensor<?x?x128xf32>\r\n```"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-01-17T13:01:02Z",
+   "body": "@reporter Try this\r\n```\r\nspec_shape = str(spec_shape).replace(\"None\", \"b\", 1).replace(\"None\", \"d\")\r\n```\r\n---\r\nhttps://github.com/keras-team/keras/blob/c4dd4fab5bd9491b32b4ab1e360d290ad8e8a238/keras/backend/common/variables.py#L422-L424\r\n↓\r\n```\r\n        if config.backend() == \"jax\":\r\n            if str(e) == \"b\" or str(e) == \"d\":\r\n            # JAX2TF tracing represents `None` dimensions as `b` or `d`\r\n                continue\r\n```"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-01-17T13:12:16Z",
+   "body": "These changes fix my specific example.  I suppose the \"proper\" fix would be to:\r\n\r\n1. Somehow expose `polymorphic_shape` to the user (or is there already a way in keras to specify that two **None** dimensions should be e.g. equal to each other?)\r\n2. Accept arbitrary strings to represent **None** dimensions in `standardize_shape` when the backend is jax, as opposed to specifically only **b** or **d** or whatever else.\r\n\r\nThanks!\r\n\r\nLuca"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2024-02-17T13:22:14Z",
+   "body": "I'm also facing `AttributeError: 'DynamicJaxprTracer' object has no attribute '_keras_mask'`. Any hack to mitigate this?"
+  },
+  {
+   "author": "participant6",
+   "created_at": "2024-04-12T00:18:54Z",
+   "body": "Hi @reporter ,\r\n\r\n> `import keras_core as keras`.\r\n\r\n`keras_core` is deprecated, please use `keras` instead.\r\n\r\nThe latest version of Keras (3.1.2) supports exactly what you want out of the box using `ExportArchive`. It will detect the `None` dimension and give it a name in the `polymorphic_shapes` given to `jax2tf`.\r\n\r\n```python\r\nimport os\r\nos.environ['KERAS_BACKEND'] = 'jax'\r\nimport keras\r\nimport numpy as np\r\nimport tensorflow as tf\r\n\r\nwindow_size = 100\r\ninference_window_size = None\r\n\r\nX = np.random.random((1024, window_size, 1))\r\nY = np.random.random((1024, window_size, 1))\r\n\r\nmodel = keras.Sequential([keras.layers.Dense(128, activation='relu'),\r\n                          keras.layers.Dense(64, activation='relu'),\r\n                          keras.layers.Dense(1, activation='relu'),\r\n                          ])\r\n\r\nmodel.compile(optimizer=keras.optimizers.Adam(), loss=keras.losses.mean_squared_error)\r\n\r\nmodel.fit(X, Y, batch_size=32)\r\n\r\nmodel.summary()\r\n\r\narchive = keras.export.ExportArchive()\r\narchive.track(model)\r\nsignature = [tf.TensorSpec(shape=(None, inference_window_size, 1), dtype=tf.float32)]\r\narchive.add_endpoint(\r\n    \"call\",\r\n    model.__call__,\r\n    input_signature=signature\r\n)\r\narchive.write_out(\"my_export\")\r\n\r\nrevived_model = tf.saved_model.load(\"my_export\")\r\nrevived_model.call(np.random.random((1024, 50, 1)))\r\n```\r\n\r\n> Does model.export() automatically turn my JAX-backend-keras-model (with custom layers that use JAX ops) into a TF savedmodel? \r\n\r\nYes, it uses `jax2tf` under the hood.\r\n\r\n> It's not correct to replace all \"None\" dimensions with \"b\"\r\n\r\nThis is fixed.\r\n\r\n> Somehow expose polymorphic_shape to the user (or is there already a way in keras to specify that two None dimensions should be e.g. equal to each other?)\r\n\r\nBoth options were added. If you have `None`s in the signature, it will create a `polymorphic_shapes` with individual names for each `None` dimension, meaning they're uncorrelated. If you want more control, you can pass `polymorphic_shapes` in the `jax2tf` argument to override the default. Here is an example of how to do this: https://github.com/keras-team/keras/blob/master/keras/export/export_lib_test.py#L274\r\n\r\n> Sorry I should have been more explicit in my original issue . The reason I can't take this approach is that in my real use-case, I am using a fairly complex custom keras layer, for which I only have jax-backend implementation. So reloading the model with the tensorflow backend is not an option.\r\n\r\nI'm a bit confused about this. This export approach produces a Tensorflow graph that you can only reload with Tensorflow. However, the what Keras \"save\" approach (`model.save(\"keras_model.keras\")`) produces can be reloaded with Keras with the JAX backend. So if that is what you want, you definitely want to go with the \"save\" approach.\r\n\r\n@participant7  @participant2 ,\r\n\r\n> `AttributeError: 'DynamicJaxprTracer' object has no attribute '_keras_mask'`\r\n\r\nKeras 2.0 does not work with JAX, it is Tensorflow only. You'll have to switch to Keras 3.\r\n\r\n@participant3 ,\r\n\r\nThe torch backend is not supported, there is no way to make the Tensorflow export work with torch.\r\n\r\n"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-04-12T01:59:37Z",
+   "body": "@participant6 \r\nhttps://github.com/keras-team/keras/issues/19017#issuecomment-1889271772"
+  },
+  {
+   "author": "participant6",
+   "created_at": "2024-04-12T20:55:10Z",
+   "body": "@participant3 ,\r\n\r\nThanks! Interesting. So when we get PyTorch XLA to work with Keras 3, then this will be possible."
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "keras-team/keras",
+  "default_branch": "master",
+  "commit_sha": "e5dad3905969e62a85f6da6aefead2790a8aa8f1",
+  "as_of": "2024-01-10T16:53:26Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_keras-team_keras_19048"
+}

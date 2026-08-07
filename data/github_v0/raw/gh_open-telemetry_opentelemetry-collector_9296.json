@@ -1,0 +1,127 @@
+{
+ "repo": "open-telemetry/opentelemetry-collector",
+ "number": 9296,
+ "url": "https://github.com/open-telemetry/opentelemetry-collector/issues/9296",
+ "title": "Collector crashing with `invalid memory address or nil pointer dereference` on collector exposing a `GRPC` endpoint  behind an AWS ALB",
+ "state": "closed",
+ "labels": [
+  "bug",
+  "priority:p1"
+ ],
+ "reporter": "reporter",
+ "created_at": "2024-01-16T17:38:43Z",
+ "closed_at": "2024-01-26T14:43:02Z",
+ "body": "**Describe the bug**\r\nCollector is crashing continuously a few seconds after starting up after upgrading to `0.92.0`\r\n\r\n\r\n**Steps to reproduce**\r\nI have several collectors running with the same version but only one is having the issue. the only difference I can see is that it is used as a Gateway behind an AWS ALB. the ALB healthcheck in GRPC polls on the `/` path of the receiver and the failure seem to correlate with the probe frequency. Also noted that if I remove the ingress the error stops (along with the traffic so not sure if this proves anything....) \r\nI also tried to downgrade the relay collector to 0.91.0 and send the traces \"as-is\" to a second collector running on `0.92.0` with the same config but without ingress and I don't get the error so it would tend to confirm the ALB probe theory.... \r\n\r\n**What did you expect to see?**\r\nThe collector should at least survive the error and log a meaningful message\r\n\r\n**What did you see instead?**\r\n```\r\npanic: runtime error: invalid memory address or nil pointer dereference\r\n[signal SIGSEGV: segmentation violation code=0x1 addr=0x18 pc=0x1235929]\r\n\r\ngoroutine 167 [running]:\r\n<redacted-host>/contrib/instrumentation/google.golang.org/grpc/otelgrpc.(*config).handleRPC(0xc002a0e9c0, {0x902ac80, 0xc002aaa510}, {0x8ff2fd0?, 0xc0020fba88?})\r\n\t<redacted-host>/contrib/instrumentation/google.golang.org/grpc/otelgrpc@v0.46.1/stats_handler.go:144 +0xa9\r\n<redacted-host>/contrib/instrumentation/google.golang.org/grpc/otelgrpc.(*serverHandler).HandleRPC(0xc00232a340?, {0x902ac80?, 0xc002aaa510?}, {0x8ff2fd0?, 0xc0020fba88?})\r\n\t<redacted-host>/contrib/instrumentation/google.golang.org/grpc/otelgrpc@v0.46.1/stats_handler.go:88 +0x2a\r\ngoogle.golang.org/grpc/internal/transport.(*http2Server).WriteStatus(0xc00232a340, 0xc002a0c480, 0xc002b3c340)\r\n\tgoogle.golang.org/grpc@v1.60.1/internal/transport/http2_server.go:1071 +0xaf2\r\ngoogle.golang.org/grpc.(*Server).handleStream(0xc002858c00, {0x905cfe0, 0xc00232a340}, 0xc002a0c480)\r\n\tgoogle.golang.org/grpc@v1.60.1/server.go:1749 +0x575\r\ngoogle.golang.org/grpc.(*Server).serveStreams.func2.1()\r\n\tgoogle.golang.org/grpc@v1.60.1/server.go:1016 +0x59\r\ncreated by google.golang.org/grpc.(*Server).serveStreams.func2 in goroutine 166\r\n\tgoogle.golang.org/grpc@v1.60.1/server.go:1027 +0x115\r\n```\r\n\r\n**What version did you use?**\r\notel-operator: 0.91.0 , collector image: 0.92.0\r\n\r\n**What config did you use?**\r\ncollector: \r\n```\r\n\"exporters\":\r\n  \"logging\": null\r\n  \"otlp/central\":\r\n    \"endpoint\": \"https://xxxxxxxxxxxxxx\"\r\n\"extensions\":\r\n  \"health_check\": {}\r\n  \"zpages\": {}\r\n\"processors\":\r\n  \"batch\":\r\n    \"send_batch_max_size\": 15000\r\n    \"send_batch_size\": 7500\r\n    \"timeout\": \"200ms\"\r\n  \"memory_limiter\":\r\n    \"check_interval\": \"1s\"\r\n    \"limit_percentage\": 75\r\n    \"spike_limit_percentage\": 15\r\n  \"transform\":\r\n    \"metric_statements\":\r\n    - \"context\": \"metric\"\r\n      \"statements\":\r\n      - \"set(resource.attributes[\\\"meta.collector\\\"], \\\"relay-collector\\\")\"\r\n    \"trace_statements\":\r\n    - \"context\": \"spanevent\"\r\n      \"statements\":\r\n      - \"set(resource.attributes[\\\"meta.collector\\\"], \\\"relay-collector\\\")\"\r\n    - \"context\": \"span\"\r\n      \"statements\":\r\n      - \"set(resource.attributes[\\\"meta.collector\\\"], \\\"relay-collector\\\")\"\r\n\"receivers\":\r\n  \"otlp\":\r\n    \"protocols\":\r\n      \"grpc\":\r\n        \"endpoint\": \"0.0.0.0:4317\"\r\n        \"max_recv_msg_size_mib\": 15\r\n        \"tls\":\r\n          \"cert_file\": \"/certificate/tls.crt\"\r\n          \"key_file\": \"/certificate/tls.key\"\r\n\"service\":\r\n  \"extensions\":\r\n  - \"health_check\"\r\n  - \"zpages\"\r\n  \"pipelines\":\r\n    \"traces\":\r\n      \"exporters\":\r\n      - \"otlp/central\"\r\n      \"processors\":\r\n      - \"memory_limiter\"\r\n      - \"transform\"\r\n      - \"batch\"\r\n      \"receivers\":\r\n      - \"otlp\"\r\n  \"telemetry\":\r\n    \"logs\":\r\n      \"encoding\": \"json\"\r\n      \"level\": \"info\"\r\n    \"metrics\":\r\n      \"address\": \":8888\"\r\n```\r\n\r\ningress:\r\n```\r\napiVersion: <redacted-host>/v1\r\nkind: Ingress\r\nmetadata:\r\n  name: relay-collector\r\n  namespace: '${config.namespace}'\r\n  annotations:\r\n    \"<redacted-host>/backend-protocol\": \"HTTPS\"\r\n    \"<redacted-host>/backend-protocol-version\": \"GRPC\"\r\n    \"<redacted-host>/target-type\": \"ip\"\r\n    \"<redacted-host>/healthcheck-path\": \"/\"\r\n    \"<redacted-host>/healthcheck-protocol\": \"HTTPS\"\r\n    \"<redacted-host>/healthcheck-interval-seconds\": \"5\"\r\n    \"<redacted-host>/healthcheck-timeout-seconds\": \"4\"\r\n    \"<redacted-host>/unhealthy-threshold-count\": \"3\"\r\n    \"<redacted-host>/success-codes\": \"0-99\"\r\n    \"<redacted-host>/ssl-policy\": \"ELBSecurityPolicy-TLS-1-2-2017-01\"\r\n    \"<redacted-host>/inbound-cidrs\": \"${config.inbound_cidrs}\"\r\n    \"<redacted-host>/certificate-arn\": \"${config.certificate}\"\r\n    \"<redacted-host>/listen-ports\": \"[{\\\"HTTPS\\\": 443 }]\"\r\n    \"<redacted-host>/scheme\": \"internal\"\r\nspec:\r\n  ingressClassName: albv2\r\n  rules:\r\n    - host: ${config.hostname}\r\n      http:\r\n        paths:\r\n          - path: /*\r\n            pathType: ImplementationSpecific\r\n            backend:\r\n              service:\r\n                name: relay-collector\r\n                port:\r\n                  name: otlp-grpc\r\n```\r\n\r\n**Environment**\r\notel-contrib image\r\n\r\n**Additional context**\r\nI did not manage to repro locally on my machine, the issue only seem to happen on the cluster\r\n",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2024-01-16T19:37:31Z",
+   "body": "I also have issues with 0.92.0 behind AWS ALB, which worked fine in all previous versions I've ran (including 0.91.0), where mine just fails the health checks and I don't get why..\r\n\r\nBut I do seem to get the same error message as you, _when_ I restart the service (via systemd).\r\n```\r\nJan 16 19:22:53 opentelemetry-collector-338 otelcol-contrib[116191]: panic: runtime error: invalid memory address or nil pointer dereference\r\nJan 16 19:22:53 opentelemetry-collector-338 otelcol-contrib[116191]: [signal SIGSEGV: segmentation violation code=0x1 addr=0x18 pc=0xd37fa8]\r\nJan 16 19:22:53 opentelemetry-collector-338 otelcol-contrib[116191]: goroutine 318 [running]:\r\nJan 16 19:22:53 opentelemetry-collector-338 otelcol-contrib[116191]: <redacted-host>/contrib/instrumentation/google.golang.org/grpc/otelgrpc.(*config).>\r\nJan 16 19:22:53 opentelemetry-collector-338 otelcol-contrib[116191]:         <redacted-host>/contrib/instrumentation/google.golang.org/grpc/otelgrpc@v0>\r\nJan 16 19:22:53 opentelemetry-collector-338 otelcol-contrib[116191]: <redacted-host>/contrib/instrumentation/google.golang.org/grpc/otelgrpc.(*serverHa>\r\nJan 16 19:22:53 opentelemetry-collector-338 otelcol-contrib[116191]:         <redacted-host>/contrib/instrumentation/google.golang.org/grpc/otelgrpc@v0>\r\nJan 16 19:22:53 opentelemetry-collector-338 otelcol-contrib[116191]: google.golang.org/grpc/internal/transport.(*http2Server).WriteStatus(0x4002b22340, 0x4>\r\nJan 16 19:22:53 opentelemetry-collector-338 otelcol-contrib[116191]:         google.golang.org/grpc@v1.60.1/internal/transport/http2_server.go:1071 +0x8dc\r\nJan 16 19:22:53 opentelemetry-collector-338 otelcol-contrib[116191]: google.golang.org/grpc.(*Server).handleStream(0x4001fb7600, {0x852a3a0, 0x4002b22340},>\r\nJan 16 19:22:53 opentelemetry-collector-338 otelcol-contrib[116191]:         google.golang.org/grpc@v1.60.1/server.go:1749 +0x474\r\nJan 16 19:22:53 opentelemetry-collector-338 otelcol-contrib[116191]: google.golang.org/grpc.(*Server).serveStreams.func2.1()\r\nJan 16 19:22:53 opentelemetry-collector-338 otelcol-contrib[116191]:         google.golang.org/grpc@v1.60.1/server.go:1016 +0x5c\r\nJan 16 19:22:53 opentelemetry-collector-338 otelcol-contrib[116191]: created by google.golang.org/grpc.(*Server).serveStreams.func2 in goroutine 95\r\nJan 16 19:22:53 opentelemetry-collector-338 otelcol-contrib[116191]:         google.golang.org/grpc@v1.60.1/server.go:1027 +0x138\r\nJan 16 19:22:53 opentelemetry-collector-338 systemd[1]: otelcol-contrib.service: Main process exited, code=exited, status=2/INVALIDARGUMENT\r\n```\r\n\r\nI'm running this on al2023 (but I have seen the same issue on amzn2 using x86 as well)\r\n**cat /etc/os-release**\r\n```\r\nNAME=\"Amazon Linux\"\r\nVERSION=\"2023\"\r\nID=\"amzn\"\r\nID_LIKE=\"fedora\"\r\nVERSION_ID=\"2023\"\r\nPLATFORM_ID=\"platform:al2023\"\r\nPRETTY_NAME=\"Amazon Linux 2023\"\r\nANSI_COLOR=\"0;33\"\r\nCPE_NAME=\"cpe:2.3:o:amazon:amazon_linux:2023\"\r\nHOME_URL=\"https://<redacted-host>/linux/\"\r\nBUG_REPORT_URL=\"https://github.com/amazonlinux/amazon-linux-2023\"\r\nSUPPORT_END=\"2028-03-01\"\r\n```\r\n**uname -a**\r\n```\r\nLinux opentelemetry-collector-338 6.1.56-82.125.amzn2023.aarch64 #1 SMP Tue Oct 10 17:03:29 UTC 2023 aarch64 aarch64 aarch64 GNU/Linux\r\n```\r\n\r\n**config:**\r\n```\r\nreceivers:\r\n  otlp:\r\n    protocols:\r\n      grpc:\r\n\r\nexporters:\r\n  loadbalancing:\r\n    protocol:\r\n      otlp:\r\n        timeout: 5s\r\n        sending_queue:\r\n          queue_size: 10000\r\n        tls:\r\n          insecure: true\r\n    resolver:\r\n      dns:\r\n        hostname: otelsampler.etc\r\n        timeout: 3s\r\n\r\nprocessors:\r\n  memory_limiter:\r\n    check_interval: 1s\r\n    limit_percentage: 80\r\n    spike_limit_percentage: 30\r\n  batch:\r\n    send_batch_max_size: 12288\r\n    timeout: 5s\r\n\r\nextensions:\r\n  health_check:\r\n  zpages:\r\n\r\nservice:\r\n  extensions: [zpages, health_check]\r\n  pipelines:\r\n    traces/otlp:\r\n      receivers: [otlp]\r\n      exporters: [loadbalancing]\r\n      processors: [memory_limiter, batch]\r\n    metrics:\r\n      receivers: [otlp]\r\n      exporters: [loadbalancing]\r\n      processors: [memory_limiter, batch]\r\n    logs:\r\n      receivers: [otlp]\r\n      exporters: [loadbalancing]\r\n      processors: [memory_limiter, batch]\r\n```\r\n"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-01-16T21:41:35Z",
+   "body": "Thanks for reporting! Might be a regression go OTel Go GRPC instrumentation. Looking into it.\r\n\r\ncc @open-telemetry/go-instrumentation-approvers "
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-01-17T16:28:39Z",
+   "body": "Some findings: \r\n\r\n- Could be related to #9137 or #9084 that both happened in v0.92.0\r\n- Here is the line where it happens https://github.com/open-telemetry/opentelemetry-go-contrib/blob/instrumentation/google.golang.org/grpc/otelgrpc/v0.46.1/instrumentation/google.golang.org/grpc/otelgrpc/stats_handler.go#L144. Presumably either the value here is missing https://github.com/open-telemetry/opentelemetry-go-contrib/blob/ba19074a6785b2b65c86a52c0649cf040319fa96/instrumentation/google.golang.org/grpc/otelgrpc/stats_handler.go#L142C41-L142C41 (could be the wrong type, that sounds unlikely).\r\n- I have not been able to reproduce the issue with the sample configs and `telemetrygen traces`.\r\n"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-01-17T16:35:22Z",
+   "body": "The diff between v1.59.0 and v1.60.0 has these two PRs which are potentially related to the instrumentation code: grpc/grpc-go/pull/6716 and grpc/grpc-go/pull/6750. 6176 looks more suspicious."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-01-17T16:49:32Z",
+   "body": "I don't know why the crash happens, but open-telemetry/opentelemetry-go-contrib/pull/4825 would prevent it and it follows existing practice in grpc-go, so I think this would at least make the issue less serious."
+  },
+  {
+   "author": "codeboten",
+   "created_at": "2024-01-17T16:53:57Z",
+   "body": "@reporter @participant1 can you confirm that restarting the collector w/ the following feature gate prevents the issue from occurring:\r\n\r\n```\r\n--feature-gates -telemetry.useOtelForInternalMetrics\r\n```\r\n\r\nI'm wondering if this issue is caused by the change to using otel for internal metrics, but it might not be"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-01-17T18:40:15Z",
+   "body": "@codeboten I tried what you suggested but I didn't notice any difference, the container is still crashing with the same error. \r\n~~I didn't see any mention of the flag in the logs, how can I make sure that it has actually been applied ?~~\r\nI managed to ping zpages before the container restart and I confirm the flag is disabled\r\n<img width=\"1173\" alt=\"image\" src=\"https://github.com/open-telemetry/opentelemetry-collector/assets/61552600/d5802971-1080-4bdd-8559-a3764e553751\">\r\n\r\n\r\nFYI i deploy via the operator so I added the following config in the CRD:\r\n```\r\n  args:\r\n    feature-gates: \"-telemetry.useOtelForInternalMetrics\"\r\n```\r\n\r\nwhich results in the pod args generated as:\r\n```\r\napiVersion: v1\r\nkind: Pod\r\n[...]\r\nspec:\r\n  containers:\r\n  - name: otc-container\r\n    args:\r\n    - --config=/conf/collector.yaml\r\n    - --feature-gates=-telemetry.useOtelForInternalMetrics\r\n[...]\r\n```"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-01-18T07:02:59Z",
+   "body": "I also get the same error on restarts with that setting.\r\n```\r\notelcol+    5870  2.5  3.3 1455156 133792 ?      Ssl  06:31   0:00 /usr/bin/otelcol-contrib --config=/etc/otelcol-contrib/config.yaml --feature-gates=-telemetry.useOtelForInternalMetrics\r\n```\r\n"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-01-18T12:12:26Z",
+   "body": "Filed grpc/grpc-go/issues/6928"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-01-18T19:10:39Z",
+   "body": "I think we should not close this issue until https://github.com/grpc/grpc-go/issues/6928 is resolved. Or file another one. It sounds potentially pretty impactful. Maybe even worth putting a release blocker label. @codeboten @codeboten WDYT?"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-01-18T19:29:07Z",
+   "body": "Hello, I replied in the issue in gRPC-Go, but is there a way to reproduce this? I wrote a test locally and triaged this repo's stats handler code and it all seems to be in good order (my test had no problem accessing context values in the server side trailers case from WriteStatus). Here to help, hopefully we can get to the bottom of this."
+  },
+  {
+   "author": "codeboten",
+   "created_at": "2024-01-18T19:40:16Z",
+   "body": "@participant2 i think its fine to keep it opened until its been confirmed to be fixed"
+  },
+  {
+   "author": "codeboten",
+   "created_at": "2024-01-18T19:45:02Z",
+   "body": "@reporter @participant1  the latest dev build of contrib is available, would you be able to test it out and see if the original crash occurs? No worries if not, we just haven't been able to repro on our end. The docker tag is:\r\n\r\n```\r\notel/opentelemetry-collector-contrib-dev:bcc7163f7a8a7c2611fe74ba23f998a7fc0889a2\r\n```"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-01-19T14:24:28Z",
+   "body": "@codeboten YES ! the issue is fixed with the `dev` build 🥳 🎉 \r\nThank you so much to all of you for prioritizing this and fixing the issue so quickly !"
+  },
+  {
+   "author": "codeboten",
+   "created_at": "2024-01-19T14:46:19Z",
+   "body": "Thanks @participant3 for getting to the bottom of this so quickly! @participant2 @participant3 did you want to leave this open until the release or mark it closed?"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-01-19T15:36:37Z",
+   "body": "> Thank you so much to all of you for prioritizing this and fixing the issue so quickly !\r\n\r\nThanks to you both for providing us with feedback and detailed information about this as well :) \r\n\r\nWhile the issue is fixed at the Collector level, it would be great to also fix this at grpc-go. It would be extremely helpful if you can help us reproduce this locally @reporter @participant1. To this end, I think the following would be helpful:\r\n- More details about your setup: you both have an AWS ALB, but could you share more details about your setup there?\r\n- Minimizing your Collector configuration while still reproducing the panic. Some things to try and remove here:\r\n    - Removing processors, extensions and pipelines from your configuration\r\n    - Disabling particular features (e.g. `telemetry::metrics`, `max_recv_msg_size_mib`...)\r\n\r\nAnything else you can think of that would help is also welcome :)\r\n\r\n> did you want to leave this open until the release or mark it closed?\r\n\r\nI think this issue can be marked as solved. I would still want to keep the discussion going to help the folks at grpc-go and prevent further similar issues."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-01-19T21:46:00Z",
+   "body": "I have an AWS ALB configured which has a listener on HTTPS:4317 (and a certificate connected to it).\r\nThat ALB forwards to a AWS TG which is defined with port HTTP:4317 and grpc as protocol.\r\n\r\nThe TG has a health check configured to check for valid grpc codes 0-99\r\nThe AMIs launched for this via ASG (connected to the TG) are prebuilt on al2023 with otelcol-contrib installed which are then configured on instance boot (this is so I can scale in/out).\r\n\r\nI use a form of this as my AWS CF template, if that might help:\r\nhttps://pastebin.pl/view/15d2c892\r\n\r\nI looked a bit further on my logs, and it does crash the same as @reporter\r\nIt's just systemd that keeps it running, so it _looks_ like it runs as it should, except it restarts all the time.\r\n\r\nSo, I stripped my config to this, and I still see the same issue:\r\n```\r\nreceivers:\r\n  otlp:\r\n    protocols:\r\n      grpc:\r\n\r\nexporters:\r\n  otlp:\r\n    endpoint: \"https://otlp.domain:4317\"\r\n\r\nservice:\r\n  extensions: []\r\n  pipelines:\r\n    traces/otlp:\r\n      receivers: [otlp]\r\n      exporters: [otlp]\r\n      processors: []\r\n```\r\nI also tried installing the otelcol rpm instead, used above config and that also gave me the same result.\r\n\r\n\r\nI tried running otelcol-contrib with one time each of these below as options, and got the same result then as well:\r\n```\r\nOTELCOL_OPTIONS=\"--config=/etc/otelcol-contrib/config.yaml --feature-gates=-telemetry.disableHighCardinalityMetrics\"\r\nOTELCOL_OPTIONS=\"--config=/etc/otelcol-contrib/config.yaml --feature-gates=-telemetry.useOtelForInternalMetrics\"\r\nOTELCOL_OPTIONS=\"--config=/etc/otelcol-contrib/config.yaml --feature-gates=-telemetry.useOtelWithSDKConfigurationForInternalTelemetry\"\r\n```\r\n\r\nThen I installed https://github.com/rmedvedev/grpcdump and got the below output from it:\r\n```\r\nTEST [root@participant5 v338 eu-west-1: grpcdump]$ go run cmd/grpcdump/main.go -i ens5 -p 4317\r\nINFO[0000] Starting sniff ethernet packets at interface ens5 on port 4317\r\n172.27.182.41:16706 -> 172.27.182.110:4317 /  map[:<nick>:POST :<nick>:/ :<nick>:http accept-encoding:gzip, compressed content-length:5 content-type:application/grpc host:AWSALB te:trailers user-agent:ELB-HealthChecker/2.0]\r\n172.27.182.8:38552 -> 172.27.182.110:4317 /  map[:<nick>:POST :<nick>:/ :<nick>:http accept-encoding:gzip, compressed content-length:5 content-type:application/grpc host:AWSALB te:trailers user-agent:ELB-HealthChecker/2.0]\r\nERRO[0003] Error in try to read http2: Error reading frame: unexpected EOF\r\n172.27.182.41:16716 -> 172.27.182.110:4317 /  map[:<nick>:POST :<nick>:/ :<nick>:http accept-encoding:gzip, compressed content-length:5 content-type:application/grpc host:AWSALB te:trailers user-agent:ELB-HealthChecker/2.0]\r\nERRO[0006] Error in try to read http2: Error reading frame: unexpected EOF\r\n172.27.182.41:3594 -> 172.27.182.110:4317 /  map[:<nick>:POST :<nick>:/ :<nick>:http accept-encoding:gzip, compressed content-length:5 content-type:application/grpc host:AWSALB te:trailers user-agent:ELB-HealthChecker/2.0]\r\n172.27.182.110:4317 -> 172.27.182.41:3594  <nil> map[:<nick>:200 content-type:application/grpc grpc-message:malformed method name: \"/\" grpc-status:12]\r\nERRO[0022] Error in try to read http2: Error reading frame: unexpected EOF\r\n```\r\n\r\nWhich when compared to the output I get from an instance running with **0.91.0** (and with the config from my first post in this issue), it looks very different:\r\n```\r\nINFO[0000] Starting sniff ethernet packets at interface ens5 on port 4317\r\n172.27.182.8:59638 -> 172.27.182.125:4317 /  map[:<nick>:POST :<nick>:/ :<nick>:http accept-encoding:gzip, compressed content-length:5 content-type:application/grpc host:AWSALB te:trailers user-agent:ELB-HealthChecker/2.0]\r\n172.27.182.125:4317 -> 172.27.182.8:59638  <nil> map[:<nick>:200 content-type:application/grpc grpc-message:malformed method name: \"/\" grpc-status:12]\r\n172.27.182.41:49472 -> 172.27.182.125:4317 /  map[:<nick>:POST :<nick>:/ :<nick>:http accept-encoding:gzip, compressed content-length:5 content-type:application/grpc host:AWSALB te:trailers user-agent:ELB-HealthChecker/2.0]\r\n172.27.182.125:4317 -> 172.27.182.41:49472  <nil> map[:<nick>:200 content-type:application/grpc grpc-message:malformed method name: \"/\" grpc-status:12]\r\n172.27.182.8:59640 -> 172.27.182.125:4317 /  map[:<nick>:POST :<nick>:/ :<nick>:http accept-encoding:gzip, compressed content-length:5 content-type:application/grpc host:AWSALB te:trailers user-agent:ELB-HealthChecker/2.0]\r\n172.27.182.125:4317 -> 172.27.182.8:59640  <nil> map[:<nick>:200 content-type:application/grpc grpc-message:malformed method name: \"/\" grpc-status:12]\r\n172.27.182.41:49488 -> 172.27.182.125:4317 /  map[:<nick>:POST :<nick>:/ :<nick>:http accept-encoding:gzip, compressed content-length:5 content-type:application/grpc host:AWSALB te:trailers user-agent:ELB-HealthChecker/2.0]\r\n172.27.182.125:4317 -> 172.27.182.41:49488  <nil> map[:<nick>:200 content-type:application/grpc grpc-message:malformed method name: \"/\" grpc-status:12]\r\n172.27.182.125:4317 -> 172.27.182.41:49494   map[:<nick>:200 content-type:application/grpc grpc-message: grpc-status:0]\r\n172.27.182.8:43914 -> 172.27.182.125:4317 /  map[:<nick>:POST :<nick>:/ :<nick>:http accept-encoding:gzip, compressed content-length:5 content-type:application/grpc host:AWSALB te:trailers user-agent:ELB-HealthChecker/2.0]\r\n172.27.182.125:4317 -> 172.27.182.8:43914  <nil> map[:<nick>:200 content-type:application/grpc grpc-message:malformed method name: \"/\" grpc-status:12]\r\n172.27.182.41:5922 -> 172.27.182.125:4317 /  map[:<nick>:POST :<nick>:/ :<nick>:http accept-encoding:gzip, compressed content-length:5 content-type:application/grpc host:AWSALB te:trailers user-agent:ELB-HealthChecker/2.0]\r\n```\r\n\r\nLet me know if I should test something more."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-01-22T12:57:38Z",
+   "body": "Thanks @participant1, this is helpful! cc @participant4 in case the log messages give you any hint"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-01-26T14:24:33Z",
+   "body": "I confirm that the issue is fixed for me on 0.93.0  🎉 "
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-01-26T14:43:02Z",
+   "body": "I am going to close this as done, further discussion can happen over at https://github.com/grpc/grpc-go/issues/6928. Thanks again everybody :)"
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "open-telemetry/participant5",
+  "default_branch": "main",
+  "commit_sha": "060c53899ab254a353d94debf9583432f88a24ad",
+  "as_of": "2024-01-16T17:38:43Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_open-telemetry_participant5_9296"
+}

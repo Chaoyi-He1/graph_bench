@@ -1,0 +1,146 @@
+{
+ "repo": "qdrant/qdrant",
+ "number": 6758,
+ "url": "https://github.com/qdrant/qdrant/issues/6758",
+ "title": "Panic occurred in gridstore.rs: OutputTooSmall { expected: 4, actual: 0 } causing collection instability",
+ "state": "closed",
+ "labels": [
+  "bug"
+ ],
+ "reporter": "reporter",
+ "created_at": "2025-06-25T17:03:01Z",
+ "closed_at": "2025-07-01T22:43:45Z",
+ "body": "\n## Current Behavior\nQdrant server experiences repeated panic errors, resulting in:\n- Vector storage validation failures returning 500 Internal Server Error\n- Collection entering unstable state (\"collection may be in unstable state\")\n- Optimization tasks continuously failing and panicking\n- Feature extraction processing stops, massive data processing failures (only 902 out of 30,439 items processed)\n\n## Steps to Reproduce\n1. Run normal vector insertion operations to Qdrant collection \"mediakit\"\n2. Process large dataset (~30,439 items)\n3. Panic starts occurring after processing ~900 items\n4. Error persists, affecting all subsequent operations\n\n## Expected Behavior\n- Vectors should be stored and retrieved normally\n- Optimization tasks should complete successfully\n- Collection should maintain stable state\n- Large dataset processing should complete without issues\n\n\n## Context (Environment)\n- **Qdrant Version**: 1.14.1\n- **Deployment**: Docker Compose\n- **Host System**: Unraid 7.1.4\n- **Docker Version**: 27.5.1\n- **Client**: qdrant-client/1.14.3 python/3.12.11\n- **Collection**: \"mediakit\" collection\n- **Dataset Size**: ~30,439 vector items when error occurs\n- **Docker Volume Mount**: `./qdrant:/qdrant/storage`\n- **Collection Config**:\n```python\n conn.create_collection(\n     collection_name=keyColl,\n     vectors_config=qmod.VectorParams(\n         size=2048,\n         distance=qmod.Distance.COSINE\n     ),\n     timeout=60\n )\n```\n\n## Detailed Description\nError consistently occurs at `/qdrant/lib/gridstore/src/gridstore.rs` line 53 with:\n```\ncalled `Result::unwrap()` on an `Err` value: OutputTooSmall { expected: 4, actual: 0 }\n```\n\nError appears in multiple scenarios:\n1. **Vector retrieval**: `gridstore::Gridstore<V>:<nick>` \n2. **Segment optimization**: `SegmentOptimizer::build_new_segment`\n3. **Payload storage operations**: `MmapPayloadStorage` related operations\n\nThis causes the collection to enter a red state, preventing normal vector operations.\n\nStack trace shows errors occurring in:\n- `segment::payload_storage::mmap_payload_storage::MmapPayloadStorage`\n- `segment::segment::segment_ops::Segment::payload_by_offset`\n- `segment::segment_constructor::segment_builder::SegmentBuilder::update`\n\nThe panics occur during:\n- Point retrieval operations\n- Segment optimization processes\n- Collection optimization tasks",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2025-06-25T20:27:57Z",
+   "body": "This is related to https://github.com/qdrant/qdrant/issues/6669 and  https://github.com/qdrant/qdrant/issues/6679\n\nMost certainly some kind of fuse filesystem is used, which is not supported"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-06-25T20:28:49Z",
+   "body": "We will have check for this, implemented in https://github.com/qdrant/qdrant/pull/6682\n\nIf you want to make sure. please try to run dev build with `qdrant/qdrant:dev`"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-06-26T07:43:17Z",
+   "body": "For a list of supported storage types, please see our docs: https://qdrant.tech/documentation/guides/installation/#storage"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-07-06T23:13:09Z",
+   "body": "I have the exact same issue on the same OS -> Unraid 7.1.4\nStorage appdata : btrfs\n\n`⚠ Error: Service internal error: 1 of 1 read operations failed: Service internal error: task 7266 panicked with message \"called Result::unwrap() on an Err value: OutputTooSmall { expected: 4, actual: 0 }\"`\n\nI'm using it in an n8n workflow. I simply changed the credential to my Qdrant Cloud account instead of my Docker instance, and there was no issue.\nThere's a problem with the Docker setup that I can't figure out."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-07-06T23:18:22Z",
+   "body": "Unraid is likely using Fuse filesystem on top of btrfs. https://discordapp.com/channels/907569970500743200/1335658066104029305/1364216269355880469"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-07-29T18:36:59Z",
+   "body": "> I have the exact same issue on the same OS -> Unraid 7.1.4 Storage appdata : btrfs\n> \n> `⚠ Error: Service internal error: 1 of 1 read operations failed: Service internal error: task 7266 panicked with message \"called Result::unwrap() on an Err value: OutputTooSmall { expected: 4, actual: 0 }\"`\n> \n> I'm using it in an n8n workflow. I simply changed the credential to my Qdrant Cloud account instead of my Docker instance, and there was no issue. There's a problem with the Docker setup that I can't figure out.\n\nMount to /mnt/cache/appdata/qdrant rather than to /mnt/user/appdata/qdrant."
+  },
+  {
+   "author": "participant5",
+   "created_at": "2025-08-04T07:48:55Z",
+   "body": "Getting this running on docker in WSL 2"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-08-04T08:22:18Z",
+   "body": "> Getting this running on docker in WSL 2\n\nThen, this is likely because you're using a storage directory that is on the Windows host and mounted into WSL2. Windows's implementation appears to not be fully POSIX compliant, causing these issues. We'd recommend to use a file system within WSL2 itself or to host on Windows direclty (without WSL2)."
+  },
+  {
+   "author": "participant6",
+   "created_at": "2025-08-04T08:31:51Z",
+   "body": "Perfect, thank you, that's exactly what I was doing and this is the confirmation I was looking for. Appreciated !!"
+  },
+  {
+   "author": "participant7",
+   "created_at": "2025-08-17T02:41:58Z",
+   "body": "I have the same issue running as container service with persistent storage. I have two collections and I'm hitting this issue for one of the collection not for the other. Any help?"
+  },
+  {
+   "author": "participant6",
+   "created_at": "2025-08-17T08:52:54Z",
+   "body": "> I have the same issue running as container service with persistent storage. I have two collections and I'm hitting this issue for one of the collection not for the other. Any help?\n\nSee above - resolved it for me 100%. Also you say two collection, wondering if you're running open-webui, that's my use case and it's been stable not for two weeks. "
+  },
+  {
+   "author": "participant7",
+   "created_at": "2025-08-23T13:14:17Z",
+   "body": "> See above - resolved it for me 100%. Also you say two collection, wondering if you're running open-webui, that's my use case and it's been stable not for two weeks.\n\nI had created a snapshot of data few weeks back that works fine with new version and it doesn't have issue on volume mounts. It on windows mounted volume. New version qdrant has issues after creating new collection and loaded new data, restart qdrant db and will have issues. IDK what changed in the qdrant behavior for windows."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2025-08-23T22:00:30Z",
+   "body": "\n> I had created a snapshot of data few weeks back that works fine with new version and it doesn't have issue on volume mounts. It on windows mounted volume. New version qdrant has issues after creating new collection and loaded new data, restart qdrant db and will have issues. IDK what changed in the qdrant behavior for windows.\n\nThere are some changes, indeed. But those changes implemented within the POSIX standard, and the actual problems are on windows side, not qdrant."
+  },
+  {
+   "author": "participant7",
+   "created_at": "2025-08-24T09:05:25Z",
+   "body": "> There are some changes, indeed. But those changes implemented within the POSIX standard, and the actual problems are on windows side, not qdrant.\n\nI'm confused, how does the old snapshot work and doesn't exihibit same behavior as seen for the new collection created? If windows has changed in past weeks, would that get addressed by windows or qdrant for the volume mounts?"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-08-25T13:20:58Z",
+   "body": "> I'm confused, how does the old snapshot work and doesn't exihibit same behavior as seen for the new collection created? If windows has changed in past weeks, would that get addressed by windows or qdrant for the volume mounts?\n\nIt is possible that your snapshot still uses an old data format which doesn't suffer from this issue. We don't have plans to keep/maintain this old format because it also introduces many problems in other ways.\n\nIn this case we'd argue Windows' implementation is broken, and Microsoft is responsible for fixing that problem.\n\nWe've updated our documentation to explicitly note this issue:\n- https://qdrant.tech/documentation/guides/installation/#storage\n- https://qdrant.tech/documentation/guides/common-errors/#incompatible-file-system"
+  },
+  {
+   "author": "participant7",
+   "created_at": "2025-08-26T00:52:30Z",
+   "body": "> It is possible that your snapshot still uses an old data format which doesn't suffer from this issue. We don't have plans to keep/maintain this old format because it also introduces many problems in other ways.\n> \n> In this case we'd argue Windows' implementation is broken, and Microsoft is responsible for fixing that problem.\n> \n> We've updated our documentation to explicitly note this issue:\n> \n> * https://qdrant.tech/documentation/guides/installation/#storage\n> * https://qdrant.tech/documentation/guides/common-errors/#incompatible-file-system\n\nMy apologies - I should have reviewed the documentation on filesystem changes introduced in version 1.15 more closely. Microsoft supporting POSIX on windows 😂"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-08-26T07:54:40Z",
+   "body": "No problem! Sorry for any inconvenience this may have caused.\n\nIn this specific case we're switching our storage to make use of [memory mapping](https://en.wikipedia.org/wiki/Memory-mapped_file). It's a feature we need to ensure Qdrant remains scalable, manageable and performant on humongous scales.\n\nTo be clear, we'd still like to support as many platforms as possible. But a platform with broken internals makes that quite hard.\n\nIn the case of Docker on Windows/WSL, you can still use Docker volumes instead of mounts into the host file system. We'd recommend that as alternative, which should also result in better file IO performance."
+  },
+  {
+   "author": "participant8",
+   "created_at": "2025-11-18T09:50:30Z",
+   "body": "Any suggestions on Windows/WSL with Podmanv Desktop? Can't get the workarround with the mounting running on that environment.\n\nWent back to Qdrant v1.14.1 for now, but that is no valid solution in the long run. \nWhy was this system check not needed prior to 1.15.0?"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-11-18T12:03:55Z",
+   "body": "I have no experience with Podman Desktop, so it's hard for me to recommend anything specific.\n\nIs it possible to keep all storage completely within the Linux VM it spawns under the hood? I assume that'll eliminate the problematic mounts."
+  },
+  {
+   "author": "participant8",
+   "created_at": "2025-11-18T13:14:03Z",
+   "body": "I currently can not find a solution which allows me to keep all storage within the VM. Thats why i'am a bit lost here. I just can mount a folder on my file system there. Sadly Docker Desktop is no option in my current environment. It has to be a windows machine also."
+  },
+  {
+   "author": "participant8",
+   "created_at": "2025-11-19T13:59:13Z",
+   "body": "In case someone else stumbles upon this error in the future when using Podman:\n\nIt’s possible to create your own volume in Podman Desktop. You can copy the “Mount Point” from its details and use this as a mount in your container. This keeps the storage within the Linux VM in this setup."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2025-11-19T14:04:03Z",
+   "body": "> It’s possible to create your own volume in Podman Desktop. You can copy the “Mount Point” from its details and use this as a mount in your container. This keeps the storage within the Linux VM in this setup.\n\nThanks for the update! Glad to see that works.\n\nI recommended the same [here](https://github.com/qdrant/qdrant/issues/6758#issuecomment-3223039924), but for Docker itself. I wasn't aware Podman Desktop could do the same."
+  },
+  {
+   "author": "participant9",
+   "created_at": "2025-11-22T13:33:18Z",
+   "body": "@participant3 Were you able to get it working on Unraid?"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-11-22T21:26:35Z",
+   "body": "@participant9 \nYes, it works perfectly now.\nThe fix was to use the direct path /mnt/cache instead of /mnt/user\n\n"
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "qdrant/qdrant",
+  "default_branch": "master",
+  "commit_sha": "530430fac2a3ca872504f276d2c91a5c91f43fa0",
+  "as_of": "2025-06-25T17:03:01Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_qdrant_qdrant_6758"
+}

@@ -1,0 +1,103 @@
+{
+ "repo": "onnx/onnx",
+ "number": 5466,
+ "url": "https://github.com/onnx/onnx/issues/5466",
+ "title": "Fix definition of GroupNormalization",
+ "state": "closed",
+ "labels": [
+  "bug",
+  "topic: operator",
+  "contributions welcome"
+ ],
+ "reporter": "reporter",
+ "created_at": "2023-08-03T12:38:08Z",
+ "closed_at": "2024-01-18T19:40:12Z",
+ "body": "# Ask a Question\r\n\r\n### Question\r\nAccording to the document of GroupNormalization's operator \r\nhttps://github.com/onnx/onnx/blob/main/docs/Operators.md#groupnormalization\r\nI found the tensor shape of both scale and bias are num_groups.\r\nHowever, this should be equal to C instead of G.\r\n\r\n### Further information\r\n- Relevant Area: operators\r\n-According to the paper (page 4)\r\nhttps://arxiv.org/pdf/1803.08494.pdf\r\nShape of Gamma (scale) and beta (bias) ic C (perchannel not pergroup).\r\n![image](https://github.com/onnx/onnx/assets/9115697/8622ff58-122f-4ee4-a182-9f7f14caecc3)\r\n",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2023-08-29T16:37:04Z",
+   "body": "@participant2 , any thoughts on this?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-08-31T13:15:37Z",
+   "body": "According to the implementation of onnxruntime, shape of gamma and beta is also [C], \r\nhttps://github.com/microsoft/onnxruntime/blob/HEAD/onnxruntime/contrib_ops/cuda/diffusion/group_norm.cc#L91-L98\r\n\r\nIn addition, I also check the implementation of pytorch\r\n![image](https://github.com/onnx/onnx/assets/9115697/da237e78-2301-413d-976e-40f739c87087)\r\n\r\nThe result is also the same\r\ngamma =  tensor([1., 1., 1., 1., 1., 1.])\r\nbeta =  tensor([0., 0., 0., 0., 0., 0.])\r\n\r\nHence, I thought the doc of onnx operator may be incorrect and need to be revised."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-09-27T16:31:40Z",
+   "body": "@reporter Thanks for bringing this up. It does seem like the ONNX spec is being more restrictive than the version in the paper and PyTorch.\r\nThe current ONNXRuntime implementation, though, follows the ONNX spec with per-group scale and bias. What you linked to above seems to be the `com.microsoft.GroupNorm` op. \r\n\r\nTo determine next steps, I think it would be useful to look at some practical use cases first. I'm wondering if you have some concrete models where per-channel scale and bias are needed?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-09-28T08:35:39Z",
+   "body": "> @reporter Thanks for bringing this up. It does seem like the ONNX spec is being more restrictive than the version in the paper and PyTorch. The current ONNXRuntime implementation, though, follows the ONNX spec with per-group scale and bias. What you linked to above seems to be the `com.microsoft.GroupNorm` op.\r\n> \r\n> To determine next steps, I think it would be useful to look at some practical use cases first. I'm wondering if you have some concrete models where per-channel scale and bias are needed?\r\n\r\nStable diffusion require groupnorm operator.\r\nYou could reference follow model\r\nhttps://github.com/microsoft/onnxruntime/blob/main/onnxruntime/python/tools/transformers/models/stable_diffusion/README.md\r\n\r\nBy the way, you mention the link I provide is **com.microsoft.GroupNorm**.  I wonder is there any other groupnorm in onnxruntime is per-group scale and bias?\r\n"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-09-28T23:22:34Z",
+   "body": "@reporter Thanks for the reference. Does this stable diffusion model actually use different scale and bias for each channel? Or do it use the default values of 1 and 0 respectively? I've seen resnet models where the scale and bias are always kept at the default values. But regardless, I think matching pytorch's implementaion is strong enough reason for us to extend this op in coming opsets. I'm just trying to gather more info on the impact of this limitation.\r\n\r\nIn onnxruntime, the standard implementation for `GroupNormalization` (note the name difference) uses per-group sclae and bias. You can verify this by running a simple onnx model through onnxruntime. If the scale and bias inputs have length C instead of G, then it'll complain about shape mismatch."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-09-29T07:04:42Z",
+   "body": "> GroupNormalization\r\n\r\nstable diffusion does not use default value of gamma and beta.\r\nIn addition, traditional Resnet use batchnorm instead of groupnorm."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-10-03T18:07:09Z",
+   "body": "I agree we should update to match what is in the paper and match pytorch, because the spec is defined based on the paper."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-10-05T00:52:13Z",
+   "body": "This was discussed in the operator SIG meeting last week, and the op's spec will be updated."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-10-05T00:53:42Z",
+   "body": "~Should we deprecate the old spec?~\r\n\r\nUpdate: no from the discussion."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-12-05T20:44:50Z",
+   "body": "@participant2 gentle nudge. Do you have any updates? We are targeting this for the 1.16 release."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-12-05T23:02:02Z",
+   "body": "> @participant2 gentle nudge. Do you have any updates? We are targeting this for the 1.16 release.\r\n\r\nAs I mentioned in my message to @participant1 , I wonder if we should apply an individual fix to this op or should we make this fix when unifying the normalization ops. An individual fix should be faster if we are targeting the next release."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-12-05T23:32:35Z",
+   "body": "I vote for fixing this op first, as the error has been around for a while and it is preventing adoption of this operator."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-12-06T17:04:26Z",
+   "body": "@participant3 May I ask what's the projected timeline for 1.16 release?"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-12-06T18:03:24Z",
+   "body": "@participant1 could you chime in? Thanks!"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-12-06T18:14:19Z",
+   "body": "I think we should ideally target February for the next release (aiming for code-freeze by end of January or so). But this is contingent upon finding a release-manager, etc."
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "onnx/onnx",
+  "default_branch": "main",
+  "commit_sha": "e724cc33616ff614dd8555743e9d707b5a7c5492",
+  "as_of": "2023-08-03T12:38:08Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_onnx_onnx_5466"
+}

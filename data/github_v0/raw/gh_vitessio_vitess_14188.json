@@ -1,0 +1,183 @@
+{
+ "repo": "vitessio/vitess",
+ "number": 14188,
+ "url": "https://github.com/vitessio/vitess/issues/14188",
+ "title": "Bug Report: v18.0.0-rc1 S3 backup failed to upload",
+ "state": "closed",
+ "labels": [
+  "Type: Bug",
+  "Component: Backup and Restore",
+  "Type: Regression"
+ ],
+ "reporter": "reporter",
+ "created_at": "2023-10-05T07:30:58Z",
+ "closed_at": "2024-09-27T21:12:39Z",
+ "body": "### Overview of the Issue\r\n\r\nUpgraded from v17.0.3 to v18.0.0-rc1 our backup failed to be upload to S3 like storage (not AWS but more like Minio).\r\n\r\n```\r\nE1005 07:20:00.774018      14 main.go:56] rpc error: code = Unknown desc = TabletManager.Backup on commerce-0000001010 error: MultipartUpload: upload multipart failed\r\n\tupload id: ZGQ5OWUxNWYtY2IzNS00MDdjLWI1OGItMWNkZDA4M2ZlYzRk\r\ncaused by: RequestCanceled: request context canceled\r\ncaused by: context canceled: MultipartUpload: upload multipart failed\r\n\tupload id: ZGQ5OWUxNWYtY2IzNS00MDdjLWI1OGItMWNkZDA4M2ZlYzRk\r\ncaused by: RequestCanceled: request context canceled\r\ncaused by: context canceled\r\n```\r\n\r\n### Reproduction Steps\r\n\r\n`/vt/bin/vtctldclient --server=vtctld:15999 --logtostderr=true BackupShard --concurrency=1 \"commerce/-\"`\r\n\r\nRunning vttablet and vtctld with following flag:\r\n\r\n```shell\r\n--backup_storage_implementation=s3 \\\r\n--backup_engine_implementation=xtrabackup \\\r\n--s3_backup_aws_region=us-east-1 \\\r\n--s3_backup_storage_bucket=default \\\r\n--s3_backup_force_path_style=true \\\r\n--s3_backup_aws_endpoint=https://* \\\r\n--s3_backup_storage_root=*\r\n```\r\n\r\n### Binary Version\r\n\r\n```sh\r\nvtctldclient version Version: 18.0.0-rc1 (Git revision 6ab165ade925b35a00cf447827d874eba13998b6 branch 'heads/v18.0.0-rc1') built on Tue Oct  3 15:00:58 UTC 2023 by vitess@participant5 using go1.21.1 linux/amd64\r\n```\r\n\r\n\r\n### Operating System and Environment details\r\n\r\n```sh\r\nkubernetes / docker official vitess image\r\n```\r\n\r\n\r\n### Log Fragments\r\n\r\n_No response_",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2023-10-05T21:17:40Z",
+   "body": "@reporter can you please capture the log from vttablet as well? None of us maintainers have access to a minio environment so this will be tough to debug."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-10-05T21:22:10Z",
+   "body": "Our minio dependency hasn't changed in years. However the `aws-sdk-go` dependency has changed. That would be the first place to check.\r\nhttps://github.com/vitessio/vitess/blame/main/go.mod#L14\r\nYou can see the diff here https://github.com/vitessio/vitess/commit/9d2029aff8a805c6f646eef47e1b90c76f80d3e9\r\n\r\nIf you are able to build an image with the older version of aws-sdk-go, and that works, that will give us a starting point. But in any case we'll need the vttablet logs, not just the vtctld logs."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-10-06T07:00:38Z",
+   "body": "@participant1 we are not using Minio but AWS compatible storage like it. \r\nvttablet logs are the same:\r\n\r\n```\r\nvttablet W1006 00:03:11.814578       1 rpc_server.go:72] TabletManager.Backup(concurrency:1)(on commerce-0000001012 from ) error: MultipartUpload: upload multipart failed\r\nvttablet \tupload id: M2MzYjJkY2YtODI4Yi00NGE5LWFkMjgtYTIwYzU2NmM4Yjdh\r\nvttablet caused by: RequestCanceled: request context canceled\r\nvttablet caused by: context canceled\r\n```\r\n\r\nI'll try to see if I can reproduce with a simple Minio docker instance, and with the team in charge of our storage solution to see if they have some log on their side."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-10-06T08:02:05Z",
+   "body": "I reproduce with a Minio docker instance:\r\n\r\n```yaml\r\n    minio:\r\n        image: minio/minio:RELEASE.2023-09-30T07-02-29Z\r\n        command: [\"server\", \"/data\", \"--console-address\", \":9001\"]\r\n        environment:\r\n            MINIO_ROOT_USER: \"test\"\r\n            MINIO_ROOT_PASSWORD: \"test\"\r\n```"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-10-06T14:21:42Z",
+   "body": "From my testing, downgrading the `aws-sdk-go` have no impact, but reverting https://github.com/vitessio/vitess/pull/12500 works."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-10-09T16:30:17Z",
+   "body": "I'm going to test with vanilla S3 to see if that exhibits the same problem. If yes, we will have to revert at least a portion of #12500 and then figure out a way forward."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-10-09T18:09:56Z",
+   "body": "I have tested PR #12500 (or actually it's exact counterpart on the planetscale fork) and backups with vanilla S3 work just fine. However, my test db is very small, and the whole vtbackup process (download previous backup from s3, restore and take a new backup and upload to s3) takes 10 minutes.\r\nHow big is your backup? `Context canceled` is telling us that a timeout is being hit.\r\nDefault timeout (`--action_timeout`) for all vtctl commands is 1 hour. Does your command take longer than that? Or does it error out exactly after 1 hour?\r\nIf yes, you need to extend that. If not, let me know and we'll see if we can think of something else."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-10-09T18:25:29Z",
+   "body": "@participant1 2GB and fails in less than 2ms once xtrabackup finished.\r\n\r\nedit: tried with an empty database and same issue."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2023-10-10T17:10:20Z",
+   "body": "@participant1 Is planetscale using the new vtctld grpc api to do the backup?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-10-10T17:46:22Z",
+   "body": "@reporter can you try if builtinbackup works? You did specify the flags in your issue description but I missed the fact that you are in fact using xtrabackup. My test was with vtbackup (which operator uses) + builtin backup, not xtrabackup.\r\n\r\nAlso:\r\n- were you using the same command with v17? Or were you by any chance using `vtctlclient` instead of `vtctldclient`?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-10-10T17:47:41Z",
+   "body": "@participant1 `--backup_engine_implementation=xtrabackup` was specified in the issue yeah :) I'll try with builtin backup"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-10-10T18:25:25Z",
+   "body": "```\r\nunsharded/- (local-0000000301): time:{seconds:1696962252 nanoseconds:352680626} file:\"builtinbackupengine.go\" line:609 value:\"failed to backup files due to error.\"\r\nunsharded/- (local-0000000301): time:{seconds:1696962252 nanoseconds:352697998} file:\"builtinbackupengine.go\" line:609 value:\"failed to backup files due to error.\"\r\nunsharded/- (local-0000000301): time:{seconds:1696962252 nanoseconds:352710499} file:\"builtinbackupengine.go\" line:609 value:\"failed to backup files due to error.\"\r\nunsharded/- (local-0000000301): time:{seconds:1696962254 nanoseconds:357451136} file:\"builtinbackupengine.go\" line:487 value:\"resetting mysqld super_read_only to false\"\r\nunsharded/- (local-0000000301): time:{seconds:1696962254 nanoseconds:359553344} file:\"builtinbackupengine.go\" line:422 value:\"resetting mysqld super_read_only to false\"\r\nunsharded/- (local-0000000301): time:{seconds:1696962254 nanoseconds:361549882} level:ERROR file:\"backup.go\" line:180 value:\"backup is not usable, aborting it: [RequestCanceled: request context canceled\\ncaused by: context canceled;RequestCanceled: request context canceled\\ncaused by: context canceled]\"\r\nunsharded/- (local-0000000301): time:{seconds:1696962254 nanoseconds:376869259} level:ERROR file:\"backup.go\" line:188 value:\"failed to finish backup: [MalformedXML: The XML you provided was not well-formed or did not validate against our published schema.\\n\\tstatus code: 400, request id: 178CD22DF0FC0D2A, host id: dd9025bab4ad464b049177c95eb6ebf374d3b3fd1af9251148b658df7ac2e3e8]: %!v(MISSING)\"\r\nE1010 18:24:14.456267      40 main.go:56] rpc error: code = Unknown desc = TabletManager.Backup on local-0000000301 error: RequestCanceled: request context canceled\r\ncaused by: context canceled;RequestCanceled: request context canceled\r\ncaused by: context canceled: RequestCanceled: request context canceled\r\ncaused by: context canceled;RequestCanceled: request context canceled\r\ncaused by: context canceled\r\n```"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-10-11T13:51:02Z",
+   "body": "this change works:\r\n\r\n<img width=\"736\" alt=\"image\" src=\"https://github.com/vitessio/vitess/assets/4710495/9f17e1a9-0ed0-4bb3-8fb3-75d6e57d5f66\">\r\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-10-11T15:49:24Z",
+   "body": "@reporter there are 3 variables here\r\n- vanilla s3 vs your storage\r\n- builtinbackup vs xtrabackup -> you have shown that this doesn't matter\r\n- vtctlclient vs vtctldclient - can you try running with vtctlclient and tell us what happens?\r\n\r\nThe reason I don't want to just revert the context change is that the new code is \"correct\"."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-10-11T15:53:35Z",
+   "body": "@participant1 \r\n\r\n```\r\n/vt/bin/vtctlclient --server=vtctld:15999 BackupShard -- --concurrency=1 --allow_primary \"unsharded/-\"\r\nW1011 15:53:05.200409      68 log.go:39] Failed to read in config : Config File \"vtconfig\" Not Found in \"[/]\". This is optional, and can be ignored if you are not using config files. For a detailed explanation, see https://github.com/vitessio/vitess/blob/main/doc/viper/viper.md#config-files.\r\nE1011 15:53:11.339150      68 main.go:96] E1011 15:53:11.338962 backup.go:110] E1011 15:53:11.338637 backup.go:180] backup is not usable, aborting it: [RequestCanceled: request context canceled\r\ncaused by: context canceled;RequestCanceled: request context canceled\r\ncaused by: context canceled]\r\nE1011 15:53:11.342682      68 main.go:96] E1011 15:53:11.342484 backup.go:110] E1011 15:53:11.342019 backup.go:188] failed to finish backup: [MalformedXML: The XML you provided was not well-formed or did not validate against our published schema.\r\n        status code: 400, request id: 178D18845BAAE316, host id: dd9025bab4ad464b049177c95eb6ebf374d3b3fd1af9251148b658df7ac2e3e8]: %!v(MISSING)\r\nBackupShard Error: rpc error: code = Unknown desc = TabletManager.Backup on local-0000000301 error: RequestCanceled: request context canceled\r\ncaused by: context canceled;RequestCanceled: request context canceled\r\ncaused by: context canceled: RequestCanceled: request context canceled\r\ncaused by: context canceled;RequestCanceled: request context canceled\r\ncaused by: context canceled\r\nE1011 15:53:11.432335      68 main.go:105] remote error: rpc error: code = Unknown desc = TabletManager.Backup on local-0000000301 error: RequestCanceled: request context canceled\r\ncaused by: context canceled;RequestCanceled: request context canceled\r\ncaused by: context canceled: RequestCanceled: request context canceled\r\ncaused by: context canceled;RequestCanceled: request context canceled\r\ncaused by: context canceled\r\n```"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-10-12T01:04:05Z",
+   "body": "I just tried the same thing against s3 (without --allow_primary, so it happened on a replica) and the backup succeeds. So at this point I'm going say that this seems to be specific to your storage provider.\r\nEspecially given that you seem to be getting an error returned from the call to UploadWithContext."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-10-12T06:22:21Z",
+   "body": "Multiple storage provider as we replicate the behavior with Swift and Minio"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-10-12T13:22:21Z",
+   "body": "Similar to https://github.com/vitessio/vitess/issues/8391"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-10-12T16:46:16Z",
+   "body": "In order to scope this down a bit further we can try this\r\n- my test was with the PlanetScale fork, I can re-test with vanilla vitess\r\n- is it possible for you to test with an actual s3 bucket instead of Minio/Swift? "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-10-12T18:00:34Z",
+   "body": "We are not using Amazon S3 because we are on premise. Maybe it works with pure Amazon S3 but not with compatible S3 storage... it used to work in v16 and v17 tho."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-10-15T20:05:21Z",
+   "body": "This is a little bit of a gray area because on the one hand, we don't \"officially\" support s3 like non-s3 storage backends. On the other hand, it has worked for a long time and you and others are relying on it.\r\nSo for now, I'm willing for us to revert the change that is causing this error and go back to using `Upload` instead of `UploadWithContext` and then we can try and figure out why that is not working as expected.\r\nWill you be able to do a PR to make just that change? We don't want to revert the stats changes from #12500 \r\n\r\ncc @participant6 "
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-10-16T14:42:57Z",
+   "body": "@reporter there's one more thing you should do.\r\nCan you run this again with some logging added? Log the context and its deadline in `s3.go` just before we call `Upload`/`UploadWithContext`, and at the beginning of the rpc call in `rpc_backup.go`. That will tell us if we are somehow overriding the original context or its deadline.\r\n\r\nrpc_backup.go\r\n```\r\nfunc (tm *TabletManager) Backup(ctx context.Context, logger logutil.Logger, req *tabletmanagerdatapb.BackupRequest) error {\r\n```"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-10-17T09:24:39Z",
+   "body": "I'll check for this tomorrow."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-10-18T04:51:03Z",
+   "body": "@participant1 \r\n\r\n```\r\nrpc_backup.go:44] Backup: [s3] context.Background.WithValue(type transport.connectionKey, val <not Stringer>).WithValue(type peer.peerKey, val <not Stringer>).WithDeadline(2023-10-18 05:47:58.845009687 +0000 UTC m=+3647.749218339 [59m59.989854174s]).WithValue(type metadata.mdIncomingKey, val <not Stringer>).WithValue(type grpc.streamKey, val <not Stringer>).WithValue(type grpc.rpcInfoContextKey, val <not Stringer>).WithValue(type callinfo.key, val <not Stringer>)\r\n\r\ns3.go:176] AddFile: [s3] context.Background.WithValue(type transport.connectionKey, val <not Stringer>).WithValue(type peer.peerKey, val <not Stringer>).WithDeadline(2023-10-18 05:47:58.845009687 +0000 UTC m=+3647.749218339 [59m55.920480222s]).WithValue(type metadata.mdIncomingKey, val <not Stringer>).WithValue(type grpc.streamKey, val <not Stringer>).WithValue(type grpc.rpcInfoContextKey, val <not Stringer>).WithValue(type callinfo.key, val <not Stringer>).WithCancel\r\n```"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-10-19T14:25:45Z",
+   "body": "So the logs tell us that we are not messing up the context in passing it in. AND that it does have a 1 hour timeout. This makes it more likely that somehow this is not being supported on the server side i.e. the specific storage solution you are using. Do you get any logs on the storage server that can help?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-10-19T14:44:55Z",
+   "body": "@participant1 the only thing I have on the (minio) server side log is 499 http status (client/vttablet disconnection) https://github.com/vitessio/vitess/issues/8391#issuecomment-1759374421"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2023-10-19T15:27:32Z",
+   "body": "Then the next thing I can think of is some sort of grpc keep alive timeout. The client (vttablet) is canceling because there's no response within some shorter timeout on the grpc connection.\r\nThere was an issue of that sort some time ago https://github.com/vitessio/vitess/issues/9195 but the error message is different."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-10-25T15:40:33Z",
+   "body": "The error message looks like somehow an explicit cancel on the context was triggered. It doesn't look like an expiry. And these contexts are not really something the server even sees, it's a purely client side concern. \r\n\r\nI'd be curious to know if in your case `EndBackup` ever ends up being called? That is what should wait for the uploads to complete then. "
+  },
+  {
+   "author": "reporter",
+   "created_at": "2023-10-26T14:25:25Z",
+   "body": "@participant3 `EndBackup` seems not called"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2023-10-26T14:29:50Z",
+   "body": "> @participant3 `EndBackup` seems not called\r\n\r\nThat would indicate that we also don't want on the background goroutine that uploads. Which means that request completes and the context is cancelled. Which explains why this happens.\r\n\r\nI don't think this is to be honest related to S3 / minio or whatever the implementation is. This is a bug that happens independently of that cc @participant1. "
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-09-18T23:50:46Z",
+   "body": "I opened https://github.com/vitessio/vitess/pull/16806 to fix this issue. The PR contains my interpretation of the issue too."
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "vitessio/vitess",
+  "default_branch": "main",
+  "commit_sha": "d84f6d7f97502a79c5d78e9f5986f16057d21857",
+  "as_of": "2023-10-05T07:30:58Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_vitessio_vitess_14188"
+}

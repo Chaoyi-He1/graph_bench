@@ -1,0 +1,290 @@
+{
+ "repo": "apache/airflow",
+ "number": 50185,
+ "url": "https://github.com/apache/airflow/issues/50185",
+ "title": "Trigger runner process locked with multiple Workflow triggers",
+ "state": "closed",
+ "labels": [
+  "kind:bug",
+  "priority:high",
+  "area:core",
+  "area:Triggerer",
+  "affected_version:3.0"
+ ],
+ "reporter": "ArvidMartensRenson",
+ "created_at": "2025-05-05T07:07:23Z",
+ "closed_at": "2025-06-17T14:21:11Z",
+ "body": "### Apache Airflow version\n\n3.0.0\n\n### If \"Other Airflow 2 version\" selected, which one?\n\n_No response_\n\n### What happened?\n\nI am running a few dags that can start multiple workflow triggers. When the amount of triggers is low, below 10 or so; all works fine but whenever it goes higher the trigger runner seems to get stuck. I traced it back to one of the dag_count calls on RuntimeTaskInstance getting stuck/taking too long which locks all the other triggers and the syncing of the trigger runner as the SUPERVISOR_COMMS object stays in its locked state. The triggers seems to be started at the same time.\n\nI already tried to solve the problem by introducing a timeout on the count calls but that made the trigger runner crash as the incoming messages are getting mixed up (response of a cancelled call finally getting through). Only solution I see right now is to perform API calls on the public endpoint for the dag count method calls.\n\n### What you think should happen instead?\n\n_No response_\n\n### How to reproduce\n\nHave more than twenty or so workflow triggers running started at the same, I suppose they poll states at about the same time.\n\n### Operating System\n\ndebian 12\n\n### Versions of Apache Airflow Providers\n\n_No response_\n\n### Deployment\n\nOfficial Apache Airflow Helm Chart\n\n### Deployment details\n\n_No response_\n\n### Anything else?\n\n_No response_\n\n### Are you willing to submit PR?\n\n- [ ] Yes I am willing to submit a PR!\n\n### Code of Conduct\n\n- [x] I agree to follow this project's [Code of Conduct](https://github.com/apache/airflow/blob/main/CODE_OF_CONDUCT.md)\n",
+ "comments": [
+  {
+   "author": "uranusjr",
+   "created_at": "2025-05-07T05:48:35Z",
+   "body": "Is it possible to write a dag that can reliably reproduce this?"
+  },
+  {
+   "author": "kaxil",
+   "created_at": "2025-05-12T08:57:47Z",
+   "body": "cc @gopidesupavan "
+  },
+  {
+   "author": "gopidesupavan",
+   "created_at": "2025-05-12T14:02:34Z",
+   "body": "Yeah will look at this today."
+  },
+  {
+   "author": "vatsrahul1001",
+   "created_at": "2025-05-19T05:24:46Z",
+   "body": "@gopidesupavan are you still looking into this?"
+  },
+  {
+   "author": "ArvidMartensRenson",
+   "created_at": "2025-05-19T06:57:59Z",
+   "body": "For now I solved througt the creation of an async Task SDK client which the triggers use directly. In my setup the triggers always have the api server running on the same instances, hence I could use localhost traffic. In this way it is rather similar like the in-process traffic but I do not overload the data pipe between trigger runner and supervisor. From my investigation it seems that using too much external workload triggers (count calls) together with the supervisor-runner syncs congests that pipe in such a way that all calls were blocked indefinitely resulting in a trigger process that seems alive (heartbeats still worked) but in reality it is stuck.\n\nProbably this is not the designed pattern, but for now this solution makes it possible for me to role out airflow 3.0 at our office.  "
+  },
+  {
+   "author": "gopidesupavan",
+   "created_at": "2025-05-19T07:37:31Z",
+   "body": "I am able to re produce it with one of example ExternalTaskSensor dags. It looks blocking somewhere and triggers are not getting to added to further process.\n\nNeed to workout why it's blocking though we use async lock. Will check and update."
+  },
+  {
+   "author": "gopidesupavan",
+   "created_at": "2025-05-19T13:39:03Z",
+   "body": "> For now I solved througt the creation of an async Task SDK client which the triggers use directly. In my setup the triggers always have the api server running on the same instances, hence I could use localhost traffic. In this way it is rather similar like the in-process traffic but I do not overload the data pipe between trigger runner and supervisor. From my investigation it seems that using too much external workload triggers (count calls) together with the supervisor-runner syncs congests that pipe in such a way that all calls were blocked indefinitely resulting in a trigger process that seems alive (heartbeats still worked) but in reality it is stuck.\n> \n> Probably this is not the designed pattern, but for now this solution makes it possible for me to role out airflow 3.0 at our office.\n\n@ArvidMartensRenson we dont have async client in Task SDK, did you overwrite the Triggerer client method, does it fixed? "
+  },
+  {
+   "author": "ArvidMartensRenson",
+   "created_at": "2025-05-19T17:56:03Z",
+   "body": "I created an async client from the sync client, using httpx.AsyncClient as the base (like httpx.Client is for the sync client). Inherited the init client from the sync task client. Only problem I had was that the operations had to be rewritten as an async method, so I copied the code from the sync client and changed the method definition to async. I found this implementation nicer than using plain api calls with the async httpx client. \n\nTraffic is over localhost so even then a token is required, I reused the methods that are used in the creation of the task workload to get the token. I considered dropping the token requirement but it seemed safer and whenever the trigger service and api server are separated it will be needed.\n\nI implemented this solution last Thursday and for now the trigger service has not been stuck and the external workload triggers all completed. So for now I would conclude that the solution works.\n\nIf it is desirable to have an async client I am happy to help on creating the client, however I am a little worried with duplicate code I have now, same code for the sync and async client. If someone knows a solution for this or a way to handle that problem, that would be nice. \n\nFor the record, I am using a custom implementation of the workload trigger. I was an early adopter of the trigger paradigm and the external workload trigger did not exist at that time, so we had to implement our own trigger. We never came around converting to the standard provider implementation."
+  },
+  {
+   "author": "gopidesupavan",
+   "created_at": "2025-05-23T23:07:04Z",
+   "body": "Thanks @ArvidMartensRenson that explains me what's happening. During debugging, I noticed that requests are being sent, but no responses are being returned. Since we use a lock when sending requests, the absence of a response causes the lock to remain active, which in turn blocks any further triggers from being processed.\n\nWill check on async client part over this week."
+  },
+  {
+   "author": "gopidesupavan",
+   "created_at": "2025-05-23T23:11:58Z",
+   "body": "> I created an async client from the sync client, using httpx.AsyncClient as the base (like httpx.Client is for the sync client). Inherited the init client from the sync task client. Only problem I had was that the operations had to be rewritten as an async method, so I copied the code from the sync client and changed the method definition to async. I found this implementation nicer than using plain api calls with the async httpx client.\n> \n> Traffic is over localhost so even then a token is required, I reused the methods that are used in the creation of the task workload to get the token. I considered dropping the token requirement but it seemed safer and whenever the trigger service and api server are separated it will be needed.\n> \n> I implemented this solution last Thursday and for now the trigger service has not been stuck and the external workload triggers all completed. So for now I would conclude that the solution works.\n> \n> If it is desirable to have an async client I am happy to help on creating the client, however I am a little worried with duplicate code I have now, same code for the sync and async client. If someone knows a solution for this or a way to handle that problem, that would be nice.\n\nI don't see any issues with using an async client, it's part of the triggerer, and most triggers are already asynchronous. I do agree that there's some code duplication. Please feel free to submit your approach; it’ll be great to have more eyes on it and gather suggestions to refine the solution. :) \n\n> \n> For the record, I am using a custom implementation of the workload trigger. I was an early adopter of the trigger paradigm and the external workload trigger did not exist at that time, so we had to implement our own trigger. We never came around converting to the standard provider implementation.\n\n"
+  },
+  {
+   "author": "gopidesupavan",
+   "created_at": "2025-05-26T04:15:46Z",
+   "body": "Looks like the lock inside sync_to_async function causing issues, its likely messing up with threads acquired in side the sync_to_async. We use get_ti_count, get_task_states, get_dr_count from the `RuntimeTaskInstance`. likely this is not a good choice.\n\nI have Moved those functions to async version without using sync_to_async and working fine, did some stress test around 400 triggers nothing locked everything running fine.\n\n@ArvidMartensRenson we may not need async client. i will raise changes for moving the functions to async, please test it once i raised? async client type also would be good , but in this case i dont see any need. its working without async client. "
+  },
+  {
+   "author": "gopidesupavan",
+   "created_at": "2025-05-26T16:27:40Z",
+   "body": "@ArvidMartensRenson https://github.com/apache/airflow/pull/51085 would be helpful if you test this change please?\n\ni ran with aroud 400 triggerers and dont see any locks."
+  },
+  {
+   "author": "x42005e1f",
+   "created_at": "2025-05-27T10:31:33Z",
+   "body": "@ArvidMartensRenson, I would like to clarify: do threads get stuck when trying to acquire the lock when some other thread is already performing some actions holding the lock, or do they get stuck for no reason? I ask because in the second case it would mean that the problem is most likely on my side - in which case I would consider it a critical bug and release a fix version. However, I tested the lock with `sync_to_async()` yesterday right after the PR appeared and was unable to reproduce the problem in isolated tests (with both stable and the latest version of aiologic)."
+  },
+  {
+   "author": "gopidesupavan",
+   "created_at": "2025-05-27T10:41:16Z",
+   "body": "@x42005e1f can i have your example you tested? In our trigger process we use lock inside sync_to_async."
+  },
+  {
+   "author": "x42005e1f",
+   "created_at": "2025-05-27T11:08:32Z",
+   "body": "> [@x42005e1f](https://github.com/x42005e1f) can i have your example you tested? In our trigger process we use lock inside sync_to_async.\n\nYes, here is a simple mixed test:\n\n<details>\n<summary>test.py</summary>\n\n```python\nimport asyncio\nimport sys\nimport time\n\nfrom concurrent.futures import ThreadPoolExecutor, as_completed\n\nimport aiologic\n\nfrom asgiref.sync import sync_to_async\n\nif sys.version_info >= (3, 11):\n    WaitTimeout = TimeoutError\nelse:\n    from concurrent.futures import TimeoutError as WaitTimeout\n\nDELAY = 1e-6\nTIMEOUT = 6.0  # must be reached (success)\nTHREADS = 100\nTASKS = 100\n\nlock = aiologic.Lock()\nbarrier = aiologic.Latch(THREADS)\nstopped = False\n\n\ndef sync_acquire_release():\n    with lock:\n        time.sleep(DELAY)\n\n\nasync def async_acquire_release(i):\n    if i % 2 == 0:\n        while True:\n            await sync_to_async(sync_acquire_release)()\n\n            if stopped:\n                break\n    else:\n        while True:\n            async with lock:\n                await asyncio.sleep(DELAY)\n\n            if stopped:\n                break\n\n\nasync def hub():\n    await barrier\n    await asyncio.gather(*(\n        asyncio.create_task(async_acquire_release(i))\n        for i in range(TASKS)\n    ))\n\n\nif __name__ == \"__main__\":\n    with ThreadPoolExecutor(THREADS) as executor:\n        interval = sys.getswitchinterval()\n        sys.setswitchinterval(min(1e-6, interval))\n\n        try:\n            futures = [\n                executor.submit(asyncio.run, hub())\n                for _ in range(THREADS)\n            ]\n\n            for future in as_completed(futures, timeout=TIMEOUT):\n                future.result()  # reraise\n        except WaitTimeout:\n            pass\n        finally:\n            sys.setswitchinterval(interval)\n            stopped = True\n```\n\n</details>\n\nBut note that `sync_to_async()` uses only one worker thread by default, which blocks all further calls until the first one is completed. This can be seen, for example, in this example:\n\n<details>\n<summary>example.py</summary>\n\n```python\nimport asyncio\nimport sys\nimport threading\n\nfrom asgiref.sync import sync_to_async\n\n\nasync def main():\n    loop = asyncio.get_running_loop()\n    first = asyncio.Event()\n    second = threading.Event()\n\n    def a():\n        print(\"'a' started!\")\n        loop.call_soon_threadsafe(first.set)\n        second.wait()\n\n    def b():\n        print(\"'b' started!\")  # will never be printed!\n        second.set()\n\n    f1 = asyncio.create_task(sync_to_async(a)())\n    await first.wait()\n    print(\"notified!\")\n    f2 = asyncio.create_task(sync_to_async(b)())\n\n    await asyncio.gather(f1, f2)\n\n\nif __name__ == \"__main__\":\n    asyncio.run(main())\n```\n\n</details>\n\nWhat is indicative is that my test works well in free-threaded mode. In this mode threads are more aggressive, especially on multi-core systems, which better reveals thread-safety issues."
+  },
+  {
+   "author": "x42005e1f",
+   "created_at": "2025-05-27T12:55:27Z",
+   "body": "Also note that the different APIs that aiologic provides should not be mixed in the same thread if threading is used for the green (sync) API. This is a fundamental problem due to the fact that primitives work at the task level: `lock.green_acquire()` can block the event loop when `aiologic.lowlevel.current_green_library() == \"threading\"`, and as a result lock will never be released. This is well demonstrated in the following example:\n\n<details>\n<summary>example.py</summary>\n\n```python\nimport asyncio\nimport time\n\nimport aiologic\n\n\nasync def main():\n    lock = aiologic.Lock()\n\n    async def a():\n        async with lock:\n            print(\"before\")\n            await asyncio.sleep(0)\n            print(\"after\")  # will never be printed!\n\n    async def b():\n        with lock:\n            time.sleep(0)\n\n    await asyncio.gather(a(), b())\n\n\nif __name__ == \"__main__\":\n    asyncio.run(main())\n```\n\n</details>\n\nThis is the same as using `threading.Lock` along with asyncio tasks. If you have such calls somewhere, it can be the cause of deadlocks.\n\nThis problem of mixing two APIs in the same thread can be solved by using [GLock](https://gist.github.com/x42005e1f/a50d0744013b7bbbd7ded608d6a3845b), which can be a thread-level lock - if you use the read-preferring readers-writer locks condition (`self.group is None or self.group == group`), its APIs can safely mix (just replace `lock = aiologic.Lock()` with `lock = GLock(default_group_factory=current_thread_ident)` and that example will work without hanging). However, since it would no longer be a task level, it would not be coroutine-safe."
+  },
+  {
+   "author": "gopidesupavan",
+   "created_at": "2025-05-27T14:00:06Z",
+   "body": "> Also note that the different APIs that aiologic provides should not be mixed in the same thread if threading is used for the green (sync) API. This is a fundamental problem due to the fact that primitives work at the task level: `lock.green_acquire()` can block the event loop when `aiologic.lowlevel.current_green_library() == \"threading\"`, and as a result lock will never be released. This is well demonstrated in the following example:\n> \n> example.py\n> This is the same as using `threading.Lock` along with asyncio tasks. If you have such calls somewhere, it can be the cause of deadlocks.\n> \n> This problem of mixing two APIs in the same thread can be solved by using [GLock](https://gist.github.com/x42005e1f/a50d0744013b7bbbd7ded608d6a3845b), which can be a thread-level lock - if you use the read-preferring readers-writer locks condition (`self.group is None or self.group == group`), its APIs can safely mix (just replace `lock = aiologic.Lock()` with `lock = GLock(default_group_factory=current_thread_ident)` and that example will work without hanging). However, since it would no longer be a task level, it would not be coroutine-safe.\n\nlooks like we are using that similar way some places. this is async one https://github.com/apache/airflow/blob/main/airflow-core/src/airflow/jobs/triggerer_job_runner.py#L965 and in other places we are using like `with SUPERVISOR_COMMS.lock:`  \n\nBTW GLock where can i find this package i dont see it on PyPI? i will try with this"
+  },
+  {
+   "author": "x42005e1f",
+   "created_at": "2025-05-27T14:18:57Z",
+   "body": "If the problem is the same as what I described (which is likely), the (relatively) easiest way to solve it is to use libraries like [greenback](https://github.com/oremanj/greenback) to execute an asynchronous version when the code runs in a thread with an event loop. Requires explicit portal creation, greenlet support, and interrupt support on the synchronous code side.\n\nIt is also possible to create asynchronous versions of functions to use directly, or delegate them to execute sequentially in the worker thread via `sync_to_async()`, but this can be difficult, especially since [`SUPERVISOR_COMMS.lock` is used even in `__getitem__()`](https://github.com/apache/airflow/blob/7ebba78236b945e0ce569607480f397e5f2e58ba/task-sdk/src/airflow/sdk/execution_time/lazy_sequence.py#L147).\n\n> BTW GLock where can i find this package i dont see it on PyPI? i will try with this\n\nYou can directly copy the code from gist and make the mentioned change. GLock [was created to provide readers-writer locks](https://github.com/x42005e1f/aiologic/discussions/6) before Grouper appears in a future version of aiologic. Right now my efforts are focused on moving aiologic to the beta development stage, so releases are currently delayed.\n\nBut be aware that if you choose GLock, you will have to deal with the loss of coroutine-safety: in particular, the asynchronous usage you mentioned will be executed in one thread at a time, but will also be able to be executed in different tasks at the same time."
+  },
+  {
+   "author": "gopidesupavan",
+   "created_at": "2025-05-27T19:51:19Z",
+   "body": "> If the problem is the same as what I described (which is likely), the (relatively) easiest way to solve it is to use libraries like [greenback](https://github.com/oremanj/greenback) to execute an asynchronous version when the code runs in a thread with an event loop. Requires explicit portal creation, greenlet support, and interrupt support on the synchronous code side.\n> \n> It is also possible to create asynchronous versions of functions to use directly, or delegate them to execute sequentially in the worker thread via `sync_to_async()`, but this can be difficult, especially since [`SUPERVISOR_COMMS.lock` is used even in `__getitem__()`](https://github.com/apache/airflow/blob/7ebba78236b945e0ce569607480f397e5f2e58ba/task-sdk/src/airflow/sdk/execution_time/lazy_sequence.py#L147).\n> \n> > BTW GLock where can i find this package i dont see it on PyPI? i will try with this\n> \n> You can directly copy the code from gist and make the mentioned change. GLock [was created to provide readers-writer locks](https://github.com/x42005e1f/aiologic/discussions/6) before Grouper appears in a future version of aiologic. Right now my efforts are focused on moving aiologic to the beta development stage, so releases are currently delayed.\n> \n> But be aware that if you choose GLock, you will have to deal with the loss of coroutine-safety: in particular, the asynchronous usage you mentioned will be executed in one thread at a time, but will also be able to be executed in different tasks at the same time.\n\n@x42005e1f Thats a good suggestion, greenback seems working, did some tests and everything seems fine. no triggers blocked. \n\nLooks like this package is not maintained or not sure, no activity since last Feb 2024."
+  },
+  {
+   "author": "x42005e1f",
+   "created_at": "2025-05-27T20:34:36Z",
+   "body": "> Looks like this package is not maintained or not sure, no activity since last Feb 2024.\n\nIt is not always possible to tell from the commit activity of such packages whether they are maintained or not. Sometimes they are not updated just because there are no serious issues, in which case the author can focus on other projects. Even more ambiguous is the situation when tests are regularly run for new versions of dependencies and a lockfile is updated - in this case the repository may look alive with a huge number of commits, but in fact it has not been updated for a very long time, having very few commits in the source code for the whole history.\n\nThere are also alternatives such as [greenletio](https://github.com/miguelgrinberg/greenletio) or [awaitlet](https://github.com/sqlalchemy/awaitlet). But if you want, you can implement something similar on your side - for example, SQLAlchemy has long used [its own module](https://github.com/sqlalchemy/sqlalchemy/blob/05b2442132d5ae31cfcc7a1fe95e0f6b739aa995/lib/sqlalchemy/util/concurrency.py) as part of asynchronous API implementation.\n\nThese solutions have some disadvantages associated with stack growth, but they are usually insignificant. A more comprehensive solution is to implement (generators and) coroutines via greenlets - what I called (genlets and) corolets 3 years ago (for a non-public tutorial on asynchronous library design). But it is redundant for this task."
+  },
+  {
+   "author": "gopidesupavan",
+   "created_at": "2025-05-28T18:22:20Z",
+   "body": "> > Looks like this package is not maintained or not sure, no activity since last Feb 2024.\n> \n> It is not always possible to tell from the commit activity of such packages whether they are maintained or not. Sometimes they are not updated just because there are no serious issues, in which case the author can focus on other projects. Even more ambiguous is the situation when tests are regularly run for new versions of dependencies and a lockfile is updated - in this case the repository may look alive with a huge number of commits, but in fact it has not been updated for a very long time, having very few commits in the source code for the whole history.\n> \n> There are also alternatives such as [greenletio](https://github.com/miguelgrinberg/greenletio) or [awaitlet](https://github.com/sqlalchemy/awaitlet). But if you want, you can implement something similar on your side - for example, SQLAlchemy has long used [its own module](https://github.com/sqlalchemy/sqlalchemy/blob/05b2442132d5ae31cfcc7a1fe95e0f6b739aa995/lib/sqlalchemy/util/concurrency.py) as part of asynchronous API implementation.\n> \n> These solutions have some disadvantages associated with stack growth, but they are usually insignificant. A more comprehensive solution is to implement (generators and) coroutines via greenlets - what I called (genlets and) corolets 3 years ago (for a non-public tutorial on asynchronous library design). But it is redundant for this task.\n\nagree :)"
+  },
+  {
+   "author": "gopidesupavan",
+   "created_at": "2025-05-28T19:06:31Z",
+   "body": "@kaxil @uranusjr considering the above all discussion this leaves me i guess two options IMHO. Whats your suggestion or thoughts ?\n1. Create async version of all the comms methods that access via triggerer\n2.  Use something like [greenback](https://github.com/oremanj/greenback) , execute the sync version inside greenback portal. this we no need to have copy of async version.\n\nFor option two i am thinking something like this below we can have decorators on the methods. and if the comms methods called from  async function then these executes in greenback portal. for normal sync invocation it works without any issues. \n\n```\nlock = aiologic.Lock()\n\nglobal is_async_process\nis_async_process = False\n\ndef sync_or_async(func):\n    @functools.wraps(func)\n    def wrapper(*args, **kwargs):\n        if is_async_process:\n            async def async_wrapper():\n                return await greenback.with_portal_run_sync(func, *args, **kwargs)\n            return async_wrapper()\n        else:\n            return func(*args, **kwargs)\n\n    return wrapper\n\n\n@sync_or_async\ndef sample_func(a, b):\n    with lock:\n        return a + b\n\nasync def async_main():\n    global is_async_process\n    is_async_process = True\n    await sample_func(4, 4)\n\n\nif __name__ == \"__main__\":\n    sample_func(1, 2)\n    asyncio.run(async_main())\n```\n\nNot sure of any side effects to use with decorators, when i tested its working fine above approach.\n\n@x42005e1f please add your thoughts."
+  },
+  {
+   "author": "x42005e1f",
+   "created_at": "2025-05-28T21:41:42Z",
+   "body": "> [@x42005e1f](https://github.com/x42005e1f) please add your thoughts.\n\nI do not think that making the function return type dependent on runtime is a good pattern. This approach is poorly compatible with static analyzers and it will also not work correctly in all cases. Instead, I suggest shifting the focus not on how to create greenlets, but on how to pass awaitable objects from them. Here is how it can be implemented with a ready-made example for `aiologic.Lock`:\n\n```python\nfrom __future__ import annotations\n\nimport inspect\nimport sys\n\nfrom collections.abc import Awaitable, Callable\nfrom functools import wraps\nfrom typing import TypeVar, cast\n\nimport aiologic\nimport anyio\nimport greenback\n\nif sys.version_info >= (3, 10):\n    from typing import ParamSpec\nelse:\n    from typing_extensions import ParamSpec\n\n_T = TypeVar(\"_T\")\n_P = ParamSpec(\"_P\")\n\n\ndef sync_or_async(\n    sync_func: Callable[_P, _T],\n    async_func: Callable[_P, _T] | Callable[_P, Awaitable[_T]],\n) -> Callable[_P, _T]:\n    if inspect.iscoroutinefunction(async_func):\n        async_impl = greenback.autoawait(async_func)\n    else:\n        async_impl = async_func\n\n    async_impl = cast(Callable[_P, _T], async_impl)\n\n    @wraps(sync_func)\n    def wrapper(*args: _P.args, **kwargs: _P.kwargs) -> _T:\n        if greenback.has_portal():\n            return async_impl(*args, **kwargs)\n        else:\n            return sync_func(*args, **kwargs)\n\n    return wrapper\n\n\nclass CommsLock(aiologic.Lock):\n    __slots__ = ()\n\n    async def _async_acquire_with_timeout(\n        self,\n        /,\n        *,\n        blocking: bool = True,\n        timeout: float | None = None,\n    ) -> bool:\n        with anyio.move_on_after(timeout):\n            return await self.async_acquire(blocking=blocking)\n\n        return False\n\n    green_acquire = sync_or_async(\n        aiologic.Lock.green_acquire,\n        _async_acquire_with_timeout,  # type: ignore[arg-type]\n    )\n    green_release = sync_or_async(\n        aiologic.Lock.green_release,\n        aiologic.Lock.async_release,\n    )\n```\n\n```python\nlock = CommsLock()\n\nasync def noop() -> None:\n    pass\n\nasync def holding() -> None:\n    async with lock:\n        await asyncio.sleep(0)  # switch back to the event loop\n\ndef acquire_release() -> None:\n    with lock:\n        pass  # do something\n\n# make CommsLock implicitly awaitable for the current task\nawait greenback.ensure_portal()\n\n# hold the lock with another task\nholder = asyncio.create_task(holding())\nawait asyncio.sleep(0)\nassert lock.locked()\n\n# a task to verify that CommsLock does indeed yield to the event loop\ntask = asyncio.create_task(noop())\nassert not task.done()\n\nacquire_release()  # sync-or-async call\nassert task.done()  # there was a context switch!\n```"
+  },
+  {
+   "author": "x42005e1f",
+   "created_at": "2025-05-28T23:01:57Z",
+   "body": "Also note that this greenlet approach requires interrupt support - synchronous functions that contain such sync-or-async calls at least indirectly (via subcalls) must be aware that they can be interrupted and called again (i.e. they must be coroutine-safe). Otherwise, the effect will be like a multithreaded function call, but with cooperative multitasking, the possibility of deadlocks when using primitives from the threading module, and broken `threading.local`.\n\nIf it is possible to write asynchronous versions for functions that use `SUPERVISOR_COMMS.lock` with little effort, it is better to do so. If not, the above approach can be considered as a temporary or permanent solution (depending on whether you are willing to keep an eye on coroutine-safety).\n\nNote that selecting the first option (separate asynchronous functions) requires that there be such functions for each use case of `SUPERVISOR_COMMS.lock` via the asynchronous API. If an asynchronous function calls at least one synchronous function that directly or indirectly uses `SUPERVISOR_COMMS.lock`, this immediately risks deadlocks, possibly even hard-to-detect ones.\n\nThis caveat is only true for calls within the same thread. If `SUPERVISOR_COMMS.lock` is used synchronously in a separate thread (e.g. via `sync_to_async()`), everything is fine."
+  },
+  {
+   "author": "x42005e1f",
+   "created_at": "2025-05-28T23:25:42Z",
+   "body": "Well, I think the best solution is not to synchronize. If it is possible to rewrite communication so that messages go really atomically (or without collisions), it will get rid of all this abstruse headache."
+  },
+  {
+   "author": "gopidesupavan",
+   "created_at": "2025-05-28T23:41:58Z",
+   "body": "@x42005e1f Really appreciate your thoughts here and all the suggestions :)\n\n Yes, I agree, having an async version would be a good way to avoid all these patches. If I remember correctly, the lock was introduced primarily to prevent mixing API communication messages with triggerer workloads.\n\n@kaxil  @ashb  It seems to me that having a separate channel for triggerer workloads and API communication would be ideal in this scenario to avoid deadlocks IMHO. Alternatively, implementing async versions of all relevant methods could also work. Or, as @x42005e1f suggested, we could adopt the method he mentioned—but as he noted, we’ll need to closely monitor its coroutine-safety."
+  },
+  {
+   "author": "gopidesupavan",
+   "created_at": "2025-05-28T23:45:17Z",
+   "body": "> > [@x42005e1f](https://github.com/x42005e1f) please add your thoughts.\n> \n> I do not think that making the function return type dependent on runtime is a good pattern. This approach is poorly compatible with static analyzers and it will also not work correctly in all cases. Instead, I suggest shifting the focus not on how to create greenlets, but on how to pass awaitable objects from them. Here is how it can be implemented with a ready-made example for `aiologic.Lock`:\n> \n> from __future__ import annotations\n> \n> import inspect\n> import sys\n> \n> from collections.abc import Awaitable, Callable\n> from functools import wraps\n> from typing import TypeVar, cast\n> \n> import aiologic\n> import anyio\n> import greenback\n> \n> if sys.version_info >= (3, 10):\n>     from typing import ParamSpec\n> else:\n>     from typing_extensions import ParamSpec\n> \n> _T = TypeVar(\"_T\")\n> _P = ParamSpec(\"_P\")\n> \n> \n> def sync_or_async(\n>     sync_func: Callable[_P, _T],\n>     async_func: Callable[_P, _T] | Callable[_P, Awaitable[_T]],\n> ) -> Callable[_P, _T]:\n>     if inspect.iscoroutinefunction(async_func):\n>         async_impl = greenback.autoawait(async_func)\n>     else:\n>         async_impl = async_func\n> \n>     async_impl = cast(Callable[_P, _T], async_impl)\n> \n>     @wraps(sync_func)\n>     def wrapper(*args: _P.args, **kwargs: _P.kwargs) -> _T:\n>         if greenback.has_portal():\n>             return async_impl(*args, **kwargs)\n>         else:\n>             return sync_func(*args, **kwargs)\n> \n>     return wrapper\n> \n> \n> class CommsLock(aiologic.Lock):\n>     __slots__ = ()\n> \n>     async def _async_acquire_with_timeout(\n>         self,\n>         /,\n>         *,\n>         blocking: bool = True,\n>         timeout: float | None = None,\n>     ) -> bool:\n>         with anyio.move_on_after(timeout):\n>             return await self.async_acquire(blocking=blocking)\n> \n>         return False\n> \n>     green_acquire = sync_or_async(\n>         aiologic.Lock.green_acquire,\n>         _async_acquire_with_timeout,  # type: ignore[arg-type]\n>     )\n>     green_release = sync_or_async(\n>         aiologic.Lock.green_release,\n>         aiologic.Lock.async_release,\n>     )\n> lock = CommsLock()\n> \n> async def noop() -> None:\n>     pass\n> \n> async def holding() -> None:\n>     async with lock:\n>         await asyncio.sleep(0)  # switch back to the event loop\n> \n> def acquire_release() -> None:\n>     with lock:\n>         pass  # do something\n> \n> # make CommsLock implicitly awaitable for the current task\n> await greenback.ensure_portal()\n> \n> # hold the lock with another task\n> holder = asyncio.create_task(holding())\n> await asyncio.sleep(0)\n> assert lock.locked()\n> \n> # a task to verify that CommsLock does indeed yield to the event loop\n> task = asyncio.create_task(noop())\n> assert not task.done()\n> \n> acquire_release()  # sync-or-async call\n> assert task.done()  # there was a context switch!\n\ncan this `greenback.ensure_portal()` be opened on global level in trigger process, why i am asking is its bit problematic to add this before every function that calls from triggerer. Also users have their own custom triggers they have to update this before every function call. "
+  },
+  {
+   "author": "x42005e1f",
+   "created_at": "2025-05-28T23:58:38Z",
+   "body": "> [@kaxil](https://github.com/kaxil) [@ashb](https://github.com/ashb) It seems to me that having a separate channel for triggerer workloads and API communication would be ideal in this scenario to avoid deadlocks IMHO.\n\nThere is also a very audacious solution. Let's go back to the thread-level lock. If we add an asynchronous lock to it for the current event loop, it will:\n\n1. Guarantee exclusive access for the thread.\n2. Guarantee exclusive access for the task.\n3. But allow access through a synchronous function called by another task.\n\nAnd let's just suspend the message transmission to the asynchronous task and let the response come to the synchronous function first, and resume sending to the asynchronous function afterwards. This way we will eliminate both collisions and deadlocks - due to cooperative multitasking it can be done relatively easily. But this mechanism will have to be implemented properly.\n\n> can this `greenback.ensure_portal()` be opened on global level in trigger process, why i am asking is its bit problematic to add this before every function that calls from triggerer. Also users have their own custom triggers they have to update this before every function call.\n\nJust call somewhere within the current task that will make sync-or-async calls. `greenback.ensure_portal()` keeps track of registered tasks, so it can be called multiple times."
+  },
+  {
+   "author": "x42005e1f",
+   "created_at": "2025-05-29T00:26:50Z",
+   "body": "Perhaps I should clarify the thought. Instead of waiting in the synchronous function to finish reading the message in the asynchronous task, which obviously will never complete without switching back to the event loop, we can finish reading the message in the synchronous function. Once we finish reading that message, we will send that remainder to the asynchronous task on the next switch. And before that, the synchronous function will make the request it wants to make.\n\nAlso, instead of adding a separate asynchronous lock, we can reuse the task-owner group ident for synchronous calls in the same thread."
+  },
+  {
+   "author": "gopidesupavan",
+   "created_at": "2025-05-31T09:47:55Z",
+   "body": "@x42005e1f sorry was having hard time last two days at my day job, back to this now, Could you please elaborate with some example i couldn't think of what you referring sorry?\n\nIf not i will go ahead and try implement the above Commslock approach with sync_or_async. i feel its worth doing.  "
+  },
+  {
+   "author": "x42005e1f",
+   "created_at": "2025-05-31T11:05:20Z",
+   "body": "> [@x42005e1f](https://github.com/x42005e1f) sorry was having hard time last two days at my day job, back to this now, Could you please elaborate with some example i couldn't think of what you referring sorry?\n\nCollisions occur due to simultaneous reading of a single descriptor - usually the one referenced by `sys.stdin`. In `CommsDecoder.get_message()`, it is read synchronously via `sys.stdin` directly. In `TriggerRunner.sync_state_to_supervisor()`, it is read asynchronously via `asyncio.StreamReader`. The idea is that to resolve collisions and avoid deadlocks, it is sufficient to allow the file descriptor to be read in mixed mode in the same thread, but associate the read with the one who sent the request.\n\nWhen using the lock described above (which can be implemented via GLock or independently), there is only one such mixed read situation - async -> sync. In this case we can, for example, do three things:\n\n1. Replace `asyncio.StreamReader` with `concurrent.futures.ThreadPoolExecutor(1)`.\n2. Call `executor.submit()` in `TriggerRunner.sync_state_to_supervisor()`, store a reference to the future in `SUPERVISOR_COMMS`, wait for the future asynchronously with `asyncio.wrap_future()`.\n3. In `CommsDecoder.get_message()`, wait for the future synchronously, if any, and only then read the `sys.stdin` content itself.\n\nThat way we can eliminate this type of collision with minimal pain. At least hypothetically."
+  },
+  {
+   "author": "x42005e1f",
+   "created_at": "2025-05-31T11:20:15Z",
+   "body": "Also note that if we make all communication as `executor.submit()` calls, we can do without synchronization. Since the calls will be executed by a single worker thread, and the futures can be waited for either synchronously or asynchronously. The disadvantage is only a slight performance loss.\n\nObviously, this will also mean that you will no longer need aiologic, at least not for the kind of `SUPERVISOR_COMMS` synchronization you have now. Well, sophisticated solutions are rarely ever really needed in a proper architecture."
+  },
+  {
+   "author": "gopidesupavan",
+   "created_at": "2025-05-31T13:07:22Z",
+   "body": "> Also note that if we make all communication as `executor.submit()` calls, we can do without synchronization. Since the calls will be executed by a single worker thread, and the futures can be waited for either synchronously or asynchronously. The disadvantage is only a slight performance loss.\n> \n> Obviously, this will also mean that you will no longer need aiologic, at least not for the kind of `SUPERVISOR_COMMS` synchronization you have now. Well, sophisticated solutions are rarely ever really needed in a proper architecture.\n\nAgree, generally nowadays people are using triggers largely, not sure about the how much performance it hit. "
+  },
+  {
+   "author": "gopidesupavan",
+   "created_at": "2025-05-31T13:23:42Z",
+   "body": "> > [@x42005e1f](https://github.com/x42005e1f) sorry was having hard time last two days at my day job, back to this now, Could you please elaborate with some example i couldn't think of what you referring sorry?\n> \n> Collisions occur due to simultaneous reading of a single descriptor - usually the one referenced by `sys.stdin`. In `CommsDecoder.get_message()`, it is read synchronously via `sys.stdin` directly. In `TriggerRunner.sync_state_to_supervisor()`, it is read asynchronously via `asyncio.StreamReader`. The idea is that to resolve collisions and avoid deadlocks, it is sufficient to allow the file descriptor to be read in mixed mode in the same thread, but associate the read with the one who sent the request.\n> \n> When using the lock described above (which can be implemented via GLock or independently), there is only one such mixed read situation - async -> sync. In this case we can, for example, do three things:\n> \n> 1. Replace `asyncio.StreamReader` with `concurrent.futures.ThreadPoolExecutor(1)`.\n> 2. Call `executor.submit()` in `TriggerRunner.sync_state_to_supervisor()`, store a reference to the future in `SUPERVISOR_COMMS`, wait for the future asynchronously with `asyncio.wrap_future()`.\n> 3. In `CommsDecoder.get_message()`, wait for the future synchronously, if any, and only then read the `sys.stdin` content itself.\n> \n> That way we can eliminate this type of collision with minimal pain. At least hypothetically.\n\nLooks promising, looking at now. :) thanks."
+  },
+  {
+   "author": "gopidesupavan",
+   "created_at": "2025-06-01T23:08:03Z",
+   "body": "@x42005e1f looks like the solution working, i dont see any too much performance issue. may be in my local environment un noticeable. and good to know the locks are not required as it uses future object to wait.  "
+  },
+  {
+   "author": "x42005e1f",
+   "created_at": "2025-06-01T23:56:45Z",
+   "body": "The difference can be seen only in some very subtle cases where performing context switching might be too expensive (usually a large number of running threads that give O(n) time, possibly with additional cycles), but this is hardly the Apache Airflow case.\n\nAnd the futures solution to the problem is explained quite simply. When we use any kind of synchronization in the same thread, we have a deadlock because the previous context cannot continue its execution. However, when we use ThreadPoolExecutor, both operations are executed separately, because of which they can be executed without deadlocks - the second synchronous wait can be safely done without completing the asynchronous first one."
+  },
+  {
+   "author": "gopidesupavan",
+   "created_at": "2025-06-02T00:18:09Z",
+   "body": "Cool thanks , can you please have a look ? https://github.com/apache/airflow/pull/51279 "
+  },
+  {
+   "author": "x42005e1f",
+   "created_at": "2025-06-02T01:15:38Z",
+   "body": "By the way, below is an excerpt from my unwritten section for the aiologic documentation, which illustrates just how expensive context switching can actually be. It does not show the whole picture, but it may be useful for understanding what seldom-mentioned problems asynchronous programming has, especially in [lock-free and wait-free](https://concurrencyfreaks.blogspot.com/2013/05/lock-free-and-wait-free-definition-and.html) contexts.\n\n<details>\n<summary>challenges.md</summary>\n\nChallenges\n==========\n\nBridging between concurrency libraries is not the only thing that aiologic was\ndesigned to do. The purpose of this section is to show some of the problems\nconsidered in its design, in the hope that the interested reader will be able\nto make the best use of this library by clearly understanding its ideas.\n\nA world full of squares\n-----------------------\n\nHow much time are you willing to spend to get all the threads up and running?\nThis may seem like a strange question, but it is not as simple as it seems at\nfirst glance.\n\nLiving in the world of data, we tend to consider the time complexity of the\nalgorithms we know. But what about the asynchronous world? We are used to\nseeing this world as a black box, forgetting that it is built on the same\nalgorithms, albeit at a level that is not always available to us. And that\ncomes at a price.\n\nSuppose we want to launch N threads to perform some long work. Whether it is\nfor parallel processing of some NumPy arrays, for network operations, for\nsimulating some game processes - it does not matter. Here is an example that\nmodels our task:\n\n```python\nimport threading\nimport time\n\nN = ...\n\nstopped = False\n\n\ndef work(i):\n    global stopped\n\n    if i == N - 1:  # the last thread\n        stopped = True  # stop the work\n\n    while not stopped:\n        time.sleep(0)  # do some work\n\n\nfor i in range(N):\n    threading.Thread(target=work, args=[i]).start()\n```\n\nIn this example, we run the work in separate threads until the last thread\nstarts. Let's see what happens if we set different N's.\n\n* N=100: 0.17 seconds\n* N=200: 0.55 seconds\n* N=300: 1.19 seconds\n* N=400: 2.14 seconds\n* N=500: 3.14 seconds\n* N=600: 4.69 seconds\n* N=700: 6.38 seconds\n* N=800: 8.11 seconds\n* N=900: 10.48 seconds\n* N=1000: 12.95 seconds\n\nWhoa! Increasing the number of threads by only 10 times increased the time by\nover 50 times! We can clearly see that the dependence of execution time on the\nnumber of threads is not linear - in fact, it is quadratic. Why does this\nhappen?\n\nStarting a thread in Python is based on two main operations:\n\n1. Asking the operating system to start a thread.\n2. Waiting for that thread to start (e.g. to detect memory leaks).\n\nStarting each new thread forces the main thread to do a context switch.\nHowever, the operating system needs to emulate the concurrent execution of all\nthreads, so the picture will usually not look like ping-pong between the main\nthread and the newly created thread - it will need to give CPU resources to the\nalready running threads to execute as well. With a fair scheduling strategy\nthat might look something like this:\n\n1. main thread\n2. thread 1 -> main thread\n3. thread 1 -> thread 2 -> main thread\n4. thread 1 -> thread 2 -> thread 3 -> main thread\n5. ...\n\nWith each new thread, the required number of context switches to start the next\none increases. We see a triangle, which becomes a *square* when the constant is\ndiscarded - that is where the quadratic complexity comes from!\n\n</details>\n\nAgain, this is not specific to Apache Airflow, however as a learning material it may have some value. Just as a footnote to how non-trivial the impact of approaches that rely on context switching is.\n"
+  },
+  {
+   "author": "ashb",
+   "created_at": "2025-06-12T13:29:19Z",
+   "body": "As part of addressing [#46426](https://github.com/apache/airflow/issues/46426) (which I'm working on right now) I'm totally overhauling the protocol between supervisor and child process.\n\nI'm adding a request ID (integer, atomic auto inc using `itertools.counter`) and I was wondering about if we could remove the lock and replace it with .... some other primitive from aiologic to send the response instead back to async code (possibly a queue? Maybe a flag? Not sure tbh, just a thought)\n\nMy WIP branch is https://github.com/astronomer/airflow/tree/rework-tasksdk-supervisor-comms-protocol"
+  },
+  {
+   "author": "x42005e1f",
+   "created_at": "2025-06-12T14:12:40Z",
+   "body": "> I'm adding a request ID (integer, atomic auto inc using `itertools.counter`) and I was wondering about if we could remove the lock and replace it with .... some other primitive from aiologic to send the response instead back to async code (possibly a queue? Maybe a flag? Not sure tbh, just a thought)\n\nIf you only need to wait for a result, currently the most appropriate option is to use either a high-level event (`aiologic.Event` if there are many waiters of the same result) or a low-level event (`aiologic.lowlevel.create_<type>_event()` (>=0.15.0) / `aiologic.lowlevel.<Type>Event` (<0.15.0) if there is only one waiter). Just set the event after the result is saved somewhere.\n\nIf you want to sequentially wait for multiple results, then yes, `aiologic.Queue` might be a good option. You may also be interested in [`culsans.Queue`](https://github.com/x42005e1f/culsans), which has more features.\n\nFlags (`aiologic.Flag` (>=0.15.0) / `aiologic.lowlevel.Flag` (<0.15.0)) have a slightly different meaning. They are used in situations where you want to know which thread (or state) was first. The analogy from which they get their name is related to conquering the mountain / moon / and so on.\n\nI have a plan to add some kind of Future / AsyncResult in the future, but I have not decided on the interface yet."
+  },
+  {
+   "author": "ashb",
+   "created_at": "2025-06-12T14:27:42Z",
+   "body": "Thinking about this a bit more and re-reading the your super helpful comments, I'm not sure this approach will get around the fundamental problem of sync_to_async.\n\nWe can't easily (today/now) add async versions of get_connection etc, so we have the issue that the calling code ends up doing:\n\n```python\n    connection = await sync_to_async(self.get_connection)(self.aws_conn_id)\n```\n\nGiven that constraint (that we sort of really want to support this code, sadly) I'm not sure my queue etc approach will help at all."
+  },
+  {
+   "author": "x42005e1f",
+   "created_at": "2025-06-12T14:38:00Z",
+   "body": "> Given that constraint (that we sort of really want to support this code, sadly) I'm not sure my queue etc approach will help at all.\n\nAs I said in the [comment on the linked PR](https://github.com/apache/airflow/pull/51279#issuecomment-2934712813), the problem is tied to the async -> sync case in the same thread, which is fundamentally unsolvable. However, it is enough to make synchronous and asynchronous codes independent of each other to bypass the problem. For example, if every read is actually performed in a worker thread.\n\nIf your approach has something similar to this, or otherwise removes the dependency (created due to synchronization), then it solves this issue as well."
+  },
+  {
+   "author": "ashb",
+   "created_at": "2025-06-12T14:49:59Z",
+   "body": "Thanks, yeah. I'm only just now getting back around to looking at this issue and the linked PR in detail.\n\nI don't have any reader/writer thread in my WIP right now, and wasn't thinking of adding any, so I don't think my changes will in help at all this way. (In my head I was thinking \"we can just send all the responses from sync code, make note of the request_id, then have asnyc code wait for a response to that matching request_id. But that won't help squat here)\n\nThanks very much for the detailed and helpful comments @x42005e1f."
+  },
+  {
+   "author": "ashb",
+   "created_at": "2025-06-12T15:02:26Z",
+   "body": "Actually, how about this @x42005e1f:\n\n- We remove the lock on CommsDecoder.\n- We create a new subclass called TriggererCommsDecoder (so we know when we are operating in this hybrid sync/async env)\n- On that we have two queues - one for requests, the other for responses.\n- The code that pulls off of the requests Q and writes to requests/reads from stdin is 100% async code\n- The sync send code (in my Pr I combined `send_msg() + get_response()` into a single function as it's a nicer API anyway) does something like this:\n\n    ```python\n    req_id = next(self.id_counter)\n    self._q_requests.put(Frame(..., id=req_id)\n    while True:\n        resp = self._q_responses.peek()\n        if resp.id != req_id:\n            # Response to someone else's message. Try again\n            continue\n        self._q_responses.get() # Though this feels racy? Maybe we need a sanity check and to requeue it if the req_id doesn't match?\n    ```\n\nIs that actually any better (clearer/easier to understand/more performant) than just using a n=1 Thread pool?\n\nWDYT as well @gopidesupavan?\n\n"
+  },
+  {
+   "author": "x42005e1f",
+   "created_at": "2025-06-12T15:32:20Z",
+   "body": "> Actually, how about this [@x42005e1f](https://github.com/x42005e1f):\n\nIf queues are also used for asynchronous code, the problem remains. Let's imagine that asynchronous code sent a request and then the event loop switched execution to another task that called the sync send code. Then the first response will be for the asynchronous code, and the synchronous code will wait forever for that response to be removed from the queue, which will never happen because execution will never switch back to the asynchronous code. This is now not a deadlock, but an eternal load on the processor.\n\nIf the queues are only for synchronous code, then yes, that might solve the problem. However, in any case, I suggest removing `self._q_responses`, since such polls are almost always a bad thing. Just send a future (`concurrent.futures.Future`) along with the frame. Call `future.result()` in the sync send code, and let the producer put the response in the future via `future.set_result(response)`. Then the consumer will wake up and get their response from the future."
+  },
+  {
+   "author": "x42005e1f",
+   "created_at": "2025-06-12T15:39:50Z",
+   "body": "> * The code that pulls off of the requests Q and writes to requests/reads from stdin is 100% async code\n\nHowever, I read it again and realized that this is an attempt to delegate work to asynchronous code from synchronous code. No, it will not work that way because, again, the synchronous code will not be able to interrupt its execution to resume execution of asynchronous code. It will only work if they are different threads."
+  },
+  {
+   "author": "ashb",
+   "created_at": "2025-06-12T15:53:14Z",
+   "body": "> the synchronous code will not be able to interrupt its execution to resume execution of asynchronous code. It will only work if they are different threads.\n\nAnd we don't get that via `sync_to_async` as all calls to that use a single Thread?"
+  },
+  {
+   "author": "x42005e1f",
+   "created_at": "2025-06-12T16:00:05Z",
+   "body": "> And we don't get that via `sync_to_async` as all calls to that use a single Thread?\n\n`sync_to_async()` delegates execution to a worker thread. This eliminates the requirement to switch from synchronous to asynchronous code (since asynchronous code just waits for a future object), which in turn bypasses the problem - you can even synchronize in synchronous code, as long as synchronous code does not depend on asynchronous code in the same thread. Of course, this is true only when `sync_to_async()` is used for full operations - if it is used for single reads that are part of the whole `get_message()`, the problem remains."
+  },
+  {
+   "author": "x42005e1f",
+   "created_at": "2025-06-12T16:14:52Z",
+   "body": "To put it another way, a feature of the approach with delegating execution to another thread is that the code is executed independently of the synchronous code in the current thread. This means that any operation that has been delegated by the asynchronous code and that the synchronous code needs to wait for will be able to complete in parallel. This eliminates the dependency, and thus bypasses the problem."
+  },
+  {
+   "author": "ajayganti3",
+   "created_at": "2025-07-15T14:39:27Z",
+   "body": "I see that the airflow 3.0.3 is released, but I don't see this bug in the release notes. Can someone confirm if the fix is already a part of 3.0.3 release?"
+  },
+  {
+   "author": "kaxil",
+   "created_at": "2025-07-15T15:54:05Z",
+   "body": "@ajayganti3  Yes it is"
+  },
+  {
+   "author": "kaxil",
+   "created_at": "2025-07-15T15:54:37Z",
+   "body": "The [first item](https://airflow.apache.org/docs/apache-airflow/stable/release_notes.html#airflow-3-0-3-2025-07-14:~:text=Fix%20task%20execution%20failures%20with%20large%20data%20by%20improving%20internal%20communication%20protocol%20(%2351924%2C%20%2353194)) in bug-fixes:\n\n>Fix task execution failures with large data by improving internal communication protocol ([#51924](https://github.com/apache/airflow/pull/51924), [#53194](https://github.com/apache/airflow/pull/53194))"
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "apache/airflow",
+  "default_branch": "main",
+  "commit_sha": "bc44a329e9e2f46eba591e084c443f94aa5dde08",
+  "as_of": "2025-05-05T07:07:23Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_apache_airflow_50185"
+}

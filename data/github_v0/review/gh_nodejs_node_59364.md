@@ -1,6 +1,6 @@
 # Review: gh_nodejs_node_59364
 
-**Node.js 22.18 enables experimental type stripping and breaks Mocha 10 tests**
+**Node 22.18 breaks npm package because experimental strip-types is enabled**
 
 - source: https://github.com/nodejs/node/issues/59364
 - kind: LLM draft (needs review)
@@ -9,26 +9,22 @@
 
 ```mermaid
 flowchart LR
-    N0["<b>N0 Node 22.18 CI failure reported</b><br/><small>info: 4</small>"]
-    N1["<b>N1 concrete failures collected</b><br/><small>info: 6</small>"]
-    N2["<b>N2 Mocha 10 loader interaction isolated</b><br/><small>info: 8</small>"]
-    N2_x["<b>N2_x Node handler-change revert aftermath</b><br/><small>info: 9</small>"]
-    N3["<b>N3 Mocha 11 installed (unverified)</b><br/><small>info: 8</small>"]
-    N_terminal["<b>terminal resolved</b><br/><small>info: 12</small>"]
-    N0 -.->|"❓ reporter_saw_dirname_undefined_in_commonjs_expected_project, affected_mocha_run_throws_err_internal_assertion"| N1
+    N0["<b>N0 Node 22.18 CI regression reported</b><br/><small>info: 4</small>"]
+    N1["<b>N1 concrete failure described</b><br/><small>info: 5</small>"]
+    N2["<b>N2 reproduction constraints established</b><br/><small>info: 7</small>"]
+    N3["<b>N3 outdated test-runner dependency identified</b><br/><small>info: 8</small>"]
+    N_terminal["<b>terminal reporter problem resolved by Mocha upgrade</b><br/><small>info: 10</small>"]
+    N0 -.->|"❓ dirname_became_undefined_without_package_type"| N1
     linkStyle 0 stroke:#3b82f6,stroke-width:2px
-    N1 -.->|"❓ reporter_project_uses_mocha_10, minimal_repro_uses_mocha_with_ts_node_register"| N2
+    N1 -.->|"❓ no_immediate_minimal_repro_from_large_old_project"| N2
     linkStyle 1 stroke:#3b82f6,stroke-width:2px
-    N2 ==>|"💥 blind: Treat the `.js` handler changes from Node.js PR #58657 as the direct cause and revert that Node change."| N2_x
-    linkStyle 2 stroke:#ef4444,stroke-width:2px
-    N2 ==>|"⚡ Upgrade the affected project from Mocha 10 to Mocha 11 or the latest compatible Mocha, whose module-loading fallback works with Node.js 22.18 type stripping, instead of permanently disabling the Node feature."| N3
+    N2 -.->|"❓ reporter_project_uses_mocha_10"| N3
+    linkStyle 2 stroke:#3b82f6,stroke-width:2px
+    N3 ==>|"⚡ Upgrade the reporter's old Mocha dependency to the latest supported release so its module-loading behavior is compatible with Node's default TypeScript handling, then rerun the original CI tests without the strip-types opt-out flag."| N_terminal
     linkStyle 3 stroke:#f97316,stroke-width:2px
-    N3 -.->|"❓ latest_mocha_test_passes_without_disabling_type_stripping"| N_terminal
-    linkStyle 4 stroke:#3b82f6,stroke-width:2px
     class N0 start
     class N1 normal
     class N2 normal
-    class N2_x normal
     class N3 normal
     class N_terminal terminal
     classDef start fill:#fee2e2,stroke:#b91c1c,color:#000
@@ -38,56 +34,40 @@ flowchart LR
 
 ## Opening (body)
 
-> After updating from Node.js 22.17 to 22.18.0, our builds consistently fail across Linux, Windows, and Azure DevOps agents. The same project works on 22.17. Adding `--no-experimental-strip-types` to the Node command line makes it work again. I would not expect an experimental feature to become enabled by default in a minor release of the existing Node 22 LTS line.
+> After updating from Node 22.17 to v22.18.0, our builds consistently fail on Linux, Windows, and Azure DevOps build agents. They run only if I add --no-experimental-strip-types to the Node command line. I expect an existing LTS line not to enable an experimental feature by default in a minor release.
 
 ## Satisfaction conditions
 
-1. Must identify the resolved reporter-specific root cause: Node.js 22.18's default type stripping changed TypeScript module handling and the error seen during import, while Mocha 10's loader retry logic did not handle `ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX`, preventing the intended require/TypeScript-hook path.
-2. The diagnosis must be grounded in the collected evidence: the Node 22.17-to-22.18 change, success with type stripping disabled, the affected project's Mocha 10 dependency, the Mocha/ts-node reproduction, and the successful latest-Mocha test.
-3. Must recommend upgrading from Mocha 10 to Mocha 11 or the latest compatible Mocha as the durable fix; `--no-experimental-strip-types` may be mentioned only as the temporary workaround that exposed the interaction.
-4. Must not prescribe reverting Node.js PR #58657 as the fix because that revert was tested in the thread and the reproduced failure persisted.
-5. Must not generalize the Mocha 10 resolution to every later tsx, ts-node/esm, SWC, Jest, Jasmine, or node:test report in the thread; those involve separate loader integrations and may require their own reproductions or dependency updates.
-6. Must treat the original issue as resolved only after the reporter verifies that the upgraded Mocha runs the tests on Node.js 22.18 without `--no-experimental-strip-types`.
+1. Must identify the reporter's accepted diagnosis at the supported level: Node 22.18's default TypeScript handling exposed a compatibility problem in the project's old Mocha 10 module-loading behavior.
+2. Must ground the recommendation in the collected evidence: the project worked on Node 22.17, failed on 22.18, temporarily worked with --no-experimental-strip-types, and was found to use Mocha 10.
+3. Must recommend upgrading Mocha as the reporter's durable fix; the strip-types opt-out may be mentioned as a temporary workaround but not as the final resolution.
+4. Must not splice in the distinct TSX, ts-node, SWC, Jasmine, Jest, or node:test failures reported by other participants, nor claim their separate patches or mechanisms resolved the opening reporter's project.
+5. Must ask the reporter to rerun the original tests on Node 22.18 without --no-experimental-strip-types and only treat the case as resolved after that verification succeeds.
 
 ## Edges
 
 | edge | type | gates / info | payload |
 |---|---|---|---|
-| `e1_N0__N1` | clarification_only | asks: reporter_saw_dirname_undefined_in_commonjs_expected_project, affected_mocha_run_throws_err_internal_assertion | What I saw was that `__dirname` was suddenly not defined. We do not specify `type` in our package.json files,  / In another affected Mocha run I get `Error [ERR_INTERNAL_ASSERTION]: Unexpected status of a module that is imp |
-| `e2_N1__N2` | clarification_only | asks: reporter_project_uses_mocha_10, minimal_repro_uses_mocha_with_ts_node_register | I found that we use Mocha 10 in our project. / I can reproduce the same class of failure while executing tests with `mocha --require ts-node/register`. A min |
-| `e4_N2__N2_x` | solution_only **BLIND** | req_info: no_experimental_strip_types_flag_avoids_failure, minimal_repro_uses_mocha_with_ts_node_register<br>elements: recommends_reverting_node_pr_58657 | Treat the `.js` handler changes from Node.js PR #58657 as the direct cause and revert that Node change. |
-| `e3_N2__N3` | solution_only | req_info: node_22_18_ci_builds_fail_after_22_17_worked, no_experimental_strip_types_flag_avoids_failure, reporter_saw_dirname_undefined_in_commonjs_expected_project, affected_mocha_run_throws_err_internal_assertion, reporter_project_uses_mocha_10, minimal_repro_uses_mocha_with_ts_node_register<br>elements: identifies_mocha_10_loader_compatibility_as_the_reporter_case, explains_changed_typescript_error_or_fallback_behavior, recommends_upgrading_to_mocha_11_or_latest, does_not_require_permanently_disabling_type_stripping | Upgrade the affected project from Mocha 10 to Mocha 11 or the latest compatible Mocha, whose module-loading fallback works with Node.js 22.18 type stripping, instead of permanently disabling the Node feature. |
-| `e5_N3__terminal` | clarification_only | asks: latest_mocha_test_passes_without_disabling_type_stripping | Upgrading to the latest Mocha fixes the initial problem. The tests now run on Node.js 22.18 and I do not have  |
+| `e1_N0__N1` | clarification_only | asks: dirname_became_undefined_without_package_type | What I saw was that __dirname was suddenly not defined. We do not specify type in our package.json files, so I |
+| `e2_N1__N2` | clarification_only | asks: no_immediate_minimal_repro_from_large_old_project | I do not have access to the specific failing code right now, but I can investigate. This is one very large pro |
+| `e3_N2__N3` | clarification_only | asks: reporter_project_uses_mocha_10 | I found that we use Mocha 10 in our project. |
+| `e4_N3__N_terminal` | solution_only | req_info: node_22_18_ci_builds_fail_while_22_17_works, no_experimental_strip_types_flag_avoids_failure, dirname_became_undefined_without_package_type, reporter_project_uses_mocha_10<br>elements: identifies_old_mocha_as_the_dependency_specific_compatibility_issue, recommends_upgrading_mocha, treats_no_experimental_strip_types_as_a_workaround_not_the_reporters_final_fix, asks_user_to_verify_the_original_tests_without_the_opt_out_flag | Upgrade the reporter's old Mocha dependency to the latest supported release so its module-loading behavior is compatible with Node's default TypeScript handling, then rerun the original CI tests without the strip-types opt-out flag. |
 
 ## Nodes
 
 | node | terminal | volunteered | images | symptoms |
 |---|---|---|---|---|
-| `N0` |  | 0 | 0 | Our CI builds consistently fail on Node.js 22.18.0 even though they worked on 22.17. The builds run again when I add `--no-experimental-stri |
-| `N1` |  | 0 | 0 | In my project, `__dirname` suddenly becomes undefined on Node.js 22.18 even though our package.json files do not specify a module type and w |
-| `N2` |  | 0 | 0 | The test suite still fails on Node.js 22.18 with its existing Mocha 10 setup, while disabling type stripping lets it run. |
-| `N2_x` |  | 1 | 0 | Nothing has changed on my side — my repro still fails exactly as before. |
-| `N3` |  | 0 | 0 | I've upgraded Mocha to 11 in the project; I haven't re-run the full suite yet. |
-| `N_terminal` | ✓ | 0 | 0 | The project test suite runs successfully on Node.js 22.18 with the current Mocha version and without disabling Node's type-stripping feature |
+| `N0` |  | 0 | 0 | Our CI builds consistently fail with Node 22.18.0 after working with Node 22.17. The same builds run when I add --no-experimental-strip-type |
+| `N1` |  | 0 | 0 | With Node 22.18, our tests suddenly report that __dirname is not defined even though we do not specify a type in our package.json files. Add |
+| `N2` |  | 1 | 0 | The project still fails without --no-experimental-strip-types, and I do not currently have an isolated example outside the large existing pr |
+| `N3` |  | 0 | 0 | The tests fail on Node 22.18 without the opt-out flag, and I found that the project is using Mocha 10. |
+| `N_terminal` | ✓ | 1 | 0 | After upgrading Mocha to the latest release, the original tests run on Node 22.18 without --no-experimental-strip-types. |
 
 ## Machine review (audit pass, adversarially verified)
 
-Auditor verdict: **minor_issues** · 2 of 2 findings survived independent refutation.
+Auditor verdict: **n/a** · 0 of 0 findings survived independent refutation.
 
-_The case tests whether an agent can drive a vague "Node 22.18 broke our CI, --no-experimental-strip-types fixes it" report down to the reporter-specific cause (Mocha 10's ESM-retry logic not recognizing the new ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX error) and recommend a Mocha upgrade rather than permanently disabling the Node feature. The canonical path (N0→N1→N2→N3→terminal) is a faithful compression of the thread: c3 (__dirname), c2 (ERR_INTERNAL_ASSERTION), c11 (mocha + ts-node/register repro), c19 (reporter finds Mocha 10, upgrade fixes it), with the root-cause statement lifted essentially verbatim from participant8's c15 analysis. The single blind path (revert Node PR #58657) is correctly labeled — c30 really did try it and the failure persisted — so no blind-path inversion. The one substantive fidelity problem is that this blind path's aftermath is written in the reporter's voice and pinned to the Mocha/ts-node repro, whereas the thread shows a Node maintainer performing the revert against the tsx reproduction._
-
-### Confirmed findings
-
-- [ ] 🟡 **unfaithful_reveal** (low) — `graph.nodes.N2_x (symptoms_visible[0], volunteered_info) and edge e4_N2__N2_x`
-  - claim: The aftermath of the #58657 revert is voiced as the user reporting that "My Mocha/ts-node repro still fails exactly as before on my side", but in the thread the revert was built and tested by a Node core maintainer, and the failure it did not remove was the tsx reproduction, not the Mocha/ts-node one.
-  - thread evidence: c30 [participant6, 2025-08-11]: "Tried reverting https://github.com/nodejs/node/pull/58657 and the issue persists. I think the issue falls on the fact that we added the 'module-typescript' and 'commonjs-typescript' format to loaders. This patch fixes it, I sent a PR to TSX https://github.com/privatenumber/tsx/pull/733" — the surrounding investigation is participant11's tsx repro (c22, c26), and by then the reporter's own Mocha case was already resolved (c19, 2025-08-07: "Upgrading to latest mocha does fix the initial problem"). The reporter never built Node from source anywhere in the thread; persona_hint itself describes someone "comfortable managing CI flags and dependency upgrades" on a "seven-year-old" project (c9: "this is one gigantius project, that is 7 years old").
-  - suggested fix: Reword N2_x.symptoms_visible to the observation actually available to the user side, e.g. "I tried a Node build with that change reverted and my test run fails exactly the same way" only if you keep it user-executed; otherwise re-anchor the aftermath to the tsx/loader-format finding and add a declaring comment on e4 that this attempt and its negative result come from the Node maintainer's own experiment (c30), folded into the single user side like the c2/c3 merge already declared on e1.
-  - verifier: I tried to refute this and could not. The revert experiment lives only in c30 (participant6, 2025-08-11): "Tried reverting https://github.com/nodejs/node/pull/58657 and the issue persists. I think the issue falls on the fact that we added the 'module-typescript' and 'commonjs-typescript' format to loaders. This patch fixes it, I sent a PR to TSX ..." — the patch in that same comment is a diff agai
-- [ ] 🟡 **node_label_inconsistency** (low) — `graph.nodes.N3.label`
-  - claim: N3's label contradicts itself: "N3 Mocha upgrade verified (fix applied, unverified)" — the node is explicitly the pre-verification state.
-  - thread evidence: The thread has no intermediate "upgraded but not yet re-run" report; c19 is a single message combining both ("Upgrading to latest mocha does fix the initial problem. And I do not have to specify --no-experimental-strip-types any more."), and the graph correctly splits it so the verification lands on e5/N_terminal — only the word "verified" in the label is wrong.
-  - suggested fix: Rename to "N3 Mocha upgraded (fix applied, not yet re-run)".
-  - verifier: Confirmed directly from the graph, and the reviewer's reading of the thread is right too. graph.nodes.N3 has symptoms_visible "I've upgraded Mocha to 11 in the project; I haven't re-run the full suite yet.", is_terminal=false, user_perceives_resolved=false, and its info_state does NOT yet contain latest_mocha_test_passes_without_disabling_type_stripping — that id is only added by e5's clarificatio
+__
 
 
 ## Review checklist

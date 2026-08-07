@@ -1,0 +1,182 @@
+{
+ "repo": "NVIDIA/TensorRT",
+ "number": 3907,
+ "url": "https://github.com/NVIDIA/TensorRT/issues/3907",
+ "title": "Is there any gpu memory difference when using different context in TensorRT 8.4.0.6 ?",
+ "state": "closed",
+ "labels": [
+  "triaged"
+ ],
+ "reporter": "Jsy0220",
+ "created_at": "2024-05-28T06:12:17Z",
+ "closed_at": "2024-06-11T06:14:48Z",
+ "body": "Hi, I have a further question about difference between `createExecutionContext` and `createExecutionContextWithoutDeviceMemory`,  Is there have any gpu memory difference when using the corresponding context ?",
+ "comments": [
+  {
+   "author": "lix19937",
+   "created_at": "2024-05-28T11:43:11Z",
+   "body": "An engine @ deserialization, allocates device memory to store the model weights.   \r\nSince the serialized engine is almost all weights, its size is a good approximation to the amount of device memory the weights require.\r\n\r\nAn ExecutionContext uses 2 kinds of device memory:     \r\n+ Persistent memory required by some layer implementations - for example, some convolution implementations use edge masks, and this state cannot be shared between contexts as weights are, because its size depends on the layer input shape, which may vary across contexts. This memory is allocated on creation of the execution context, and lasts for its lifetime.\r\n\r\n+ Scratch memory, used to hold intermediate results while processing the network. This memory is used for intermediate activation tensors. It is also used for temporary storage required by layer implementations, the bound for which is controlled by `setMaxWorkspaceSize()`.\r\n\r\nYou may optionally create an execution context without scratch memory using `createExecutionContextWithoutDeviceMemory()` and provide that memory yourself for the duration of network execution. This allows you to share it between multiple contexts that are not running concurrently, or for other uses while inference is not running.    "
+  },
+  {
+   "author": "Jsy0220",
+   "created_at": "2024-05-29T01:32:57Z",
+   "body": "@lix19937 ok, thank you for your answer. \r\nOne more question: \r\nIs the total memory (Persistent + Scratch) the same no matter what execution context used (`createExecutionContextWithoutDeviceMemory` or `createExecutionContext`)？\r\nThanks !!"
+  },
+  {
+   "author": "lix19937",
+   "created_at": "2024-06-01T11:39:38Z",
+   "body": "> Is the total memory (Persistent + Scratch) the same no matter what execution context used (createExecutionContextWithoutDeviceMemory or createExecutionContext)？\r\n\r\nYes when you only use one ctx.    "
+  },
+  {
+   "author": "Jsy0220",
+   "created_at": "2024-06-03T06:28:16Z",
+   "body": "okay, what if use more than one ctx ?"
+  },
+  {
+   "author": "lix19937",
+   "created_at": "2024-06-04T15:21:47Z",
+   "body": "For createExecutionContextWithoutDeviceMemory in multi-ctxs    \r\nPersistent memorys in each ctx + the share memory between multiple contexts = total memory  \r\n"
+  },
+  {
+   "author": "Jsy0220",
+   "created_at": "2024-06-11T06:13:43Z",
+   "body": "@lix19937  okay, i see. Thank you !!"
+  },
+  {
+   "author": "HuangYison",
+   "created_at": "2024-08-02T08:15:17Z",
+   "body": "I have a question. If I want to manually allocate scratch memory for each context, how do I calculate the minimum size I need to apply for? @lix19937 "
+  },
+  {
+   "author": "HuangYison",
+   "created_at": "2024-08-02T08:17:47Z",
+   "body": "I am using multithreading for parallel inference, but the inference time is still long. I consulted the documentation and found that the default memory application strategy for creating a context is KSTATIC, which will apply for the maximum size in all configuration files. Observing the running output, I found that when I set the batch of maxShapes to 128, 4150M of device memory will be allocated. If I create multiple threads, it will quickly exhaust the GPU's dedicated memory and then apply for shared memory. I think it is because the calculation on shared memory makes the entire inference very slow, so I want to know if I can calculate the actual memory size required?\r\nMy test environment is: GPU 4090 24G, \r\nTensorRT version 10.1\r\nmodel: yolov8-seg, shape is 3x640x640\r\nThanks."
+  },
+  {
+   "author": "HuangYison",
+   "created_at": "2024-08-02T08:20:58Z",
+   "body": "shape 32x3x640x640 with ~1G memory allocated per context\r\n![image](https://github.com/user-attachments/assets/675ad42d-741b-42a0-bf09-d34a912141d5)\r\n"
+  },
+  {
+   "author": "lix19937",
+   "created_at": "2024-08-03T03:10:15Z",
+   "body": "> I have a question. If I want to manually allocate scratch memory for each context, how do I calculate the minimum size I need to apply for? @lix19937\r\n\r\nref https://github.com/NVIDIA/TensorRT/issues/3907#issuecomment-2135012117,  the minimum size = Persistent + Scratch,    Scratch size maybe need do some experiment with multi size.     "
+  },
+  {
+   "author": "lix19937",
+   "created_at": "2024-08-03T03:11:37Z",
+   "body": "For Scratch size, usually affects the choice of strategy.  "
+  },
+  {
+   "author": "HuangYison",
+   "created_at": "2024-08-03T09:11:40Z",
+   "body": "> For Scratch size, usually affects the choice of strategy.  \n\nok, thanks. I will test it."
+  },
+  {
+   "author": "HuangYison",
+   "created_at": "2024-08-05T04:20:32Z",
+   "body": "> > I have a question. If I want to manually allocate scratch memory for each context, how do I calculate the minimum size I need to apply for? @lix19937\r\n> \r\n> ref [#3907 (comment)](https://github.com/NVIDIA/TensorRT/issues/3907#issuecomment-2135012117), the minimum size = Persistent + Scratch, Scratch size maybe need do some experiment with multi size.\r\n\r\nI created execution context with `nvinfer1::ExecutionContextAllocationStrategy::kUSER_MANAGED` strategy, and tried to assign less device memory use `setDeviceMemoryV2`, but error happen,:\r\n`IExecutionContext::setDeviceMemoryV2: Error Code 3: API Usage Error (Parameter check failed, condition: size >= expectedSize. setDeviceMemoryV2: The provided memory size is too small. Provided 1073741824, but expected at least 4351590400 bytes.)`\r\nAnd 4351590400 bytes is the max size of profiles(128x3x640x640), which is the same as the returns of `getDeviceMemorySizeForProfileV2`"
+  },
+  {
+   "author": "lix19937",
+   "created_at": "2024-08-05T05:25:42Z",
+   "body": "getDeviceMemorySizeForProfileV2: Return the device memory size required for a certain profile.\r\n\r\nSo, you can check it.  "
+  },
+  {
+   "author": "HuangYison",
+   "created_at": "2024-08-05T06:16:08Z",
+   "body": "What should I do to check it? The program does use memory of the size returned by getDeviceMemorySizeForProfileV2 during runtime.\r\nI probably create 10-15 threads at the same time when test, and according to one thread and one context, it does use 4*num of context, which is about 50-60G of memory."
+  },
+  {
+   "author": "lix19937",
+   "created_at": "2024-08-06T15:05:01Z",
+   "body": "You can disable the tactics of `CUBLAS, CUBLAS_LT, CUDNN` to decrease the mem use.  Another way, if use the share device ctx, you add mutex.  "
+  },
+  {
+   "author": "HuangYison",
+   "created_at": "2024-08-07T01:43:28Z",
+   "body": "Thank you for you reply, does disabling these three tactics will degrade inference performance or accuracy? And what should I do to disabled these strategies? I'm not actually sure how to do that. Can you give a more detailed step-by-step or is there a section of the official documentation that include this part? Thank you."
+  },
+  {
+   "author": "HuangYison",
+   "created_at": "2024-08-07T02:16:59Z",
+   "body": "I think i found it, but in tensorrt 10.1, it already disabled by default?\r\n![image](https://github.com/user-attachments/assets/966c30f8-ae8c-47f2-8f4d-51de333f9e5a)\r\n"
+  },
+  {
+   "author": "lix19937",
+   "created_at": "2024-08-07T02:22:18Z",
+   "body": "For TRT 8.4.0.6,\r\n\r\nUsually, not degrade inference performance or accuracy, you can compare.    \r\n\r\nFollow code snippet is disable the tactis.   \r\n```cpp \r\n// IBuilderConfig  config \r\n   \r\n        TacticSources tacticSources = config.getTacticSources();        \r\n        nvinfer1::TacticSources disabledTactics{0};\r\n        \r\n        {\r\n          uint32_t sourceBit = 1U << static_cast<uint32_t>(nvinfer1::TacticSource::kCUBLAS);\r\n          disabledTactics |= sourceBit;\r\n        }\r\n        \r\n        {\r\n          uint32_t sourceBit = 1U << static_cast<uint32_t>(nvinfer1::TacticSource::kCUBLAS_LT);\r\n          disabledTactics |= sourceBit;\r\n        }\r\n\r\n        {\r\n          uint32_t sourceBit = 1U << static_cast<uint32_t>(nvinfer1::TacticSource::kCUDNN);\r\n          disabledTactics |= sourceBit;\r\n        }\r\n\r\n        tacticSources &= ~disabledTactics;\r\n        config.setTacticSources(tacticSources);\r\n```\r\n\r\ninclude/NvInfer.h      \r\n```h  \r\n    //!\r\n    //! \\brief Set tactic sources.\r\n    //!\r\n    //! This bitset controls which tactic sources TensorRT is allowed to use for tactic\r\n    //! selection.\r\n    //!\r\n    //! Multiple tactic sources may be combined with a bitwise OR operation. For example,\r\n    //! to enable cublas and cublasLt as tactic sources, use a value of:\r\n    //!\r\n    //! 1U << static_cast<uint32_t>(TacticSource::kCUBLAS) | 1U <<\r\n    //! static_cast<uint32_t>(TacticSource::kCUBLAS_LT)\r\n    //!\r\n    //! \\see getTacticSources\r\n    //!\r\n    //! \\return true if the tactic sources in the build configuration were updated.\r\n    //!         The tactic sources in the build configuration will not be updated if the provided value is invalid.\r\n    //!\r\n    bool setTacticSources(TacticSources tacticSources) noexcept\r\n    {\r\n        return mImpl->setTacticSources(tacticSources);\r\n    }\r\n```\r\n\r\nref   \r\nhttps://docs.nvidia.com/deeplearning/tensorrt/api/c_api/namespacenvinfer1.html#a9e1d81e5a8bfeb38b86e22a66d5f836a"
+  },
+  {
+   "author": "HuangYison",
+   "created_at": "2024-08-07T06:29:30Z",
+   "body": "I have tried it, got the same result, the new engine which disabled these three policies use the same amount of memory for each context as the old engine, not less"
+  },
+  {
+   "author": "lix19937",
+   "created_at": "2024-08-07T07:06:39Z",
+   "body": "How did you generate the plan/engine file ? "
+  },
+  {
+   "author": "HuangYison",
+   "created_at": "2024-08-07T07:48:09Z",
+   "body": "Use trtexec command line and c++ api，the trtexec command is \r\n```\r\ntrtexec --onnx=v1-n-seg-dynamic.onnx --saveEngine=v1-n-seg-1-128-128.engine --memPoolSize=workspace:24G --tacticSources=-CUBLAS,-CUBLAS_LT,-CUDNN --minShapes=images:1x3x640x640 --optShapes=images:128x3x640x640 --maxShapes=images:128x3x640x640 --fp16 --verbose\r\n```\r\nC++ API is the same, just add the code snippet you posted to disable the tactis.\r\n\r\nI think it is because tensorrt10.1 already disabled by default? I posted it above."
+  },
+  {
+   "author": "HuangYison",
+   "created_at": "2024-08-09T06:49:40Z",
+   "body": "Hi, I see that the comments in your repository code are in Chinese, do you know Chinese? Is it ok for me to express my current problem in Chinese? Maybe I didn't express it accurately in English before.😊 @lix19937 "
+  },
+  {
+   "author": "HuangYison",
+   "created_at": "2024-08-09T09:32:46Z",
+   "body": "我现在的目的是同时推理大量图片，输入由一张大图切片为多张小图获得，类似[SAHI切片推理库](https://github.com/obss/sahi)。\r\n我最开始使用动态形状和批量推理，但是发现批量推理随着批大小的增长推理延时也线性增加，只有当批大小设到64以上会有稍明显的加速效果。\r\n  因为批处理加速效果不好，所以又采用多线程多个context的方式并行推理，这样的问题是创建每个context所需的GPU内存太多，必须限制并发线程数量以防止GPU专用内存被耗尽后申请系统共享内存而导致推理变慢，所以我想尝试是否能减少创建每个context所需的内存，目前我测试的pt模型是yolov8实例分割模型，对于导出的最大尺寸为128x3x640x640的动态形状的engine，似乎使用该engine创建一个context所需的最小内存确实需要大约4g，无法减少它需要申请的GPU内存。\r\n"
+  },
+  {
+   "author": "HuangYison",
+   "created_at": "2024-08-09T09:51:51Z",
+   "body": "现在我尝试使用yolo-seg系列更小尺寸的模型，这可以显著减小所需的内存，另外我现在尝试使用固定batch静态形状的引擎，我使用trtexec对不同batch的引擎进行性能测试，测试结果对比我的程序的测试结果，我的延时比trtexec的慢了很多倍，运行trtexec时我发现不管batch是多少，16或256，GPU利用率都能到达70%-80%，而我的程序运行时GPU利用率只有个位数，我想知道是我使用批处理的方式有问题还是trtexec对推理做了特定的处理？我查看很多示例，批量推理似乎只需要自行构建符合批大小*单个输入大小的输入数据，然后传输给GPU计算就可以了，tensorrt计算时会自动进行批处理？还是我遗漏了什么。另外我查看了trtexec的源码，许多功能似乎是调用common包下的sampleXXX执行的，但由于代码太多了，我也不清楚实际是否trtexec做了特定处理。下面是我推理部分的代码：\r\n```c++\r\n// 更新实际bs\r\nbatch_size = images.size();\r\ncout << endl << \"当前批次大小为\" << batch_size << endl;\r\n \r\n// 创建当前context的cuda流\r\ncudaStream_t temp_stream;\r\ncudaStreamCreate(&temp_stream);\r\n\r\nvoid* temp_buffers[3];\r\n// GPU缓冲区内存申请\r\n//cudaHostAlloc(&temp_buffers[IDX_INPUT], input_size * batch_size * sizeof(float), cudaHostAllocMapped); // 零内存 Host Pinned Memory CPU GPU都能访问\r\n//cudaMallocHost(&temp_buffers[IDX_INPUT], input_size * batch_size * sizeof(float));\r\n//cudaMallocHost(&temp_buffers[IDX_OUTPUT0], output0_size * batch_size * sizeof(float));\r\n//cudaMallocHost(&temp_buffers[IDX_OUTPUT1], output1_size * batch_size * sizeof(float));\r\ncudaMalloc(&temp_buffers[IDX_INPUT], input_size * batch_size * sizeof(float));\r\ncudaMalloc(&temp_buffers[IDX_OUTPUT0], output0_size * batch_size * sizeof(float));\r\ncudaMalloc(&temp_buffers[IDX_OUTPUT1], output1_size * batch_size * sizeof(float));\r\n\r\n//context->setOptimizationProfileAsync(0, temp_stream); // 默认选择0\r\n// 设置输入输出Tensor地址以及形状\r\ncontext->setTensorAddress(\"images\", temp_buffers[IDX_INPUT]);\r\ncontext->setTensorAddress(\"output0\", temp_buffers[IDX_OUTPUT0]);\r\ncontext->setTensorAddress(\"output1\", temp_buffers[IDX_OUTPUT1]);\r\n// dynamic 需要 explicit batch\r\ncontext->setInputShape(\"images\", nvinfer1::Dims4(batch_size, input_c, input_h, input_w));\r\n\r\n// 创建临时缓存输出（接收）\r\nvector<float> output0_data(output0_size * batch_size);\r\nvector<float> output1_data(output1_size * batch_size);\r\n//output0_data.resize(output0_size * batch_size);\r\n//output1_data.resize(output1_size * batch_size);\r\n\r\nint64 start = cv::getTickCount();\r\nvector<Mat> input_datas;\r\nvector<float> factors;\r\n\r\n// 预处理\r\ntie(input_datas, factors) = batchPreProcess(images);\r\n\r\ncout << \"预处理：\" << (cv::getTickCount() - start) / static_cast<float>(cv::getTickFrequency()) * 1000.f << \"ms\" << endl;\r\n\r\nint64 start1 = cv::getTickCount();\r\n\r\nstart = cv::getTickCount();\r\n// 将分散的多个输入Mat数据分配到内存连续的区域中，以构建batch_size大小的输入数据匹配模型batch shape\r\nvector<float> batch_input_data(input_size * batch_size);\r\nfor (int i = 0; i < input_datas.size();i++) {\r\n\tif (input_datas[i].isContinuous())\r\n\t\t//memcpy(batch_input_data.data() + i * input_size, input_datas[i].ptr<float>(), input_size * sizeof(float));\r\n\t\tcudaMemcpyAsync((float*)temp_buffers[IDX_INPUT] + i*input_size, input_datas[i].ptr<float>(), input_size * sizeof(float), cudaMemcpyHostToDevice, temp_stream); // 异步\r\n}\r\ncout << \"内存分配：\" << (cv::getTickCount() - start) / static_cast<float>(cv::getTickFrequency()) * 1000.f << \"ms\" << endl;\r\n\r\nstart = cv::getTickCount();\r\n//cudaMemcpyAsync(temp_buffers[IDX_INPUT], batch_input_data.data(), input_size * batch_size * sizeof(float) , cudaMemcpyHostToDevice, temp_stream);\r\n//cudaMemcpy(temp_buffers[IDX_INPUT], batch_input_data.data(), input_size * batch_size * sizeof(float), cudaMemcpyHostToDevice); // 同步\r\ncout << \"H2D：\" << (cv::getTickCount() - start) / static_cast<float>(cv::getTickFrequency()) * 1000.f << \"ms\" << endl;\r\nstart = cv::getTickCount();\r\n\r\ncontext->enqueueV3(temp_stream);\r\n//context->executeV2(temp_buffers); // 同步\r\ncout << \"enqueue：\" << (cv::getTickCount() - start) / static_cast<float>(cv::getTickFrequency()) * 1000.f << \"ms\" << endl;\r\nstart = cv::getTickCount();\r\n\r\ncudaMemcpyAsync(output0_data.data(), temp_buffers[IDX_OUTPUT0], output0_size * batch_size * sizeof(float), cudaMemcpyDeviceToHost, temp_stream);\r\n//cudaMemcpy(output0_data.data(), temp_buffers[IDX_OUTPUT0], output0_size * batch_size * sizeof(float), cudaMemcpyDeviceToHost); // 同步\r\ncout << \"D2H 0：\" << (cv::getTickCount() - start) / static_cast<float>(cv::getTickFrequency()) * 1000.f << \"ms\" << endl; // 不准确，会被enqueue后GPU计算影响，准确测量可以使用cudaEvent?\r\n\r\nstart = cv::getTickCount();\r\ncudaMemcpyAsync(output1_data.data(), temp_buffers[IDX_OUTPUT1], output1_size * batch_size * sizeof(float), cudaMemcpyDeviceToHost, temp_stream);\r\n//cudaMemcpy(output1_data.data(), temp_buffers[IDX_OUTPUT1], output1_size * batch_size * sizeof(float), cudaMemcpyDeviceToHost); // 同步\r\ncout << \"D2H 1：\" << (cv::getTickCount() - start) / static_cast<float>(cv::getTickFrequency()) * 1000.f << \"ms\" << endl;\r\n\r\ncudaStreamSynchronize(temp_stream);\r\n\r\ncout << \"Latency is ：\" << (cv::getTickCount() - start1) / static_cast<float>(cv::getTickFrequency()) * 1000.f << \"ms\" << endl;\r\n\r\nstart = cv::getTickCount();\r\n// 后处理\r\nvector<vector<InferResult>> results;\r\nfor (int i = 0; i < input_datas.size(); i++) {\r\n\tvector<float> output0(output0_data.begin() + i * output0_size , output0_data.begin() + (i + 1) * output0_size );\r\n\tvector<float> output1(output1_data.begin() + i * output1_size , output1_data.begin() + (i + 1) * output1_size );\r\n\tresults.emplace_back(batchPostProcess(images[i], factors[i], output0, output1));\r\n\r\n}\r\ncout << \"后处理：\" << (cv::getTickCount() - start) / static_cast<float>(cv::getTickFrequency()) * 1000.f << \"ms\" << endl;\r\n\r\nauto ret = cudaFree(temp_buffers[0]);\r\ncudaFree(temp_buffers[1]);\r\ncudaFree(temp_buffers[2]);\r\ncout << std::this_thread::get_id() << \": GPU临时缓冲区显存释放\" << ret << endl;\r\n\r\ncudaStreamDestroy(temp_stream);\r\n//cudaFree(&context);\r\n\r\nreturn results;\r\n```"
+  },
+  {
+   "author": "lix19937",
+   "created_at": "2024-08-12T01:02:28Z",
+   "body": "> 发现批量推理随着批大小的增长推理延时也线性增加，只有当批大小设到64以上会有稍明显的加速效果。   \r\n\r\nIt usually does not increase proportionally.\r\n\r\n> 似乎使用该engine创建一个context所需的最小内存确实需要大约4g   \r\n\r\nHow did you get it ? \r\n\r\nhttps://github.com/NVIDIA/TensorRT/issues/3907#issuecomment-2277579658   Obviously, the code is not efficient enough.\r\n\r\nIf possible, would it be convenient to provide onnx file here ? \r\n"
+  },
+  {
+   "author": "HuangYison",
+   "created_at": "2024-08-12T03:03:41Z",
+   "body": "of course, here the onnx file: \r\n1. https://drive.google.com/file/d/1o1Ov6zqu6jgRx2390Bm6qqGLLh5IR08i/view?usp=sharing\r\n2. https://drive.google.com/file/d/1T4ibSX9V8BsbzU0KLnGnPTPeKrIsoZ-D/view?usp=drive_link"
+  },
+  {
+   "author": "HuangYison",
+   "created_at": "2024-08-12T03:36:05Z",
+   "body": "> 似乎使用该engine创建一个context所需的最小内存确实需要大约4g\r\n\r\nobserved through the output like \r\n```\r\nAllocated activation device memory of size xxxxx\r\n[MemUsageChange] TensorRT-managed allocation in IExecutionContext creation: CPU +0, GPU +xxx, now: CPU 0, GPU xxx(MiB)\r\n``` \r\nFor yolov8m-seg model with 128x3x640x640 input shape, the size is 4150M, and yolov8s-seg is about 60% of yolov8m-seg\r\n\r\n>https://github.com/NVIDIA/TensorRT/issues/3907#issuecomment-2277579658 Obviously, the code is not efficient enough.\r\n\r\nYes, still testing, and is batch inference being used correctly in the code? How can i get the high GPU utilization like trtexec? Can you give me some suggestions, much appreciated."
+  },
+  {
+   "author": "HuangYison",
+   "created_at": "2024-08-16T09:47:19Z",
+   "body": "非常感谢你为这个问题提供的帮助。请问现在这里是否有什么结果吗？\r\n推理延时的测量，排除预处理和后处理的影响，单单对于使用TensorRT推理阶段的主机、设备内存申请、数据传输、GPU进行网络前向传播计算这些操作，我想这部分使用相应TensorRT API这应该是标准的，并且我看官方文档和网上代码都是差不多的，但是我无论是单张推理还是批量推理性能都达不到预期，与使用trtexec测量出来的差了非常多，我实在想不懂是什么问题导致的，您可以帮忙看看是什么问题导致的吗？\r\n对于[yolovs-seg](https://github.com/NVIDIA/TensorRT/issues/3907#:~:text=https%3A//drive.google.com/file/d/1T4ibSX9V8BsbzU0KLnGnPTPeKrIsoZ%2DD/view%3Fusp%3Ddrive_link) onnx file转换得到的batch为64的engine\r\n- 运行`trtexec --loadEngine=yolov8s-seg-static-64.engine`的输出日志文件 [yolov8s-seg-static-64.txt](https://github.com/user-attachments/files/16633615/yolov8s-seg-static-64.txt)\r\n\r\n\r\n- 运行我的代码测量得到的输出，测量代码就是上面给出的代码,，我添加了cudaEvent来执行GPU端的延时统计：\r\n```\r\nTotal per-runner device persistent memory is 103936\r\nTotal per-runner host persistent memory is 433808\r\nAllocated activation device memory of size 1377075200\r\n[MemUsageChange] TensorRT-managed allocation in IExecutionContext creation: CPU +0, GPU +1314, now: CPU 0, GPU 1336 (MiB)\r\nCUDA lazy loading is enabled.\r\n current engien use device memory size: 1377075200 bytes\r\n====================================================================\r\n当前批次大小为64\r\n预处理：333.718ms\r\n---------------\r\nH2D：143.851ms\r\nenqueue：146.57ms\r\nD2H 0：90.5057ms\r\nD2H 1：25.873ms\r\nLatency is ：263.942ms\r\ncuda event elapsed time is: 165.413ms\r\n12204: GPU临时缓冲区显存释放0\r\n---------------\r\n后处理：559.687ms\r\n====================================================================\r\n```\r\n我主要对比Host lantency和我的Lantency，\r\n- 对应的Nsight System报告文件[report.nsys-rep](https://drive.google.com/file/d/1U9jftjs5AzRiBMK8_sLGaejTJw_MUiPa/view?usp=sharing)\r\n十分感谢！"
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "NVIDIA/TensorRT",
+  "default_branch": "main",
+  "commit_sha": "a282d919e2593608667307d5253bb2fd8ef5d303",
+  "as_of": "2024-05-28T06:12:17Z",
+  "method": "github_commits_until"
+ },
+ "images": [
+  {
+   "where": "c8",
+   "source_url": "https://github.com/user-attachments/assets/675ad42d-741b-42a0-bf09-d34a912141d5",
+   "file": "gh_NVIDIA_TensorRT_3907_img0.png"
+  },
+  {
+   "where": "c17",
+   "source_url": "https://github.com/user-attachments/assets/966c30f8-ae8c-47f2-8f4d-51de333f9e5a",
+   "file": "gh_NVIDIA_TensorRT_3907_img1.png"
+  }
+ ],
+ "slug": "gh_NVIDIA_TensorRT_3907"
+}

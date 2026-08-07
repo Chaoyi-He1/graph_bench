@@ -1,0 +1,141 @@
+{
+ "repo": "pingcap/tidb",
+ "number": 56104,
+ "url": "https://github.com/pingcap/tidb/issues/56104",
+ "title": "lightning might stuck for hours when importing parquet files from cloud storage",
+ "state": "closed",
+ "labels": [
+  "type/bug",
+  "severity/major",
+  "component/lightning",
+  "affects-6.1",
+  "affects-6.5",
+  "affects-7.1",
+  "affects-7.5",
+  "affects-8.1",
+  "report/customer",
+  "affects-8.5"
+ ],
+ "reporter": "reporter",
+ "created_at": "2024-09-18T03:01:31Z",
+ "closed_at": "2025-04-11T07:56:44Z",
+ "body": "## Bug Report\r\n\r\nPlease answer these questions before submitting your issue. Thanks!\r\n\r\n### 1. Minimal reproduce step (Required)\r\n\r\n<!-- a step by step guide for reproducing the bug. -->\r\nafter https://github.com/pingcap/tidb/pull/46984, including `>= v7.5.x`, `7.1.3+`, we will sample parquet all the time in serial, it's very slow and might takes hours if user have large mount of parquet files before lightning start doing import, and the time takes to sample the files might even longer than real import work.\r\n\r\nwe only need this size for displaying progress more accurately and use it as a reference when splitting engine, but slowing import this much is un-acceptable.\r\n\r\n### 2. What did you expect to see? (Required)\r\nstart import fast\r\n### 3. What did you see instead (Required)\r\nit might takes hours before start doing any work\r\n### 4. What is your TiDB version? (Required)\r\n\r\n<!-- Paste the output of SELECT tidb_version() -->\r\n\r\n",
+ "comments": [
+  {
+   "author": "reporter",
+   "created_at": "2024-09-18T03:02:38Z",
+   "body": "it's a enhance type of bug, it need to pick back"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-09-19T10:56:54Z",
+   "body": "How about sampling just one file? Sample the first file and calculate a compression ratio, and use this compression ratio to estimate the remaining files."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-09-19T13:47:28Z",
+   "body": "lgtm"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-09-25T07:40:45Z",
+   "body": "> How about sampling just one file\r\n\r\n@participant1 Do you have real data to support this idea? I'm afraid that different table structure may have different compression ratio, so IMO we should at least sample once for every table. But the performance is not improved if every table only has 1 parquet file."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-09-25T09:19:33Z",
+   "body": "Good catch. The different table structure may have different compression ratio, I will fix #56205 and test with different tables."
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-02-06T05:28:34Z",
+   "body": "I am reopening this issue. The PR #56205 to fix `constructFileInfo` is entirely wrong and does not improve the situation much.\n\nThe issue is that ***OPENING A PARQUET FILE IN S3 IS EXTREMELY TIME-COSTLY*** (i.e. `ReadParquetFileRowCountByFile` must be avoided like plague). The PR #56205 changes the original sampling algorithm:\n\n* for each parquet file:\n    1. open it ( :-1: )\n    2. read the real size\n    3. set it as the file's RealSize\n\nto this:\n\n* for each parquet file:\n    1. if the table's `sampledParquetRowSizes` is unknown (0),\n        1. open it ( :ok: )\n        2. read the (real size / count)\n        3. store it into the table's `sampledParquetRowSizes`\n   2. now that the table's `sampledParquetRowSizes` is known,\n        1. open the file again (👎👎👎👎👎👎)\n        2. read the count\n        3. set (`sampledParquetRowSizes` * count) as the file's RealSize\n\nhttps://github.com/pingcap/tidb/blob/fc8bdb54c6061fdb0af15c28943d41e5f12d9f0d/pkg/lightning/mydump/loader.go#L540-L566\n\nSo you are still reading N files in total before importing. Nothing has changed!\n\nInstead of sampling the ratio as (real size / count), you should use the ratio (real size / file size), because getting the file size is free. Then the other file's RealSize can be calculated just by ((sampled real size / file size) * current file size).\n\n---\n\nI also demand we add a failpoint-enabled integration test, which explodes after opening/downloading files 49 times from `data-source-dir` (i.e. total count of `ReadFile` + `Open`). The test should consist of\n* 1 database (`test-schema-create.sql`)\n* 4 tables (`test.{a,b,c,d}-schema.sql`)\n    * two table with 10 parquet files (`test.{a,b}.[0-9].parquet`)\n    * two table with 10 gzip-compressed CSV files (`test.{c,d}.[0-9].csv.gz`)"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-02-06T05:39:06Z",
+   "body": "> I am reopening this issue. The PR [#56205](https://github.com/pingcap/tidb/pull/56205) to fix `constructFileInfo` is entirely wrong and does not improve the situation much.\n> \n> (EDIT: rest of quote snipped)\n\nbefore https://github.com/pingcap/tidb/pull/46984, we are reading every parquet file for its `row-count` before encoding, and it will read one file twice after it, one for row-count, one for sample real-size\n\nafter https://github.com/pingcap/tidb/pull/56205, it optimized the sample real-size part to open only 1 file for each table, but yes it still need to open parquet file for row-count like original implementation, see https://github.com/pingcap/tidb/pull/56205#pullrequestreview-2441340662 too"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-02-06T05:48:19Z",
+   "body": "@reporter \n\n> it still need to open parquet file for row-count like original implementation, see [#56205 (review)](https://github.com/pingcap/tidb/pull/56205#pullrequestreview-2441340662) too\n\nYes and this is unacceptable, our customer on v7.5.5 is still waiting 3 hours to get to the pre-check stage because there are 10000 parquet files. \n\nLightning should never need to open the data files --- at least not in O(N) scale --- before actually running import. \n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-02-06T05:59:57Z",
+   "body": "> [@reporter](https://github.com/reporter)\n> \n> > it still need to open parquet file for row-count like original implementation, see [#56205 (review)](https://github.com/pingcap/tidb/pull/56205#pullrequestreview-2441340662) too\n> \n> Yes and this is unacceptable, our customer on v7.5.5 is still waiting 3 hours to get to the pre-check stage because there are 10000 parquet files.\n> \n> Lightning should never need to open the data files --- at least not in O(N) scale --- before actually running import.\n\nlightning need row-count to generate row-id range, it's a must step. unlike CSV/SQL, parquet might have larger file size difference for same row count due to its column format nature, might be harder to get the id-range by sample.\n\nbut we can do it in parallel to speedup"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-02-06T06:01:21Z",
+   "body": "/assign participant4"
+  },
+  {
+   "author": "ti-chi-bot[bot]",
+   "created_at": "2025-02-06T06:01:25Z",
+   "body": "@reporter: GitHub didn't allow me to assign the following users: participant4.\n\nNote that only [pingcap members](https://github.com/orgs/pingcap/people) with read permissions, repo collaborators and people who have commented on this issue/PR can be assigned. Additionally, issues/PRs can only have 10 assignees at the same time.\nFor more information please see [the contributor guide](https://<redacted-host>/community/contributors/guide/first-contribution.md#issue-assignment-in-github)\n\n<details>\n\nIn response to [this](https://github.com/pingcap/tidb/issues/56104#issuecomment-2638914470):\n\n>/assign participant4\n\n\nInstructions for interacting with me using PR comments are available [here](https://<redacted-host>/community/contributors/guide/pull-requests.md).  If you have questions or suggestions related to my behavior, please file an issue against the [kubernetes-sigs/prow](https://github.com/kubernetes-sigs/prow/issues/new?title=Prow%20issue:) repository.\n</details>"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-02-06T06:05:11Z",
+   "body": "/assign"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-02-06T07:03:10Z",
+   "body": "@reporter You only need an ***upper estimate*** of the row count, you don't need the exact count. Row ID gaps are expected. You could even set `rowCount = realSize`. \n\nWe won't accept solutions that open and read 10000 parquet files before precheck, even with parallelization."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-02-06T07:27:39Z",
+   "body": "> [@reporter](https://github.com/reporter) You only need an _**upper estimate**_ of the row count, you don't need the exact count. Row ID gaps are expected. You could even set `rowCount = realSize`.\n\nas `realSize` comes from sampling some files, not sure how much it can reflect all files, but it should be fine in most cases\n\nthe auto-id range is not always needed, such as when the pk is clustered and data files have provided the auto IDs, maybe we can add auto detect and avoid alloc id range.\n\n> We won't accept solutions that open and read 10000 parquet files before precheck, even with parallelization.\n\neven with sampling, in worst case when table-count ~ O(n) where n is number of files, we still need to read O(n) files"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-02-06T08:58:54Z",
+   "body": "> the auto-id range is not always needed, such as when the pk is clustered and data files have provided the auto IDs, maybe we can add auto detect and avoid alloc id range.\n\nyeah allocating ID at real-time (like TiDB) instead of pre-allocating can also get rid of the estimation, though this would be a quite big refactoring 🙃, and also not so friendly for checkpoints.\n\n> even with sampling, in worst case when table-count ~ O(n) where n is number of files, we still need to read O(n) files\n\nthat's true, ideally we should never sampling anything at all. but in practice the number of tables is much less than the number of data files. having (number of files / number of tables >> number of CPU cores) is enough to outperform parallelization."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-02-07T08:52:57Z",
+   "body": "If opening files with parallelization is still unacceptable, can we estimate a **lower bound** for the parquet compression ratio? Since we can't guarantee that we won't get an underestimated `Rows` using sampling files in some extreme cases.\n\nI did a simple test: I created a extremely simple table, only one column and all values were 1. I used Python PyArrow package to write it as Parquet file. The data page size was set to 1MB and the number of row groups was 1 ([data page](https://tajo.apache.org/docs/0.8.0/table_management/parquet.html) is the basic unit of compression which affects the compression ratio).  Below is the result:\n\n![Image](https://github.com/user-attachments/assets/5f9b0a2a-db9d-4d36-a335-9d4f1d0ab09b)\n\nBy this way, we can obtain the compression ratio: 20000 / (800m * 8) = 3.125e-06. Then we could use this value to estimate the `Rows` of each file, although we will quite a very large RowID gap 🧐.\n\n> I tested different compression algorithms supported by Parquet. The file size is almost the same so I just take the minimum value."
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-02-07T09:17:44Z",
+   "body": "Or we just skip fetching row count and use the above estimation method only when table has no auto row ID 🥲.\nhttps://github.com/pingcap/tidb/blob/4734c9c2f4a240818bb2d7aac84a4c169318b6e9/pkg/lightning/backend/kv/sql2kv.go#L216-L241"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2025-02-07T09:30:07Z",
+   "body": "Using 1/320000 as the lower-bound is fine, but that puts an upper limit of the total supported size of Parquet files to (2<sup>64</sup> / 320000) = 52 TiB.\n\nIn the long term we should have some way to recover from using rowID outside of the allocated range (the issue is already happening with CSV, see TICKET-5411) and then we can reduce the compression estimation to some more practical value (e.g. 0.7). But that involves refactoring outside the scope of this issue.\n\n> I think we could resolve it like this. Suppose we have 10 chunks:\n>\n> * chunk 0: rowID in [0, 10)\n> * chunk 1: rowID in [10, 25)\n> * chunk 2: rowID in [25, 40)\n> * ...\n> * chunk 9: rowID in [475, 500)\n> \n> Suppose we actually *underestimated* the number of rows in chunk 1 and we actually have 50 rows instead of 15 rows. Instead of assigning the row number as [10, 60) which spills into the next chunks, we use\n>\n> * rows [0, 15) of chunk 1 get ID [10, 25)\n> * rows [15, 30) of chunk 1 get ID [510, 525) <- 500 is the max rowID of the entire table\n> * rows [30, 45) of chunk 1 get ID [1010, 1025)\n> * rows [45, 50) of chunk 1 get ID [1510, 1515)\n> \n> This way we can be sure no overlapping will happen, at the same time being checkpoint-friendly as the allocation scheme is stateless. We need to modify the code doing `ALTER TABLE AUTO_INCREMENT` to set it to 1515 instead of 500 though.\n\nBTW does `IMPORT INTO` have the same issue regarding row ID sampling?"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2025-02-07T09:54:18Z",
+   "body": "> BTW does IMPORT INTO have the same issue regarding row ID sampling?\n\n`IMPORT INTO` will read row number from file because we doesn't set `Rows` in  file meta.\n\nhttps://github.com/pingcap/tidb/blob/4734c9c2f4a240818bb2d7aac84a4c169318b6e9/pkg/executor/importer/table_import.go#L402\n\nhttps://github.com/pingcap/tidb/blob/4734c9c2f4a240818bb2d7aac84a4c169318b6e9/pkg/lightning/mydump/region.go#L364-L377"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2025-02-08T03:14:51Z",
+   "body": "> * rows [15, 30) of chunk 1 get ID [510, 525) <- 500 is the max rowID of the entire table\n\nit's more complex when using parallel import where we use a table to coordinate id allocation, and also considering the range is also saved in checkpoint\n\nreading files in parallel is simpler, if it can finish within a reasonable time, I think it's acceptable for the short term. we can consider optimize id allocation later, including the similar case for CSV"
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "pingcap/tidb",
+  "default_branch": "master",
+  "commit_sha": "3ae6470ea785c371b91d28fd5656d48af3f45b94",
+  "as_of": "2024-09-18T03:01:31Z",
+  "method": "github_commits_until"
+ },
+ "images": [
+  {
+   "where": "c15",
+   "source_url": "https://github.com/user-attachments/assets/5f9b0a2a-db9d-4d36-a335-9d4f1d0ab09b",
+   "file": "gh_pingcap_tidb_56104_img0.png"
+  }
+ ],
+ "slug": "gh_pingcap_tidb_56104"
+}

@@ -1,0 +1,113 @@
+{
+ "repo": "keras-team/keras",
+ "number": 19314,
+ "url": "https://github.com/keras-team/keras/issues/19314",
+ "title": "Backward compatibility issues: arbitrary inputs and overreliance on custom layers",
+ "state": "closed",
+ "labels": [
+  "stat:awaiting response from contributor",
+  "stale",
+  "type:Bug"
+ ],
+ "reporter": "reporter",
+ "created_at": "2024-03-15T11:50:55Z",
+ "closed_at": "2026-04-01T02:21:30Z",
+ "body": "Hi! Thank you guys for the better, cleaner new Keras! The promise of backend-agnostic models is just fantastic.  \r\n\r\nProblem is, the new framework seems to have lost some capabilities of its predecessor. Here's an example code which works perfectly in Keras 2:\r\n\r\n**Keras 2**\r\n```python\r\nimport tensorflow as tf\r\nfrom tensorflow import keras\r\nimport numpy as np\r\n\r\n\r\ndef TestModel():\r\n   x = keras.Input(batch_shape=(1, None))\r\n\r\n   b, l = tf.shape(x)\r\n   y = x[:, l // 2]\r\n   return keras.Model(inputs=x, outputs=y)\r\n\r\n\r\ninput = np.random.normal(size=(1, 10))\r\nmodel = TestModel()\r\noutput = model(input)\r\nprint(output)\r\n```\r\n\r\nI want the same in Keras 3 with **minimal reliance on custom layers**. Alas, the straightforward approach fails.\r\n\r\n**Keras 3**\r\n```python\r\nimport tensorflow as tf\r\nfrom tensorflow import keras\r\nimport numpy as np\r\n\r\ndef TestModel():\r\n    x = keras.Input(batch_shape=(1, None))\r\n\r\n    shape = keras.layers.Lambda(lambda x: keras.ops.convert_to_tensor(keras.ops.shape(x)))(input)\r\n    b, l = shape[0], shape[1]\r\n    y = x[:, l // 2]  # ValueError: Attempt to convert a value (Ellipsis) with an unsupported type (<class 'ellipsis'>) to a Tensor.\r\n    return keras.Model(inputs=x, outputs=y)\r\n    \r\ninput = np.random.normal(size=(1, 10))\r\nmodel = TestModel()\r\noutput = model(input)\r\nprint(output)\r\n```\r\n```console\r\nTraceback (most recent call last):\r\n  File \"/home/<user>/PycharmProjects/nobuco/examples/keras3.py\", line 57, in <module>\r\n    model = TestModel()\r\n  File \"/home/<user>/PycharmProjects/nobuco/examples/keras3.py\", line 39, in TestModel\r\n    y = x[:, l // 2]  # ValueError: Attempt to convert a value (Ellipsis) with an unsupported type (<class 'ellipsis'>) to a Tensor.\r\n  File \"/home/<user>/anaconda3/envs/tf_new/lib/python3.9/site-packages/keras/src/backend/common/keras_tensor.py\", line 291, in __getitem__\r\n    return ops.GetItem().symbolic_call(self, key)\r\n  File \"/home/<user>/anaconda3/envs/tf_new/lib/python3.9/site-packages/keras/src/ops/operation.py\", line 51, in symbolic_call\r\n    outputs = self.compute_output_spec(*args, **kwargs)\r\n  File \"/home/<user>/anaconda3/envs/tf_new/lib/python3.9/site-packages/keras/src/ops/numpy.py\", line 2694, in compute_output_spec\r\n    num_ellipses = remaining_key.count(Ellipsis)\r\n  File \"/home/<user>/anaconda3/envs/tf_new/lib/python3.9/site-packages/tensorflow/python/ops/tensor_math_operator_overrides.py\", line 138, in _tensor_equals_factory\r\n    return math_ops.tensor_equals(self, other)\r\n  File \"/home/<user>/anaconda3/envs/tf_new/lib/python3.9/site-packages/tensorflow/python/util/traceback_utils.py\", line 153, in error_handler\r\n    raise e.with_traceback(filtered_tb) from None\r\n  File \"/home/<user>/anaconda3/envs/tf_new/lib/python3.9/site-packages/tensorflow/python/framework/constant_op.py\", line 108, in convert_to_eager_tensor\r\n    return ops.EagerTensor(value, ctx.device_name, dtype)\r\nValueError: Attempt to convert a value (Ellipsis) with an unsupported type (<class 'ellipsis'>) to a Tensor.\r\n```\r\nCustom layers do work, but I'd like to avoid them because otherwise I would need to supply `custom_objects` on model loading.\r\n\r\n```python\r\nclass Shape(keras.Layer):\r\n    def call(self, x):\r\n        shape = keras.ops.shape(x)\r\n        n_dims = len(shape)\r\n        shape = keras.ops.convert_to_tensor(shape)\r\n        return tuple(shape[i] for i in range(n_dims))\r\n\r\n\r\nclass Slice(keras.Layer):\r\n    def call(self, x, k):\r\n        return x[:, k]\r\n\r\n\r\ndef TestModel():\r\n    x = keras.Input(batch_shape=(1, None))\r\n\r\n    b, l = Shape()(x)\r\n    y = Slice()(x, l // 2)\r\n    return keras.Model(inputs=x, outputs=y)\r\n```\r\n\r\nAnother drawback is that Keras layers (in contrast to e.g. Pytorch) do not allow arbitrary input signatures. In my example, generalizing `Slice` layer to the same degree as `__getitem__` method is not possible.\r\n\r\n```python\r\nclass SliceGeneric(keras.Layer):\r\n    def call(self, x, slices):\r\n        return x.__getitem__(slices)\r\n\r\n\r\ndef TestModel():\r\n    x = keras.Input(batch_shape=(1, None))\r\n\r\n    b, l = Shape()(x)\r\n    y = SliceGeneric()(x, slices=(slice(None, None, None), l // 2))  # ValueError: In a nested call() argument, you cannot mix tensors and non-tensors. Received invalid mixed argument: slices=(slice(None, None, None), <KerasTensor shape=(), dtype=int32, sparse=False, name=keras_tensor_3>)\r\n    return keras.Model(inputs=x, outputs=y)\r\n```\r\n\r\n```console\r\nTraceback (most recent call last):\r\n  File \"/home/<user>/PycharmProjects/nobuco/examples/keras3.py\", line 57, in <module>\r\n    model = TestModel()\r\n  File \"/home/<user>/PycharmProjects/nobuco/examples/keras3.py\", line 51, in TestModel\r\n    y = SliceGeneric()(x, slices=(slice(None, None, None), l // 2))  # ValueError: In a nested call() argument, you cannot mix tensors and non-tensors. Received invalid mixed argument: slices=(slice(None, None, None), <KerasTensor shape=(), dtype=int32, sparse=False, name=keras_tensor_3>)\r\n  File \"/home/<user>/anaconda3/envs/tf_new/lib/python3.9/site-packages/keras/src/utils/traceback_utils.py\", line 123, in error_handler\r\n    raise e.with_traceback(filtered_tb) from None\r\n  File \"/home/<user>/anaconda3/envs/tf_new/lib/python3.9/site-packages/keras/src/layers/layer.py\", line 1402, in __init__\r\n    raise ValueError(\r\nValueError: In a nested call() argument, you cannot mix tensors and non-tensors. Received invalid mixed argument: slices=(slice(None, None, None), <KerasTensor shape=(), dtype=int32, sparse=False, name=keras_tensor_3>)\r\n```\r\n**Why it matters**\r\n\r\nThere's a [tool](https://github.com/reporter/nobuco) that converts Pytorch models to Tensorflow using Keras 2, the approach proved successful. Now I'd like to take it a step further and bring the awesomeness of JAX to the Pytorch crowd.\r\n\r\nThe converter establishes a one-to-one correspondence between Pytorch modules/ops and the equivalent Keras implementations. Both have the same signatures, except for tensors which are framework-specific.\r\n\r\nBelow, we traced three Pytorch ops (`shape`, `__floordiv__` and `__getitem__`) which we then convert to Keras independently from each other. That is why I want generic `__getitem__` in Keras 3.\r\n\r\n```python\r\nimport torch\r\nfrom torch import nn\r\n\r\n\r\nclass PytorchModule(nn.Module):\r\n    def forward(self, x):\r\n        b, l = x.shape\r\n        y = x[:, l // 2]\r\n        return y\r\n```\r\n![trace](https://github.com/keras-team/keras/assets/2457934/98881d1b-fe6a-4291-a774-465a842b3866)\r\n\r\nSo, for the new Keras' perceived lack of flexibility. Is that considered a flaw or rather a deliberate design choice? Why do some ops only work when wrapped in a layer? Is there a work-around? Any help will be greatly appreciated.",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2024-03-18T14:25:53Z",
+   "body": "Hi @reporter ,\r\n\r\nReplicated the reported issue with Keras3. Keras2 works fine. Attached [gist](https://colab.sandbox.google.com/gist/participant1/95b6d685d4549bdc4ce27a3d2f2f865c/19314.ipynb) for reference.\r\n\r\nMay need to check whether this is a bug or design changes. Thanks"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-03-28T17:23:39Z",
+   "body": "cc: @participant15"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-03-28T17:42:38Z",
+   "body": "Hi @reporter, I agree this is a pain point with Keras, working with different tensors we haven't yet standardized an indexing method. Ideally we want users to be able to create an `ops.array()` and have access to indexing in all backends. We are actively exploring solutions to this.\r\n\r\nWe are aiming to have an operator where for example, the corresponding Keras translation of the pytorch code you added would be `y = ops.at(x)[:, l // 2]`. Note that for the time being this is experimental and work in progress."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-04-02T10:17:51Z",
+   "body": "@participant3 Thanks for the clarity! \r\n\r\nOne thing I still don't understand is why it works fine inside a custom layer:\r\n\r\n```python\r\nclass CustomLayer(keras.Layer):\r\n    def call(self, x):\r\n        b, l = keras.ops.shape(x)\r\n        y = x[:, l // 2]\r\n        return y\r\n\r\n\r\ndef TestModel():\r\n    x = keras.Input(batch_shape=(1, None))\r\n    y = CustomLayer()(x)\r\n    return keras.Model(inputs=x, outputs=y)\r\n```\r\nCan it be made to work without a custom layer? Is that on the to-do list?"
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-04-25T07:56:05Z",
+   "body": "Hello, thanks reporter for raising this issue, yes, I am facing the same issues with keras3"
+  },
+  {
+   "author": "participant5",
+   "created_at": "2024-06-19T06:28:34Z",
+   "body": "Hi! Alexander's tool is an incredible breakthrough for anyone who wants to use models from different frameworks with Keras. It would be amazing to be able to update it with Keras3 and take full advantage of its potential, so please fix this bug. Thanks!"
+  },
+  {
+   "author": "participant6",
+   "created_at": "2024-07-09T11:05:55Z",
+   "body": "Hello, nobuco is an amazing tool to migrate pytorch model to keras. I hope this issue would be resolved well. Thank you!"
+  },
+  {
+   "author": "participant7",
+   "created_at": "2024-07-17T02:57:47Z",
+   "body": "+1"
+  },
+  {
+   "author": "participant8",
+   "created_at": "2024-09-30T13:18:25Z",
+   "body": "+1"
+  },
+  {
+   "author": "participant9",
+   "created_at": "2025-02-28T21:38:53Z",
+   "body": "+1"
+  },
+  {
+   "author": "participant10",
+   "created_at": "2025-08-19T11:00:46Z",
+   "body": "+1"
+  },
+  {
+   "author": "participant11",
+   "created_at": "2025-10-16T14:19:24Z",
+   "body": "+1"
+  },
+  {
+   "author": "participant12",
+   "created_at": "2025-10-17T19:35:23Z",
+   "body": "+1"
+  },
+  {
+   "author": "participant13",
+   "created_at": "2025-10-29T09:20:28Z",
+   "body": "+1"
+  },
+  {
+   "author": "participant14",
+   "created_at": "2025-11-04T01:08:26Z",
+   "body": "@reporter \n\nThank you for the report and sorry for the late reply. First, I want to demonstrate that it works for a lot of things:\n```python\n# Works\nx = keras.layers.Input(shape=(10,))\ny = x + x\nmodel = keras.models.Model(inputs=x, outputs=y)\n\n# Works\nx = keras.layers.Input(shape=(10,))\ny = x * x\nmodel = keras.models.Model(inputs=x, outputs=y)\n\n# Works\nx = keras.layers.Input(shape=(10,))\ny = x[:, 2]\nmodel = keras.models.Model(inputs=x, outputs=y)\n\n# Works\nx = keras.layers.Input(shape=(10,))\ny = keras.ops.sqrt(x)\nmodel = keras.models.Model(inputs=x, outputs=y)\n```\n\nIn general, all `keras.ops` that take one or more tensors as input and return one or more tensors work.\n\nkeras.ops.shape\n----\n\nNow... your example uses `keras.ops.shape` which is a one-of-a-kind operation. I intend to write a guide about it.\n\n- The primary reason for creating `keras.ops.shape` was to make it backend independent to be able to write backend independent code. That's because `x.shape` is of a different type depending on the backend. Most notably, TensorFlow returns `TensorShape` objects, but we want tuples always.\n- `keras.ops.shape` is not an equivalent of `tf.shape`. This is by design. `tf.shape` always returns a tensor, if you want the static shape, you use `x.shape`. `keras.ops.shape` returns a tuple of `int`s whenever possible, so you should also use `keras.ops.shape` if you want the static shape.\n\nThe consequence is that, because `keras.ops.shape` doesn't return a tensor, it cannot be an operation part of the graph of a functional model.\n\nWhy\n----\n\n> Is that considered a flaw or rather a deliberate design choice?\n\nIt is a deliberate choice for multi-backend support. The way TensorFlow handles dynamic shapes in graph mode is fairly unique.\n\nThese 2 lines:\n```python\nb, l = keras.ops.shape(x)\ny = x[:, l // 2]\n```\nWill work on any backend in eager mode. But on JAX with compilation, it will only work if the dimension `l` is statically known. If `l` is a tensor, it makes it a dynamic dimension, and this code cannot be compiled. So this is why we chose the non-tensor approach.\n\nDynamic Shapes\n----\n\n> One thing I still don't understand is why it works fine inside a custom layer?\n\nOne related question I'll add to this one: Does it mean that Keras 3 doesn't support dynamic shape?\n\nThere is a subtlety with `keras.ops.shape`. It does support dynamic dimensions. When tracing the model with TensorFlow, `keras.ops.shape` will return a tuple, but put `int`s for static dimensions and scalar tensors for dynamic dimensions (and not `None`). This behavior is [documented](https://keras.io/api/ops/core/#shape-function). It allows this code to work:\n```python\nb, l = keras.ops.shape(x)\ny = x[:, l // 2]\n```\nThe beauty of this is that when you write this code, you don't have to worry about whether `l` is an `int` or a scalar tensor, it just works in both cases.\n\nRelated tip: to detect dynamic dimensions, don't write `if keras.ops.shape[1] is None`, write `if not isinstance(keras.ops.shape[1], int)`.\n\nWorkaround\n----\n\nWhat's missing is a op equivalent to `tf.shape`, which is basically the same as the `Shape` layer you provided. I would create my own and use is where needed.\n\nI'm hesitant to add this to Keras. I fear it will cause even more confusion to something that's already complex."
+  },
+  {
+   "author": "github-actions[bot]",
+   "created_at": "2026-03-18T02:19:08Z",
+   "body": "This issue is stale because it has been open for 14 days with no activity. It will be closed if no further activity occurs. Thank you."
+  },
+  {
+   "author": "github-actions[bot]",
+   "created_at": "2026-04-01T02:21:29Z",
+   "body": "This issue was closed because it has been inactive for 28 days. Please reopen if you'd like to work on this further."
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "keras-team/keras",
+  "default_branch": "master",
+  "commit_sha": "3fcb38c1a7221473232581a6e0215dc0c7fa9518",
+  "as_of": "2024-03-15T11:50:55Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_keras-team_keras_19314"
+}

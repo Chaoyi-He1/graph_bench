@@ -1,0 +1,203 @@
+{
+ "repo": "tailscale/tailscale",
+ "number": 12108,
+ "url": "https://github.com/tailscale/tailscale/issues/12108",
+ "title": "Tailscale >= 1.66.0 breaks DNS name resolution in Docker containers on Linux",
+ "state": "closed",
+ "labels": [
+  "containers",
+  "dns",
+  "bug"
+ ],
+ "reporter": "reporter",
+ "created_at": "2024-05-12T17:54:07Z",
+ "closed_at": "2024-05-21T15:32:52Z",
+ "body": "### What is the issue?\n\nAfter upgrading to Tailscale `1.66.0` or `1.66.1`, DNS name resolution breaks inside newly created Docker containers.\r\n\r\nI'm experiencing this on a Debian 11 host.\r\n\r\nThis doesn't occur on the same machine with Tailscale 1.64.0\r\n\r\nThanks for your support!\n\n### Steps to reproduce\n\n1. Install Tailscale 1.64.0 on the Linux machine: `apt install tailscale=1.64.0`\r\n2. Start a Docker container: `docker run --rm -it debian:12`\r\n3. Ping an external service from inside the container: `ping google.com` -> WORKS\r\n4. Stop the Docker containr: `exit`\r\n5. Install Tailscale 1.66.0 or 1.66.1 on the Linux machine: `apt install tailscale=1.66.1`\r\n6. Start a Docker container: `docker run --rm -it debian:12`\r\n7. Ping an external service from inside the container: `ping google.com` -> Cannot resolve name\n\n### Are there any recent changes that introduced the issue?\n\nUpgrade Tailscale from 1.64.0 to 1.66.1 using the system package manager.\n\n### OS\n\nLinux\n\n### OS version\n\nDebian 11\n\n### Tailscale version\n\n1.66.1\n\n### Other software\n\nDocker version 26.1.2, build 211e74b\n\n### Bug report\n\nBUG-c7f85e39b9c72709e39b2f333de28e65a0d5875a2e351ab851dae9f245cea271-20240512175341Z-c93cbe3beb3e255b",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2024-05-12T21:26:52Z",
+   "body": "1.66 added stateful filtering for packets going via the `tailscale0` interface, see https://tailscale.com/changelog#2024-05-08. But that should not affect packets from docker containers to the Internet.\r\n\r\nAnother notable thing is that this node is also a subnet router for the `10.0.0.0/8` range. Again, this should not affect docker containers, but noting it for others reading the issue.\r\n\r\nSome things to check are:\r\n* check whether `tailscale set --stateful-filtering=false` on 1.66.1 resolves the issue\r\n* check if your docker configuration uses CGNAT IPs (in the 100.64.0.0/10 range) by chance? You can run something like this to view the config for all docker networks:\r\n  ```sh\r\n  docker network ls --format '{{.Name}}' | xargs docker network inspect\r\n  ```"
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-05-12T21:44:23Z",
+   "body": "In the container, what does `getent hosts google.com` print, on both versions?\r\n\r\nI also ran in to this (or maybe this is a different problem), in my case my _tailnet_ address resolved to ipv6, but the container did not have an ipv6 address.  One way to solve it is by [enabling ipv6 for the container](https://docs.docker.com/config/daemon/ipv6/)"
+  },
+  {
+   "author": "participant3",
+   "created_at": "2024-05-13T01:45:35Z",
+   "body": "I had the same issue, which showed up as Service Widgets from my [Homepage](https://gethomepage.dev/latest/) instance not connecting to their source (e.g. Proxmox, Jellyfin, etc). \r\n\r\nThe problem was solved by running `tailscale up --stateful-filtering=false` on my host machine. "
+  },
+  {
+   "author": "participant4",
+   "created_at": "2024-05-13T07:17:44Z",
+   "body": "I had the same problem which he solved:\r\n`tailscale set --stateful-filtering=false`\r\n\r\nYou owe me a good night's sleep :-("
+  },
+  {
+   "author": "participant5",
+   "created_at": "2024-05-13T07:19:28Z",
+   "body": "+1 \r\n\r\n`--stateful-filtering=false` solve the problem"
+  },
+  {
+   "author": "participant6",
+   "created_at": "2024-05-13T08:27:03Z",
+   "body": "i have same issue but for Magic DNS host names . \r\n`tailscale set --stateful-filtering=false`  fixed issue with ips but not for node host names"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-05-13T10:02:20Z",
+   "body": "> 1.66 added stateful filtering for packets going via the `tailscale0` interface, see https://tailscale.com/changelog#2024-05-08. But that should not affect packets from docker containers to the Internet.\r\n> \r\n> Another notable thing is that this node is also a subnet router for the `10.0.0.0/8` range. Again, this should not affect docker containers, but noting it for others reading the issue.\r\n\r\nCorrect, it's a subnet router for that range\r\n\r\n> \r\n> Some things to check are:\r\n> \r\n> * check whether `tailscale set --stateful-filtering=false` on 1.66.1 resolves the issue\r\n\r\nIt works if I update to 1.66.1, and disable stateful filtering, for both internal and external names. So, stateful filtering is likely interfering with this?\r\n\r\n> * check if your docker configuration uses CGNAT IPs (in the 100.64.0.0/10 range) by chance? You can run something like this to view the config for all docker networks:\r\n>   ```shell\r\n>   docker network ls --format '{{.Name}}' | xargs docker network inspect\r\n>   ```\r\n\r\nI checked, and it doesn't appear to be the case. That range is not in use by any network that Docker creates.\r\n\r\n> In the container, what does `getent hosts google.com` print, on both versions?\r\n\r\nTailscale 1.64.0: `2a00:1450:4002:402::200e google.com`\r\nTailscale 1.66.1 (before disabling stateful filtering): Timeout\r\nTailscale 1.66.1 (after disabling stateful filtering): `2a00:1450:4002:411::200e google.com`\r\n\r\nThanks for your support!"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-05-13T10:17:23Z",
+   "body": "From the https://tailscale.com/security-bulletins#ts-2024-005 page:\r\n\r\n> The attack only works on a LAN because:\r\n\r\n> * it relies on next-hop routing, which only works in a LAN\r\n> * **destination IPs are in the subnet router's approved range**, or in the [CGNAT range](https://tailscale.com/kb/1015/100.x-addresses) 100.64.0.0/10, which are not routable over the Internet.\r\n\r\nThis appears to be the case because both the resolvers I'm using are in the 10.0.0.0/8 range. Additionally, one of those (10.0.0.2) runs in a container.\r\n\r\n> On Linux packet-forwarding nodes we added stateful packet filtering. This means that these nodes keep track of forwarded connections and only allow return packets for existing outbound connections. Inbound packets that don't belong to an existing connection are dropped.\r\n\r\nAnd from https://tailscale.com/kb/1080/cli:\r\n\r\n> `--stateful-filtering` Enable stateful filtering for subnet routers and exit nodes. When enabled, inbound packets with another node's destination IP are dropped, unless they are a part of a tracked outbound connection from that node. Defaults to enabled, but can be disabled for site-to-site networking use cases.\r\n\r\nThis doesn't appear to work as intended, at least in this case?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-05-13T16:13:38Z",
+   "body": "Thanks for the details, I reproduced the issue.\r\nRight now, `tailscale set --stateful-filtering=false` is the only workaround. Running it on a regular node (not exit node and not subnet router) should be safe.\r\n\r\nThe reason this happens is because Docker will by default use `resolv.conf` from the host, which points at 100.100.100.100 (served by local tailscaled) as the nameserver. Since this IP lands in the `tailscale0` interface, DNS request packets become subject to stateful filtering. And because the source IP is not localhost, but something like `172.17.0.2` (from the docker network range), it's interpreted as \"incoming request from another host\" and thus rejected."
+  },
+  {
+   "author": "participant7",
+   "created_at": "2024-05-15T15:17:35Z",
+   "body": "> I had the same problem which he solved: `tailscale set --stateful-filtering=false`\r\n> \r\n> You owe me a good night's sleep :-(\r\n\r\nThanks, and no need to restart tailscale and docker."
+  },
+  {
+   "author": "participant8",
+   "created_at": "2024-05-15T21:11:53Z",
+   "body": "Dropping an updated command from what was posted above (https://github.com/tailscale/tailscale/issues/12108#issuecomment-2107156997) to view docker network names / IP ranges if you have [jqlang/jq](https://github.com/jqlang/jq) installed:\r\n\r\n```shell\r\ndocker network ls --format '{{.Name}}' | xargs docker network inspect | jq '.[] | [.Name, .IPAM.Config]'\r\n```\r\n\r\n![Cursor_and_zsh](https://github.com/tailscale/tailscale/assets/93973/2b125f80-c248-444d-93a5-02ace2c2db2c)\r\n\r\n"
+  },
+  {
+   "author": "participant6",
+   "created_at": "2024-05-16T18:48:25Z",
+   "body": "@participant1 for me MagicDns nodes names still not not working in docker  in Unraid and one Ubuntu 20.4 client, other Ubuntu 22.4 client working fine. 3th Ubuntu 22.4 still don't have docker installed. \r\nUsing headscale + 3 Ubuntu servers + unraid server with plugin. But dns is OK also full MagicDns nodes name are working.\r\n<redacted-host>"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-05-17T00:16:38Z",
+   "body": "@participant6 just to clarify:\r\n* resolving full names, like `<redacted-host>` works\r\n* resolving short names, like `host` does not work\r\n\r\nIf that's correct, that sounds like a different issue.\r\nCan you show the contents of `/etc/resolv.conf` on the hosts that servers that don't work, and those that do work?"
+  },
+  {
+   "author": "participant6",
+   "created_at": "2024-05-17T06:19:55Z",
+   "body": "> @participant6 just to clarify:\r\n> \r\n> * resolving full names, like `<redacted-host>` works\r\n> * resolving short names, like `host` does not work\r\n> \r\n> If that's correct, that sounds like a different issue. Can you show the contents of `/etc/resolv.conf` on the hosts that servers that don't work, and those that do work?\r\n\r\nYes all right ,maybe i should open another issue for it , in previous version of tailscale all works fine\r\nshort host NOT works:\r\n\r\n`instance-mysite-cloud`   Ubuntu 20.04.6 LTS\r\n`/etc/resolv.conf`\r\n`nameserver 127.0.0.53\r\nsearch <redacted-host> <redacted-host>`\r\n\r\n`unraidhost:2375`\r\n![image](https://github.com/tailscale/tailscale/assets/28630321/20ba5b94-883e-44a9-9a48-6a34200793e1)\r\n\r\n![image](https://github.com/tailscale/tailscale/assets/28630321/83b3c5b4-453b-400c-82b9-9bca0e217137)\r\n\r\n![image](https://github.com/tailscale/tailscale/assets/28630321/39d88d20-b2a0-448b-95dd-dd497f3cdca1)\r\n\r\n![image](https://github.com/tailscale/tailscale/assets/28630321/db4846f3-0427-4e3b-b4da-ae6e4d317951)\r\n\r\n\r\nWhen using ip instead its fine : \r\n\r\n![image](https://github.com/tailscale/tailscale/assets/28630321/0dd662d7-8f56-434d-8617-5eb360616322)\r\n\r\n<br>\r\n<br>\r\n\r\n`instance-mysite-cloud2`   Ubuntu 22.04.4 LTS\r\n`/etc/resolv.conf`\r\n\r\n`nameserver 127.0.0.53\r\noptions edns0 trust-ad\r\nsearch <redacted-host> <redacted-host>`\r\n\r\nhttp://instance-mysite-cloud:9768 for s3 backup in portainer working fine \r\n\r\n<br>\r\n<br>\r\n\r\n`nasname` Unraid 6.12.10\r\n`# Generated by rc.inet1\r\nnameserver 9.9.9.9\r\nnameserver 149.112.112.112\r\nnameserver 192.168.0.1`\r\n\r\n![image](https://github.com/tailscale/tailscale/assets/28630321/60153a90-dc60-4614-9e28-bdea3424bc53)\r\n![image](https://github.com/tailscale/tailscale/assets/28630321/0ddb711e-52ab-4e2d-9fe7-3081fb65a9a4)\r\n\r\n"
+  },
+  {
+   "author": "participant6",
+   "created_at": "2024-05-19T12:37:36Z",
+   "body": "Fixed in Ubuntu by :\r\n`tailscale set - - accept-dns=false` then\r\n`tailscale set - - accept-dns`\r\nIn Unraid it's not helped"
+  },
+  {
+   "author": "participant6",
+   "created_at": "2024-05-19T17:59:36Z",
+   "body": "> Fixed in Ubuntu by : `tailscale set - - accept-dns=false` then `tailscale set - - accept-dns` In Unraid it's not helped\r\n\r\nForgot to mention that also tryed to make Adguard home as dns in docker then goes back to local dns. So was also reload dns/stundns for resolve.conf"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-05-21T15:32:52Z",
+   "body": "1.66.4 is available and disables stateful filtering by default.\r\nWe discussed doing more clever things, like detecting container runtimes and allowlisting their interfaces in our iptables/nftables rules, but that gets pretty hairy. Instead, @participant18 pointed out that other mitigations for https://tailscale.com/security-bulletins#ts-2024-005 cover most cases except for `autogroup:danger-all`, so stateful filtering is not strictly required except for that case.\r\n\r\nIf you run 1.66.0-1.66.3, you still need to manually disable stateful filtering with `tailscale set --stateful-filtering=false`.\r\nIf you install a brand new 1.66.4, or upgrade from 1.64 or older versions, stateful filtering will be off by default."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-05-21T16:37:37Z",
+   "body": "Thanks for the update!"
+  },
+  {
+   "author": "participant9",
+   "created_at": "2024-06-12T02:22:51Z",
+   "body": "I still experience this problem on Arch Linux. The update to 1.66.4-2 did NOT fix this for me, but setting `tailscale set --stateful-filtering=false` did. Maybe this setting is not reliably applied when updating (possibly distro dependent)?"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-06-12T16:17:47Z",
+   "body": "@participant9 the default change only applies to new installs. When you update from 1.66.3 (or older) to 1.66.4, the `--stateful-filtering` value has already been set and does not revert to the new default. For existing installs that update to 1.66.4 running `tailscale set --stateful-filtering=false` is indeed the solution."
+  },
+  {
+   "author": "participant10",
+   "created_at": "2024-06-18T05:55:57Z",
+   "body": "How do I set stateful filtering to false when tailscale runs inside a container?\r\n\r\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-06-18T14:36:09Z",
+   "body": "@participant10 if you start a brand new tailscale instance inside of the container, stateful filtering is false by default.\r\nIf you have an existing instance, you can run `tailscale set --stateful-filtering=false` inside of the container."
+  },
+  {
+   "author": "participant11",
+   "created_at": "2024-07-01T07:38:18Z",
+   "body": "How/where should I run `tailscale set --stateful-filtering=false` when using the K8s operator?"
+  },
+  {
+   "author": "participant12",
+   "created_at": "2024-07-01T16:33:17Z",
+   "body": "> How/where should I run tailscale set --stateful-filtering=false when using the K8s operator?\r\n\r\nWe disable stateful filtering by default in the operator egress proxies. We haven't seen a need to disable it for the other proxy types. Have you ran into issues with that?"
+  },
+  {
+   "author": "participant11",
+   "created_at": "2024-07-02T12:21:31Z",
+   "body": "I'm exposing a service using the K8s operator by using the `tailscale.com/expose` annotation. Then, on a different machine, connected to the same Tailnet using tailscaled managed by systemd, I'm trying to connect to the service from inside a Docker container. On the machine I've already done `tailscale set --stateful-filtering=false`, but inside Docker containers there I still get `[Errno -2] Name or service not known`"
+  },
+  {
+   "author": "participant11",
+   "created_at": "2024-07-02T13:09:12Z",
+   "body": "In the host:\r\n\r\n```\r\n❯ cat /etc/resolv.conf\r\n# Generated by NetworkManager\r\nsearch fritz.box\r\nnameserver 127.0.0.53\r\n```\r\n\r\nIn the container:\r\n\r\n```\r\n# cat /etc/resolv.conf\r\nnameserver 192.168.178.1\r\nsearch fritz.box <redacted-host>\r\n```\r\n\r\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-07-02T21:28:25Z",
+   "body": "@participant11 stateful filtering only applies on the machine where requests originate from - in this case that's the host running the docker container and not the k8s service or operator.\r\nSomething else is likely misconfigured on your host running the docker container.\r\n\r\nCould you please open a new issue?"
+  },
+  {
+   "author": "participant11",
+   "created_at": "2024-07-03T15:36:03Z",
+   "body": "@participant1 yea I think I was conflating issues, the DNS resolution issues are intermittent and seem unrelated to this. Thanks for the help."
+  },
+  {
+   "author": "participant13",
+   "created_at": "2024-08-23T05:44:00Z",
+   "body": "Assuming you are running containers within a host that is added to tailnet and you would like to use magic dns lookup of host machine, then you can reference the following docker compose file. I recently had a problem where I wanted to call host machine on tailnet but couldn't use magic dns lookup because docker containers are run in different network_mode and do not use host dns lookup by default. As a bonus I am showing you how to use inter container communication.\r\n```\r\nservices:\r\n  container_using_magic_dns:\r\n    build:\r\n      context: .\r\n      dockerfile: Dockerfile\r\n    network_mode: host # if you want to communicate with other containers, \r\n                       # you have to use localhost and expose port on different container\r\n    environment:\r\n      URL: 'http://localhost:1234' # you would provide 'different_container:5678' \r\n                            # with default network_mode\r\n\r\n  different_container:\r\n    image: image:tag\r\n    ports:\r\n      - 1234:5678\r\n```"
+  },
+  {
+   "author": "participant14",
+   "created_at": "2024-09-19T19:12:44Z",
+   "body": "what if I'm running a Swarm mode cluster though, and rely on the network mode *not* being host networking, but the swarm mesh instead..?"
+  },
+  {
+   "author": "participant15",
+   "created_at": "2024-10-10T15:18:39Z",
+   "body": "Setting the ` --stateful-filtering=false` doesn't solve the issue for me. DNS still not working inside a docker container. I am using an AL2023"
+  },
+  {
+   "author": "participant14",
+   "created_at": "2024-10-28T14:24:20Z",
+   "body": "While I don't fully understand why yet, adding an additional resolve configuration to my `/etc/systemd/resolved.conf` seemingly fixes the issue:\r\n```ini\r\n[Resolve]\r\nDNS=100.100.100.100\r\nDomains=<redacted-host>\r\n```"
+  },
+  {
+   "author": "participant16",
+   "created_at": "2025-07-18T14:58:03Z",
+   "body": "Hello. Just wanted to add to this thread that I was able to reproduce the issue while using Mullvad VPN as an exit node, even with stateful filtering set to false. \n\nDocker containers can't resolve DNS, but if I disable Mullvad as the exit node, it works normally. "
+  },
+  {
+   "author": "participant13",
+   "created_at": "2025-09-13T07:27:28Z",
+   "body": "> While I don't fully understand why yet, adding an additional resolve configuration to my `/etc/systemd/resolved.conf` seemingly fixes the issue:\n> \n> [Resolve]\n> DNS=100.100.100.100\n> Domains=<redacted-host>\n\nHi @participant14 . Where you able to use magic dns name? I got it to work only when I use `my_device_name.<redacted-host>`\n```\nservices:\n  container_using_magic_dns:\n    build:\n      context: .\n      dockerfile: Dockerfile\n    dns:\n      - 100.100.100.100 # Tailscale MagicDNS resolver\n    dns_search:\n      - <redacted-host>\n    environment:\n      remote_tailscale_host: my_device_name.<redacted-host> # with network_mode: host you don't need to append <redacted-host>\n```\n\nUPDATE: you don't need dns and dns_search if you provide full host name.\n```\nservices:\n  container_using_magic_dns:\n    build:\n      context: .\n      dockerfile: Dockerfile\n    environment:\n      remote_tailscale_host: my_device_name.<redacted-host> # with network_mode: host you don't need to append <redacted-host>\n```"
+  },
+  {
+   "author": "participant17",
+   "created_at": "2025-10-06T17:13:49Z",
+   "body": "I think setting a custom DNS for Docker containers will be much more secure and safer\nhttps://dev.to/darnahsan/set-custom-dns-for-docker-to-use-2h9c\n\nPlease correct me if I'm wrong, but it did fix the issue for me without tinkering or impacting current Tailscale settings."
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "tailscale/tailscale",
+  "default_branch": "main",
+  "commit_sha": "79b2d425cfdba54e5f4d75a698ad71655a7bb7c1",
+  "as_of": "2024-05-12T17:54:07Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_tailscale_tailscale_12108"
+}

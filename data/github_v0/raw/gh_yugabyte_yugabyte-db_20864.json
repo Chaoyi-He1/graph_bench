@@ -1,0 +1,118 @@
+{
+ "repo": "yugabyte/yugabyte-db",
+ "number": 20864,
+ "url": "https://github.com/yugabyte/yugabyte-db/issues/20864",
+ "title": "[YSQL] FK sometimes fail on batch insert",
+ "state": "closed",
+ "labels": [
+  "kind/bug",
+  "area/ysql",
+  "priority/high"
+ ],
+ "reporter": "reporter",
+ "created_at": "2024-01-31T03:32:09Z",
+ "closed_at": "2024-03-06T10:14:24Z",
+ "body": "Jira Link: [DB-9854](https://<redacted-host>/browse/DB-9854)\r\n### Description\n\nHi guys,\r\nI think I found an issue while inserting multiple records.\r\nThe insertion may throw a foreign key constraint violation.\r\n\r\nConditions to replicate:\r\n1. Batch insertion\r\n2. Some records need to FK to each other in the batch (Unique Index FK)\r\n3. Some other records need to FK to already inserted records (Unique Index FK)\r\n4. All records also need to FK to another table records\r\n\r\n\r\nExample:\r\n\r\n```sql\r\nCREATE TABLE IF NOT EXISTS workplaces (\r\n    name TEXT NOT NULL,\r\n    CONSTRAINT workplaces_pk PRIMARY KEY (name)\r\n);\r\n\r\nCREATE TABLE IF NOT EXISTS employees (\r\n    workplace TEXT NOT NULL,\r\n    id UUID NOT NULL,\r\n    name TEXT NOT NULL,\r\n    manager_id UUID,\r\n    CONSTRAINT employees_pk PRIMARY KEY (id)\r\n);\r\n\r\nCREATE UNIQUE INDEX employees_workplace_and_id_idx ON employees (workplace, id);\r\n\r\nALTER TABLE employees ADD CONSTRAINT employees_managers_fk\r\n    FOREIGN KEY (workplace, manager_id)\r\n    REFERENCES employees (workplace, id);\r\n\r\nALTER TABLE employees ADD CONSTRAINT employees_workplaces_fk\r\n    FOREIGN KEY (workplace)\r\n    REFERENCES workplaces (name);\r\n```\r\n\r\n```sql\r\nINSERT INTO workplaces (name) VALUES ('MyCorp');\r\n\r\nINSERT INTO employees\r\n    (workplace, id, name, manager_id)\r\n    VALUES\r\n        ('MyCorp', '00112233-4455-6677-8899-aaaaaaaaaaaa', 'Elad', NULL);\r\n\r\nINSERT INTO employees\r\n    (workplace, id, name, manager_id)\r\n    VALUES\r\n        ('MyCorp', '00112233-4455-6677-8899-bbbbbbbbbbbb', 'Aviel', '00112233-4455-6677-8899-aaaaaaaaaaaa'),\r\n        ('MyCorp', '00112233-4455-6677-8899-cccccccccccc', 'Someone', '00112233-4455-6677-8899-bbbbbbbbbbbb'),\r\n        ('MyCorp', '00112233-4455-6677-8899-dddddddddddd', 'MrBug', '00112233-4455-6677-8899-cccccccccccc');\r\n```\r\n\r\n```sql\r\nINSERT INTO employees\r\n    (workplace, id, name, manager_id)\r\n    VALUES\r\n        ('MyCorp', '00112233-ffff-ffff-ffff-bbbbbbbbbbbb', 'Aviel 2', '00112233-4455-6677-8899-aaaaaaaaaaaa'),\r\n        ('MyCorp', '00112233-ffff-ffff-ffff-cccccccccccc', 'Someone 2', '00112233-ffff-ffff-ffff-bbbbbbbbbbbb'),\r\n        ('MyCorp', '00112233-ffff-ffff-ffff-dddddddddddd', 'MrBug 2', '00112233-ffff-ffff-ffff-cccccccccccc');\r\n```\r\n\r\n```sql\r\nError invoking remote method 'DB_EXECUTE_CANCELLABLE_QUERY': error: insert or update on table \"employees\" violates foreign key constraint \"employees_managers_fk\"\r\n```\r\n\r\nOn Postgres it always works.\n\n### Issue Type\n\nkind/bug\n\n### Warning: Please confirm that this issue does not contain any sensitive information\n\n- [X] I confirm this issue does not contain any sensitive information.\n\n[DB-9854]: https://<redacted-host>/browse/DB-9854?atlOrigin=eyJpIjoiNWRkNTljNzYxNjVmNDY3MDlhMDU5Y2ZhYzA5YTRkZjUiLCJwIjoiZ2l0aHViLWNvbS1KU1cifQ",
+ "comments": [
+  {
+   "author": "participant1",
+   "created_at": "2024-01-31T09:35:36Z",
+   "body": "@reporter \r\n\r\n- What version of yugabytedb are you using?\r\n- What version of PostgreSQL?\r\n- Did you set any custom configuration?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-01-31T13:24:28Z",
+   "body": "> @reporter\r\n> \r\n> * What version of yugabytedb are you using?\r\n> * What version of PostgreSQL?\r\n> * Did you set any custom configuration?\r\n\r\nYugabyteDB 2.20.1.3\r\nPostgreSQL 14.9\r\nNo custom configuration"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-02-05T11:05:08Z",
+   "body": "@reporter \r\n\r\nIs it possible to get more info on how to replicate it? Maybe a small script? I'm trying to replicate but cannot."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-02-12T12:20:33Z",
+   "body": "> @reporter\r\n> \r\n> Is it possible to get more info on how to replicate it? Maybe a small script? I'm trying to replicate but cannot.\r\n\r\nTry the example I wrote below the description.\r\nIf you find it hard to replicate, try executing those lines as fast as possible.\r\nMy suspicion is that YugaByteDB does some Asyc stuff after committing a transaction.\r\nIf you wait a while, the last batch in the example most likely to succeed.\r\nSo try to run the last batch immediately."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-02-12T12:27:01Z",
+   "body": "> Try the example I wrote below the description.\r\n\r\nI did.\r\n\r\n> If you find it hard to replicate, try executing those lines as fast as possible.\r\n\r\nPlease explain how many sessions you're running and where you commit. It's hard to translate as is."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-02-12T12:39:57Z",
+   "body": "> Please explain how many sessions you're running and where you commit. It's hard to translate as is.\r\n\r\nSingle Session.\r\n\r\nReplicated on:\r\n1. NodeJS (node postgres)\r\n2. Sqlectron\r\n3. DBeaver\r\n\r\n![Image 12-02-2024 at 14 38](https://github.com/yugabyte/yugabyte-db/assets/15181172/31ffcac8-ef9c-404f-9300-cdb972306c3b)\r\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-02-12T12:44:11Z",
+   "body": "And if it doesn't fail? Do you just truncate and try again?"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-02-12T12:44:28Z",
+   "body": "After hitting Retry couple of times:\r\n\r\n![Image 12-02-2024 at 14 42 (1)](https://github.com/yugabyte/yugabyte-db/assets/15181172/0f69b8c2-f5da-4ef4-8a14-81a869296ff2)\r\n"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-02-12T12:49:43Z",
+   "body": "> And if it doesn't fail? Do you just truncate and try again?\r\n\r\nIt mostly fail, after the 1st try, but yes.\r\nI drop both of the tables and do it all over again."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-02-12T12:49:52Z",
+   "body": "Please write in pseudocode or something cause just showing a screenshot when the error happens doesn't help."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-02-12T13:05:00Z",
+   "body": "> Please write in pseudocode or something cause just showing a screenshot when the error happens doesn't help.\r\n\r\nThere are 3 SQL sections in the example. 3 queries to replicate.\r\n\r\n1. Run the 1st query to build the Schema.\r\n2. Run the 2nd query to insert the first batch.\r\n3. Run the 3rd query to insert the second batch.\r\n4. If it fails (almost every try)\r\n    4.1. Then, hit retry couple of times until it succeed.\r\n    4.2. Otherwise, drop everything and start all over again."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-02-12T13:58:53Z",
+   "body": "@reporter \r\n\r\nSee this python script that doesn't error for me. Can you make it fail?:\r\n```python\r\ndef db_error_check():\r\n    import psycopg2\r\n\r\n    # Create the database connection.\r\n\r\n    connString = \"host=127.0.1.1 port=5433 dbname=yugabyte user=yugabyte password=yugabyte load_balance=True\"\r\n\r\n    conn = psycopg2.connect(connString)\r\n\r\n    # Open a cursor to perform database operations.\r\n    # The default mode for psycopg2 is \"autocommit=false\".\r\n\r\n    conn.set_session(autocommit=True)\r\n    cur = conn.cursor()\r\n\r\n    # Create the table. (It might preexist.)\r\n\r\n    cur.execute(\"\"\"\r\n    drop table IF EXISTS employees,workplaces cascade;\r\n    \"\"\")\r\n\r\n    cur.execute(\"\"\"\r\n            CREATE TABLE IF NOT EXISTS workplaces (\r\n        name TEXT NOT NULL,\r\n        CONSTRAINT workplaces_pk PRIMARY KEY (name)\r\n    );\r\n\r\n    CREATE TABLE IF NOT EXISTS employees (\r\n        workplace TEXT NOT NULL,\r\n        id UUID NOT NULL,\r\n        name TEXT NOT NULL,\r\n        manager_id UUID,\r\n        CONSTRAINT employees_pk PRIMARY KEY (id)\r\n    );\r\n\r\n    CREATE UNIQUE INDEX IF NOT EXISTS employees_workplace_and_id_idx ON employees (workplace, id);\r\n\r\n    ALTER TABLE employees ADD CONSTRAINT employees_managers_fk\r\n        FOREIGN KEY (workplace, manager_id)\r\n        REFERENCES employees (workplace, id);\r\n\r\n    ALTER TABLE employees ADD CONSTRAINT employees_workplaces_fk\r\n        FOREIGN KEY (workplace)\r\n        REFERENCES workplaces (name);\"\"\"\r\n                )\r\n    for i in range(50):\r\n\r\n        cur.execute(\"\"\"\r\n        INSERT INTO workplaces (name) VALUES ('MyCorp');\r\n        \r\n        INSERT INTO employees\r\n            (workplace, id, name, manager_id)\r\n            VALUES\r\n                ('MyCorp', '00112233-4455-6677-8899-aaaaaaaaaaaa', 'Elad', NULL);\r\n        \r\n        INSERT INTO employees\r\n            (workplace, id, name, manager_id)\r\n            VALUES\r\n                ('MyCorp', '00112233-4455-6677-8899-bbbbbbbbbbbb', 'Aviel', '00112233-4455-6677-8899-aaaaaaaaaaaa'),\r\n                ('MyCorp', '00112233-4455-6677-8899-cccccccccccc', 'Someone', '00112233-4455-6677-8899-bbbbbbbbbbbb'),\r\n                ('MyCorp', '00112233-4455-6677-8899-dddddddddddd', 'MrBug', '00112233-4455-6677-8899-cccccccccccc');        \r\n        \"\"\")\r\n\r\n        cur.execute(\"commit;\")\r\n        cur.execute(\"TRUNCATE employees,workplaces CASCADE;\")\r\n    exit(\"end\")\r\n\r\n\r\ndb_error_check()\r\n\r\n```"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-02-12T15:14:18Z",
+   "body": "@participant1 \r\nThe bug won't be replicated because you didn't wrote the second insert batch.\r\n\r\nAlso, turn off the auto-commit. It should be False on any application.\r\n(You will get the error anyway, but probably not on the first loop iteration).\r\n\r\nHere is the modified script:\r\nNote that I've changed a bit the connection string to make that runnable on my machine.\r\n\r\n```python\r\ndef db_error_check():\r\n    import psycopg2\r\n\r\n    # Create the database connection.\r\n\r\n    connString = \"host=127.0.0.1 port=5433 dbname=yugabyte user=yugabyte password=yugabyte\"\r\n\r\n    conn = psycopg2.connect(connString)\r\n\r\n    # Open a cursor to perform database operations.\r\n    # The default mode for psycopg2 is \"autocommit=false\".\r\n\r\n    conn.set_session(autocommit=False)\r\n    cur = conn.cursor()\r\n\r\n    # Create the table. (It might preexist.)\r\n\r\n    cur.execute(\"\"\"\r\n    drop table IF EXISTS employees,workplaces cascade;\r\n    \"\"\")\r\n\r\n    cur.execute(\"\"\"\r\n            CREATE TABLE IF NOT EXISTS workplaces (\r\n        name TEXT NOT NULL,\r\n        CONSTRAINT workplaces_pk PRIMARY KEY (name)\r\n    );\r\n\r\n    CREATE TABLE IF NOT EXISTS employees (\r\n        workplace TEXT NOT NULL,\r\n        id UUID NOT NULL,\r\n        name TEXT NOT NULL,\r\n        manager_id UUID,\r\n        CONSTRAINT employees_pk PRIMARY KEY (id)\r\n    );\r\n\r\n    CREATE UNIQUE INDEX IF NOT EXISTS employees_workplace_and_id_idx ON employees (workplace, id);\r\n\r\n    ALTER TABLE employees ADD CONSTRAINT employees_managers_fk\r\n        FOREIGN KEY (workplace, manager_id)\r\n        REFERENCES employees (workplace, id);\r\n\r\n    ALTER TABLE employees ADD CONSTRAINT employees_workplaces_fk\r\n        FOREIGN KEY (workplace)\r\n        REFERENCES workplaces (name);\"\"\"\r\n                )\r\n    for i in range(50):\r\n        print(i)\r\n        cur.execute(\"\"\"\r\n        INSERT INTO workplaces (name) VALUES ('MyCorp');\r\n        \r\n        INSERT INTO employees\r\n            (workplace, id, name, manager_id)\r\n            VALUES\r\n                ('MyCorp', '00112233-4455-6677-8899-aaaaaaaaaaaa', 'Elad', NULL);\r\n        \r\n        INSERT INTO employees\r\n            (workplace, id, name, manager_id)\r\n            VALUES\r\n                ('MyCorp', '00112233-4455-6677-8899-bbbbbbbbbbbb', 'Aviel', '00112233-4455-6677-8899-aaaaaaaaaaaa'),\r\n                ('MyCorp', '00112233-4455-6677-8899-cccccccccccc', 'Someone', '00112233-4455-6677-8899-bbbbbbbbbbbb'),\r\n                ('MyCorp', '00112233-4455-6677-8899-dddddddddddd', 'MrBug', '00112233-4455-6677-8899-cccccccccccc');        \r\n        \"\"\")\r\n\r\n        cur.execute(\"commit;\")\r\n\r\n        # Second Batch\r\n        cur.execute(\"\"\"\r\n            INSERT INTO employees\r\n            (workplace, id, name, manager_id)\r\n            VALUES\r\n                ('MyCorp', '00112233-ffff-ffff-ffff-bbbbbbbbbbbb', 'Aviel 2', '00112233-4455-6677-8899-aaaaaaaaaaaa'),\r\n                ('MyCorp', '00112233-ffff-ffff-ffff-cccccccccccc', 'Someone 2', '00112233-ffff-ffff-ffff-bbbbbbbbbbbb'),\r\n                ('MyCorp', '00112233-ffff-ffff-ffff-dddddddddddd', 'MrBug 2', '00112233-ffff-ffff-ffff-cccccccccccc');\r\n        \"\"\")\r\n        cur.execute(\"commit;\")\r\n\r\n        cur.execute(\"TRUNCATE employees,workplaces CASCADE;\")\r\n    exit(\"end\")\r\n\r\n\r\ndb_error_check()\r\n```\r\n"
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-02-12T16:17:30Z",
+   "body": "Smaller script:\r\n```python\r\ndef db_error_check():\r\n    import psycopg2\r\n\r\n    # Create the database connection.\r\n    # yugabyte\r\n    connString = \"host=127.0.1.1 port=5433 dbname=yugabyte user=yugabyte password=yugabyte\"\r\n    # postgresql\r\n    # connString = \"host=127.0.0.1 port=5432 dbname=yugabyte user=postgres password=1\"\r\n\r\n    conn = psycopg2.connect(connString)\r\n\r\n    # Open a cursor to perform database operations.\r\n    # The default mode for psycopg2 is \"autocommit=false\".\r\n\r\n    conn.set_session(autocommit=False)\r\n    cur = conn.cursor()\r\n\r\n    # Create the table. (It might preexist.)\r\n\r\n    cur.execute(\"\"\"\r\n    drop table IF EXISTS employees,workplaces cascade;\r\n    \"\"\")\r\n\r\n    cur.execute(\"\"\"\r\n    CREATE TABLE IF NOT EXISTS workplaces (\r\n        name TEXT NOT NULL,\r\n        CONSTRAINT workplaces_pk PRIMARY KEY (name)\r\n    );\r\n\r\n    CREATE TABLE IF NOT EXISTS employees (\r\n        workplace TEXT NOT NULL,\r\n        id UUID NOT NULL,\r\n        name TEXT NOT NULL,\r\n        manager_id UUID,\r\n        CONSTRAINT employees_pk PRIMARY KEY (id)\r\n    );\r\n\r\n    CREATE UNIQUE INDEX IF NOT EXISTS employees_workplace_and_id_idx ON employees (workplace, id);\r\n\r\n    ALTER TABLE employees ADD CONSTRAINT employees_managers_fk\r\n        FOREIGN KEY (workplace, manager_id)\r\n        REFERENCES employees (workplace, id);\r\n\r\n    ALTER TABLE employees ADD CONSTRAINT employees_workplaces_fk\r\n        FOREIGN KEY (workplace)\r\n        REFERENCES workplaces (name);\"\"\"\r\n                )\r\n\r\n    for i in range(1):\r\n        print(i)\r\n        cur.execute(\"\"\"\r\n        INSERT INTO workplaces (name) VALUES ('MyCorp');\r\n        \"\"\")\r\n\r\n        cur.execute(\"commit;\")\r\n        # cur.execute(\"begin transaction isolation level read committed;\")\r\n        # Second Batch\r\n        cur.execute(\"\"\"\r\n            INSERT INTO employees\r\n            (workplace, id, name, manager_id)\r\n            VALUES\r\n                ('MyCorp', '00112233-ffff-ffff-ffff-bbbbbbbbbbbb', 'Aviel 2', NULL),\r\n                ('MyCorp', '00112233-ffff-ffff-ffff-cccccccccccc', 'Someone 2', '00112233-ffff-ffff-ffff-bbbbbbbbbbbb'),\r\n                ('MyCorp', '00112233-ffff-ffff-ffff-dddddddddddd', 'MrBug 2', '00112233-ffff-ffff-ffff-cccccccccccc');\r\n        \"\"\")\r\n        cur.execute(\"commit;\")\r\n\r\n        cur.execute(\"TRUNCATE employees,workplaces CASCADE;\")\r\n    exit(\"end\")\r\n\r\n\r\ndb_error_check()\r\n\r\n```\r\n\r\nAnd output:\r\n\r\n```\r\n  File ysql.py\", line 88, in db_error_check\r\n    cur.execute(\"\"\"\r\npsycopg2.errors.ForeignKeyViolation: insert or update on table \"employees\" violates foreign key constraint \"employees_managers_fk\"\r\nDETAIL:  Key (workplace, manager_id)=(MyCorp, 00112233-ffff-ffff-ffff-cccccccccccc) is not present in table \"employees\".\r\n\r\n```"
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-02-12T16:25:06Z",
+   "body": "@participant1 \r\nExactly.\r\nUUID 00112233-ffff-ffff-ffff-cccccccccccc should be present in table \"employees\", because it belongs to 'Someone 2' (the previous one).\r\nOn Postgres there are no errors."
+  },
+  {
+   "author": "participant1",
+   "created_at": "2024-02-27T07:35:41Z",
+   "body": "@reporter the bug has been identified and is being worked on."
+  },
+  {
+   "author": "participant2",
+   "created_at": "2024-02-27T17:27:55Z",
+   "body": "Thx a lot @reporter for reporting this issue with a nice/simple test case! Nice find."
+  },
+  {
+   "author": "reporter",
+   "created_at": "2024-03-01T02:12:00Z",
+   "body": "> Thx a lot @reporter for reporting this issue with a nice/simple test case! Nice find.\r\n\r\nOf course!\r\nThank you for making a great distributed RDBMS to the open source community."
+  }
+ ],
+ "base_commit": {
+  "provider": "github",
+  "repo": "yugabyte/yugabyte-db",
+  "default_branch": "master",
+  "commit_sha": "e004f561a9968178382cdcedbb22c58078ace1a5",
+  "as_of": "2024-01-31T03:32:09Z",
+  "method": "github_commits_until"
+ },
+ "images": [],
+ "slug": "gh_yugabyte_yugabyte-db_20864"
+}
