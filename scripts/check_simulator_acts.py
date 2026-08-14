@@ -300,6 +300,34 @@ def check_opening_is_the_report() -> None:
     print('opening fidelity   OK')
 
 
+def check_no_images_ablation() -> None:
+    """``send_images: false`` must silence every image path, not just the
+    opening — arrivals and clarification answers carry them too."""
+    task = next(
+        (
+            t
+            for t in (load_task(p) for p in sorted(glob.glob(GRAPHS)))
+            if t.opening_images
+            or any(n.symptom_images for n in t.graph.nodes.values())
+        ),
+        None,
+    )
+    assert task is not None, 'no case with images in the corpus'
+    # NB: opening() claims each image once per session, so the baseline and
+    # the ablation each need their own simulator and a single opening call.
+    baseline = UserSimulator(task, SimulatorConfig(online=False, leak_profile='C'))
+    assert baseline.opening().images, 'baseline should attach images'
+    quiet = UserSimulator(
+        task,
+        SimulatorConfig(online=False, leak_profile='C', send_images=False),
+    )
+    assert not quiet.opening().images, 'opening still attached images'
+    for _ in range(4):
+        reply = quiet.respond('What exactly do you see on screen?')
+        assert not reply.images, reply.images
+    print('no-images ablation  OK')
+
+
 def check_canonical_coverage() -> None:
     """
     Every non-terminal node must be routable to a terminal, and a clean
@@ -354,6 +382,7 @@ if __name__ == '__main__':
     check_ride_along_order()
     check_not_attempted_guard()
     check_opening_is_the_report()
+    check_no_images_ablation()
     check_stall_reset()
     check_canonical_coverage()
     print('all simulator act checks passed')

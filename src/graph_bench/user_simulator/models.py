@@ -54,6 +54,8 @@ class SimulatorConfig(BaseModel):
     # there is little left to reset. Kept off by default and exposed for
     # the ablation table.
     reset_stall_on_progress: bool = False
+    # Ablation: attach the reporter's original screenshots, or none of them.
+    send_images: bool = True
     # §9.6 counterfactual intervention: info_id -> replacement answer.
     # Every reveal path for that info_id (clarification reply, mixed
     # edge, forced reveal) serves the replacement instead of the

@@ -306,7 +306,15 @@ class Responder:
         Filter ``candidates`` down to images not yet sent this session and
         mark them sent. A given original screenshot is attached at most
         once per conversation.
+
+        Returns nothing at all under ``send_images: false`` — the ablation
+        that asks how much of the benchmark's difficulty the reporter's
+        screenshots actually carry. Every other image path funnels through
+        here, so the single check covers the opening, node arrivals,
+        clarification answers and forced reveals alike.
         """
+        if not self.config.send_images:
+            return []
         fresh: list[str] = []
         for path in candidates:
             if path and path not in self.session.sent_images:
