@@ -22,6 +22,10 @@ from graph_bench.recorder.models import AgentTelemetry, TokenUsage
 if TYPE_CHECKING:
     from graph_bench.backbone.models import AgentTurn, RecoveryMode
 
+# Output budget per turn. Must leave room for the answer AFTER the
+# model's reasoning tokens; the gateway's own default (1000) does not.
+_DEFAULT_MAX_TOKENS = 8000
+
 _DEFAULT_SYSTEM_PROMPT = (
     'You are a senior support engineer helping a user diagnose and fix a '
     'software problem over chat. The user executes actions; you cannot run '
@@ -43,12 +47,18 @@ class APIChatAgent:
         from graph_bench.llm import build_chat_client  # noqa: PLC0415
 
         key_env = self._cfg.get('api_key_env')
+        # An explicit output budget is REQUIRED, not a tuning knob. Left
+        # unset, the gateway caps output at 1000 tokens; a reasoning model
+        # spends that on reasoning and returns an empty message, which the
+        # benchmark then scores as a bad turn. That silently turned one
+        # matrix row into 76% empty replies before it was caught.
         self._llm = build_chat_client(
             model=self._cfg.get('model'),
             base_url=self._cfg.get('base_url'),
             api_key=os.environ.get(key_env) if key_env else None,
             effort=self._cfg.get('effort'),
             api=self._cfg.get('api'),
+            max_tokens=int(self._cfg.get('max_tokens', _DEFAULT_MAX_TOKENS)),
         )
         return self._llm
 

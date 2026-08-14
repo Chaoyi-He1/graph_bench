@@ -19,6 +19,9 @@ Directive = Literal[
     'symptoms',
     'neutral_followup',
     'neutral_nochange',
+    # The user has NOT run what the agent proposed and reports no outcome
+    # for it — distinct from neutral_nochange, which reports a real one.
+    'not_attempted',
     'forced_reveal',
     'satisfied',
 ]
@@ -40,6 +43,17 @@ class SimulatorConfig(BaseModel):
     # ends `none`) into a `forced_walk_to_terminal`. Default OFF keeps the
     # historical behavior byte-identical.
     count_revisits_toward_stall: bool = False
+    # When True, a turn that surfaces information the user had not yet
+    # given clears that node's stall count, making the counter a streak of
+    # unproductive turns rather than their lifetime total at the node.
+    # This is arguably what the counter always meant — but measured on the
+    # 50-case paired subset it did not pay: forced reveals barely moved
+    # (126 -> 122) and mean grade came out below the same configuration
+    # with the flag off (+0.033 vs +0.067 over baseline). Once a case can
+    # use its whole budget, most late turns gather no new information, so
+    # there is little left to reset. Kept off by default and exposed for
+    # the ablation table.
+    reset_stall_on_progress: bool = False
     # §9.6 counterfactual intervention: info_id -> replacement answer.
     # Every reveal path for that info_id (clarification reply, mixed
     # edge, forced reveal) serves the replacement instead of the

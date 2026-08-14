@@ -37,6 +37,17 @@ _PARTIAL_TEMPLATES: dict[str, str] = {
     ),
 }
 _PARTIAL_DEFAULT = 'How exactly would I do that?'
+# Fix 3: what the follow-up presses for when the gap is not a missing step.
+_PARTIAL_BY_KIND: dict[str, str] = {
+    'why': (
+        'I can follow the steps, but I still do not understand what is '
+        'actually going wrong here — what is causing this?'
+    ),
+    'both': (
+        'Before I change anything: what is actually causing this, and what '
+        'exactly should I do about it?'
+    ),
+}
 # Corrective escalation (A + C-light): used when the agent is stuck on a
 # wrong-direction edge or has lingered below the advance bar, in place of the
 # soft §10.3 follow-up.
@@ -59,6 +70,20 @@ _INTENT_NOMATCH_CLARIFICATION = (
     "doesn't match and suggest trying a different angle. Do NOT point out "
     'the correct direction or the answer for them.'
 )
+# Fix 2: said instead of the "nothing changed" line when the case models no
+# fix attempt from this state at all. The user has not run it, so the reply
+# must not report an outcome — it states that, and offers what it CAN give.
+_NOT_TRIED_YET = (
+    "I haven't run that yet. Before I start changing things, what else do "
+    'you need to know about my setup or what I am seeing?'
+)
+_INTENT_NOMATCH_UNTRIED = (
+    'You have NOT tried what the agent proposed, and you must not claim any '
+    'result for it — do not say it did or did not help. Say plainly that you '
+    "haven't done it yet, that you would rather pin the problem down first, "
+    'and offer to answer questions about your setup or the symptoms. Do NOT '
+    'name a root cause, propose a fix, or hint at the right direction.'
+)
 _INTENT_PARTIAL_RIGHT = (
     "The agent's direction is right but they haven't said concretely how "
     'to do it. Follow up asking for the concrete step ("how exactly? '
@@ -75,6 +100,28 @@ _INTENT_PARTIAL_RIGHT_STALLED = (
     'data to check afterwards to verify." A slightly impatient tone is '
     'fine. Do NOT tell them to change direction, and do NOT fill in the '
     'missing method or name the answer.'
+)
+# Fix 3: pressed when what the answer still lacks is the ACCOUNT of the
+# problem rather than the steps. Naming the kind of gap is leak-safe (it
+# says nothing about the cause); demanding steps the agent already gave is
+# not merely useless, it drives the agent to repeat itself into insurance.
+_INTENT_PARTIAL_WHY = (
+    'The agent has told you what to do but has not explained what is '
+    'actually going wrong. Say the steps are clear enough, but you do not '
+    'understand the cause yet, and ask them to explain what is happening '
+    'before you change anything. Do NOT guess the cause yourself, do NOT '
+    'name any mechanism, and do NOT tell them where to look.'
+)
+_INTENT_PARTIAL_WHY_STALLED = (
+    'Several rounds in, the agent still has not explained what is actually '
+    'going wrong — only what to type. Press once more, a little impatient: '
+    'you want to understand the cause before making further changes. Do '
+    'NOT guess the cause, name a mechanism, or point them anywhere.'
+)
+_INTENT_PARTIAL_BOTH = (
+    'The agent has neither explained what is going wrong nor given you a '
+    'complete concrete step. Ask for both, in that order. Do NOT guess the '
+    'cause or fill in any step yourself.'
 )
 _INTENT_PARTIAL_BLIND = (
     'You tried a few times along the direction the agent suggested and '
@@ -97,6 +144,59 @@ _INTENT_PARTIAL_BLIND_ESCALATED = (
 )
 
 
+# Fix 3: leading verbs that mark a required element as EXPLANATORY — the
+# element asks the answer to establish what is going on, not what to type.
+# Anything else is treated as procedural (the pre-existing default).
+_EXPLANATORY_VERBS = (
+    'identifies',
+    'explains',
+    'connects',
+    'grounds',
+    'distinguishes',
+    'attributes',
+    'recognizes',
+    'relates',
+    'diagnoses',
+    'links',
+    'separates',
+    'traces',
+    'acknowledges',
+    'treats',
+    'understands',
+    'describes',
+    'rules_out',
+    'confirms',
+    'records',
+    'keeps',
+    'preserves',
+)
+
+
+def missing_kind(missing_elements: list[str]) -> str:
+    """
+    Classify what a partial is still short of: ``'why'``, ``'how'``, or
+    ``'both'``.
+
+    The simulator may not name a missing element — that would hand over the
+    answer. It may say which KIND of thing is still missing, and it must:
+    a follow-up demanding concrete steps from an agent that already gave
+    concrete steps is feedback the agent cannot act on, and three of those
+    in a row is the single largest source of forced reveals.
+    """
+    explanatory = procedural = False
+    for element in missing_elements:
+        head = element.lower().lstrip('_')
+        if head.startswith(_EXPLANATORY_VERBS):
+            explanatory = True
+        else:
+            procedural = True
+    if explanatory and procedural:
+        return 'both'
+    if explanatory:
+        return 'why'
+    return 'how'
+
+
 def partial_followup_draft(match: MatchResult) -> str:
     """
     Neutral §10.3 follow-up: echoes only the agent's own words.
@@ -115,6 +215,9 @@ def partial_followup_draft(match: MatchResult) -> str:
         return f'{term} — which one? I have several here.'
     if term and match.subtype == 'concept_correct_tool_different':
         return f'What is {term}, and how do I use it?'
+    kind = missing_kind(list(match.missing_elements))
+    if kind != 'how':
+        return _PARTIAL_BY_KIND[kind]
     return _PARTIAL_TEMPLATES.get(match.subtype or '', _PARTIAL_DEFAULT)
 
 
@@ -259,7 +362,10 @@ class Responder:
         )
 
     def respond(
-        self, match: MatchResult, agent_turn: str
+        self,
+        match: MatchResult,
+        agent_turn: str,
+        ride_along_info_ids: list[str] | None = None,
     ) -> tuple[BaseResponse, SimEvent]:
         completion_prefix = ''
         if self.session.pending_completion:
@@ -267,9 +373,35 @@ class Responder:
             completion_prefix = 'Oh, one more thing: ' + '; '.join(items) + '.'
             self.session.pending_completion = []
         base, event = self._dispatch(match, agent_turn)
+        # A turn that proposed an accepted fix AND asked something gets its
+        # question answered too — but only here, after _dispatch has already
+        # graded the solution call against the pre-turn info set, so the
+        # answer cannot retroactively ground the proposal.
+        if ride_along_info_ids:
+            answers = self._grant_info(ride_along_info_ids)
+            if answers:
+                base.payload = f'{" ".join(answers)} {base.payload}'.strip()
+                event.info_gained = list(event.info_gained) + [
+                    i
+                    for i in ride_along_info_ids
+                    if i in self.session.gathered_info_ids
+                ]
         if completion_prefix:
             base.must_convey = completion_prefix
         return base, event
+
+    def _grant_info(self, info_ids: list[str]) -> list[str]:
+        """Reveal authored answers for ``info_ids`` not yet given."""
+        answers: list[str] = []
+        for info_id in info_ids:
+            if info_id in self.session.gathered_info_ids:
+                continue
+            answer = self.info_answers.get(info_id)
+            if answer is None:
+                continue
+            self.session.gathered_info_ids.append(info_id)
+            answers.append(answer)
+        return answers
 
     def _dispatch(
         self, match: MatchResult, agent_turn: str
@@ -337,6 +469,13 @@ class Responder:
             newly.append(info_id)
             answers.append(answer)
             images.extend(self.info_images.get(info_id, []))
+        # Flag-guarded: a productive turn clears this node's stall, making
+        # the counter a streak rather than a lifetime total. A re-ask
+        # yields no new info and deliberately does not reset. See
+        # SimulatorConfig.reset_stall_on_progress for why this is off by
+        # default despite being the more intuitive semantics.
+        if self.config.reset_stall_on_progress and newly:
+            self.session.stall_counts.pop(node_before, None)
         # Fix 3b: backfill matched_edge_id from info_edge map when it is None
         # so the frontend overlay can highlight the real clarification edge.
         if match.matched_info_ids and match.matched_edge_id is None:
@@ -599,11 +738,21 @@ class Responder:
             )
         else:
             draft = partial_followup_draft(match)
-            intent = (
-                _INTENT_PARTIAL_RIGHT_STALLED
-                if stalled
-                else _INTENT_PARTIAL_RIGHT
-            )
+            kind = missing_kind(list(match.missing_elements))
+            if kind == 'why':
+                intent = (
+                    _INTENT_PARTIAL_WHY_STALLED
+                    if stalled
+                    else _INTENT_PARTIAL_WHY
+                )
+            elif kind == 'both':
+                intent = _INTENT_PARTIAL_BOTH
+            else:
+                intent = (
+                    _INTENT_PARTIAL_RIGHT_STALLED
+                    if stalled
+                    else _INTENT_PARTIAL_RIGHT
+                )
         event = self._new_event(match, node_before, node_before)
         event.stall_count_after = counts[node_before]
         base = BaseResponse(
@@ -641,21 +790,35 @@ class Responder:
             'try a different angle?'
         )
         is_clar = match.edge_type == 'clarification_only'
-        phrasing = (
-            _OFF_TARGET_HINT
-            if is_clar
-            else 'I tried that; nothing seems to have changed.'
+        # The user may only report an outcome the case actually establishes.
+        # From a node with no authored solution edge, nothing is known about
+        # what applying a fix would do, so claiming "I tried it and nothing
+        # changed" invents an experimental result — and a fabricated negative
+        # is worse than no answer: it argued agents off correct paths.
+        has_solution_exit = any(
+            e.edge_type != 'clarification_only'
+            for e in self.index.get(node_before, [])
         )
-        intent = (
-            _INTENT_NOMATCH_CLARIFICATION
-            if is_clar
-            else _INTENT_NOMATCH_SOLUTION
-        )
+        if is_clar:
+            phrasing, intent = _OFF_TARGET_HINT, _INTENT_NOMATCH_CLARIFICATION
+        elif has_solution_exit:
+            phrasing, intent = (
+                'I tried that; nothing seems to have changed.',
+                _INTENT_NOMATCH_SOLUTION,
+            )
+        else:
+            phrasing, intent = _NOT_TRIED_YET, _INTENT_NOMATCH_UNTRIED
         event = self._new_event(match, node_before, node_before)
         event.stall_count_after = counts[node_before]
         event.hitl = hitl
         base = BaseResponse(
-            directive='neutral_nochange', payload=phrasing, intent=intent
+            directive=(
+                'neutral_nochange'
+                if phrasing is not _NOT_TRIED_YET
+                else 'not_attempted'
+            ),
+            payload=phrasing,
+            intent=intent,
         )
         return base, event
 

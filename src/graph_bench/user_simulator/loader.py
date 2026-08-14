@@ -103,18 +103,21 @@ def build_out_edge_index(graph: Graph) -> dict[str, list[Edge]]:
     return index
 
 
-def _is_canonical_passable(edge: Edge) -> bool:
+def _is_canonical_passable(edge: Edge, *, allow_blind: bool = False) -> bool:
     """
     True iff ``edge`` may be traversed by the canonical-path BFS.
 
     Excludes solution edges that are known blind paths or shortcuts
     (Decision A / §8.4); clarification and plain mixed/solution edges
-    pass.
+    pass. ``allow_blind`` re-admits blind paths for the relaxed second
+    tier — see ``precompute_canonical_edges``.
     """
     solution = edge.solution
     if solution is None:
         return True
-    return not (solution.is_known_blind_path or solution.is_shortcut)
+    if solution.is_shortcut:
+        return False
+    return allow_blind or not solution.is_known_blind_path
 
 
 def distance_to_terminal(graph: Graph) -> dict[str, int]:
@@ -141,6 +144,36 @@ def distance_to_terminal(graph: Graph) -> dict[str, int]:
     return dist
 
 
+def _canonical_first_edge(
+    graph: Graph,
+    index: dict[str, list[Edge]],
+    start_id: str,
+    *,
+    allow_blind: bool,
+) -> Edge | None:
+    """First edge of the shortest start_id -> terminal path, or None."""
+    from collections import deque  # noqa: PLC0415
+
+    first_edge: dict[str, Edge] = {}
+    visited: set[str] = {start_id}
+    queue: deque[str] = deque([start_id])
+    while queue:
+        current = queue.popleft()
+        for edge in index.get(current, []):
+            if not _is_canonical_passable(edge, allow_blind=allow_blind):
+                continue
+            nxt = edge.to_node
+            if nxt in visited:
+                continue
+            first = edge if current == start_id else first_edge[current]
+            if graph.nodes[nxt].is_terminal:
+                return first
+            visited.add(nxt)
+            first_edge[nxt] = first
+            queue.append(nxt)
+    return None
+
+
 def precompute_canonical_edges(
     graph: Graph, index: dict[str, list[Edge]]
 ) -> dict[str, Edge | None]:
@@ -148,40 +181,43 @@ def precompute_canonical_edges(
     Map each node id to the first edge of its canonical path.
 
     The canonical path is the BFS shortest path from the node to the
-    nearest terminal over the subgraph that excludes edges whose
-    ``solution.is_known_blind_path`` or ``solution.is_shortcut`` is
-    set. The mapped value is the first edge on that path, or ``None``
-    when no such path exists (e.g. terminal nodes, or nodes whose
-    only out-edges are blind/shortcut).
-    """
-    from collections import deque  # noqa: PLC0415
+    nearest terminal. It is searched in two tiers:
 
+    1. over the subgraph excluding known blind paths and shortcuts;
+    2. for nodes the first tier cannot route, over the same subgraph with
+       blind paths re-admitted.
+
+    The second tier exists because most real threads reach their fix
+    *through* a failed attempt: the only route from an early node to the
+    terminal often crosses one blind edge into its aftermath state, from
+    which the investigation continues. Refusing to traverse it does not
+    protect the agent from a wrong branch — it leaves the node with no
+    canonical path at all, so the stall insurance finds nothing to reveal
+    and terminates the case as a dead end with most of its turn budget
+    unspent. Under tier 1 alone that hit 34% of non-terminal nodes and
+    55% of start nodes, and killed about half of every run by turn 5.
+    Ordering preserves the original intent: a clean route always wins
+    where one exists, and a blind route is used only when the alternative
+    is declaring a solvable case unsolvable.
+
+    Shortcuts stay excluded in both tiers: they are planted copies that
+    skip authored clarifications, so walking one would hand the agent a
+    later state it never worked for.
+
+    The mapped value is the first edge on that path, or ``None`` for
+    terminal nodes and for nodes with no route under either tier.
+    """
     canonical: dict[str, Edge | None] = {}
     for start_id, node in graph.nodes.items():
         if node.is_terminal:
             canonical[start_id] = None
             continue
-        # BFS recording the first edge taken from start_id.
-        first_edge: dict[str, Edge] = {}
-        visited: set[str] = {start_id}
-        queue: deque[str] = deque([start_id])
-        found: Edge | None = None
-        while queue:
-            current = queue.popleft()
-            for edge in index.get(current, []):
-                if not _is_canonical_passable(edge):
-                    continue
-                nxt = edge.to_node
-                if nxt in visited:
-                    continue
-                first = edge if current == start_id else first_edge[current]
-                if graph.nodes[nxt].is_terminal:
-                    found = first
-                    break
-                visited.add(nxt)
-                first_edge[nxt] = first
-                queue.append(nxt)
-            if found is not None:
-                break
+        found = _canonical_first_edge(
+            graph, index, start_id, allow_blind=False
+        )
+        if found is None:
+            found = _canonical_first_edge(
+                graph, index, start_id, allow_blind=True
+            )
         canonical[start_id] = found
     return canonical

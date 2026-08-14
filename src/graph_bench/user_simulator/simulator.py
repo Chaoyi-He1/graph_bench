@@ -21,14 +21,12 @@ from graph_bench.user_simulator.loader import (
     precompute_canonical_edges,
 )
 from graph_bench.user_simulator.matching import (
-    classify_turn,
+    _fallback_outcome,
     judge_turn_multi,
-    match_edge,
     select_advancing_match,
 )
 from graph_bench.user_simulator.models import (
     BaseResponse,
-    EdgeTypeName,
     MatchResult,
     SimEvent,
     SimulatorConfig,
@@ -210,57 +208,96 @@ class UserSimulator:
         self._session.sim_events.append(event)
         return turn
 
+    def _combine_acts(
+        self, outcome, sol_edges: list  # noqa: ANN001
+    ) -> tuple[MatchResult, list[str]]:
+        """
+        Fold the turn's two acts into the one match the state machine walks.
+
+        A turn may ask AND propose. The rules, in order:
+
+        1. An exact solution match advances, whatever else the turn did; any
+           question it also asked is answered as a ride-along AFTER the
+           solution call is graded, so asking never retroactively grounds a
+           proposal the agent made without the answer.
+        2. Otherwise a question that yields information the user has not
+           given yet wins: the modeled way forward from a node whose
+           out-edges are clarifications IS to ask, and a turn that does that
+           must not be scored as a stall just because it also floated a fix.
+           The proposal outcome still rides on the event for scoring.
+        3. Otherwise fall through to the proposal outcome (partial/none), or
+           to a plain clarification no-match when the turn proposed nothing.
+
+        Rule 2 is deliberately gated on NEW information: a re-ask of an
+        already-answered question is not progress and must keep accruing
+        stall, or a turn that asks nothing new while proposing nothing
+        matchable would loop forever.
+        """
+        clar = outcome.clar_match
+        fresh = [
+            i
+            for i in (clar.matched_info_ids if clar else [])
+            if i not in self._session.gathered_info_ids
+        ]
+        sol = (
+            select_advancing_match(
+                outcome.proposals,
+                sol_edges,
+                self._distance_map,
+                self._config.advance_match_threshold,
+            )
+            if outcome.proposals or outcome.intent == 'solution'
+            else None
+        )
+        if sol is not None and sol.type == 'exact':
+            return sol, fresh
+        if clar is not None and clar.type == 'exact' and fresh:
+            clar.proposal_matches = list(outcome.proposals)
+            clar.proposed_n = len(outcome.proposals)
+            clar.matched_m = sum(
+                1
+                for p in outcome.proposals
+                if p.matched_edge_id and p.match_pct > 0
+            )
+            return clar, []
+        if sol is not None:
+            return sol, []
+        return (
+            clar
+            if clar is not None
+            else MatchResult(type='none', edge_type='clarification_only')
+        ), []
+
     def respond(self, agent_turn: str) -> UserTurn:
         node_id = self._session.current_node_id
         out_edges = self._index.get(node_id, [])
+        all_clars = [
+            {
+                'info_id': c.info_id,
+                'question_patterns': list(c.question_patterns),
+            }
+            for edge in self._graph.edges
+            for c in edge.clarifications
+        ]
+        sol_edges = [
+            e for e in out_edges if e.edge_type != 'clarification_only'
+        ]
+        # Both backends produce the same two-act outcome and fold it the same
+        # way, so the offline fallback cannot silently score a turn by rules
+        # the documented online path no longer uses.
         if self._config.online and self._speaker_llm is not None:
-            all_clars = [
-                {
-                    'info_id': c.info_id,
-                    'question_patterns': list(c.question_patterns),
-                }
-                for edge in self._graph.edges
-                for c in edge.clarifications
-            ]
-            sol_edges = [
-                e for e in out_edges if e.edge_type != 'clarification_only'
-            ]
             outcome = judge_turn_multi(
                 agent_turn,
                 clarifications=all_clars,
                 solution_edges=sol_edges,
                 llm=self._speaker_llm,
             )
-            if outcome.intent == 'clarification' and outcome.clar_match:
-                match = outcome.clar_match
-            else:
-                match = select_advancing_match(
-                    outcome.proposals,
-                    sol_edges,
-                    self._distance_map,
-                    self._config.advance_match_threshold,
-                )
         else:
-            components = classify_turn(
-                agent_turn,
-                online=self._config.online,
-                llm=self._speaker_llm,
-            )
-            if components.has_clarification and components.has_solution:
-                edge_type: EdgeTypeName = 'mixed'
-            elif components.has_solution:
-                edge_type = 'solution_only'
-            else:
-                edge_type = 'clarification_only'
-            typed_edges = [e for e in out_edges if e.edge_type == edge_type]
-            match = match_edge(
-                agent_turn,
-                edge_type,
-                typed_edges,
-                online=self._config.online,
-                llm=self._speaker_llm,
-            )
-        base, event = self._responder.respond(match, agent_turn)
+            outcome = _fallback_outcome(agent_turn, sol_edges, all_clars)
+        match, ride_along = self._combine_acts(outcome, sol_edges)
+        base, event = self._responder.respond(
+            match, agent_turn, ride_along_info_ids=ride_along
+        )
         node_after = self._node(self._session.current_node_id)
         text = self._speaker.render(
             base,

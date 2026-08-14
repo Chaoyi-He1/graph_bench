@@ -528,12 +528,50 @@ def judge_turn(
     return _coerce_match_any(data, solution_edges)
 
 
+def _match_clarification_dicts(
+    agent_turn: str, clarifications: list[dict]
+) -> MatchResult:
+    """Offline twin of ``_match_clarification`` over the flat dict payload."""
+    turn_tokens = _tokenize(agent_turn)
+    hits: list[str] = []
+    total = 0.0
+    for clar in clarifications:
+        best = 0.0
+        for pattern in clar.get('question_patterns') or []:
+            pat_tokens = _tokenize(pattern)
+            if pat_tokens:
+                best = max(best, len(turn_tokens & pat_tokens) / len(pat_tokens))
+        if best >= _CLAR_HIT_RATIO:
+            hits.append(clar['info_id'])
+            total += best
+    if not hits:
+        return MatchResult(type='none', edge_type='clarification_only')
+    return MatchResult(
+        type='exact',
+        edge_type='clarification_only',
+        matched_info_ids=hits,
+        confidence=round(total / len(hits), 3),
+    )
+
+
 def _fallback_outcome(
-    agent_turn: str, solution_edges: list[Edge]
+    agent_turn: str,
+    solution_edges: list[Edge],
+    clarifications: list[dict] | None = None,
 ) -> MultiMatchOutcome:
     m = _offline_judge(agent_turn, solution_edges)
+    # Dual-act, same as the online path: a question is matched against the
+    # clarifications whether or not the turn also proposes something.
+    clar = (
+        _match_clarification_dicts(agent_turn, clarifications)
+        if clarifications and _looks_like_question(agent_turn)
+        else None
+    )
     if m.edge_type == 'clarification_only' and not solution_edges:
-        return MultiMatchOutcome(intent='clarification', clar_match=m)
+        return MultiMatchOutcome(
+            intent='clarification',
+            clar_match=clar if clar and clar.type == 'exact' else m,
+        )
     # For solution intent (or ambiguous vague turns with solution_edges present),
     # build proposals from code_coverage_pct so required_elements_for_full_match
     # is honoured (approach_keywords may be empty).
@@ -570,7 +608,9 @@ def _fallback_outcome(
                 missing_elements=list(m.missing_elements),
             )
         )
-    return MultiMatchOutcome(intent='solution', proposals=proposals)
+    return MultiMatchOutcome(
+        intent='solution', clar_match=clar, proposals=proposals
+    )
 
 
 def judge_turn_multi(
@@ -621,23 +661,30 @@ def judge_turn_multi(
     try:
         data = json.loads(extract_text(llm.invoke(prompt)))
     except Exception:  # LLM errors must never propagate
-        return _fallback_outcome(agent_turn, solution_edges)
+        return _fallback_outcome(agent_turn, solution_edges, clarifications)
     if not isinstance(data, dict):
-        return _fallback_outcome(agent_turn, solution_edges)
+        return _fallback_outcome(agent_turn, solution_edges, clarifications)
 
-    if data.get('intent') == 'clarification':
-        valid = {c['info_id'] for c in clarifications}
-        hit = [i for i in data.get('matched_info_ids', []) if i in valid]
-        clar = (
-            MatchResult(
-                type='exact',
-                edge_type='clarification_only',
-                matched_info_ids=hit,
-            )
-            if hit
-            else MatchResult(type='none', edge_type='clarification_only')
+    # Both acts are read out of the SAME response. A turn that asks for
+    # evidence while also proposing a fix used to be routed to one side
+    # only; routed to 'solution' at a node whose out-edges are all
+    # clarifications, it could not match anything by construction and
+    # accrued stall — which penalised models that bundle question and
+    # proposal in one turn (a style, not a capability).
+    valid = {c['info_id'] for c in clarifications}
+    hit = [i for i in data.get('matched_info_ids', []) if i in valid]
+    clar = (
+        MatchResult(
+            type='exact',
+            edge_type='clarification_only',
+            matched_info_ids=hit,
         )
-        return MultiMatchOutcome(intent='clarification', clar_match=clar)
+        if hit
+        else MatchResult(type='none', edge_type='clarification_only')
+    )
+    intent = (
+        'clarification' if data.get('intent') == 'clarification' else 'solution'
+    )
 
     valid_ids = {e.edge_id for e in solution_edges}
     proposals: list[ProposalMatch] = []
@@ -655,7 +702,9 @@ def judge_turn_multi(
                 ],
             )
         )
-    return MultiMatchOutcome(intent='solution', proposals=proposals)
+    return MultiMatchOutcome(
+        intent=intent, clar_match=clar, proposals=proposals
+    )
 
 
 def select_advancing_match(

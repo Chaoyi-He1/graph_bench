@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING, Any, Protocol
 
 if TYPE_CHECKING:
@@ -38,6 +39,27 @@ _NEUTRAL_FOLLOWUP: str = 'How exactly would I do that?'
 
 # Default 'nothing changed' reply for a failed solution attempt.
 _NEUTRAL_NOCHANGE: str = 'I tried it; nothing seems to have changed.'
+
+# Default reply when the case models no attempt from this state, so the
+# user has run nothing and has no outcome to report.
+_NOT_ATTEMPTED: str = (
+    "I haven't run that yet, so I have no result to report."
+)
+
+# Claims of a performed attempt or an observed outcome. The persona pass
+# is free to rephrase a ``not_attempted`` reply, but not to turn it into
+# evidence: with a history full of "I tried that, nothing changed" the
+# LLM drifts back to that shape in most renders, and the fabricated
+# negative it produces is exactly what this directive exists to prevent.
+_ATTEMPT_CLAIM_RE = re.compile(
+    r"\b(?:i|we)\s+(?:just\s+|already\s+)?"
+    r'(?:tried|ran|applied|did|set|changed|installed|switched|rebuilt|'
+    r"restarted|disabled|enabled|updated|reinstalled)\b"
+    r"|didn'?t (?:help|work|change)"
+    r'|no(?:thing)? (?:change|difference)'
+    r'|(?:still|symptoms) (?:the same|unchanged)',
+    re.IGNORECASE,
+)
 
 # Persona-appropriate satisfaction close.
 _SATISFIED: str = 'Looks OK now, thanks!'
@@ -116,6 +138,8 @@ class Speaker:
             return payload if payload else _NEUTRAL_FOLLOWUP
         if directive == 'neutral_nochange':
             return payload if payload else _NEUTRAL_NOCHANGE
+        if directive == 'not_attempted':
+            return payload if payload else _NOT_ATTEMPTED
         if directive == 'satisfied':
             return payload if payload else _SATISFIED
         return payload if payload is not None else ''
@@ -179,6 +203,14 @@ class Speaker:
         try:
             polished = extract_text(self._llm.invoke(prompt)).strip()
         except (ValueError, TypeError, AttributeError):
+            polished = ''
+        if (
+            context['directive'] == 'not_attempted'
+            and polished
+            and _ATTEMPT_CLAIM_RE.search(polished)
+        ):
+            # The polish invented an attempt the user never made; the
+            # deterministic draft is the only safe reply here.
             polished = ''
         return polished or offline_text
 
