@@ -270,6 +270,36 @@ def check_not_attempted_guard() -> None:
     print('not-attempted guard OK')
 
 
+def check_opening_is_the_report() -> None:
+    """
+    The opening turn is exactly the reporter's own words — body, visible
+    symptoms, volunteered info — with nothing added. It used to reach the
+    persona pass as an empty draft, which the model filled with invented
+    filler in 13 of 229 cases.
+    """
+    class _ChattyLlm:
+        def invoke(self, _input):  # noqa: ANN001, ANN202
+            return 'Nothing to add.'
+
+    task = load_task(sorted(glob.glob(GRAPHS))[0])
+    sim = UserSimulator(
+        task,
+        SimulatorConfig(online=True, leak_profile='C'),
+        llm=_ChattyLlm(),
+    )
+    opening = sim.opening().text
+    start = task.graph.nodes[task.graph.start_node]
+    expected = '\n'.join(
+        [
+            *([task.body] if task.body else []),
+            *start.symptoms_visible,
+            *start.volunteered_info,
+        ]
+    )
+    assert opening == expected, opening[-200:]
+    print('opening fidelity   OK')
+
+
 def check_canonical_coverage() -> None:
     """
     Every non-terminal node must be routable to a terminal, and a clean
@@ -323,6 +353,7 @@ if __name__ == '__main__':
     check_dual_act_and_no_fabrication()
     check_ride_along_order()
     check_not_attempted_guard()
+    check_opening_is_the_report()
     check_stall_reset()
     check_canonical_coverage()
     print('all simulator act checks passed')

@@ -175,14 +175,19 @@ class UserSimulator:
         opening_images = self._responder.claim_images(
             [*self._task.opening_images, *start.symptom_images]
         )
-        base = BaseResponse(
-            directive='opening', payload=None, images=opening_images
-        )
         parts: list[str] = []
         if self._task.body:
             parts.append(self._task.body)
         parts.extend(start.symptoms_visible)
         parts.extend(start.volunteered_info)
+        # The payload must carry the report. Left as None it reached the
+        # persona pass as an EMPTY draft, and the model filled the silence:
+        # 13 of 229 openings ended in invented filler ("Nothing to add.").
+        base = BaseResponse(
+            directive='opening',
+            payload='\n'.join(parts),
+            images=opening_images,
+        )
         rendered = self._speaker.render(
             base,
             node=start,

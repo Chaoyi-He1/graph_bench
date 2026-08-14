@@ -162,6 +162,12 @@ class Speaker:
         if self._llm is None:
             return self._render_offline(context)
         offline_text = self._render_offline(context)
+        if context['directive'] == 'opening':
+            # The opening is the reporter's own bug report, already in their
+            # voice. There is nothing for the persona pass to restyle, and
+            # asking it to restyle anyway only risks compressing away detail
+            # the case depends on.
+            return offline_text
         persona = context['persona']
         persona_text = (
             f'experience_level={persona.get("experience_level")}, '
