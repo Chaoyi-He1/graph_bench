@@ -1,8 +1,13 @@
 # Corpus v1.0 — 79 signed cases
 
-Frozen 2026-08-05. Every case in `data/*/graphs/` carries
-`metadata.hitl_reviewed: true`, meaning it passed a release sign-off
-review. Evaluation runs intended for publication should be executed
+> Historical. This describes the repository at `git tag corpus-v1.0`,
+> when the 79 cases below were all that existed. The current release is
+> [corpus v2.1](corpus-v2.md) — 229 cases, and the sign-off described
+> here was retracted when a stricter review found real defects in it.
+
+Frozen 2026-08-05. Every case in `data/*/graphs/` carried
+`metadata.hitl_reviewed: true` at that tag, meaning it passed a release
+sign-off review. Evaluation runs intended for publication should be executed
 against this frozen state (`git tag corpus-v1.0`).
 
 ## Composition

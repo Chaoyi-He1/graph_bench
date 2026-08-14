@@ -2,7 +2,7 @@
 
 Causal-graph-grounded, **execution-free** evaluation of conversational debugging agents, built from **real public support threads**. Paper workspace + benchmark harness + data pipeline.
 
-> Status: pilot complete (4 hand-annotated Mozilla Bugzilla cases, machine-validated); harness ported and smoke-tested offline; GitHub drafting pipeline live. Drafted cases are `hitl_reviewed: false` until human review.
+> Status: corpus v2.1 — **229 released cases** across 75 projects, each machine-validated and passed by a two-stage model review ([docs/corpus-v2.md](docs/corpus-v2.md)). The repository also ships the 55 drafts that review blocked, with their findings; **the released set is exactly the graphs carrying `metadata.hitl_reviewed: true`**, and every published number describes that set alone. Harness, four-model matrix, contamination probe and simulator-fidelity experiments are in [docs/experiments.md](docs/experiments.md) — note that the pre-fix result tables there are marked superseded and are being re-measured.
 
 ## Why
 
@@ -22,6 +22,10 @@ src/graph_bench/
   judge/             terminal scorer (rubrics + tiers; stub backend for CI)
   pipeline/          GitHub harvest + CAB-style filter + LLM graph drafting
 scripts/             validate.py · prepare_github_cases.py · scrub.py
+                     corpus_stats.py (released-set statistics) ·
+                     check_simulator_acts.py (offline simulator invariants) ·
+                     run_validity.py (is a recorded row scoreable at all) ·
+                     contamination_probe.py · variance_report.py · run_ab.sh
 data/trial/          4 hand-annotated Mozilla pilot cases (+ raw, images)
 data/github_v0/      LLM-drafted GitHub cases (raw, images, graphs, report)
 docs/                method · related-work survey · pilot study · collection

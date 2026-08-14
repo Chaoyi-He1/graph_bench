@@ -194,3 +194,57 @@ Two consequences for how results are reported:
 
 Everything measured before this section — main table, difficulty profile,
 noise floor — predates these fixes and must be re-measured.
+
+## E-leak — did the simulator ever say more than the agent earned
+
+`scripts/leak_audit.py` · 10,715 user turns across the four baseline rows,
+plus a static pass over all 229 released graphs
+
+The benchmark's central claim is that the simulated user speaks only from
+its graph position. That claim was asserted by construction — the speaker
+sees a fixed allow-list of fields — but never audited against what the
+runs actually said. This checks it.
+
+**Method.** For each case, the answer-key vocabulary (distinctive words of
+the terminal solution's required elements and of the satisfaction
+conditions) is subtracted by everything the user has legitimately earned:
+their own opening report, the visible symptoms of any state they have
+reached, the authored answer to every clarification actually asked, and —
+from a recorded reveal onward — everything. A turn is flagged when it uses
+at least two remaining answer-key terms, one of which appears in at most
+three cases' answer keys corpus-wide (pairs of ordinary words like
+"configuration, source" were most of the first pass's false alarms).
+
+| row | user turns | flagged | rate |
+|---|---|---|---|
+| gpt-5.6 | 2607 | 4 | 0.15% |
+| gpt-5.5 | 2618 | 1 | 0.04% |
+| GLM-5.1 | 2797 | 1 | 0.04% |
+| Kimi-2.5 | 2693 | 3 | 0.11% |
+
+All nine were read individually. None is a leak: seven are coincidental
+overlap on ordinary words carried by the simulator's own fixed
+follow-ups ("the behavior is unchanged… CPU usage rises"), one is a
+legitimate measurement answer, and one is a case where the agent matched
+a shortcut edge to the terminal on its first turn and was told that
+state's outcome — earned, and recorded as such. **Zero unexplained
+reveals in 10,715 turns.**
+
+**Static pass.** A run only exercises the states it reaches, so the same
+screen runs over the corpus itself, looking for a non-terminal state —
+reachable without proposing anything — whose authored symptoms already
+speak from after the resolution. Three fields match, all of the form
+"with the patched build, X no longer happens". Each is entered by a
+*measurement-class clarification* ("build the linked branch, run it
+against the same scenario, and paste the result"), which the DSL admits
+as a clarification because the user performs it and reports what they
+see. The state is therefore earned by asking for that measurement, and
+what remains to be diagnosed — why the change works — is still the
+terminal edge's job. Recorded here rather than repaired, since repairing
+would mean re-typing an edge the source thread supports.
+
+A note on what this can and cannot show: the screen is lexical, so it
+finds vocabulary that appears where it should not, not paraphrase. It is
+a floor on compliance, not a proof of it — but it is a floor no
+transcript-conditioned simulator can clear by construction, which is the
+comparison that matters.
