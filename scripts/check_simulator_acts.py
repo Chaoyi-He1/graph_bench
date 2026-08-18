@@ -328,6 +328,38 @@ def check_no_images_ablation() -> None:
     print('no-images ablation  OK')
 
 
+def check_unanswerable_budget() -> None:
+    """
+    A question the case cannot answer runs on its own looser budget: it
+    must not touch the node's stall counter, the insurance must not fire
+    on it until that budget is spent, and the reply must not pretend to
+    know the question was off the mark.
+    """
+    task = None
+    for path in sorted(glob.glob(GRAPHS)):
+        cand = load_task(path)
+        out = [
+            e for e in cand.graph.edges if e.from_node == cand.graph.start_node
+        ]
+        if out and all(e.edge_type == 'clarification_only' for e in out):
+            task = cand
+            break
+    assert task is not None
+    sim = _sim(task)
+    threshold = sim._responder.config.unanswerable_question_threshold  # noqa: SLF001
+    for i in range(threshold - 1):
+        reply = sim.respond(
+            f'Which unrelated subsystem {i} produced the accounting entry?'
+        )
+        assert not reply.event.forced_reveal, f'fired after {i + 1} questions'
+        assert not sim.session.stall_counts, sim.session.stall_counts
+        assert 'angle' not in reply.text.lower(), reply.text
+    assert sim.session.unanswerable_questions == threshold - 1
+    reply = sim.respond('And which unrelated subsystem produced the last one?')
+    assert reply.event.forced_reveal, 'budget never spent'
+    print('unanswerable budget OK')
+
+
 def check_canonical_coverage() -> None:
     """
     Every non-terminal node must be routable to a terminal, and a clean
@@ -382,6 +414,7 @@ if __name__ == '__main__':
     check_ride_along_order()
     check_not_attempted_guard()
     check_opening_is_the_report()
+    check_unanswerable_budget()
     check_no_images_ablation()
     check_stall_reset()
     check_canonical_coverage()

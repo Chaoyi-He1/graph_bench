@@ -29,6 +29,10 @@ class SimulatorSession(BaseModel):
     visited: list[str] = Field(default_factory=list)
     history: list[UserTurn] = Field(default_factory=list)
     stall_counts: dict[str, int] = Field(default_factory=dict)
+    # Questions the case models no answer for, counted for the whole
+    # session on their own budget — see
+    # SimulatorConfig.unanswerable_question_threshold.
+    unanswerable_questions: int = 0
     sim_events: list[SimEvent] = Field(default_factory=list)
     hitl_queue: list[HitlEntry] = Field(default_factory=list)
     termination_reason: TerminationReason = 'none'

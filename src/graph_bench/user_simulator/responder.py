@@ -65,10 +65,11 @@ _INTENT_NOMATCH_SOLUTION = (
     'Do NOT name a root cause or propose a concrete fix yourself.'
 )
 _INTENT_NOMATCH_CLARIFICATION = (
-    "What the agent asks about doesn't line up with anything on your side "
-    "and doesn't feel like the key point right now. Politely say it "
-    "doesn't match and suggest trying a different angle. Do NOT point out "
-    'the correct direction or the answer for them.'
+    'You simply do not have what the agent is asking for and would not know '
+    'how to obtain it. Say so plainly and offer to look at something else. '
+    'You are NOT judging their direction — do not say the question is off '
+    'the mark, unimportant, or that they should try another angle, and do '
+    'NOT point out the correct direction or the answer.'
 )
 # Fix 2: said instead of the "nothing changed" line when the case models no
 # fix attempt from this state at all. The user has not run it, so the reply
@@ -776,10 +777,33 @@ class Responder:
             HitlEntry,
         )
 
+        is_clar = match.edge_type == 'clarification_only'
+        # A question the case cannot answer is not evidence of a stalling
+        # conversation. A graph authors the handful of clarifications the
+        # thread turned on (median 2 per edge); real diagnosis asks many
+        # more, and every question outside that set landed here — 52% of all
+        # no-matches in the baseline, 62% after the routing fixes. On the
+        # shared stall counter, four such questions were enough to have the
+        # answer handed over, so asking was a step toward being rescued.
+        #
+        # They are not free either: a conversation made entirely of
+        # questions nobody can answer IS degenerate. So they run on their
+        # own, looser budget. A repeat detector was tried first and dropped
+        # — measured over the baseline transcripts, consecutive unmodeled
+        # questions are no more alike than unrelated ones (median Jaccard
+        # 0.09 vs 0.08), because agents rephrase onto new ground rather than
+        # re-ask.
         counts = self.session.stall_counts
-        counts[node_before] = counts.get(node_before, 0) + 1
-
-        if counts[node_before] >= self.config.stall_reveal_threshold:
+        if is_clar:
+            self.session.unanswerable_questions += 1
+            over = (
+                self.session.unanswerable_questions
+                >= self.config.unanswerable_question_threshold
+            )
+        else:
+            counts[node_before] = counts.get(node_before, 0) + 1
+            over = counts[node_before] >= self.config.stall_reveal_threshold
+        if over:
             fired = self._fire_insurance(match, agent_turn, node_before)
             if fired is not None:
                 return fired
@@ -792,12 +816,16 @@ class Responder:
         )
         self.session.hitl_queue.append(hitl)
 
-        _OFF_TARGET_HINT = (  # noqa: N806
-            "Hmm… what you're asking about doesn't match anything on my "
-            "side; it doesn't feel like the key point right now. Could we "
-            'try a different angle?'
+        # The graph knows only which clarifications the thread turned on; it
+        # does not know that anything else is off-topic. Judging the agent's
+        # direction here ("that isn't the key point, try another angle")
+        # asserts something the case never established — the same fabrication
+        # as claiming an untried fix did not help — and hands over a hint
+        # besides. The user simply does not have the answer.
+        _NO_SUCH_INFO = (  # noqa: N806
+            "I don't have that to hand, sorry — I wouldn't know how to check "
+            'it. Is there something else I can look at?'
         )
-        is_clar = match.edge_type == 'clarification_only'
         # The user may only report an outcome the case actually establishes.
         # From a node with no authored solution edge, nothing is known about
         # what applying a fix would do, so claiming "I tried it and nothing
@@ -808,7 +836,7 @@ class Responder:
             for e in self.index.get(node_before, [])
         )
         if is_clar:
-            phrasing, intent = _OFF_TARGET_HINT, _INTENT_NOMATCH_CLARIFICATION
+            phrasing, intent = _NO_SUCH_INFO, _INTENT_NOMATCH_CLARIFICATION
         elif has_solution_exit:
             phrasing, intent = (
                 'I tried that; nothing seems to have changed.',
@@ -817,7 +845,8 @@ class Responder:
         else:
             phrasing, intent = _NOT_TRIED_YET, _INTENT_NOMATCH_UNTRIED
         event = self._new_event(match, node_before, node_before)
-        event.stall_count_after = counts[node_before]
+        event.stall_count_after = counts.get(node_before, 0)
+        event.unanswerable_after = self.session.unanswerable_questions
         event.hitl = hitl
         base = BaseResponse(
             directive=(

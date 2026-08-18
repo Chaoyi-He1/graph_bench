@@ -56,6 +56,12 @@ class SimulatorConfig(BaseModel):
     reset_stall_on_progress: bool = False
     # Ablation: attach the reporter's original screenshots, or none of them.
     send_images: bool = True
+    # How many questions the case cannot answer a session tolerates before
+    # the insurance fires. Separate from stall_reveal_threshold and looser:
+    # a graph models only the few clarifications its thread turned on, so an
+    # agent exploring a real system asks past them without that meaning the
+    # conversation has stopped moving.
+    unanswerable_question_threshold: int = 8
     # §9.6 counterfactual intervention: info_id -> replacement answer.
     # Every reveal path for that info_id (clarification reply, mixed
     # edge, forced reveal) serves the replacement instead of the
@@ -143,6 +149,9 @@ class SimEvent(BaseModel):
     info_gained: list[str] = Field(default_factory=list)
     solution_call: SolutionCall | None = None
     stall_count_after: int = 0
+    # Session-wide count of questions the case could not answer, after this
+    # turn. Lets a run separate 'asked past the graph' from 'went nowhere'.
+    unanswerable_after: int = 0
     forced_reveal: bool = False
     revealed_by_simulator: bool = False
     # True only when the forced reveal was triggered by the flag-guarded

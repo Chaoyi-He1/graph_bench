@@ -572,6 +572,19 @@ def _fallback_outcome(
             intent='clarification',
             clar_match=clar if clar and clar.type == 'exact' else m,
         )
+    if not solution_edges and _looks_like_question(agent_turn):
+        # A node with no solution edge cannot produce a proposal match, so a
+        # turn that asks something is an unanswered question, not a failed
+        # fix. Without this the deterministic backend reported it as
+        # solution_only and the responder charged it to the node's stall
+        # counter — disagreeing with the online judge, which reports an
+        # unmatched question as clarification_only.
+        return MultiMatchOutcome(
+            intent='clarification',
+            clar_match=clar
+            if clar and clar.type == 'exact'
+            else MatchResult(type='none', edge_type='clarification_only'),
+        )
     # For solution intent (or ambiguous vague turns with solution_edges present),
     # build proposals from code_coverage_pct so required_elements_for_full_match
     # is honoured (approach_keywords may be empty).
