@@ -321,3 +321,42 @@ inferred from question quality.
 Reading for the benchmark: elicitation and diagnosis separate. A model can
 run the conversation competently and still fail the case, which is exactly
 the distinction an execution-free multi-turn benchmark exists to make.
+
+## E-judge-ablation — what grounding the judge in the graph buys (preliminary)
+
+`scripts/judge_ablation.py` · no new runs: every component of the grade is
+stored in `grade_components`, so both judges are recoverable from any
+judged run.
+
+The structured grade averages five terms — four LLM rubrics read off the
+transcript, plus `info_grounded_rate`, the one term the graph supplies
+(the share of solution calls made with the required information in hand).
+Drop that term and you have the **plain** judge: a transcript read by a
+model with no answer key, which is what an execution-free benchmark looks
+like without the annotation layer.
+
+| run | n | structured | plain | ρ |
+|---|---|---|---|---|
+| gpt-5.6 | 48 | 0.6360 | 0.7611 | 0.918 |
+| Kimi-2.5 | 48 | 0.3908 | 0.4573 | 0.875 |
+| gpt-5.6, 30 turns | 50 | 0.6565 | 0.7865 | 0.887 |
+| gpt-5.6, rerun | 50 | 0.6602 | 0.7870 | 0.869 |
+
+| | spread across runs | in noise floors (0.021) |
+|---|---|---|
+| structured | 0.2694 | 12.8× |
+| plain | 0.3297 | **15.7×** |
+
+**The result cuts against the obvious claim, and is recorded as such.**
+The plain judge separates these runs slightly *more* than the structured
+one, and the two track each other at ρ ≈ 0.87–0.92. On this evidence the
+graph-derived term is not what makes the headline number discriminative —
+it slightly compresses the gap. What the annotation layer demonstrably
+buys sits elsewhere: it constrains the simulator (E-leak), defines the
+answer key the tiers and required elements are scored against, and
+supplies the structural outcomes (`terminal_resolved`, forced reveals)
+that a plain rubric average cannot express at all.
+
+Preliminary, and weak evidence: four runs of which two share a
+configuration. It is recomputed on the main table, where four genuinely
+different models over 229 cases make the comparison worth something.
