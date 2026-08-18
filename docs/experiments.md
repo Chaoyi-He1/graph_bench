@@ -360,3 +360,30 @@ that a plain rubric average cannot express at all.
 Preliminary, and weak evidence: four runs of which two share a
 configuration. It is recomputed on the main table, where four genuinely
 different models over 229 cases make the comparison worth something.
+
+## E3 / E8 — built, not yet run
+
+Both are one queue entry away; they are listed here so the gap is on the
+record rather than implied by silence.
+
+**E3 counterfactual sensitivity** (`scripts/counterfactual.py`). 1,635
+alternative answers are authored across all 229 cases, each marked with
+whether the right fix changes as a result. `plan` draws a balanced sample
+— the two directions are 954 / 681, and sensitivity is the easier rate to
+score well on, so an unbalanced sample flatters the agent — and emits the
+`--sim-config` that executes each intervention, since `answer_overrides`
+is already served on every reveal path. `score` reports **sensitivity**
+(the proposal moved when it should have) against **specificity** (it held
+when it should not), ignoring solution calls that came from a forced
+reveal, which are the simulator's move rather than the agent's. Cost: one
+case-run per intervention, 60 in the default plan.
+
+**E8 simulator swap** (`scripts/run_row3.sh`). The simulator model drives
+both the simulated user and the turn→edge judge, so a result that only
+holds under one simulator is a property of that model rather than of the
+benchmark. The runner takes `SIM_MODEL` as a parameter; the check is the
+frozen configuration re-run on the variance subset under a different
+simulator, compared against the ±0.021 noise floor.
+
+Both are queued behind the main table, which has first call on the
+gateway.
