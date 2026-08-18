@@ -248,3 +248,76 @@ finds vocabulary that appears where it should not, not paraphrase. It is
 a floor on compliance, not a proof of it — but it is a floor no
 transcript-conditioned simulator can clear by construction, which is the
 comparison that matters.
+
+## E-turnbudget and the corrected noise floor
+
+Two arms settled the turn cap and replaced the superseded E-variance
+figures. Both run the frozen configuration (fixes 1–4 and 6, fix 5 off)
+over the 50-case paired subset with gpt-5.6.
+
+**Noise floor.** An arm intended as the no-images ablation passed
+`send_images` as an *agent* key, where the adapter ignores it — so it
+executed the baseline configuration a second time, byte for byte. Two
+identical rounds, 48 paired cases:
+
+| | round A | round B | drift |
+|---|---|---|---|
+| mean grade | 0.6360 | 0.6566 | **+0.021** |
+| per-case abs delta | | | mean 0.152, median 0.131 |
+| `resolved` verdict flips | | | 7/48 (**15%**) |
+
+That is three times the drift measured before the simulator fixes
+(0.007), and it narrows what the fix arms can claim: fix 1–4 (+0.053) and
+fix 1–4+6 (+0.060) stand at roughly 2.5–3× the floor, not the comfortable
+margin the earlier number implied. The old figure was small because half
+of every run died at turn 5, and truncated cases agree with each other.
+
+**Turn budget: 20 → 30.** The grade barely moves; the outcome
+distribution changes completely.
+
+| | 20 turns | 30 turns |
+|---|---|---|
+| mean grade | 0.6360 | 0.6559 (+0.020, = noise) |
+| ran out of turns | 27 (56%) | **10 (21%)** |
+| `terminal_resolved` | 6 | 12 |
+| `forced_walk_to_terminal` | 15 | 24 |
+| median turns/case | 20 | 22 |
+
+Median turns rise 10% because only the cases that were being truncated
+use the extra room. Adopted at 30: a case that ends by exhausting its
+budget reports nothing about the agent, and more than half of them were
+doing that.
+
+## E-fairness — Kimi-2.5 under the fixed simulator
+
+The routing fix was expected to help the models that bundle a hypothesis,
+a step and a question into one turn (87% of Kimi's structurally
+unmatchable turns carried a question, against 9% of gpt-5.6's). It did,
+and the remaining gap is not the harness. On 46 paired cases:
+
+| | gpt-5.6 | Kimi-2.5 |
+|---|---|---|
+| mean grade | 0.6344 | **0.3910** |
+| empty replies | 0.0% | 0.0% |
+| exact matches | 234 | 226 |
+| `terminal_resolved` | 6 (13%) | **8 (17%)** |
+| ran out of turns | 26 (57%) | 23 (50%) |
+| proposals at a state with no solution edge | 107 | **166** |
+| rubric proactiveness | 0.971 | 0.928 |
+| rubric hallucination (0 = clean) | **0.252** | **0.857** |
+| rubric explanation | 0.747 | 0.436 |
+| rubric recovery | 0.566 | 0.317 |
+
+Kimi reaches terminal states slightly *more* often and matches nearly as
+many edges exactly; it is not being blocked. The deficit is what it says
+once it gets there — it asserts as fact what the conversation never
+established (hallucination 0.857 against 0.252, and the grade uses
+1 − that), explains the fault half as well, and recovers from a failed
+step half as often. It also proposes a fix from a state with no authored
+solution edge 55% more often: it moves to prescribing before the evidence
+is in. "Asks well, closes badly", now located at rubric level rather than
+inferred from question quality.
+
+Reading for the benchmark: elicitation and diagnosis separate. A model can
+run the conversation competently and still fail the case, which is exactly
+the distinction an execution-free multi-turn benchmark exists to make.

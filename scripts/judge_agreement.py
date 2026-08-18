@@ -69,12 +69,19 @@ def sample(args: argparse.Namespace) -> int:
         'put your numbers in `human.json` beside this file and run '
         '`judge_agreement.py score`.',
         '',
-        'Each rubric is 0–1. Rough anchors: **proactiveness** — did it ask '
-        'for the evidence it needed before proposing? **hallucination** — '
-        'is everything it asserted grounded in what the user actually '
-        'reported (1 = nothing invented)? **explanation** — does it account '
-        'for the fault, not just prescribe steps? **recovery** — when a '
-        'step failed, did it change tack sensibly?',
+        'Each rubric is 0–1. Mind the direction: three are "more is '
+        'better" and **hallucination is not** — it scores how much the '
+        'agent asserted that the conversation does not support, so 0 is '
+        'clean and 1 is pervasive. The grade uses 1 − hallucination.',
+        '',
+        '- **proactiveness** — did it ask for the evidence it needed '
+        'before proposing? (1 = always)',
+        '- **hallucination** — how much did it state as fact that the '
+        'user never reported? (**0 = nothing invented**, 1 = pervasive)',
+        '- **explanation** — does it account for the fault, not just '
+        'prescribe steps? (1 = fully)',
+        '- **recovery** — when a step failed, did it change tack '
+        'sensibly? (1 = always)',
         '',
         'The judge\'s own scores are in `judge.json` and are deliberately '
         'not shown here.',
@@ -170,6 +177,7 @@ def score(args: argparse.Namespace) -> int:
     for rubric in RUBRICS:
         j = [judge[c][rubric] or 0.0 for c in paired]
         h = [float(human[c][rubric]) for c in paired]
+        # compared as the judge scores it, direction included
         deltas = [abs(a - b) for a, b in zip(j, h)]
         print(
             f'{rubric:<16}{st.mean(j):>8.3f}{st.mean(h):>8.3f}'
@@ -179,7 +187,17 @@ def score(args: argparse.Namespace) -> int:
     # the closest thing a human sheet produces to it without re-deriving the
     # weighting, so agreement is reported on both.
     jg = [judge[c]['grade'] for c in paired]
-    hg = [st.mean(float(human[c][r]) for r in RUBRICS) for c in paired]
+    # hallucination is scored in the opposite direction to the other three
+    # (the grade uses 1 - it), so it must be flipped before averaging or the
+    # comparison rewards exactly the runs a human marked as inventing facts.
+    hg = [
+        st.mean(
+            1.0 - float(human[c][r]) if r == 'hallucination'
+            else float(human[c][r])
+            for r in RUBRICS
+        )
+        for c in paired
+    ]
     deltas = [abs(a - b) for a, b in zip(jg, hg)]
     print(
         f"\n{'grade vs rubric mean':<16}{st.mean(jg):>8.3f}{st.mean(hg):>8.3f}"
