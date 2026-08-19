@@ -387,3 +387,52 @@ simulator, compared against the ±0.021 noise floor.
 
 Both are queued behind the main table, which has first call on the
 gateway.
+
+## E1 leakage inflation — what the anti-leak invariant is worth
+
+`--sim-config '{"leak_profile": "A"}'` · 48 paired cases, frozen config
+
+Profile A hands the simulator the reconstructed resolved conversation
+before it speaks — the way a transcript-conditioned simulator works, and
+the design this benchmark argues against. Everything else is identical.
+
+| | profile C (production) | profile A (transcript-conditioned) |
+|---|---|---|
+| mean grade | 0.6360 | **0.6728** (+0.037, 26↑/22↓) |
+| `terminal_resolved` | 6 | 9 |
+| `forced_walk_to_terminal` | 15 | 9 |
+| turns flagged by `leak_audit.py` | 0 / 913 | **3 / 916** |
+
+Conditioning the simulator on the answer inflates the headline grade by
++0.037 — 1.75× the noise floor — and converts six forced walks into
+earned terminals. The agent is credited for reaching states the user
+steered it to. The per-case split is nearly even (26 up, 22 down), so
+this is an aggregate effect and no individual case should be read from
+it.
+
+The lexical screen catches three leaked turns under A against zero under
+C. That is a floor, not a measure: the screen finds vocabulary appearing
+where it should not, and cannot catch a simulator that paraphrases the
+answer. The grade inflation is the better estimate of the damage, and it
+is the number a transcript-conditioned benchmark cannot subtract from its
+own results because it has no leak-free arm to compare against.
+
+## E7 no-images — a null result, and why it is not evidence
+
+`--sim-config '{"send_images": false}'` · 48 paired cases
+
+| | with images | without |
+|---|---|---|
+| mean grade | 0.6360 | 0.6358 (**−0.0002**, 24↑/24↓) |
+
+Exactly zero — because the reference agent never received the images in
+the first place. The backbone carries them on the turn as
+`latest_user_images`, the corpus hooks 62 cases' screenshots to the exact
+state or clarification they evidence, and the adapter built its message
+list from text alone. Removing evidence nobody consumed changes nothing.
+
+The adapter now has a multimodal path (`{"multimodal": true}`, images
+inlined as base64 data URLs), **off by default** so it cannot land in the
+middle of the main table and make rows incomparable. Until this ablation
+is re-run against a multimodal agent, the honest statement is that it has
+not been measured — not that images do not matter.

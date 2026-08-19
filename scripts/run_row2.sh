@@ -12,11 +12,17 @@ run_id=$1; cfg=${2:-'{"max_tokens": 8000}'}; sim=${3:-'{}'}; turns=${4:-30}
 tasks=${5:-'data/released/graphs/*.json'}
 out="runs/matrix/${run_id}"; rd="${out}/${run_id}"; log="runs/matrix/${run_id}.log"
 expected=$(ls $tasks | wc -l | tr -d ' ')
+# Live knob, read at launch: a multi-day table should not need its queue
+# restarted to retune. Throughput is latency-bound per case — one turn
+# costs ~77s wall (68s of it the agent call), so N cases in flight give
+# N/77s turns per second until the gateway pushes back. Where that point
+# is, is measured per row rather than assumed.
+CONC=$(cat /tmp/gb-v2/runs/concurrency 2>/dev/null || echo 6)
 
 uv run --native-tls python -m graph_bench backbone run \
   --agent api --agent-config "$cfg" --sim-config "$sim" --tasks "$tasks" \
   --run-id "$run_id" --out "$out" --online --max-turns "$turns" \
-  --concurrency 6 >> "$log" 2>&1
+  --concurrency "$CONC" >> "$log" 2>&1
 rc=$?
 got=$(ls "$rd"/*.jsonl 2>/dev/null | wc -l | tr -d ' ')
 # A row this long will lose the odd case to a terminal API error; judge at
@@ -30,4 +36,4 @@ fi
 uv run --native-tls python -m graph_bench recorder metrics "$rd" >> "$log" 2>&1
 uv run --native-tls python -m graph_bench judge run "$rd" \
   --model "$GRAPH_BENCH_LLM_MODEL" --online --concurrency 6 >> "$log" 2>&1
-echo "== $run_id done (${got}/${expected})"
+echo "== $run_id done (${got}/${expected}, concurrency=${CONC})"

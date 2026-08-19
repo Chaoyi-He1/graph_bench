@@ -35,6 +35,31 @@ _DEFAULT_SYSTEM_PROMPT = (
 )
 
 
+def _with_images(text: str, paths: list[str]) -> list[dict]:
+    """A multimodal user message: the text plus each screenshot inline.
+
+    Images are read from disk and base64'd rather than linked — the
+    corpus ships them alongside the graphs, and a gateway cannot fetch a
+    local path.
+    """
+    import base64  # noqa: PLC0415
+    import mimetypes  # noqa: PLC0415
+    from pathlib import Path  # noqa: PLC0415
+
+    parts: list[dict] = [{'type': 'text', 'text': text}]
+    for path in paths:
+        file = Path(path)
+        if not file.exists():
+            continue
+        mime = mimetypes.guess_type(file.name)[0] or 'image/png'
+        data = base64.b64encode(file.read_bytes()).decode()
+        parts.append({
+            'type': 'image_url',
+            'image_url': {'url': f'data:{mime};base64,{data}'},
+        })
+    return parts
+
+
 class APIChatAgent:
     def __init__(self, cfg: dict) -> None:
         self._cfg = cfg
@@ -69,12 +94,25 @@ class APIChatAgent:
             extract_text,
         )
 
-        messages: list[tuple[str, str]] = [('system', self._system_prompt)]
+        messages: list = [('system', self._system_prompt)]
         for msg in turn.transcript:
             role = 'user' if msg.role == 'user' else 'assistant'
             messages.append((role, msg.text))
         if not turn.transcript or turn.transcript[-1].role != 'user':
             messages.append(('user', turn.latest_user_text))
+        # The reporter's screenshots reach this adapter on the turn and,
+        # until this was added, went straight in the bin: the corpus hooks
+        # 62 cases' images to the exact state or question they evidence,
+        # and the agent never saw one. That silently made the no-images
+        # ablation a null result by construction — removing evidence
+        # nobody consumed changed nothing (-0.0002 on 48 paired cases).
+        #
+        # Off by default: attaching images changes what every row is
+        # answering, so it must not land mid-table.
+        if self._cfg.get('multimodal') and turn.latest_user_images:
+            messages[-1] = ('user', _with_images(
+                messages[-1][1], turn.latest_user_images
+            ))
 
         start = time.monotonic()
         reply = await self._client().ainvoke(messages)
