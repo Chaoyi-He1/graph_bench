@@ -436,3 +436,27 @@ inlined as base64 data URLs), **off by default** so it cannot land in the
 middle of the main table and make rows incomparable. Until this ablation
 is re-run against a multimodal agent, the honest statement is that it has
 not been measured — not that images do not matter.
+
+## A caveat on the 50-case subset every A/B was measured on
+
+The simulator fixes, the turn budget, the noise floor, the leakage
+inflation and the no-images ablation were all measured on the same
+50-case paired subset. The main table gives the first chance to ask
+whether that subset resembles the corpus, and within a single run —
+same model, same configuration, so nothing confounds it:
+
+| | n | `terminal_resolved` | ran out of turns |
+|---|---|---|---|
+| inside the variance subset | 30 | 4 (**13%**) | 7 (23%) |
+| the rest of the corpus | 123 | 37 (**30%**) | 26 (21%) |
+
+A 17-point gap on the headline outcome, in the direction that matters:
+the subset the A/B arms ran on looks **harder than the corpus average**.
+At these counts that is z ≈ 1.9, p ≈ 0.06 — suggestive, not established,
+and it is re-checked at n=50 when the row completes.
+
+If it holds, it does not overturn the fix deltas: those are paired
+comparisons, where a harder slice affects both arms. It does mean the
+*absolute* levels quoted from the subset (resolved rates, the ±0.021
+noise floor) should not be read as corpus-wide figures, and the main
+table supersedes them for anything absolute.
