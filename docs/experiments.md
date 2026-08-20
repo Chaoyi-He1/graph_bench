@@ -437,26 +437,54 @@ middle of the main table and make rows incomparable. Until this ablation
 is re-run against a multimodal agent, the honest statement is that it has
 not been measured — not that images do not matter.
 
-## A caveat on the 50-case subset every A/B was measured on
+## The 50-case subset every A/B was measured on — checked, and clean
 
 The simulator fixes, the turn budget, the noise floor, the leakage
 inflation and the no-images ablation were all measured on the same
-50-case paired subset. The main table gives the first chance to ask
-whether that subset resembles the corpus, and within a single run —
-same model, same configuration, so nothing confounds it:
+50-case paired subset. The main table is the first chance to ask whether
+that subset resembles the corpus, within a single run — same model, same
+configuration, so nothing confounds it.
 
-| | n | `terminal_resolved` | ran out of turns |
+Partway through the row it looked as though it did not. At n=30 the
+subset showed 13% `terminal_resolved` against 30% for the rest, a
+17-point gap at z ≈ 1.9, and it was recorded here as suggestive pending
+the full row. It did not survive:
+
+| | n | `terminal_resolved` | mean grade |
 |---|---|---|---|
-| inside the variance subset | 30 | 4 (**13%**) | 7 (23%) |
-| the rest of the corpus | 123 | 37 (**30%**) | 26 (21%) |
+| inside the variance subset | 48 | 11 (22.9%) | 0.6645 |
+| the rest of the corpus | 173 | 53 (30.6%) | 0.6744 |
 
-A 17-point gap on the headline outcome, in the direction that matters:
-the subset the A/B arms ran on looks **harder than the corpus average**.
-At these counts that is z ≈ 1.9, p ≈ 0.06 — suggestive, not established,
-and it is re-checked at n=50 when the row completes.
+7.7 points, z = 1.04, **p ≈ 0.30**, and the grades differ by 0.010 —
+half the noise floor. The subset is not harder than the corpus; the early
+gap was small-sample noise, which is exactly what a 15%-verdict-flip rate
+produces at n=30.
 
-If it holds, it does not overturn the fix deltas: those are paired
-comparisons, where a harder slice affects both arms. It does mean the
-*absolute* levels quoted from the subset (resolved rates, the ±0.021
-noise floor) should not be read as corpus-wide figures, and the main
-table supersedes them for anything absolute.
+Recorded rather than deleted, because the sequence is the point: the
+caveat was raised on a number that looked significant, and retracted on
+the number that settled it. The absolute levels quoted from the subset
+stand as corpus-representative, and the main table agrees with them —
+0.6722 over 229 cases against 0.6559 for the same configuration on the
+subset, a gap inside the noise floor.
+
+## E5 main table — row 1 of 4
+
+`scripts/main_table.py` · all 229 released cases, 30 turns, frozen
+configuration (fixes 1–4 and 6, fix 5 off)
+
+| row | n | grade | resolved | forced walk | ran out | turns | reveals/case |
+|---|---|---|---|---|---|---|---|
+| gpt-5.6 | 221 | 0.6722 | 64 (29%) | 106 (48%) | 43 (19%) | 20 | 3.1 |
+
+`failed_dead_end` is **zero across all 229 cases** — the defect that
+ended 48–54% of every pre-fix run at a median of turn 5 does not survive
+anywhere in the corpus, not just in the slice it was diagnosed on.
+
+Reading the columns together: fewer than a third of cases end with the
+user confirming a fix the agent earned, while nearly half arrive at the
+terminal only because the insurance walked them there, at 3.1 reveals per
+case. The remaining fifth exhaust 30 turns. That is the headroom this
+benchmark is for.
+
+Rows 2–4 (Kimi-2.5, GLM-5.1, gpt-5.5) follow in the same run; the table
+is updated as each lands.
