@@ -24,6 +24,14 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# A judge failure used to be logged and dropped. On a 229-case row that
+# silently removed whole cases from the reported grade — and the losses
+# were not outcome-neutral: both cases dropped from the first main-table
+# row were `terminal_resolved`, i.e. successes, lost to one 502 from the
+# gateway. Transient infrastructure must not decide which cases count.
+_JUDGE_ATTEMPTS = 3
+_JUDGE_BACKOFF_S = 20
+
 
 def _abstain(task_id: str) -> TestcaseJudgment:
     v = RubricVerdict(score=0.0, label='abstain', rationale='agent_failed')
@@ -101,7 +109,8 @@ async def run(
     sem = asyncio.Semaphore(config.concurrency)
     metrics = recorded.metrics
 
-    async def _one(task_id: str) -> None:
+    async def _one(task_id: str, attempt: int = 1) -> None:
+        retry = 0
         async with sem:
             try:
                 turns = recorded.traces.get(task_id, [])
@@ -133,8 +142,27 @@ async def run(
                     judgment,
                     created_at,
                 )
+                return
             except Exception:  # one testcase must not poison the batch
-                logger.warning('judge failed for %s', task_id, exc_info=True)
+                if attempt < _JUDGE_ATTEMPTS:
+                    logger.warning(
+                        'judge attempt %d failed for %s, retrying',
+                        attempt,
+                        task_id,
+                    )
+                    retry = attempt
+                else:
+                    logger.warning(
+                        'judge failed for %s after %d attempts',
+                        task_id,
+                        _JUDGE_ATTEMPTS,
+                        exc_info=True,
+                    )
+                    return
+        # Released the semaphore before sleeping: a gateway hiccup should
+        # not hold a judging slot idle while it backs off.
+        await asyncio.sleep(_JUDGE_BACKOFF_S * retry)
+        await _one(task_id, retry + 1)
 
     pending = [t for t in metrics.testcases if t not in done]
     await asyncio.gather(*(_one(t) for t in pending))
