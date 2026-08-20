@@ -488,3 +488,27 @@ benchmark is for.
 
 Rows 2–4 (Kimi-2.5, GLM-5.1, gpt-5.5) follow in the same run; the table
 is updated as each lands.
+
+## E9 judge swap — does the ranking survive a different judge?
+
+`scripts/judge_swap.py` · queued behind the main table
+
+The table is scored by a gpt-5.6-family judge, and gpt-5.6 is one of the
+models it ranks. Self-preference is the first objection a reader will
+raise, and "we wrote a careful prompt" is not an answer to it.
+
+Each recorded row is re-judged by a judge from a different family
+(GLM-5.1) and the two verdicts compared on the same transcripts. This
+needs no new conversations, so it costs judging alone.
+
+What the comparison decides:
+
+* **Levels move, ordering holds** — the table's comparisons stand, and
+  only the absolute grades are judge-specific. That is the expected
+  outcome and the one worth stating explicitly.
+* **Ordering moves** — the ranking is a property of the judge, not of the
+  models, and must be reported as such.
+
+Reported as mean grade under each judge, per-case absolute delta, and
+Kendall's tau over the case ranking. The swap writes into a sibling
+directory so a check on the primary result can never overwrite it.
