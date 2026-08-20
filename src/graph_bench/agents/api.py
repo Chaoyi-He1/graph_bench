@@ -13,6 +13,7 @@ as the wiring example for adapters around real products.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import time
 from typing import TYPE_CHECKING
@@ -25,6 +26,39 @@ if TYPE_CHECKING:
 # Output budget per turn. Must leave room for the answer AFTER the
 # model's reasoning tokens; the gateway's own default (1000) does not.
 _DEFAULT_MAX_TOKENS = 8000
+
+# The gateway returns 502 upstream_unavailable when a call outruns its
+# 120-second read window, and the recovery ladder only catches AgentError,
+# so that exception killed the whole testcase. It is not outcome-neutral:
+# the longer a model's replies, the likelier it trips the window, and
+# Kimi-2.5 — median reply 1766 characters against gpt-5.6's 936 — lost 15%
+# of its main-table row to this against gpt-5.6's 3.5%. Losing verbose
+# models' cases at four times the rate is a measurement artefact, not a
+# property of the models.
+_TRANSIENT_ATTEMPTS = 3
+_TRANSIENT_BACKOFF_S = 15
+# A 4xx means the request is wrong and will stay wrong; only server-side
+# and network failures are worth repeating.
+_TRANSIENT_MARKERS = (
+    'timeout',
+    'timed out',
+    'connection',
+    'upstream_unavailable',
+    'temporarily',
+    'overloaded',
+    'error code: 5',
+    'internalservererror',
+    'serviceunavailable',
+    'badgateway',
+)
+
+
+def _is_transient(exc: Exception) -> bool:
+    status = getattr(exc, 'status_code', None)
+    if isinstance(status, int):
+        return status >= 500 or status == 429
+    text = f'{type(exc).__name__}: {exc}'.lower()
+    return any(marker in text for marker in _TRANSIENT_MARKERS)
 
 _DEFAULT_SYSTEM_PROMPT = (
     'You are a senior support engineer helping a user diagnose and fix a '
@@ -115,7 +149,15 @@ class APIChatAgent:
             ))
 
         start = time.monotonic()
-        reply = await self._client().ainvoke(messages)
+        reply = None
+        for attempt in range(1, _TRANSIENT_ATTEMPTS + 1):
+            try:
+                reply = await self._client().ainvoke(messages)
+                break
+            except Exception as exc:
+                if attempt == _TRANSIENT_ATTEMPTS or not _is_transient(exc):
+                    raise
+                await asyncio.sleep(_TRANSIENT_BACKOFF_S * attempt)
         latency_ms = (time.monotonic() - start) * 1000
         usage = getattr(reply, 'usage_metadata', None) or {}
         return AgentTelemetry(
