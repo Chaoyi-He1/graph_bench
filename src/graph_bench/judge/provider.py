@@ -6,6 +6,16 @@ from typing import TYPE_CHECKING
 
 from graph_bench.judge.models import RubricVerdict
 
+# The judge writes a score AND a rationale naming the turns it relies on,
+# which is the longest output anything in this harness produces. Left
+# unset, the gateway caps it at 1000 tokens: a reasoning model spends most
+# of that thinking, the JSON truncates mid-string, and the parse fails.
+# That failure used to become score 0.0 — free full marks on the one
+# rubric the grade inverts (1 - hallucination) and a zero on the other
+# three. 208 of 229 cases in the first main-table row were scored that
+# way before this was caught.
+_JUDGE_MAX_TOKENS = 8000
+
 if TYPE_CHECKING:
     from graph_bench.judge.models import JudgeConfig
 
@@ -18,6 +28,30 @@ _RUBRIC_INSTRUCTIONS = {
     'explanation': 'Judge the clarity of the agent explanations.',
     'recovery': 'Judge whether the agent recovered from a wrong path.',
 }
+
+
+def _extract_json(raw: str) -> dict | None:
+    """
+    The JSON object in a judge reply, however it was wrapped.
+
+    Models fence their output (```json ... ```), preface it, or trail a
+    closing remark. Requiring the whole reply to parse threw all of that
+    away.
+    """
+    text = raw.strip()
+    if not text:
+        return None
+    if text.startswith('```'):
+        text = text.split('```')[1] if '```' in text[3:] else text[3:]
+        text = text.removeprefix('json').strip()
+    start, end = text.find('{'), text.rfind('}')
+    if start == -1 or end <= start:
+        return None
+    try:
+        data = json.loads(text[start:end + 1])
+    except (json.JSONDecodeError, ValueError):
+        return None
+    return data if isinstance(data, dict) and 'score' in data else None
 
 
 class LLMBackend:
@@ -48,6 +82,9 @@ class LLMBackend:
             base_url=os.environ.get('JUDGE_RESPONSES_BASE_URL')
             or str(resolve('GRAPH_BENCH_LLM_BASE_URL')),
             effort=os.environ.get('JUDGE_REASONING_EFFORT'),
+            max_tokens=int(
+                os.environ.get('JUDGE_MAX_TOKENS', _JUDGE_MAX_TOKENS)
+            ),
         )
         return self._llm
 
@@ -64,13 +101,17 @@ class LLMBackend:
             f'Agent reasoning: {context.get("reasoning")}'
         )
         raw = extract_text(await self._client().ainvoke(prompt))
-        try:
-            data = json.loads(raw)
-            return RubricVerdict.model_validate(data)
-        except (json.JSONDecodeError, ValueError):
-            return RubricVerdict(
-                score=0.0, label='parse_error', rationale=raw[:200]
+        data = _extract_json(raw)
+        if data is None:
+            # Never fabricate a score from a failed parse. Raising sends the
+            # case back through the judge's retry, and anything that still
+            # fails is left unjudged where run_integrity.py reports it —
+            # visibly absent beats silently wrong.
+            raise ValueError(
+                f'{rubric}: unparseable judge reply ({len(raw)} chars): '
+                f'{raw[:160]!r}'
             )
+        return RubricVerdict.model_validate(data)
 
     async def resolve_tier(self, context: dict) -> str:
         from graph_bench.user_simulator.provider import (  # noqa: PLC0415
