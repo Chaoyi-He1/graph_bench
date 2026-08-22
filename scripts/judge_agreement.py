@@ -164,25 +164,49 @@ def score(args: argparse.Namespace) -> int:
     out = Path(args.out)
     judge = json.loads((out / 'judge.json').read_text())
     human = json.loads((out / 'human.json').read_text())
-    paired = [
-        c
-        for c in judge
-        if human.get(c) and all(human[c].get(r) is not None for r in RUBRICS)
-    ]
-    if not paired:
+    # Paired PER RUBRIC, not per case. Three of the four are decidable by
+    # reading the conversation — did it ask before proposing, did it change
+    # tack when a step failed, did it assert something the user never said.
+    # `explanation` asks whether the account of the fault is right, which
+    # needs the domain. An annotator who can only answer three should
+    # contribute those three rather than nothing at all.
+    scored = {
+        r: [
+            c for c in judge
+            if human.get(c) and human[c].get(r) is not None
+        ]
+        for r in RUBRICS
+    }
+    if not any(scored.values()):
         print(f'nothing filled in yet in {out}/human.json')
         return 1
-    print(f'{len(paired)}/{len(judge)} cases annotated\n')
-    print(f"{'rubric':<16}{'judge':>8}{'human':>8}{'mean|Δ|':>10}{'rho':>8}")
+    touched = {c for cs in scored.values() for c in cs}
+    print(f'{len(touched)}/{len(judge)} cases touched\n')
+    print(f"{'rubric':<16}{'n':>4}{'judge':>8}{'human':>8}{'mean|Δ|':>10}{'rho':>8}")
     for rubric in RUBRICS:
-        j = [judge[c][rubric] or 0.0 for c in paired]
-        h = [float(human[c][rubric]) for c in paired]
+        cases = scored[rubric]
+        if not cases:
+            print(f'{rubric:<16}{0:>4}{"—":>8}{"—":>8}{"—":>10}{"—":>8}')
+            continue
+        j = [judge[c][rubric] or 0.0 for c in cases]
+        h = [float(human[c][rubric]) for c in cases]
         # compared as the judge scores it, direction included
         deltas = [abs(a - b) for a, b in zip(j, h)]
         print(
-            f'{rubric:<16}{st.mean(j):>8.3f}{st.mean(h):>8.3f}'
+            f'{rubric:<16}{len(cases):>4}{st.mean(j):>8.3f}{st.mean(h):>8.3f}'
             f'{st.mean(deltas):>10.3f}{_spearman(j, h):>8.3f}'
         )
+    paired = [
+        c for c in judge
+        if human.get(c) and all(human[c].get(r) is not None for r in RUBRICS)
+    ]
+    if not paired:
+        print(
+            '\nNo case has all four rubrics scored, so the overall-grade '
+            'comparison is skipped; the per-rubric rows above stand on '
+            'their own.'
+        )
+        return 0
     # A benchmark's headline number is the overall grade; the rubric mean is
     # the closest thing a human sheet produces to it without re-deriving the
     # weighting, so agreement is reported on both.
