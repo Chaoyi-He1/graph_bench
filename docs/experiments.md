@@ -288,39 +288,53 @@ use the extra room. Adopted at 30: a case that ends by exhausting its
 budget reports nothing about the agent, and more than half of them were
 doing that.
 
-## E-fairness — Kimi-2.5 under the fixed simulator
+## E-fairness — elicitation and diagnosis come apart
 
-The routing fix was expected to help the models that bundle a hypothesis,
-a step and a question into one turn (87% of Kimi's structurally
-unmatchable turns carried a question, against 9% of gpt-5.6's). It did,
-and the remaining gap is not the harness. On 46 paired cases:
+> The 46-case version of this section is superseded and kept below for
+> the record. It rested on rubric scores taken before the judge's
+> truncation defect was found: `hallucination` parsed to 0.0 in 72% of
+> gpt-5.6's cases against 34% of Kimi's, and the grade inverts that
+> rubric, so the model losing more rationales collected more free credit.
+> The numbers here are the re-judged full corpus.
+
+All 229 released cases, 30 turns, both rows re-judged after the fix:
 
 | | gpt-5.6 | Kimi-2.5 |
 |---|---|---|
-| mean grade | 0.6344 | **0.3910** |
-| empty replies | 0.0% | 0.0% |
-| exact matches | 234 | 226 |
-| `terminal_resolved` | 6 (13%) | **8 (17%)** |
-| ran out of turns | 26 (57%) | 23 (50%) |
-| proposals at a state with no solution edge | 107 | **166** |
-| rubric proactiveness | 0.971 | 0.928 |
-| rubric hallucination (0 = clean) | **0.252** | **0.857** |
-| rubric explanation | 0.747 | 0.436 |
-| rubric recovery | 0.566 | 0.317 |
+| mean grade | **0.5991** | **0.3824** |
+| `terminal_resolved` | 66 (29%) | 52 (23%) |
+| forced walk to terminal | 110 (48%) | 103 (45%) |
+| ran out of turns | 45 (20%) | 70 (31%) |
+| forced reveals per case | 3.1 | 4.0 |
+| rubric proactiveness | 0.968 | 0.946 |
+| rubric hallucination (0 = clean) | 0.653 | 0.979 |
+| rubric explanation | 0.804 | 0.434 |
+| rubric recovery | 0.689 | 0.318 |
 
-Kimi reaches terminal states slightly *more* often and matches nearly as
-many edges exactly; it is not being blocked. The deficit is what it says
-once it gets there — it asserts as fact what the conversation never
-established (hallucination 0.857 against 0.252, and the grade uses
-1 − that), explains the fault half as well, and recovers from a failed
-step half as often. It also proposes a fix from a state with no authored
-solution edge 55% more often: it moves to prescribing before the evidence
-is in. "Asks well, closes badly", now located at rubric level rather than
-inferred from question quality.
+The grade gap is 0.217, **10.3× the noise floor** — reportable. The
+`resolved` gap is 6 points against 15 points of verdict flipping, and is
+not.
 
-Reading for the benchmark: elicitation and diagnosis separate. A model can
-run the conversation competently and still fail the case, which is exactly
-the distinction an execution-free multi-turn benchmark exists to make.
+**What separates them is not asking.** Proactiveness is a tie (0.968 vs
+0.946); both models interrogate the user competently. Every other rubric
+splits wide: explanation 0.804 vs 0.434, recovery 0.689 vs 0.318,
+hallucination 0.653 vs 0.979. Kimi also needs a third more rescues per
+case (4.0 vs 3.1) and exhausts its budget half again as often. It runs
+the conversation and then cannot close it — which is exactly the
+distinction an execution-free multi-turn benchmark exists to draw, and
+one a single-turn or patch-scored benchmark cannot see at all.
+
+**The correction changed which rubric carries the story.** On the corrupt
+numbers, hallucination looked like the whole explanation (0.857 vs
+0.252, a 0.61 gap). Re-judged, its gap is 0.33 — the same size as
+explanation (0.37) and recovery (0.37). The deficit is broad, not
+localised.
+
+**And it moved the strongest model's own result.** gpt-5.6's
+hallucination is 0.653, not the 0.252 the truncated judge reported: the
+best model here asserts things the conversation does not support in most
+of its cases. That is a finding about the state of the art, and the
+defect had hidden it.
 
 ## E-judge-ablation — what grounding the judge in the graph buys (preliminary)
 
@@ -467,27 +481,35 @@ stand as corpus-representative, and the main table agrees with them —
 0.6722 over 229 cases against 0.6559 for the same configuration on the
 subset, a gap inside the noise floor.
 
-## E5 main table — row 1 of 4
+## E5 main table — rows 1 and 2 of 4
 
 `scripts/main_table.py` · all 229 released cases, 30 turns, frozen
-configuration (fixes 1–4 and 6, fix 5 off)
+configuration (fixes 1-4 and 6, fix 5 off), judged after the truncation
+fix
 
 | row | n | grade | resolved | forced walk | ran out | turns | reveals/case |
 |---|---|---|---|---|---|---|---|
-| gpt-5.6 | 221 | 0.6722 | 64 (29%) | 106 (48%) | 43 (19%) | 20 | 3.1 |
+| gpt-5.6 | 229 | 0.5991 | 66 (29%) | 110 (48%) | 45 (20%) | 21 | 3.1 |
+| Kimi-2.5 | 229 | 0.3824 | 52 (23%) | 103 (45%) | 70 (31%) | 21 | 4.0 |
 
-`failed_dead_end` is **zero across all 229 cases** — the defect that
-ended 48–54% of every pre-fix run at a median of turn 5 does not survive
-anywhere in the corpus, not just in the slice it was diagnosed on.
+`failed_dead_end` is **zero across all 229 cases in both rows** — the
+defect that ended 48-54% of every pre-fix run at a median of turn 5 does
+not survive anywhere in the corpus, not just in the slice it was
+diagnosed on.
 
 Reading the columns together: fewer than a third of cases end with the
 user confirming a fix the agent earned, while nearly half arrive at the
-terminal only because the insurance walked them there, at 3.1 reveals per
-case. The remaining fifth exhaust 30 turns. That is the headroom this
+terminal only because the insurance walked them there, at 3-4 reveals per
+case. A fifth to a third exhaust 30 turns. That is the headroom this
 benchmark is for.
 
-Rows 2–4 (Kimi-2.5, GLM-5.1, gpt-5.5) follow in the same run; the table
-is updated as each lands.
+Both rows were judged twice. The first pass ran before the judge's
+truncation defect was found and reported 0.6736 and 0.4354; re-judging
+moved them to 0.5991 and 0.3824, and narrowed the gap by 0.022 — about
+one noise floor — because the defect had favoured gpt-5.6. Only the
+re-judged figures are quoted anywhere.
+
+Rows 3-4 (GLM-5.1, gpt-5.5) follow in the same run.
 
 ## E9 judge swap — does the ranking survive a different judge?
 
