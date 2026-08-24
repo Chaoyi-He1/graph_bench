@@ -27,6 +27,16 @@ import sys
 from pathlib import Path
 
 
+def _parse_errors(judged: dict) -> int:
+    """Rubric verdicts that came from a failed parse rather than a judge."""
+    return sum(
+        1
+        for v in judged.values()
+        for rv in (v.get('rubrics') or {}).values()
+        if rv.get('label') == 'parse_error'
+    )
+
+
 def audit(run_dir: str, expected: int | None) -> dict:
     transcripts = {
         os.path.basename(p)[:-6] for p in glob.glob(os.path.join(run_dir, '*.jsonl'))
@@ -55,6 +65,7 @@ def audit(run_dir: str, expected: int | None) -> dict:
     ]
     return {
         'run': os.path.basename(run_dir.rstrip('/')),
+        'parse_errors': _parse_errors(judged),
         'expected': expected,
         'transcripts': len(transcripts),
         'metrics': len(metrics),
@@ -79,8 +90,15 @@ def main() -> int:
     for run_dir in args:
         r = audit(run_dir, expected)
         short = (
-            expected is not None and r['judged'] < expected
-        ) or r['truncated'] or r['unjudged']
+            (expected is not None and r['judged'] < expected)
+            or r['truncated']
+            or r['unjudged']
+            # A row scored by the broken judge is not a shorter row, it is a
+            # wrong one: a failed parse became score 0.0, which the grade
+            # inverts on `hallucination` into free full marks. Mixing eras in
+            # one comparison manufactures an effect the size of the fix.
+            or r['parse_errors']
+        )
         mark = 'INCOMPLETE' if short else 'ok'
         target = f"/{r['expected']}" if r['expected'] else ''
         print(
@@ -103,6 +121,13 @@ def main() -> int:
             )
             print('      -> re-run `judge run` on the row; it skips cases '
                   'already judged')
+        if r['parse_errors']:
+            print(
+                f"   !! {r['parse_errors']} rubric verdicts came from a failed "
+                'parse, not a judge — this row predates the judge fix and '
+                'CANNOT be compared against a row judged after it'
+            )
+            print('      -> `judge run <row> --force` to re-judge it')
         if r['lost_resolved']:
             print(
                 f"   !! {len(r['lost_resolved'])} of the unjudged RESOLVED — "
