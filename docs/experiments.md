@@ -4,6 +4,26 @@ Running record of the experiments backing the paper. Every number here is
 reproducible from the scripts named beside it; per-case outputs live under
 `runs/` (git-ignored) and the aggregates are committed.
 
+## What each experiment asks
+
+| | question | verdict |
+|---|---|---|
+| E-contamination | can a model answer from the report alone, without asking? | no — 2.2% |
+| E-review | is single-pass model review usable as a release gate? | no; verification is what makes it usable |
+| E-variance | how far do identical runs drift, and how should claims be ruled? | 0.009-0.026; rule by a paired test, not by multiples |
+| E-simfix | was the harness charging agents for its own defects? | yes — only 7-11% of forced reveals were real failure |
+| E-leak | did the simulator ever say more than the agent earned? | no — 9 flags in 10,715 turns, all explained |
+| E-subset | is the 50-case subset representative of the corpus? | yes (p = 0.30) |
+| E-turnbudget | 20 turns or 30? | 30 — same grade, far fewer truncated cases |
+| E-main | how do four models compare over all 229 cases? | two tiers, 0.21 apart |
+| E-fairness | where exactly does the weaker tier lose? | not in asking; in explaining, recovering, and asserting |
+| E-leakprofile | what is the anti-leak invariant worth? | leaks observed under the alternative; grade effect not established |
+| E-simswap | does the result survive a different simulator? | yes, delta -0.0007 |
+| E-judgeswap | does the ranking survive a different judge? | queued |
+| E-judge-ablation | does grounding the judge in the graph buy discrimination? | no — the graph earns its place elsewhere |
+| E-images | do the reporter's screenshots matter? | not measured; the agent never read them |
+| E-counterfactual | does the agent's answer move when the evidence moves? | not measured; the sample was drawn wrong |
+
 ## E-contamination — is the corpus recall-solvable?
 
 `scripts/contamination_probe.py` · all 229 released cases
@@ -236,35 +256,15 @@ a floor on compliance, not a proof of it — but it is a floor no
 transcript-conditioned simulator can clear by construction, which is the
 comparison that matters.
 
-## E-turnbudget and the corrected noise floor
+## E-turnbudget — 20 turns against 30
 
-Two arms settled the turn cap and replaced the superseded E-variance
-figures. Both run the frozen configuration (fixes 1–4 and 6, fix 5 off)
-over the 50-case paired subset with gpt-5.6.
+50-case paired subset, gpt-5.6, frozen configuration.
 
-**Noise floor.** An arm intended as the no-images ablation passed
-`send_images` as an *agent* key, where the adapter ignores it — so it
-executed the baseline configuration a second time, byte for byte. Two
-identical rounds, 48 paired cases:
-
-| | round A | round B | drift |
-|---|---|---|---|
-| mean grade | 0.6360 | 0.6566 | **+0.021** |
-| per-case abs delta | | | mean 0.152, median 0.131 |
-| `resolved` verdict flips | | | 7/48 (**15%**) |
-
-That is three times the drift measured before the simulator fixes
-(0.007), and it narrows what the fix arms can claim: fix 1–4 (+0.053) and
-fix 1–4+6 (+0.060) stand at roughly 2.5–3× the floor, not the comfortable
-margin the earlier number implied. The old figure was small because half
-of every run died at turn 5, and truncated cases agree with each other.
-
-**Turn budget: 20 → 30.** The grade barely moves; the outcome
-distribution changes completely.
+The grade barely moves; the outcome distribution changes completely.
 
 | | 20 turns | 30 turns |
 |---|---|---|
-| mean grade | 0.6360 | 0.6559 (+0.020, = noise) |
+| mean grade | 0.6360 | 0.6504 (+0.014, t = 0.6 — not reportable) |
 | ran out of turns | 27 (56%) | **10 (21%)** |
 | `terminal_resolved` | 6 | 12 |
 | `forced_walk_to_terminal` | 15 | 24 |
@@ -273,8 +273,10 @@ distribution changes completely.
 Median turns rise 10% because only the cases that were being truncated
 use the extra room. Adopted at 30: a case that ends by exhausting its
 budget reports nothing about the agent, and more than half of them were
-doing that.
+doing that. The grade is not the reason — it does not move.
 
+(The noise floor once quoted here has moved to E-variance, which owns it
+and has since corrected it.)
 ## E-fairness — elicitation and diagnosis come apart
 
 > The 46-case version of this section is superseded and kept below for
@@ -362,34 +364,7 @@ Preliminary, and weak evidence: four runs of which two share a
 configuration. It is recomputed on the main table, where four genuinely
 different models over 229 cases make the comparison worth something.
 
-## E3 / E8 — built, not yet run
-
-Both are one queue entry away; they are listed here so the gap is on the
-record rather than implied by silence.
-
-**E3 counterfactual sensitivity** (`scripts/counterfactual.py`). 1,635
-alternative answers are authored across all 229 cases, each marked with
-whether the right fix changes as a result. `plan` draws a balanced sample
-— the two directions are 954 / 681, and sensitivity is the easier rate to
-score well on, so an unbalanced sample flatters the agent — and emits the
-`--sim-config` that executes each intervention, since `answer_overrides`
-is already served on every reveal path. `score` reports **sensitivity**
-(the proposal moved when it should have) against **specificity** (it held
-when it should not), ignoring solution calls that came from a forced
-reveal, which are the simulator's move rather than the agent's. Cost: one
-case-run per intervention, 60 in the default plan.
-
-**E8 simulator swap** (`scripts/run_row3.sh`). The simulator model drives
-both the simulated user and the turn→edge judge, so a result that only
-holds under one simulator is a property of that model rather than of the
-benchmark. The runner takes `SIM_MODEL` as a parameter; the check is the
-frozen configuration re-run on the variance subset under a different
-simulator, compared against the ±0.021 noise floor.
-
-Both are queued behind the main table, which has first call on the
-gateway.
-
-## E1 leakage — what the anti-leak invariant is worth
+## E-leakprofile — what the anti-leak invariant is worth
 
 `--sim-config '{"leak_profile": "A"}'` · 48 paired cases
 
@@ -421,7 +396,7 @@ transcript-conditioned simulator demonstrably says things the agent has
 not earned, and this design demonstrably does not. Whether that changes
 the headline score by a measurable amount is **not established here**.
 
-## E7 no-images — a null result, and why it is not evidence
+## E-images — a null result, and why it is not evidence
 
 `--sim-config '{"send_images": false}'` · 48 paired cases
 
@@ -441,7 +416,7 @@ middle of the main table and make rows incomparable. Until this ablation
 is re-run against a multimodal agent, the honest statement is that it has
 not been measured — not that images do not matter.
 
-## The 50-case subset every A/B was measured on — checked, and clean
+## E-subset — is the 50-case subset representative?
 
 The simulator fixes, the turn budget, the noise floor, the leakage
 inflation and the no-images ablation were all measured on the same
@@ -471,37 +446,7 @@ stand as corpus-representative, and the main table agrees with them —
 0.6722 over 229 cases against 0.6559 for the same configuration on the
 subset, a gap inside the noise floor.
 
-## E5 main table — rows 1 and 2 of 4
-
-`scripts/main_table.py` · all 229 released cases, 30 turns, frozen
-configuration (fixes 1-4 and 6, fix 5 off), judged after the truncation
-fix
-
-| row | n | grade | resolved | forced walk | ran out | turns | reveals/case |
-|---|---|---|---|---|---|---|---|
-| gpt-5.6 | 229 | 0.5991 | 66 (29%) | 110 (48%) | 45 (20%) | 21 | 3.1 |
-| Kimi-2.5 | 229 | 0.3824 | 52 (23%) | 103 (45%) | 70 (31%) | 21 | 4.0 |
-
-`failed_dead_end` is **zero across all 229 cases in both rows** — the
-defect that ended 48-54% of every pre-fix run at a median of turn 5 does
-not survive anywhere in the corpus, not just in the slice it was
-diagnosed on.
-
-Reading the columns together: fewer than a third of cases end with the
-user confirming a fix the agent earned, while nearly half arrive at the
-terminal only because the insurance walked them there, at 3-4 reveals per
-case. A fifth to a third exhaust 30 turns. That is the headroom this
-benchmark is for.
-
-Both rows were judged twice. The first pass ran before the judge's
-truncation defect was found and reported 0.6736 and 0.4354; re-judging
-moved them to 0.5991 and 0.3824, and narrowed the gap by 0.022 — about
-one noise floor — because the defect had favoured gpt-5.6. Only the
-re-judged figures are quoted anywhere.
-
-Rows 3-4 (GLM-5.1, gpt-5.5) follow in the same run.
-
-## E9 judge swap — does the ranking survive a different judge?
+## E-judgeswap — does the ranking survive a different judge?
 
 `scripts/judge_swap.py` · queued behind the main table
 
@@ -525,7 +470,7 @@ Reported as mean grade under each judge, per-case absolute delta, and
 Kendall's tau over the case ranking. The swap writes into a sibling
 directory so a check on the primary result can never overwrite it.
 
-## E5 main table — all four rows
+## E-main — the four-model table
 
 `scripts/main_table.py` · all 229 released cases, 30 turns, frozen
 configuration, judged after the truncation fix
@@ -563,3 +508,50 @@ Reading the columns together: fewer than a third of cases end with the
 user confirming a fix the agent earned, while roughly half arrive at a
 terminal only because the insurance walked them there, at 2.8–4.0 reveals
 per case. A fifth to a third exhaust 30 turns. That is the headroom.
+
+## E-simswap — does the result survive a different simulator?
+
+`scripts/run_row3.sh` with `SIM_MODEL` pinned to a different family · 50
+paired cases
+
+The simulator drives both the simulated user and the turn-to-edge judge,
+so a result that only holds under one simulator is a property of that
+model rather than of the benchmark.
+
+| | reference simulator | swapped simulator |
+|---|---|---|
+| mean grade | 0.6360 | 0.6353 |
+
+Paired delta **-0.0007**, t = -0.0, sign test p = 1.00 over 48 cases —
+indistinguishable, and by a wider margin than any other comparison in
+this file. The benchmark's scores are not an artefact of which model
+plays the user.
+
+## E-counterfactual — does the answer move when the evidence moves?
+
+`scripts/counterfactual.py` · 1,635 authored alternative answers over all
+229 cases, each marked with whether the right fix changes as a result
+
+> **First run void, by a sampling error.** 58 interventions executed
+> cleanly and only **5** could be scored: an intervention is readable
+> only against a case where the agent proposed a fix *of its own*, and in
+> the 20-turn baseline used for sampling, most cases reached their
+> terminal through a forced reveal. Where the proposal on record is the
+> simulator's, changing the user's answer cannot move something the agent
+> never chose. The planner did not filter on this and 55 of 60 came back
+> uncomparable.
+
+The fix is one constraint at sampling time, now in `plan --baseline`:
+draw only from cases where the baseline produced a self-earned solution
+call. Against the main-table row that is **146 of 229 cases**, all of
+which carry counterfactual candidates — so the experiment is
+comfortably feasible, it was simply drawn from the wrong pool.
+
+Re-drawn: 60 interventions over 53 cases, balanced 30/30 between variants
+that should change the fix and variants that should not. Queued.
+
+What it will report: **sensitivity** (the proposal moved when it should
+have) against **specificity** (it held when it should not). An agent that
+pattern-matches the opening report scores high on one and low on the
+other; only an agent actually conditioning on what the user said can score
+well on both.

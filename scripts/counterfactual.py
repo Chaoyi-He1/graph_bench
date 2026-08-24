@@ -59,9 +59,38 @@ def _released() -> list[dict]:
     return out
 
 
+def _self_earned(baseline: str) -> set[str]:
+    """
+    Cases where the baseline agent proposed a fix of its own.
+
+    An intervention is only readable against such a case. Where the agent
+    reached its terminal solely through a forced reveal, the proposal on
+    record is the simulator's, and changing the user's answer cannot move
+    something the agent never chose. The first run of this experiment did
+    not filter on it and 55 of 60 interventions came back uncomparable.
+    """
+    import glob as _glob  # noqa: PLC0415
+
+    out: set[str] = set()
+    for path in _glob.glob(os.path.join(baseline, '*.jsonl')):
+        case = os.path.basename(path)[:-6]
+        with open(path) as fh:
+            for line in fh:
+                event = json.loads(line).get('event') or {}
+                if event.get('solution_call') and not event.get('forced_reveal'):
+                    out.add(case)
+                    break
+    return out
+
+
 def plan(args: argparse.Namespace) -> int:
+    usable = _self_earned(args.baseline) if args.baseline else None
+    if usable is not None:
+        print(f'{len(usable)} cases in the baseline have a self-earned proposal')
     rows: list[dict] = []
     for task in _released():
+        if usable is not None and task['task_id'] not in usable:
+            continue
         for edge in task['graph']['edges']:
             for clar in edge.get('clarifications') or []:
                 for cf in clar.get('counterfactual_candidates') or []:
@@ -129,19 +158,23 @@ def _final_solution(run_dir: str, case: str) -> str | None:
 
 def score(args: argparse.Namespace) -> int:
     rows = [json.loads(line) for line in Path(args.plan).read_text().splitlines()]
-    sens_hit = sens_n = spec_hit = spec_n = missing = 0
+    sens_hit = sens_n = spec_hit = spec_n = missing = unearned = 0
     for row in rows:
-        variant_dir = os.path.join(
-            args.variants, f"cf-{row['task_id']}-{row['info_id']}", ''
-        )
-        variant_dir = next(
-            (d for d in glob.glob(variant_dir + '*') if os.path.isdir(d)),
-            variant_dir,
-        )
+        # The runner nests its output as <out>/<run_id>/, so a variant's
+        # transcripts sit one level below the directory named for it.
+        slug = f"cf-{row['task_id']}-{row['info_id']}"
+        variant_dir = os.path.join(args.variants, slug, slug)
         base = _final_solution(args.baseline, row['task_id'])
         var = _final_solution(variant_dir, row['task_id'])
         if base is None or var is None:
-            missing += 1
+            # Two different failures. Either the variant never ran, or one
+            # side reached its terminal only through a forced reveal and so
+            # has no proposal of the agent's own to compare. Lumping them
+            # together hides a sampling error behind an ops problem.
+            if not os.path.exists(os.path.join(variant_dir, row['task_id'] + '.jsonl')):
+                missing += 1
+            else:
+                unearned += 1
             continue
         changed = base != var
         if row['solution_should_change']:
@@ -150,7 +183,11 @@ def score(args: argparse.Namespace) -> int:
         else:
             spec_n += 1
             spec_hit += not changed
-    print(f'scored {sens_n + spec_n} interventions ({missing} not yet run)')
+    print(
+        f'scored {sens_n + spec_n} of {len(rows)} interventions '
+        f'({missing} never ran, {unearned} had no self-earned proposal on '
+        f'one side)'
+    )
     if sens_n:
         print(
             f'   sensitivity  {sens_hit}/{sens_n} '
@@ -170,6 +207,12 @@ def main() -> int:
     p = sub.add_parser('plan')
     p.add_argument('--n', type=int, default=60)
     p.add_argument('--out', default='runs/cf/plan.jsonl')
+    p.add_argument(
+        '--baseline',
+        help='baseline run dir; restricts the sample to cases where the '
+             'agent proposed a fix of its own, the only ones an '
+             'intervention can be read against',
+    )
     p.set_defaults(func=plan)
     s = sub.add_parser('score')
     s.add_argument('plan')
