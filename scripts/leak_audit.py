@@ -115,9 +115,14 @@ def _answer_vocab(task: dict) -> dict[str, set[str]]:
     out: dict[str, set[str]] = {}
     for edge in task['graph']['edges']:
         for clar in edge.get('clarifications') or []:
+            # Only the authored ANSWER is earned by asking. The id itself
+            # is a compressed description of that answer written by the
+            # corpus author, and treating its vocabulary as earned let the
+            # screen whitelist exactly the phrasing that would give a case
+            # away — which is how it missed ids being spoken verbatim.
             out[clar['info_id']] = _terms(
                 clar.get('user_answer_in_this_oncall') or ''
-            ) | _terms(clar['info_id'].replace('_', ' '))
+            )
     return out
 
 

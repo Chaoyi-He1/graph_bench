@@ -223,9 +223,19 @@ def partial_followup_draft(match: MatchResult) -> str:
 
 
 def describe_symptoms(node: Node, *, first_arrival: bool) -> str:
+    """
+    What the user says on reaching ``node``.
+
+    Volunteered info is stored as compressed English ids; they are spoken
+    as words, the same normalisation ``_respond_clarification`` applies.
+    This path used to concatenate them raw, so 6.4% of all user turns
+    across the main table contained a bare identifier — a real reporter
+    never says `build_containing_oid_handling_fix_resolves_error`, and
+    that particular id states the answer outright.
+    """
     parts = list(node.symptoms_visible)
     if first_arrival:
-        parts.extend(node.volunteered_info)
+        parts.extend(v.replace('_', ' ') for v in node.volunteered_info)
     return ' '.join(p for p in parts if p)
 
 
