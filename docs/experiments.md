@@ -53,57 +53,44 @@ Corollary from the rescue round: of 29 cases blocked in the first round,
 **25 passed after being redrafted** under the hardened rules. Their
 defects came from the generation prompt, not from the source threads.
 
-## E-variance — the noise floor any comparison must clear
+## E-variance — how far identical runs drift, and why that stopped being the ruling
 
-> **Superseded — re-measurement pending.** Both rounds below predate two
-> corrections. (i) The agent's per-turn output budget was left unset, so
-> the gateway capped output at 1000 tokens and a reasoning model spent it
-> all on reasoning; the affected rows returned empty replies, which score
-> as bad turns. `scripts/run_validity.py` now fails any row above a 5%
-> empty rate, and the current baseline passes at 0.0%. (ii) The simulator
-> fidelity fixes (see E-simfix) changed how turns are matched and how
-> stalls terminate. The **qualitative** conclusions below still hold —
-> aggregate grade is stable across identical runs while binary rates are
-> not — but every number must be re-measured before it is quoted.
+`scripts/recheck_claims.py` re-derives this and re-tests every claim
+that rested on it.
 
-Two **identical** rounds (same model, same prompts, same corpus, same
-judge) over a random 50-case paired subset of the frozen release, run
-from a git worktree pinned to the release tag so corpus edits cannot leak
-in. 49 cases completed in both rounds.
+Three arms are identical from the agent's side: the reference, one that
+passed a simulator flag as an agent key (the adapter ignores unknown
+keys), and one that switched off images a non-multimodal agent never
+read. Their pairwise drifts in mean grade:
 
-| metric | round A | round B | drift |
-|---|---|---|---|
-| mean grade | 0.5437 | 0.5363 | **−0.007** |
-| resolved | 10 (20.4%) | 6 (12.2%) | **−8.2 pts** |
-| reached terminal | 20 (40.8%) | 16 (32.7%) | **−8.1 pts** |
+| pair | n | drift |
+|---|---|---|
+| reference vs vision | 48 | 0.0091 |
+| vision vs no-images | 50 | 0.0184 |
+| reference vs no-images | 48 | 0.0260 |
 
-Per-case instability between the two identical runs:
+**Three measurements of one quantity, a factor of three apart.** Per-case
+absolute drift is 0.10–0.12 throughout, and roughly one `resolved`
+verdict in seven flips between identical runs.
 
-| | |
-|---|---|
-| cases whose `resolved` verdict flips | 8/49 (**16.3%**) |
-| cases whose `terminal` verdict flips | 8/49 (16.3%) |
-| per-case abs grade delta | mean 0.117, median 0.100, p90 0.250, max 0.429 |
-| cases with abs grade delta ≤ 0.05 | 12/49 (**24%**) |
+Two corrections follow, and the second matters more than the first.
 
-Two things follow, and they pull in opposite directions:
+**The earlier figure was wrong.** It was 0.021, measured on two arms
+judged before the judge's truncation defect was found; the random 0.0
+scores that defect produced inflated the apparent drift. Re-judged, the
+same pair drifts 0.0091.
 
-1. **The aggregate grade is stable.** Mean grade moved 0.007 between
-   identical runs — under 1.5% relative. A cross-model difference of a few
-   hundredths on this metric is meaningful at n≈50.
-2. **Binary outcome rates and per-case scores are not.** `resolved` and
-   `terminal` each moved ~8 points, and one case in six flips outright;
-   three quarters of cases move more than 0.05 in grade. A single run
-   cannot support a per-case claim, and a resolved-rate gap smaller than
-   roughly 8 points at this sample size is inside the noise.
+**And the ruling should never have been a multiple of it.** Every
+"reportable / not reportable" call in this file was `delta / floor >= 2`.
+That heuristic ignores sample size, which is exactly the information
+needed: a 0.036 difference over 229 cases is real (paired t = 3.4, sign
+test p = 0.001) while a 0.037 difference over 48 is not (t = 1.8,
+p = 0.19). Ruling by multiples got both of those backwards.
 
-Practical rules adopted for the paper: report mean grade as the headline
-comparison metric; report resolved/terminal rates only with ≥2 rounds per
-configuration and state the observed drift band alongside them; never
-draw a conclusion about an individual case from one run.
-
-This is also why the benchmark's own difficulty profile is quoted from
-the larger round (n=164) rather than from the variance subset.
+Rulings now come from a paired test — t > 2.6 **and** sign-test p < 0.01,
+both required, since t is sensitive to a few large swings and the sign
+test only to direction. The drift table above is reported as context, not
+as a denominator.
 
 ## E-simfix — what the simulator was measuring that the agent did not do
 
@@ -311,9 +298,9 @@ All 229 released cases, 30 turns, both rows re-judged after the fix:
 | rubric explanation | 0.804 | 0.434 |
 | rubric recovery | 0.689 | 0.318 |
 
-The grade gap is 0.217, **10.3× the noise floor** — reportable. The
-`resolved` gap is 6 points against 15 points of verdict flipping, and is
-not.
+The grade gap is 0.217, paired t = 20.4 over 229 cases — reportable by
+a wide margin. The `resolved` gap is 6 points against roughly one verdict
+in seven flipping between identical runs, and is not.
 
 **What separates them is not asking.** Proactiveness is a tie (0.968 vs
 0.946); both models interrogate the user competently. Every other rubric
@@ -402,9 +389,9 @@ simulator, compared against the ±0.021 noise floor.
 Both are queued behind the main table, which has first call on the
 gateway.
 
-## E1 leakage inflation — what the anti-leak invariant is worth
+## E1 leakage — what the anti-leak invariant is worth
 
-`--sim-config '{"leak_profile": "A"}'` · 48 paired cases, frozen config
+`--sim-config '{"leak_profile": "A"}'` · 48 paired cases
 
 Profile A hands the simulator the reconstructed resolved conversation
 before it speaks — the way a transcript-conditioned simulator works, and
@@ -412,24 +399,27 @@ the design this benchmark argues against. Everything else is identical.
 
 | | profile C (production) | profile A (transcript-conditioned) |
 |---|---|---|
-| mean grade | 0.6360 | **0.6728** (+0.037, 26↑/22↓) |
-| `terminal_resolved` | 6 | 9 |
-| `forced_walk_to_terminal` | 15 | 9 |
-| turns flagged by `leak_audit.py` | 0 / 913 | **3 / 916** |
+| mean grade | 0.6360 | 0.6730 (+0.037) |
+| turns flagged by `leak_audit.py` | **0 / 913** | **3 / 916** |
 
-Conditioning the simulator on the answer inflates the headline grade by
-+0.037 — 1.75× the noise floor — and converts six forced walks into
-earned terminals. The agent is credited for reaching states the user
-steered it to. The per-case split is nearly even (26 up, 22 down), so
-this is an aggregate effect and no individual case should be read from
-it.
+> **Retracted:** this section previously reported the +0.037 as leakage
+> inflation worth 1.75x the noise floor, and argued the invariant's value
+> from it. Under a paired test it does not hold — t = 1.8, sign test
+> p = 0.19 over 48 cases. The difference is not distinguishable from
+> run-to-run drift at this sample size. Establishing a grade effect would
+> need the full corpus or repeated rounds; neither has been run.
 
-The lexical screen catches three leaked turns under A against zero under
-C. That is a floor, not a measure: the screen finds vocabulary appearing
-where it should not, and cannot catch a simulator that paraphrases the
-answer. The grade inflation is the better estimate of the damage, and it
-is the number a transcript-conditioned benchmark cannot subtract from its
-own results because it has no leak-free arm to compare against.
+What survives is the direct observation, and it is the stronger evidence
+anyway: the lexical screen catches three leaked turns under A and none
+under C. That is leakage seen, not inferred from a score. The screen is a
+floor rather than a measure — it finds vocabulary appearing where it
+should not and cannot catch paraphrase — so three-versus-zero understates
+whatever profile A actually leaks.
+
+The honest statement of the invariant's worth is therefore: a
+transcript-conditioned simulator demonstrably says things the agent has
+not earned, and this design demonstrably does not. Whether that changes
+the headline score by a measurable amount is **not established here**.
 
 ## E7 no-images — a null result, and why it is not evidence
 
@@ -534,3 +524,42 @@ What the comparison decides:
 Reported as mean grade under each judge, per-case absolute delta, and
 Kendall's tau over the case ranking. The swap writes into a sibling
 directory so a check on the primary result can never overwrite it.
+
+## E5 main table — all four rows
+
+`scripts/main_table.py` · all 229 released cases, 30 turns, frozen
+configuration, judged after the truncation fix
+
+| model | n | grade | resolved | forced walk | ran out | turns | reveals/case |
+|---|---|---|---|---|---|---|---|
+| gpt-5.6 | 229 | **0.5991** | 66 (29%) | 110 (48%) | 45 (20%) | 21 | 3.1 |
+| gpt-5.5 | 229 | **0.5634** | 71 (31%) | 103 (45%) | 47 (21%) | 20 | 2.8 |
+| GLM-5.1 | 229 | **0.3877** | 59 (26%) | 115 (50%) | 49 (21%) | 22 | 3.7 |
+| Kimi-2.5 | 229 | **0.3824** | 52 (23%) | 103 (45%) | 70 (31%) | 21 | 4.0 |
+
+Every row: 229/229 transcripts, metrics and judgments reconciled by
+`run_integrity.py`; empty-reply rate 0.0–0.4%; `failed_dead_end` zero.
+
+Rulings from `recheck_claims.py`, paired t with a sign test:
+
+| comparison | delta | t | sign p | |
+|---|---|---|---|---|
+| gpt-5.6 vs Kimi-2.5 | +0.217 | 20.4 | <0.0001 | reportable |
+| gpt-5.6 vs GLM-5.1 | +0.211 | 19.4 | <0.0001 | reportable |
+| gpt-5.6 vs gpt-5.5 | +0.036 | 3.4 | 0.001 | reportable |
+| GLM-5.1 vs Kimi-2.5 | +0.005 | 0.6 | 0.046 | not reportable |
+
+Two tiers, and the split between them is enormous — 0.21 of grade, five
+times the within-tier gap that is itself detectable. Inside the GPT tier
+the 0.036 difference is small but real at n=229; between GLM-5.1 and
+Kimi-2.5 there is nothing to call.
+
+The within-GPT ruling is one the earlier noise-floor heuristic got wrong
+in both directions: it called this pair indistinguishable and called a
+0.037 difference over 48 cases real. Sample size is what separates them,
+and a multiple of a drift estimate cannot see it.
+
+Reading the columns together: fewer than a third of cases end with the
+user confirming a fix the agent earned, while roughly half arrive at a
+terminal only because the insurance walked them there, at 2.8–4.0 reveals
+per case. A fifth to a third exhaust 30 turns. That is the headroom.
