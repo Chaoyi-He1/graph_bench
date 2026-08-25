@@ -52,11 +52,11 @@ p < 0.01.
 | leak profile A vs C | 48 | +0.0370 | 1.8 | 0.1934 | not distinguishable |
 | turn budget 20 vs 30 | 48 | +0.0144 | 0.6 | 0.8854 | not distinguishable |
 | simulator swap | 48 | -0.0007 | -0.0 | 1.0000 | not distinguishable |
-| images on vs off (multimodal) | — | | | | **pending** |
+| images on vs off (multimodal) | 90 | -0.0146 | -1.1 | 0.2461 | not distinguishable |
 | judge swap (GLM-5.1) | — | | | | **pending** |
 
 ## Still pending
 
-- counterfactual interventions: 58 run directories present; scored figure lands with the re-drawn plan
+- counterfactual interventions: 111 run directories present; scored figure lands with the re-drawn plan
 - judge vs human agreement: needs annotation; the sheet and tool exist
 

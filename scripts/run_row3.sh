@@ -21,7 +21,15 @@ uv run --native-tls python -m graph_bench backbone run \
   --run-id "$run_id" --out "$out" --online --max-turns "$turns" \
   --concurrency 6 >> "$log" 2>&1
 rc=$?
-got=$(ls "$rd"/*.jsonl 2>/dev/null | wc -l | tr -d ' ')
+# A transcript file appears when a case STARTS, so counting files
+# accepts a run whose cases all crashed. metrics.json gains an entry only
+# on completion; that is the number to check.
+got=$(python3 - "$rd" <<'PYCHK'
+import json, os, sys
+p = os.path.join(sys.argv[1], 'metrics.json')
+print(len(json.load(open(p))['testcases']) if os.path.exists(p) else 0)
+PYCHK
+)
 floor=$(( expected * 95 / 100 ))
 if [ "$got" -lt "$floor" ]; then
   echo "== $run_id: backbone rc=$rc, ${got}/${expected} transcripts — NOT judging"

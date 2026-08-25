@@ -47,9 +47,14 @@ def judge(args: argparse.Namespace) -> int:
     dst.mkdir(parents=True, exist_ok=True)
     # Transcripts and metrics are the judge's input; copying them keeps the
     # original judgments.json untouched by this check.
-    for path in list(src.glob('*.jsonl')) + [src / 'metrics.json']:
+    # run.json too: the recorder's loader needs the run header, and
+    # leaving it out made every swap die on the first read.
+    for path in list(src.glob('*.jsonl')) + [
+        src / 'metrics.json',
+        src / 'run.json',
+    ]:
         target = dst / path.name
-        if not target.exists():
+        if path.exists() and not target.exists():
             shutil.copy2(path, target)
     print(f'judging {len(list(dst.glob("*.jsonl")))} transcripts with {args.model}')
     return subprocess.call([
