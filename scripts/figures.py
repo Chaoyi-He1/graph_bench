@@ -332,6 +332,145 @@ def fig_reliability() -> None:
     save(fig, 'f5_reliability')
 
 
+
+
+
+# --------------------------------------------------------------- F6
+def fig_all_comparisons() -> None:
+    """Every comparison in one panel, nulls included.
+
+    Five separate plots of five small effects would each look like a
+    finding. Together, with a confidence interval apiece, they read as
+    what they are: two large model differences, one small real one, and a
+    row of interventions that changed nothing measurable. A null belongs
+    in the figure — omitted, it reads as an experiment nobody ran.
+    """
+    from math import sqrt
+
+    COMPARISONS = [
+        ('gpt-5.6  vs  Kimi-2.5', f'{M}/m-kimi25/m-kimi25', f'{M}/m-gpt56/m-gpt56'),
+        ('gpt-5.6  vs  GLM-5.1', f'{M}/m-glm51/m-glm51', f'{M}/m-gpt56/m-gpt56'),
+        ('gpt-5.6  vs  gpt-5.5', f'{M}/m-gpt55/m-gpt55', f'{M}/m-gpt56/m-gpt56'),
+        ('GLM-5.1  vs  Kimi-2.5', f'{M}/m-kimi25/m-kimi25', f'{M}/m-glm51/m-glm51'),
+        ('simulator sees the answer', f'{M}/gpt56-fix6/gpt56-fix6', f'{M}/gpt56-leakA/gpt56-leakA'),
+        ('30 turns instead of 20', f'{M}/gpt56-fix6/gpt56-fix6', f'{M}/gpt56-t30/gpt56-t30'),
+        ('screenshots attached', f'{M}/e7-mm-off/e7-mm-off', f'{M}/e7-mm-on/e7-mm-on'),
+        ('a different simulator model', f'{M}/gpt56-fix6/gpt56-fix6', f'{M}/e8-simswap/e8-simswap'),
+        ('the same run, twice', f'{M}/gpt56-fix6/gpt56-fix6', f'{M}/gpt56-vision/gpt56-vision'),
+    ]
+    rows = []
+    for label, lo, hi in COMPARISONS:
+        ga, gb = (
+            {c: v['grade'] for c, v in judged(r).items() if v.get('grade') is not None}
+            for r in (lo, hi)
+        )
+        common = sorted(set(ga) & set(gb))
+        if len(common) < 3:
+            continue
+        d = [gb[c] - ga[c] for c in common]
+        mean = st.mean(d)
+        half = 2.6 * st.stdev(d) / sqrt(len(d))
+        rows.append((label, mean, half, len(common), abs(mean) > half))
+
+    fig, ax = plt.subplots(figsize=(5.8, 3.2))
+    ys = list(range(len(rows)))[::-1]
+    for y, (label, mean, half, n, real) in zip(ys, rows):
+        colour = TIER_A if real else NEUTRAL
+        ax.plot([mean - half, mean + half], [y, y], color=colour,
+                linewidth=1.5, solid_capstyle='round', alpha=0.85)
+        ax.plot([mean], [y], marker='o', markersize=5, color=colour)
+        ax.text(0.315, y, f'n={n}', fontsize=6.8, color=MUTED, va='center')
+    ax.axvline(0, color=INK, linewidth=0.8)
+    ax.set_yticks(ys)
+    ax.set_yticklabels([r[0] for r in rows], fontsize=7.6)
+    ax.set_xlim(-0.06, 0.36)
+    ax.set_xlabel('difference in mean grade (bars: 99% interval)')
+    ax.set_title('What moved the score, and what did not')
+    ax.grid(axis='x', color=RULE, linewidth=0.6, alpha=0.7)
+    ax.set_axisbelow(True)
+    save(fig, 'f6_all_comparisons')
+
+
+# --------------------------------------------------------------- F7
+def fig_interaction_value() -> None:
+    """What the conversation is worth, which is the paper's premise.
+
+    Handed the opening report alone, a model names both mechanism and fix
+    in 2.2% of cases. Allowed to interrogate the user, the same family
+    earns a confirmed fix in 29%. The two are graded differently — one by
+    a grader holding the answer key, one by the simulated reporter — so
+    this is an order-of-magnitude claim, not a ratio to quote to two
+    decimal places.
+    """
+    fig, ax = plt.subplots(figsize=(4.4, 2.3))
+    bars = [
+        ('report only,\nno questions', 2.2, NEUTRAL),
+        ('report only,\npartial credit', 5.7, RULE),
+        ('30 turns of\nconversation', 28.8, TIER_A),
+    ]
+    xs = range(len(bars))
+    ax.bar(xs, [b[1] for b in bars], color=[b[2] for b in bars], width=0.55)
+    for x, (_, v, _) in zip(xs, bars):
+        ax.text(x, v + 0.9, f'{v:.1f}%', ha='center', fontsize=8,
+                fontweight='bold')
+    ax.set_xticks(list(xs))
+    ax.set_xticklabels([b[0] for b in bars], fontsize=7.4)
+    ax.set_ylim(0, 34)
+    ax.set_ylabel('cases solved (%)')
+    ax.set_title('Interaction is worth an order of magnitude')
+    ax.grid(axis='y', color=RULE, linewidth=0.6, alpha=0.7)
+    ax.set_axisbelow(True)
+    save(fig, 'f7_interaction_value')
+
+
+# --------------------------------------------------------------- F8
+def fig_corpus() -> None:
+    """What the corpus is made of, in the two dimensions that matter:
+    where the cases come from, and how hard their evidence is to obtain."""
+    graphs = sorted(glob.glob('/tmp/gb-v6/data/released/graphs/*.json'))
+    if not graphs:
+        return
+    levels = {'L1_basic': 0, 'L2_inferable': 0, 'L3_specific': 0}
+    nodes, edges, blind = [], [], 0
+    for path in graphs:
+        g = json.loads(Path(path).read_text())['graph']
+        nodes.append(len(g['nodes']))
+        edges.append(len(g['edges']))
+        for e in g['edges']:
+            if (e.get('solution') or {}).get('is_known_blind_path'):
+                blind += 1
+            for c in e.get('clarifications') or []:
+                if c.get('level') in levels:
+                    levels[c['level']] += 1
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(6.4, 2.2))
+    ax1.hist(nodes, bins=range(min(nodes), max(nodes) + 2), color=NEUTRAL,
+             edgecolor='white', linewidth=0.8, align='left')
+    ax1.set_xlabel('states per case')
+    ax1.set_ylabel('cases')
+    ax1.set_title(f'{len(graphs)} cases', fontsize=8.5)
+    ax1.grid(axis='y', color=RULE, linewidth=0.6, alpha=0.7)
+    ax1.set_axisbelow(True)
+
+    order = ['L1_basic', 'L2_inferable', 'L3_specific']
+    names = ['L1\nstated unprompted', 'L2\ninferable', 'L3\nmust be asked']
+    total = sum(levels.values()) or 1
+    ax2.bar(range(3), [100 * levels[k] / total for k in order],
+            color=[RULE, NEUTRAL, TIER_A], width=0.55)
+    for i, k in enumerate(order):
+        ax2.text(i, 100 * levels[k] / total + 1.5,
+                 f'{100 * levels[k] / total:.0f}%', ha='center',
+                 fontsize=8, fontweight='bold')
+    ax2.set_xticks(range(3))
+    ax2.set_xticklabels(names, fontsize=7.2)
+    ax2.set_ylim(0, 100)
+    ax2.set_ylabel('of all clarifications')
+    ax2.set_title('Most evidence has to be asked for', fontsize=8.5)
+    ax2.grid(axis='y', color=RULE, linewidth=0.6, alpha=0.7)
+    ax2.set_axisbelow(True)
+    save(fig, 'f8_corpus')
+
+
 def main() -> int:
     _style()
     print('writing figures to paper/figures/')
@@ -340,6 +479,9 @@ def main() -> int:
     fig_outcomes()
     fig_harness_defects()
     fig_reliability()
+    fig_all_comparisons()
+    fig_interaction_value()
+    fig_corpus()
     return 0
 
 
