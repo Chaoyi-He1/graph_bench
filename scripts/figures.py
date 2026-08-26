@@ -349,62 +349,98 @@ def fig_reliability() -> None:
 
 # --------------------------------------------------------------- F6
 def fig_all_comparisons() -> None:
-    """Every comparison in one panel, nulls included.
+    """Every comparison in one panel, nulls included -- grouped by intent.
 
-    Five separate plots of five small effects would each look like a
-    finding. Together, with a confidence interval apiece, they read as
-    what they are: two large model differences, one small real one, and a
-    row of interventions that changed nothing measurable. A null belongs
-    in the figure — omitted, it reads as an experiment nobody ran.
+    The first version of this figure put nine rows on one axis in two
+    colours, real and not-real. Read cold, that says "nothing we did to
+    this benchmark changed anything", which is both the wrong reading and
+    an easy one to reach. Two things fix it.
+
+    First, a null means different things in different rows. A simulator
+    swap that moves nothing is a *robustness result* -- the literature
+    reports swaps moving success by up to 9 points. A leak ablation that
+    moves nothing is a *problem for our motivation*. Painting them the
+    same grey throws away the first and hides the second, so the rows are
+    grouped by what a null would mean.
+
+    Second, these nulls are measured at n=48, where the 99% interval is
+    +/-0.06 -- more than twice the resolution of the n=229 rows. A null
+    there is a bound, not an absence, so each one is annotated with the
+    bound it actually supports.
     """
     from math import sqrt
 
-    COMPARISONS = [
-        ('gpt-5.6  vs  Kimi-2.5', f'{M}/m-kimi25/m-kimi25', f'{M}/m-gpt56/m-gpt56'),
-        ('gpt-5.6  vs  GLM-5.1', f'{M}/m-glm51/m-glm51', f'{M}/m-gpt56/m-gpt56'),
-        ('gpt-5.6  vs  gpt-5.5', f'{M}/m-gpt55/m-gpt55', f'{M}/m-gpt56/m-gpt56'),
-        ('GLM-5.1  vs  Kimi-2.5', f'{M}/m-kimi25/m-kimi25', f'{M}/m-glm51/m-glm51'),
-        ('simulator sees the answer', f'{M}/gpt56-fix6/gpt56-fix6', f'{M}/gpt56-leakA/gpt56-leakA'),
-        ('30 turns instead of 20', f'{M}/gpt56-fix6/gpt56-fix6', f'{M}/gpt56-t30/gpt56-t30'),
-        ('screenshots attached', f'{M}/e7-mm-off/e7-mm-off', f'{M}/e7-mm-on/e7-mm-on'),
-        ('a different simulator model', f'{M}/gpt56-fix6/gpt56-fix6', f'{M}/e8-simswap/e8-simswap'),
-        ('the same run, twice', f'{M}/gpt56-fix6/gpt56-fix6', f'{M}/gpt56-vision/gpt56-vision'),
+    GROUPS = [
+        ('Model comparisons  --  what the benchmark is for', [
+            ('gpt-5.6  vs  Kimi-2.5', f'{M}/m-kimi25/m-kimi25', f'{M}/m-gpt56/m-gpt56'),
+            ('gpt-5.6  vs  GLM-5.1', f'{M}/m-glm51/m-glm51', f'{M}/m-gpt56/m-gpt56'),
+            ('gpt-5.6  vs  gpt-5.5', f'{M}/m-gpt55/m-gpt55', f'{M}/m-gpt56/m-gpt56'),
+            ('GLM-5.1  vs  Kimi-2.5', f'{M}/m-kimi25/m-kimi25', f'{M}/m-glm51/m-glm51'),
+        ]),
+        ('Robustness  --  a null here is the result we want', [
+            ('a different simulator model', f'{M}/gpt56-fix6/gpt56-fix6', f'{M}/e8-simswap/e8-simswap'),
+            ('screenshots attached', f'{M}/e7-mm-off/e7-mm-off', f'{M}/e7-mm-on/e7-mm-on'),
+            ('30 turns instead of 20', f'{M}/gpt56-fix6/gpt56-fix6', f'{M}/gpt56-t30/gpt56-t30'),
+        ]),
+        ('Design ablation  --  a null here counts against us', [
+            ('simulator sees the answer', f'{M}/gpt56-fix6/gpt56-fix6', f'{M}/gpt56-leakA/gpt56-leakA'),
+        ]),
+        ('Reference', [
+            ('the same run, twice', f'{M}/gpt56-fix6/gpt56-fix6', f'{M}/gpt56-vision/gpt56-vision'),
+        ]),
     ]
-    rows = []
-    for label, lo, hi in COMPARISONS:
-        ga, gb = (
-            {c: v['grade'] for c, v in judged(r).items() if v.get('grade') is not None}
-            for r in (lo, hi)
-        )
-        common = sorted(set(ga) & set(gb))
-        if len(common) < 3:
-            continue
-        d = [gb[c] - ga[c] for c in common]
-        mean = st.mean(d)
-        half = 2.6 * st.stdev(d) / sqrt(len(d))
-        rows.append((label, mean, half, len(common), abs(mean) > half))
 
-    fig, ax = plt.subplots(figsize=(5.8, 3.2))
-    ys = list(range(len(rows)))[::-1]
-    for y, (label, mean, half, n, real) in zip(ys, rows):
+    items = []   # (kind, payload) with kind in {'head', 'row'}
+    for title, comps in GROUPS:
+        rows = []
+        for label, lo, hi in comps:
+            ga, gb = (
+                {c: v['grade'] for c, v in judged(r).items()
+                 if v.get('grade') is not None}
+                for r in (lo, hi)
+            )
+            common = sorted(set(ga) & set(gb))
+            if len(common) < 3:
+                continue
+            d = [gb[c] - ga[c] for c in common]
+            mean = st.mean(d)
+            half = 2.6 * st.stdev(d) / sqrt(len(d))
+            rows.append((label, mean, half, len(common), abs(mean) > half))
+        if rows:
+            items.append(('head', title))
+            items.extend(('row', r) for r in rows)
+
+    fig, ax = plt.subplots(figsize=(6.1, 4.5))
+    ys = list(range(len(items)))[::-1]
+    body = [(y, p) for y, (k, p) in zip(ys, items) if k == 'row']
+    xhi = max(m + h for _, (_, m, h, _, _) in body)
+    xlo = min(m - h for _, (_, m, h, _, _) in body)
+    gutter = xhi + 0.015
+
+    for y, (kind, payload) in zip(ys, items):
+        if kind == 'head':
+            ax.text(xlo - 0.021, y, payload, fontsize=7.2, color=INK,
+                    style='italic', va='center', ha='left')
+            continue
+        label, mean, half, n, real = payload
         colour = TIER_A if real else NEUTRAL
         ax.plot([mean - half, mean + half], [y, y], color=colour,
                 linewidth=1.5, solid_capstyle='round', alpha=0.85)
         ax.plot([mean], [y], marker='o', markersize=5, color=colour)
-    # The n= labels used to sit at a hardcoded x=0.315, which the two
-    # cross-tier bars (mean 0.345, reaching 0.356) ran straight through.
-    # Reserve a gutter past the widest bar instead.
-    xhi = max(m + h for _, m, h, _, _ in rows)
-    xlo = min(m - h for _, m, h, _, _ in rows)
-    for y, (_, _, _, n, _) in zip(ys, rows):
-        ax.text(xhi + 0.015, y, f'n={n}', fontsize=6.8, color=MUTED,
-                va='center')
+        # A null is a bound, not an absence -- say which bound.
+        note = f'n={n}' if real else f'n={n}   |effect| < {half:.3f}'
+        ax.text(gutter, y, note, fontsize=6.6, color=MUTED, va='center')
+
     ax.axvline(0, color=INK, linewidth=0.8)
-    ax.set_yticks(ys)
-    ax.set_yticklabels([r[0] for r in rows], fontsize=7.6)
-    ax.set_xlim(min(xlo, 0) - 0.02, xhi + 0.065)
+    ax.set_yticks([y for y, (k, _) in zip(ys, items) if k == 'row'])
+    ax.set_yticklabels([p[0] for k, p in items if k == 'row'], fontsize=7.4)
+    ax.set_xlim(xlo - 0.023, gutter + 0.105)
     ax.set_xlabel('difference in mean grade (bars: 99% interval)')
-    ax.set_title('What moved the score, and what did not')
+    # The top group header sits at the highest y, where an untouched
+    # ylim puts it straight through the title.
+    ax.set_ylim(min(ys) - 0.7, max(ys) + 0.9)
+    ax.set_title('Effect sizes, and the resolution that bounds them',
+                 pad=12)
     ax.grid(axis='x', color=RULE, linewidth=0.6, alpha=0.7)
     ax.set_axisbelow(True)
     save(fig, 'f6_all_comparisons')
