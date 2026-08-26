@@ -626,55 +626,49 @@ it. Whether the **cross-model ranking** survives the swap is the question
 this experiment exists to answer, and it needs all four rows; three are
 still being judged.
 
-## E-judgeswap — the headline gap does not survive a different judge
+## E-judgeswap — a scale inversion, not a judge disagreement
 
-`scripts/judge_swap.py` · rows one and two re-judged by GLM-5.1
+`scripts/judge_swap.py` · rows one and two, re-judged by GLM-5.1
 
-| comparison | judge | n | delta | t | sign p | |
-|---|---|---|---|---|---|---|
-| gpt-5.6 vs Kimi-2.5 | primary (gpt-5.6 family) | 229 | +0.2167 | 20.4 | <0.0001 | real |
-| gpt-5.6 vs Kimi-2.5 | GLM-5.1 | 229 | **+0.0090** | **0.7** | **0.39** | **not distinguishable** |
+Re-judging with a different family first appeared to destroy the headline
+result: gpt-5.6 over Kimi-2.5 was +0.2167 (t = 20.4) under the primary
+judge and +0.0090 (t = 0.7) under GLM-5.1. The two checks that would
+explain that away both failed — the alternative judge's grades spread as
+widely as the primary's (sd 0.120 and 0.165 against 0.144 and 0.135), and
+the divergence was not a uniform offset but concentrated almost entirely
+in one rubric cell: Kimi's hallucination, 0.979 against 0.494.
 
-The two-tier result — this paper's headline — is a property of the judge
-that produced it. Under a judge from a different family the same 458
-transcripts show no separation at all.
+Reading the two judges' rationales for the same case settled it. On
+`gh_trinodb_trino_24572` the primary wrote that the agent *"asserted a
+definitive leak, cited unverified issue numbers and even a placeholder
+commit"* and scored **1.0**. GLM-5.1 wrote that the agent *"repeatedly
+hallucinated specific GitHub issue numbers, commit hashes and version
+numbers to support its incorrect diagnosis"* and scored **0.0**.
 
-**The alternative judge is not merely insensitive.** Its grades spread as
-widely as the primary's (sd 0.120 and 0.165 against 0.144 and 0.135) and
-span 0.21 to 1.00, so it is not compressing everyone toward a mean.
+**The judges agree about what happened and disagree about which end of
+the scale means it.** Across 229 cases their hallucination scores
+correlate at **−0.16**.
 
-**And the disagreement is not a yardstick offset.** The two judges nearly
-agree on gpt-5.6 (0.599 vs 0.555) and diverge on Kimi-2.5 (0.382 vs
-0.546). Localised by rubric, almost all of it is one cell:
+The cause was in the prompt, which never stated a direction:
 
-| Kimi-2.5 rubric | primary | GLM-5.1 | difference |
-|---|---|---|---|
-| hallucination (0 = clean) | **0.979** | **0.494** | **−0.485** |
-| explanation | 0.434 | 0.740 | +0.305 |
-| recovery | 0.318 | 0.424 | +0.106 |
-| proactiveness | 0.946 | 0.866 | −0.079 |
+```
+Judge whether the agent claimed unsupported facts.
+Return JSON with keys score (0-1), rationale, evidence_turn_indices
+```
 
-On gpt-5.6 no cell moves by more than 0.14. On Kimi the two judges make
-**opposite factual claims** about whether the agent asserted things the
-conversation does not support — the primary says nearly every case, the
-alternative says about half.
+Nothing there says whether 1 means "hallucinated heavily" or "did well".
+The primary read it as a quantity of hallucination, GLM as a quality
+score. Both readings are defensible, which is the defect.
 
-That question has a checkable answer: whether a specific assertion
-appears in the transcript is verifiable by reading it, unlike "is this
-explanation good". Which judge is right about Kimi is therefore
-decidable, and it is decidable **only by a human**, which is the study
-this repository has built and not yet run.
+Every rubric instruction now states its direction and both anchors —
+including the three whose direction had only ever been implicit, and
+therefore only ever lucky. **The numbers above are void and so is the
+conclusion drawn from them**; the swap is re-running against the fixed
+prompts, and whether the ranking survives is once again an open question
+rather than a settled one.
 
-Until then, three statements hold and the fourth does not:
-
-- The **two-tier gap must not be reported as a property of the models.**
-  It is a property of the models *as scored by a gpt-family judge*, and a
-  second judge does not reproduce it.
-- The **within-tier ruling is unaffected** in the sense that it was never
-  large enough to matter either way.
-- E-fairness's *shape* — asking is saturated, the other rubrics separate
-  — is what both judges agree on for gpt-5.6, and what they dispute for
-  Kimi. Its Kimi half is now contingent.
-- **The judge–human agreement study is no longer optional.** It was the
-  last item on the list; it is now the item the headline result depends
-  on.
+Worth recording that this is the **third** time the same trap has been
+sprung here: the annotation sheet told a human "1 = nothing invented"
+while the judge meant the reverse; the agreement scorer averaged the
+rubrics raw; and now the judge's own prompt. A scale whose direction is
+not written down will eventually be read both ways.
