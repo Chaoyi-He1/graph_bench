@@ -186,6 +186,7 @@ def fig_rubrics() -> None:
         'recovery': 'recovers from\na failed step',
     }
     xs = range(len(RUBRICS))
+    ys_by_model: dict[str, list[float]] = {}
     for name, run, colour in ROWS:
         data = judged(run)
         ys = []
@@ -199,6 +200,7 @@ def fig_rubrics() -> None:
             # Plot everything as "higher is better" so one line does not
             # run backwards against the others.
             ys.append(1 - mean if rub == 'hallucination' else mean)
+        ys_by_model[name] = ys
         ax.plot(xs, ys, marker='o', markersize=4, linewidth=1.6,
                 color=colour, label=name, alpha=0.92)
         ax.annotate(name, (xs[-1], ys[-1]), xytext=(6, 0),
@@ -209,11 +211,21 @@ def fig_rubrics() -> None:
     ax.set_xticklabels([display[r] for r in RUBRICS], fontsize=7.4)
     ax.set_ylim(0, 1.0)
     ax.set_ylabel('score (higher is better)')
-    # The dip is the finding, not a blemish: asking is saturated, and
-    # nobody stays inside the evidence — the best model manages 0.35.
-    ax.set_title(
-        'Asking is solved. Staying inside the evidence is not — by anyone.'
-    )
+    # NOTE: the title asserts a shape, so it is generated from the data
+    # rather than typed. Under the first rubric wording proactiveness sat
+    # at 0.92-0.97 for every model and "asking is solved" was safe; the
+    # corrected wording asks whether the evidence was in hand BEFORE
+    # proposing, which is a higher bar, and the first re-judged row came
+    # back at 0.687. A title claiming saturation must therefore check
+    # that saturation is still there.
+    asks = [ys_by_model[name][0] for name in ys_by_model]
+    if min(asks) > 0.85:
+        title = 'Asking is solved. Staying inside the evidence is not.'
+    elif max(asks) - min(asks) < 0.12:
+        title = 'Models differ least on asking, most on what they say next'
+    else:
+        title = 'Where the models separate'
+    ax.set_title(title)
     ax.grid(axis='y', color=RULE, linewidth=0.6, alpha=0.7)
     ax.set_axisbelow(True)
     ax.set_xlim(-0.25, len(RUBRICS) - 0.4)
