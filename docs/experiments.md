@@ -625,3 +625,56 @@ no absolute grade should be quoted without naming the judge that produced
 it. Whether the **cross-model ranking** survives the swap is the question
 this experiment exists to answer, and it needs all four rows; three are
 still being judged.
+
+## E-judgeswap — the headline gap does not survive a different judge
+
+`scripts/judge_swap.py` · rows one and two re-judged by GLM-5.1
+
+| comparison | judge | n | delta | t | sign p | |
+|---|---|---|---|---|---|---|
+| gpt-5.6 vs Kimi-2.5 | primary (gpt-5.6 family) | 229 | +0.2167 | 20.4 | <0.0001 | real |
+| gpt-5.6 vs Kimi-2.5 | GLM-5.1 | 229 | **+0.0090** | **0.7** | **0.39** | **not distinguishable** |
+
+The two-tier result — this paper's headline — is a property of the judge
+that produced it. Under a judge from a different family the same 458
+transcripts show no separation at all.
+
+**The alternative judge is not merely insensitive.** Its grades spread as
+widely as the primary's (sd 0.120 and 0.165 against 0.144 and 0.135) and
+span 0.21 to 1.00, so it is not compressing everyone toward a mean.
+
+**And the disagreement is not a yardstick offset.** The two judges nearly
+agree on gpt-5.6 (0.599 vs 0.555) and diverge on Kimi-2.5 (0.382 vs
+0.546). Localised by rubric, almost all of it is one cell:
+
+| Kimi-2.5 rubric | primary | GLM-5.1 | difference |
+|---|---|---|---|
+| hallucination (0 = clean) | **0.979** | **0.494** | **−0.485** |
+| explanation | 0.434 | 0.740 | +0.305 |
+| recovery | 0.318 | 0.424 | +0.106 |
+| proactiveness | 0.946 | 0.866 | −0.079 |
+
+On gpt-5.6 no cell moves by more than 0.14. On Kimi the two judges make
+**opposite factual claims** about whether the agent asserted things the
+conversation does not support — the primary says nearly every case, the
+alternative says about half.
+
+That question has a checkable answer: whether a specific assertion
+appears in the transcript is verifiable by reading it, unlike "is this
+explanation good". Which judge is right about Kimi is therefore
+decidable, and it is decidable **only by a human**, which is the study
+this repository has built and not yet run.
+
+Until then, three statements hold and the fourth does not:
+
+- The **two-tier gap must not be reported as a property of the models.**
+  It is a property of the models *as scored by a gpt-family judge*, and a
+  second judge does not reproduce it.
+- The **within-tier ruling is unaffected** in the sense that it was never
+  large enough to matter either way.
+- E-fairness's *shape* — asking is saturated, the other rubrics separate
+  — is what both judges agree on for gpt-5.6, and what they dispute for
+  Kimi. Its Kimi half is now contingent.
+- **The judge–human agreement study is no longer optional.** It was the
+  last item on the list; it is now the item the headline result depends
+  on.
