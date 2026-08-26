@@ -445,29 +445,41 @@ stand as corpus-representative, and the main table agrees with them —
 0.6722 over 229 cases against 0.6559 for the same configuration on the
 subset, a gap inside the noise floor.
 
-## E-judgeswap — does the ranking survive a different judge?
+## E-judgeswap — the ranking survives a judge from another family
 
-`scripts/judge_swap.py` · queued behind the main table
+`scripts/judge_swap.py` · rows one and two re-judged by GLM-5.1 under the
+same corrected rubric definitions
 
-The table is scored by a gpt-5.6-family judge, and gpt-5.6 is one of the
-models it ranks. Self-preference is the first objection a reader will
-raise, and "we wrote a careful prompt" is not an answer to it.
+| judge | n | gpt-5.6 − Kimi-2.5 | t | sign p | |
+|---|---|---|---|---|---|
+| primary (gpt-5.6 family) | 229 | +0.3450 | 31.7 | <0.0001 | reportable |
+| GLM-5.1 | 227 | **+0.1889** | 17.7 | <0.0001 | reportable |
 
-Each recorded row is re-judged by a judge from a different family
-(GLM-5.1) and the two verdicts compared on the same transcripts. This
-needs no new conversations, so it costs judging alone.
+Absolute levels are judge-specific — GLM-5.1 marks Kimi-2.5 more
+generously (0.400 against 0.279) and gpt-5.6 slightly lower — so the
+effect halves. Direction, significance and ordering all hold.
 
-What the comparison decides:
+**This section previously reported the opposite, and that reading is
+withdrawn.** An earlier swap gave +0.0090 (t = 0.7, p = 0.39) and was
+recorded here as evidence that the two-tier result was a property of the
+gpt-family judge rather than of the models. It was an artefact of the
+rubric instructions in force at the time: they never stated the direction
+of `hallucination` or its construct, and the two judges were scoring
+different things — the primary at 0.653 for gpt-5.6 where GLM-5.1 gave
+0.015. With the construct written down (`docs/metrics.md`) and checked
+against a judge-independent behavioural count
+(`scripts/rubric_sanity.py`), both judges see the same gap.
 
-* **Levels move, ordering holds** — the table's comparisons stand, and
-  only the absolute grades are judge-specific. That is the expected
-  outcome and the one worth stating explicitly.
-* **Ordering moves** — the ranking is a property of the judge, not of the
-  models, and must be reported as such.
+The lesson is worth keeping over the result: **a judge-swap experiment
+measures the rubric before it measures the judge.** Run against an
+underspecified rubric it cannot distinguish "the judges disagree" from
+"the judges were asked different questions", and it will report the first
+while the second is true.
 
-Reported as mean grade under each judge, per-case absolute delta, and
-Kendall's tau over the case ranking. The swap writes into a sibling
-directory so a check on the primary result can never overwrite it.
+What remains genuinely unsettled is whether either judge is *right*.
+Agreement between two models is not correctness, and the human study —
+built, sampled and unfilled — is still the only thing that would settle
+it.
 
 ## E-main — the four-model table
 
