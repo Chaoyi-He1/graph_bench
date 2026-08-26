@@ -143,7 +143,17 @@ async def run(
                     created_at,
                 )
                 return
-            except Exception:  # one testcase must not poison the batch
+            except Exception as exc:  # one case must not poison the batch
+                # A 4xx says the request is wrong and will stay wrong;
+                # repeating it three times only spends the gateway. Only
+                # server-side and network failures are worth another go.
+                status = getattr(exc, 'status_code', None)
+                permanent = isinstance(status, int) and 400 <= status < 500 and status != 429
+                if permanent:
+                    logger.warning(
+                        'judge gave up on %s: %s', task_id, exc, exc_info=False
+                    )
+                    return
                 if attempt < _JUDGE_ATTEMPTS:
                     logger.warning(
                         'judge attempt %d failed for %s, retrying',

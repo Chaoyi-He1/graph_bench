@@ -82,6 +82,11 @@ class LLMBackend:
             base_url=os.environ.get('JUDGE_RESPONSES_BASE_URL')
             or str(resolve('GRAPH_BENCH_LLM_BASE_URL')),
             effort=os.environ.get('JUDGE_REASONING_EFFORT'),
+            # Not every gateway model serves the Responses API — GLM-5.1
+            # and Kimi-2.5 are chat-completions only, and judging with
+            # them failed 400 on every case until this was exposed. The
+            # agent adapter has had the same knob all along.
+            api=os.environ.get('JUDGE_API'),
             max_tokens=int(
                 os.environ.get('JUDGE_MAX_TOKENS', _JUDGE_MAX_TOKENS)
             ),

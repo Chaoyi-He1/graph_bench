@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import statistics as st
 import subprocess
@@ -57,11 +58,14 @@ def judge(args: argparse.Namespace) -> int:
         if path.exists() and not target.exists():
             shutil.copy2(path, target)
     print(f'judging {len(list(dst.glob("*.jsonl")))} transcripts with {args.model}')
+    env = dict(os.environ)
+    if args.api:
+        env['JUDGE_API'] = args.api
     return subprocess.call([
         'uv', 'run', '--native-tls', 'python', '-m', 'graph_bench',
         'judge', 'run', str(dst), '--model', args.model, '--online',
         '--concurrency', str(args.concurrency),
-    ])
+    ], env=env)
 
 
 def _grades(path: Path) -> dict[str, float]:
@@ -109,6 +113,8 @@ def main() -> int:
     j.add_argument('run_dir')
     j.add_argument('--model', required=True)
     j.add_argument('--concurrency', type=int, default=4)
+    # Chat-completions-only models need this; Responses is the default.
+    j.add_argument('--api', choices=['chat', 'responses'], default=None)
     j.set_defaults(func=judge)
     c = sub.add_parser('compare')
     c.add_argument('run_dir')
