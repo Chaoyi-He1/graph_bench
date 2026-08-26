@@ -10,18 +10,19 @@ reproducible from the scripts named beside it; per-case outputs live under
 |---|---|---|
 | E-contamination | can a model answer from the report alone, without asking? | no — 2.2% |
 | E-review | is single-pass model review usable as a release gate? | no; verification is what makes it usable |
-| E-variance | how far do identical runs drift, and how should claims be ruled? | 0.009-0.026; rule by a paired test, not by multiples |
+| E-variance | how far do identical runs drift, and how should claims be ruled? | 0.009–0.026; rule by a paired test, not by multiples |
 | E-simfix | was the harness charging agents for its own defects? | yes — only 7-11% of forced reveals were real failure |
 | E-leak | did the simulator ever say more than the agent earned? | no — 9 flags in 10,715 turns, all explained |
 | E-subset | is the 50-case subset representative of the corpus? | yes (p = 0.30) |
 | E-turnbudget | 20 turns or 30? | 30 — same grade, far fewer truncated cases |
-| E-main | how do four models compare over all 229 cases? | two tiers, 0.21 apart |
-| E-fairness | where exactly does the weaker tier lose? | not in asking; in explaining, recovering, and asserting |
+| E-main | how do four models compare over all 229 cases? | two tiers, 0.32–0.35 apart |
+| E-fairness | where exactly does the weaker tier lose? | everywhere, deepest on staying inside the evidence |
 | E-leakprofile | what is the anti-leak invariant worth? | leaks observed under the alternative; grade effect not established |
 | E-simswap | does the result survive a different simulator? | yes, delta -0.0007 |
-| E-judgeswap | does the ranking survive a different judge? | queued |
+| E-judgeswap | does the ranking survive a different judge? | yes — +0.19 vs +0.35, both t > 17 |
 | E-judge-ablation | does grounding the judge in the graph buy discrimination? | no — the graph earns its place elsewhere |
 | E-images | do the reporter's screenshots matter? | not measured; the agent never read them |
+| E-rubric | do the rubric scores track the behaviour they name? | yes now (ρ = −0.80); two earlier findings were rubric artefacts |
 | E-counterfactual | does the agent's answer move when the evidence moves? | not measured; the sample was drawn wrong |
 
 ## E-contamination — is the corpus recall-solvable?
