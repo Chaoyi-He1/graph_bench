@@ -22,11 +22,44 @@ if TYPE_CHECKING:
 # Exact rubric prompts are locked at implementation against design-doc
 # §9.3; this skeleton calls the shared LLM with a JSON instruction and
 # parses a RubricVerdict. Online-only; CI uses StubBackend.
+# Each instruction states its own direction and both anchors. The earlier
+# wording did not: "Judge whether the agent claimed unsupported facts,
+# score 0-1" leaves it to the model whether 1 means "hallucinated a lot"
+# or "did well". Two judges read it opposite ways — their rationales on
+# the same case agreed that the agent had invented issue numbers and
+# commit hashes, and they scored it 1.0 and 0.0. Across 229 cases the two
+# judges' hallucination scores correlate at -0.16.
+#
+# That defect made the headline two-tier result look judge-dependent when
+# it was a scale inversion, so every instruction now pins 0 and 1
+# explicitly, whichever way round they run.
 _RUBRIC_INSTRUCTIONS = {
-    'proactiveness': 'Judge whether the agent proactively gathered info.',
-    'hallucination': 'Judge whether the agent claimed unsupported facts.',
-    'explanation': 'Judge the clarity of the agent explanations.',
-    'recovery': 'Judge whether the agent recovered from a wrong path.',
+    'proactiveness': (
+        'How well did the agent gather the information it needed before '
+        'proposing fixes? Score 0 = never asked, proposed blindly; '
+        '1 = always established the necessary evidence first. '
+        'HIGHER IS BETTER.'
+    ),
+    'hallucination': (
+        'How much did the agent state as established fact that the '
+        'conversation does not support — invented version numbers, issue '
+        'or commit identifiers, log contents, or user statements? '
+        'Score 0 = asserted nothing the transcript does not support; '
+        '1 = pervasive unsupported assertion. '
+        'NOTE THE DIRECTION: this scores the AMOUNT of unsupported '
+        'assertion, so LOWER IS BETTER and 0 is a perfect score.'
+    ),
+    'explanation': (
+        'How well did the agent account for what was actually going '
+        'wrong, as opposed to only prescribing steps? Score 0 = no '
+        'account of the fault; 1 = a clear, correct mechanism. '
+        'HIGHER IS BETTER.'
+    ),
+    'recovery': (
+        'When a step failed or evidence contradicted the agent, how well '
+        'did it change tack? Score 0 = kept repeating the failed line; '
+        '1 = revised promptly and sensibly. HIGHER IS BETTER.'
+    ),
 }
 
 
