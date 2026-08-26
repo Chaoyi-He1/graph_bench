@@ -48,6 +48,11 @@ class BatchJudgments(BaseModel):
     run_id: str
     judge_model: str
     created_at: str
+    # Which rubric wording produced these scores. Absent on files written
+    # before profiles existed, which are all `default` by construction.
+    # Comparing two batches that disagree here compares two constructs,
+    # not two systems — scripts/compare paths must check it.
+    rubric_profile: str = 'default'
     testcases: dict[str, TestcaseJudgment] = Field(default_factory=dict)
     aggregate: BatchAggregate = Field(default_factory=BatchAggregate)
 

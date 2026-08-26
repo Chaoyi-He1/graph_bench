@@ -111,6 +111,8 @@ def run(
         # Importing the submodule runs its register_agent() side effect.
         # Done lazily so offline scripted runs never build an LLM client.
         from graph_bench.agents import api  # noqa: F401, PLC0415
+    elif agent_name == 'cli':
+        from graph_bench.agents import cli as _cli_agent  # noqa: F401, PLC0415
     factory = get_agent_factory(agent_name)
     run_meta = RunMeta(
         run_id=run_id,

@@ -15,6 +15,7 @@ from graph_bench.judge.models import (
     StubBackend,
     TestcaseJudgment,
 )
+from graph_bench.judge.provider import rubric_profile
 from graph_bench.judge.rubrics import judge_all, resolve_tiers
 from graph_bench.judge.scorer import aggregate, combine
 from graph_bench.recorder.reader import load_run
@@ -78,6 +79,7 @@ def _upsert(
                 run_id=run_id,
                 judge_model=model,
                 created_at=created_at,
+                rubric_profile=rubric_profile(),
             )
         batch.testcases[judgment.task_id] = judgment
         batch.aggregate = aggregate(batch.testcases)
@@ -183,5 +185,6 @@ async def run(
             run_id=recorded.run_meta.run_id,
             judge_model=config.model,
             created_at=created_at,
+            rubric_profile=rubric_profile(),
         )
     return BatchJudgments.model_validate_json(path.read_text(encoding='utf-8'))

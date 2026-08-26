@@ -75,6 +75,36 @@ def judged(run: str) -> dict:
     return json.loads(p.read_text())['testcases'] if p.exists() else {}
 
 
+def _profile(run: str) -> str | None:
+    p = Path(run, 'judgments.json')
+    if not p.exists():
+        return None
+    # Files written before profiles existed are `default` by construction.
+    return json.loads(p.read_text()).get('rubric_profile', 'default')
+
+
+def paired(lo: str, hi: str) -> tuple[dict, dict]:
+    """Two runs' grades, refusing to pair scores from different rubrics.
+
+    Every difference in this paper is a paired subtraction of two grades.
+    If the two sides were judged under different rubric wordings, that
+    subtraction is a construct difference wearing a model difference's
+    clothes -- the exact failure that already produced one retracted
+    finding here. Fail rather than plot it.
+    """
+    pa, pb = _profile(lo), _profile(hi)
+    if pa is not None and pb is not None and pa != pb:
+        msg = (f'refusing to compare {lo} ({pa}) against {hi} ({pb}): '
+               'different rubric profiles score different constructs')
+        raise ValueError(msg)
+    return (
+        {c: v['grade'] for c, v in judged(lo).items()
+         if v.get('grade') is not None},
+        {c: v['grade'] for c, v in judged(hi).items()
+         if v.get('grade') is not None},
+    )
+
+
 def metrics(run: str) -> dict:
     p = Path(run, 'metrics.json')
     return json.loads(p.read_text())['testcases'] if p.exists() else {}
@@ -394,11 +424,7 @@ def fig_all_comparisons() -> None:
     for title, comps in GROUPS:
         rows = []
         for label, lo, hi in comps:
-            ga, gb = (
-                {c: v['grade'] for c, v in judged(r).items()
-                 if v.get('grade') is not None}
-                for r in (lo, hi)
-            )
+            ga, gb = paired(lo, hi)
             common = sorted(set(ga) & set(gb))
             if len(common) < 3:
                 continue
