@@ -585,3 +585,43 @@ Two readings, and the second is the one worth keeping:
   inference — it appears everywhere, so it must matter — was available,
   cheap, and wrong. It cost one 50-case arm to find out, against four
   days to re-run the table on a guess.
+
+## E-judgeswap — the judge disagrees with itself as much as with another judge
+
+`scripts/judge_swap.py` · row one of four, 228 cases judged twice
+
+The table is scored by a gpt-5.6-family judge and gpt-5.6 is one of the
+models it ranks, so the same transcripts were re-judged by GLM-5.1 — a
+different family, over chat completions, which is what it serves.
+
+| | mean grade | per-case abs difference | Kendall τ over the case ranking |
+|---|---|---|---|
+| primary judge | 0.5994 | | |
+| GLM-5.1 | 0.5548 | 0.119 | **0.244** |
+
+A τ of 0.244 looks alarming on its own. It is not interpretable on its
+own, because it has to be read against how much the *same* judge agrees
+with itself across two runs of the same configuration:
+
+| comparison | n | τ | per-case abs difference |
+|---|---|---|---|
+| same judge, configuration re-run | 48 | 0.197 | 0.119 |
+| same judge, configuration re-run | 48 | 0.333 | 0.099 |
+| **different judge, same transcripts** | 228 | **0.244** | **0.119** |
+
+**Swapping the judge moves a case exactly as much as re-running it.** The
+cross-judge figure sits inside the range the same judge produces against
+itself, and the per-case difference is identical to three decimal places.
+
+The finding is therefore not that the judge is unreliable relative to
+another judge. It is that **per-case grades are unreliable, full stop** —
+which is why `docs/metrics.md` forbids resting any claim on an individual
+case, and why every ruling in this file is a paired test over the whole
+set rather than a comparison of cases.
+
+The absolute levels do differ: GLM-5.1 grades 0.045 lower across the
+board. That is a difference of yardstick, not of ordering, and it is why
+no absolute grade should be quoted without naming the judge that produced
+it. Whether the **cross-model ranking** survives the swap is the question
+this experiment exists to answer, and it needs all four rows; three are
+still being judged.
