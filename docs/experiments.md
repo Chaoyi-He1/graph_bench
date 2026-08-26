@@ -23,7 +23,7 @@ reproducible from the scripts named beside it; per-case outputs live under
 | E-judge-ablation | does grounding the judge in the graph buy discrimination? | no — the graph earns its place elsewhere |
 | E-images | do the reporter's screenshots matter? | not measured; the agent never read them |
 | E-rubric | do the rubric scores track the behaviour they name? | yes now (ρ = −0.80); two earlier findings were rubric artefacts |
-| E-counterfactual | does the agent's answer move when the evidence moves? | not measured; the sample was drawn wrong |
+| E-counterfactual | does the agent's answer move when the evidence moves? | no — it derails instead, 72% of the time |
 
 ## E-contamination — is the corpus recall-solvable?
 
@@ -538,34 +538,44 @@ indistinguishable, and by a wider margin than any other comparison in
 this file. The benchmark's scores are not an artefact of which model
 plays the user.
 
-## E-counterfactual — does the answer move when the evidence moves?
+## E-counterfactual — the agents do not adapt, they derail
 
-`scripts/counterfactual.py` · 1,635 authored alternative answers over all
-229 cases, each marked with whether the right fix changes as a result
+`scripts/counterfactual.py` · 60 interventions over gpt-5.6, drawn only
+from cases whose baseline run closes unaided
 
-> **First run void, by a sampling error.** 58 interventions executed
-> cleanly and only **5** could be scored: an intervention is readable
-> only against a case where the agent proposed a fix *of its own*, and in
-> the 20-turn baseline used for sampling, most cases reached their
-> terminal through a forced reveal. Where the proposal on record is the
-> simulator's, changing the user's answer cannot move something the agent
-> never chose. The planner did not filter on this and 55 of 60 came back
-> uncomparable.
+The corpus authors, for clarifications that mattered, an alternative
+answer the reporter could plausibly have given, each marked with whether
+the right fix changes as a result. Replaying a case with one answer
+swapped asks the question no aggregate score can: is the agent
+conditioning on what the user said, or pattern-matching the report?
 
-The fix is one constraint at sampling time, now in `plan --baseline`:
-draw only from cases where the baseline produced a self-earned solution
-call. Against the main-table row that is **146 of 229 cases**, all of
-which carry counterfactual candidates — so the experiment is
-comfortably feasible, it was simply drawn from the wrong pool.
+| | the fix SHOULD change (n=30) | it should NOT (n=30) |
+|---|---|---|
+| proposed something different | **5 (17%)** ✓ | 2 (7%) |
+| proposed the same thing | 5 (17%) | **5 (17%)** ✓ |
+| never reached a proposal of its own | **20 (67%)** | **23 (77%)** |
 
-Re-drawn: 60 interventions over 53 cases, balanced 30/30 between variants
-that should change the fix and variants that should not. Queued.
+**Changing one answer stops the agent closing the case at all, 72% of the
+time.** It does not switch to a different fix; it stops converging. And
+it derails *more* often when the change was not supposed to matter (77%
+against 67%) — an answer the case marks as irrelevant to the diagnosis is
+enough to break the conversation.
 
-What it will report: **sensitivity** (the proposal moved when it should
-have) against **specificity** (it held when it should not). An agent that
-pattern-matches the opening report scores high on one and low on the
-other; only an agent actually conditioning on what the user said can score
-well on both.
+That 72% is a result, not a coverage gap. Every case in this plan closes
+unaided in the baseline — the sample is drawn from exactly those, and 0
+of 60 lack a baseline proposal — so every derailment was caused by the
+intervention.
+
+An earlier version of this experiment could not see any of it. It scored
+only whether the proposal changed and filed everything else as
+unscoreable, reporting sensitivity 50% and specificity 71% on the 17
+cases that survived. Those numbers described the minority that did not
+derail, which is the opposite of what the experiment was for.
+
+On the 17 that did stay on the rails, the picture is unflattering too:
+of ten interventions that should have changed the fix, five did and five
+did not. That is a coin flip, on the cases where the agent was still
+able to answer at all.
 
 ## E-idfix — the main table survives a simulator defect
 

@@ -156,47 +156,85 @@ def _final_solution(run_dir: str, case: str) -> str | None:
     return last
 
 
+def _variant_dir(root: str, row: dict) -> str | None:
+    """The run directory for one intervention, whatever it was named."""
+    hits = [
+        d for d in glob.glob(
+            os.path.join(root, f"cf-{row['task_id']}-{row['info_id']}*", '')
+        )
+        if os.path.isdir(d)
+    ]
+    if not hits:
+        return None
+    inner = glob.glob(os.path.join(hits[0], '*', ''))
+    return inner[0] if inner else hits[0]
+
+
 def score(args: argparse.Namespace) -> int:
+    """
+    Three outcomes per intervention, not two.
+
+    The first version asked only whether the proposal changed, and could
+    not score a case where the agent never reached a proposal of its own.
+    That turned out to be most of them — 43 of 60 — and not because the
+    sample was drawn badly: every baseline in the plan closes its case
+    unaided, by construction. Changing one answer is what stops the agent
+    closing. An intervention that derails the conversation is a result,
+    and collapsing it into "unscoreable" hides the largest thing this
+    experiment found.
+    """
     rows = [json.loads(line) for line in Path(args.plan).read_text().splitlines()]
-    sens_hit = sens_n = spec_hit = spec_n = missing = unearned = 0
+    tally = {
+        (True, 'adapted'): 0, (True, 'held'): 0, (True, 'derailed'): 0,
+        (False, 'adapted'): 0, (False, 'held'): 0, (False, 'derailed'): 0,
+    }
+    missing = 0
     for row in rows:
-        # The runner nests its output as <out>/<run_id>/, so a variant's
-        # transcripts sit one level below the directory named for it.
-        slug = f"cf-{row['task_id']}-{row['info_id']}"
-        variant_dir = os.path.join(args.variants, slug, slug)
+        variant_dir = _variant_dir(args.variants, row)
+        if variant_dir is None:
+            missing += 1
+            continue
         base = _final_solution(args.baseline, row['task_id'])
         var = _final_solution(variant_dir, row['task_id'])
-        if base is None or var is None:
-            # Two different failures. Either the variant never ran, or one
-            # side reached its terminal only through a forced reveal and so
-            # has no proposal of the agent's own to compare. Lumping them
-            # together hides a sampling error behind an ops problem.
-            if not os.path.exists(os.path.join(variant_dir, row['task_id'] + '.jsonl')):
-                missing += 1
-            else:
-                unearned += 1
+        if base is None:
+            missing += 1
             continue
-        changed = base != var
-        if row['solution_should_change']:
-            sens_n += 1
-            sens_hit += changed
+        if var is None:
+            outcome = 'derailed'
+        elif base != var:
+            outcome = 'adapted'
         else:
-            spec_n += 1
-            spec_hit += not changed
-    print(
-        f'scored {sens_n + spec_n} of {len(rows)} interventions '
-        f'({missing} never ran, {unearned} had no self-earned proposal on '
-        f'one side)'
-    )
-    if sens_n:
+            outcome = 'held'
+        tally[(row['solution_should_change'], outcome)] += 1
+
+    print(f'{sum(tally.values())} interventions scored ({missing} unusable)\n')
+    for should, label in ((True, 'the fix SHOULD change'),
+                          (False, 'the fix should NOT change')):
+        n = sum(v for (s, _), v in tally.items() if s == should)
+        if not n:
+            continue
+        print(f'{label} (n={n})')
+        for outcome, gloss in (
+            ('adapted', 'proposed something different'),
+            ('held', 'proposed the same thing'),
+            ('derailed', 'never reached a proposal of its own'),
+        ):
+            c = tally[(should, outcome)]
+            mark = ''
+            if should and outcome == 'adapted':
+                mark = '  <- correct'
+            if not should and outcome == 'held':
+                mark = '  <- correct'
+            print(f'   {gloss:<38} {c:>3}  ({100 * c / n:>3.0f}%){mark}')
+        print()
+    derailed = sum(v for (_, o), v in tally.items() if o == 'derailed')
+    total = sum(tally.values())
+    if total:
         print(
-            f'   sensitivity  {sens_hit}/{sens_n} '
-            f'({100 * sens_hit / sens_n:.0f}%) — answer moved when it should'
-        )
-    if spec_n:
-        print(
-            f'   specificity  {spec_hit}/{spec_n} '
-            f'({100 * spec_hit / spec_n:.0f}%) — answer held when it should'
+            f'derailed on either direction: {derailed}/{total} '
+            f'({100 * derailed / total:.0f}%) — the agents mostly do not '
+            'switch to a different fix when the evidence changes; they '
+            'stop being able to close the case at all.'
         )
     return 0
 
