@@ -555,3 +555,33 @@ have) against **specificity** (it held when it should not). An agent that
 pattern-matches the opening report scores high on one and low on the
 other; only an agent actually conditioning on what the user said can score
 well on both.
+
+## E-idfix — the main table survives a simulator defect
+
+`--sim-config` unchanged; the simulator itself differs · 48 paired cases
+
+`describe_symptoms` concatenated volunteered information as raw
+identifiers, so 6.4% of user turns across the main table — 1,248 of them,
+in 198 of 229 cases — contained a bare token like
+`build_containing_oid_handling_fix_resolves_error`. The main table was
+produced under that defect. Whether it mattered was measured rather than
+argued.
+
+| | raw identifiers | rendered as words |
+|---|---|---|
+| mean grade | 0.5580 | 0.5603 |
+
+Difference +0.0022, paired t = 0.09, sign test p = 0.67, 26 cases up
+against 22 down. **Not distinguishable from re-running the same
+configuration.** The four main-table rows stand as published; no re-run.
+
+Two readings, and the second is the one worth keeping:
+
+- The fix was still right to make. A reporter does not speak in
+  identifiers, and one of those ids states its case's answer outright —
+  the realism argument does not depend on a score moving.
+- **A defect visible in 86% of cases changed nothing measurable.** That is
+  a caution about inferring impact from prevalence: the tempting
+  inference — it appears everywhere, so it must matter — was available,
+  cheap, and wrong. It cost one 50-case arm to find out, against four
+  days to re-run the table on a guess.
