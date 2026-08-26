@@ -277,53 +277,52 @@ doing that. The grade is not the reason — it does not move.
 
 (The noise floor once quoted here has moved to E-variance, which owns it
 and has since corrected it.)
-## E-fairness — elicitation and diagnosis come apart
+## E-fairness — the gap is everywhere, and deepest on staying inside the evidence
 
-> The 46-case version of this section is superseded and kept below for
-> the record. It rested on rubric scores taken before the judge's
-> truncation defect was found: `hallucination` parsed to 0.0 in 72% of
-> gpt-5.6's cases against 34% of Kimi's, and the grade inverts that
-> rubric, so the model losing more rationales collected more free credit.
-> The numbers here are the re-judged full corpus.
+All 229 cases per model, judged under the corrected rubrics:
 
-All 229 released cases, 30 turns, both rows re-judged after the fix:
+| rubric (higher is better) | gpt-5.6 | gpt-5.5 | GLM-5.1 | Kimi-2.5 |
+|---|---|---|---|---|
+| asks for evidence before proposing | 0.687 | 0.569 | 0.366 | 0.331 |
+| stays inside the evidence (1 − hallucination) | 0.644 | 0.705 | 0.088 | 0.052 |
+| accounts for the fault | 0.855 | 0.825 | 0.565 | 0.510 |
+| recovers from a failed step | 0.749 | 0.568 | 0.371 | 0.313 |
 
-| | gpt-5.6 | Kimi-2.5 |
-|---|---|---|
-| mean grade | **0.5991** | **0.3824** |
-| `terminal_resolved` | 66 (29%) | 52 (23%) |
-| forced walk to terminal | 110 (48%) | 103 (45%) |
-| ran out of turns | 45 (20%) | 70 (31%) |
-| forced reveals per case | 3.1 | 4.0 |
-| rubric proactiveness | 0.968 | 0.946 |
-| rubric hallucination (0 = clean) | 0.653 | 0.979 |
-| rubric explanation | 0.804 | 0.434 |
-| rubric recovery | 0.689 | 0.318 |
+**Retracted: "asking is solved."** This section previously reported
+proactiveness at 0.92–0.97 for every model and concluded that elicitation
+was saturated while diagnosis separated them. That was a property of the
+rubric wording — *"judge whether the agent proactively gathered info"*,
+which any agent that asks many questions satisfies — and not of the
+conversations.
 
-The grade gap is 0.217, paired t = 20.4 over 229 cases — reportable by
-a wide margin. The `resolved` gap is 6 points against roughly one verdict
-in seven flipping between identical runs, and is not.
+The harness had been contradicting it all along. It counts how often an
+agent proposes a fix from a state whose graph offers no solution edge —
+that is, before the evidence chain is complete:
 
-**What separates them is not asking.** Proactiveness is a tie (0.968 vs
-0.946); both models interrogate the user competently. Every other rubric
-splits wide: explanation 0.804 vs 0.434, recovery 0.689 vs 0.318,
-hallucination 0.653 vs 0.979. Kimi also needs a third more rescues per
-case (4.0 vs 3.1) and exhausts its budget half again as often. It runs
-the conversation and then cannot close it — which is exactly the
-distinction an execution-free multi-turn benchmark exists to draw, and
-one a single-turn or patch-scored benchmark cannot see at all.
+| | premature proposals per case | old proactiveness | corrected |
+|---|---|---|---|
+| gpt-5.6 | 2.36 | 0.968 | 0.687 |
+| gpt-5.5 | 2.22 | 0.960 | 0.569 |
+| GLM-5.1 | 3.77 | 0.916 | 0.366 |
+| Kimi-2.5 | 4.00 | 0.946 | 0.331 |
 
-**The correction changed which rubric carries the story.** On the corrupt
-numbers, hallucination looked like the whole explanation (0.857 vs
-0.252, a 0.61 gap). Re-judged, its gap is 0.33 — the same size as
-explanation (0.37) and recovery (0.37). The deficit is broad, not
-localised.
+A 1.7× behavioural difference that the rubric was reporting as 0.02.
+Under the corrected wording — did the agent have the evidence *before*
+proposing — the rubric tracks that count at Spearman ρ = −0.80, and
+`scripts/rubric_sanity.py` checks it on every run. **The rewrite was
+adopted because it agrees with a measurement no judge produced, not
+because it reads better.**
 
-**And it moved the strongest model's own result.** gpt-5.6's
-hallucination is 0.653, not the 0.252 the truncated judge reported: the
-best model here asserts things the conversation does not support in most
-of its cases. That is a finding about the state of the art, and the
-defect had hidden it.
+What replaces the retracted claim is plainer: **the two tiers separate on
+all four rubrics and never cross.** The deepest gap is staying inside the
+evidence — the GPT pair at 0.64–0.71, the other two at 0.05–0.09,
+asserting what their conversations do not support in nearly every case.
+
+The reading that survives, now better supported: a model can hold a
+competent-looking diagnostic conversation and be wrong throughout it.
+Nothing in the shape of a transcript reveals that. Only checking each
+assertion against what the user actually said does — which is what this
+benchmark's answer key exists to make possible.
 
 ## E-judge-ablation — what grounding the judge in the graph buys (preliminary)
 
@@ -473,41 +472,40 @@ directory so a check on the primary result can never overwrite it.
 ## E-main — the four-model table
 
 `scripts/main_table.py` · all 229 released cases, 30 turns, frozen
-configuration, judged after the truncation fix
+simulator configuration, judged under the rubric definitions now written
+in `docs/metrics.md`
 
 | model | n | grade | resolved | forced walk | ran out | turns | reveals/case |
 |---|---|---|---|---|---|---|---|
-| gpt-5.6 | 229 | **0.5991** | 66 (29%) | 110 (48%) | 45 (20%) | 21 | 3.1 |
-| gpt-5.5 | 229 | **0.5634** | 71 (31%) | 103 (45%) | 47 (21%) | 20 | 2.8 |
-| GLM-5.1 | 229 | **0.3877** | 59 (26%) | 115 (50%) | 49 (21%) | 22 | 3.7 |
-| Kimi-2.5 | 229 | **0.3824** | 52 (23%) | 103 (45%) | 70 (31%) | 21 | 4.0 |
+| gpt-5.6 | 229 | **0.6244** | 66 (29%) | 110 (48%) | 45 (20%) | 21 | 3.1 |
+| gpt-5.5 | 229 | **0.5741** | 71 (31%) | 103 (45%) | 47 (21%) | 20 | 2.8 |
+| GLM-5.1 | 229 | **0.3033** | 59 (26%) | 115 (50%) | 49 (21%) | 22 | 3.7 |
+| Kimi-2.5 | 229 | **0.2794** | 52 (23%) | 103 (45%) | 70 (31%) | 21 | 4.0 |
 
-Every row: 229/229 transcripts, metrics and judgments reconciled by
-`run_integrity.py`; empty-reply rate 0.0–0.4%; `failed_dead_end` zero.
-
-Rulings from `recheck_claims.py`, paired t with a sign test:
+Every row reconciled 229/229 by `run_integrity.py`, zero parse failures,
+`failed_dead_end` zero throughout.
 
 | comparison | delta | t | sign p | |
 |---|---|---|---|---|
-| gpt-5.6 vs Kimi-2.5 | +0.217 | 20.4 | <0.0001 | reportable |
-| gpt-5.6 vs GLM-5.1 | +0.211 | 19.4 | <0.0001 | reportable |
-| gpt-5.6 vs gpt-5.5 | +0.036 | 3.4 | 0.001 | reportable |
-| GLM-5.1 vs Kimi-2.5 | +0.005 | 0.6 | 0.046 | not reportable |
+| gpt-5.6 vs Kimi-2.5 | +0.345 | 31.7 | <0.0001 | reportable |
+| gpt-5.6 vs GLM-5.1 | +0.321 | 32.1 | <0.0001 | reportable |
+| gpt-5.6 vs gpt-5.5 | +0.050 | 5.3 | <0.0001 | reportable |
+| GLM-5.1 vs Kimi-2.5 | +0.024 | 2.4 | 0.0003 | not reportable |
 
-Two tiers, and the split between them is enormous — 0.21 of grade, five
-times the within-tier gap that is itself detectable. Inside the GPT tier
-the 0.036 difference is small but real at n=229; between GLM-5.1 and
-Kimi-2.5 there is nothing to call.
+Two tiers 0.32–0.35 apart; an in-tier difference of 0.050 that is small
+but solid at n=229; and nothing to call between GLM-5.1 and Kimi-2.5,
+where the sign test clears and t does not, and both are required.
 
-The within-GPT ruling is one the earlier noise-floor heuristic got wrong
-in both directions: it called this pair indistinguishable and called a
-0.037 difference over 48 cases real. Sample size is what separates them,
-and a multiple of a drift estimate cannot see it.
+**These replace the numbers this section carried before** (0.599 / 0.563
+/ 0.388 / 0.382). Those came from rubric instructions that never stated
+their construct; re-judged against the written definitions the tiers
+separate *further*, not less. Only the re-judged figures should be
+quoted, with the judge that produced them named alongside.
 
-Reading the columns together: fewer than a third of cases end with the
-user confirming a fix the agent earned, while roughly half arrive at a
-terminal only because the insurance walked them there, at 2.8–4.0 reveals
-per case. A fifth to a third exhaust 30 turns. That is the headroom.
+Outcome columns are unchanged by the re-judge, since they come from the
+simulator rather than from any rubric: fewer than a third of cases end in
+a fix the agent earned, roughly half arrive at a terminal only because
+the insurance walked them there, and a fifth to a third exhaust 30 turns.
 
 ## E-simswap — does the result survive a different simulator?
 
@@ -585,46 +583,6 @@ Two readings, and the second is the one worth keeping:
   inference — it appears everywhere, so it must matter — was available,
   cheap, and wrong. It cost one 50-case arm to find out, against four
   days to re-run the table on a guess.
-
-## E-judgeswap — the judge disagrees with itself as much as with another judge
-
-`scripts/judge_swap.py` · row one of four, 228 cases judged twice
-
-The table is scored by a gpt-5.6-family judge and gpt-5.6 is one of the
-models it ranks, so the same transcripts were re-judged by GLM-5.1 — a
-different family, over chat completions, which is what it serves.
-
-| | mean grade | per-case abs difference | Kendall τ over the case ranking |
-|---|---|---|---|
-| primary judge | 0.5994 | | |
-| GLM-5.1 | 0.5548 | 0.119 | **0.244** |
-
-A τ of 0.244 looks alarming on its own. It is not interpretable on its
-own, because it has to be read against how much the *same* judge agrees
-with itself across two runs of the same configuration:
-
-| comparison | n | τ | per-case abs difference |
-|---|---|---|---|
-| same judge, configuration re-run | 48 | 0.197 | 0.119 |
-| same judge, configuration re-run | 48 | 0.333 | 0.099 |
-| **different judge, same transcripts** | 228 | **0.244** | **0.119** |
-
-**Swapping the judge moves a case exactly as much as re-running it.** The
-cross-judge figure sits inside the range the same judge produces against
-itself, and the per-case difference is identical to three decimal places.
-
-The finding is therefore not that the judge is unreliable relative to
-another judge. It is that **per-case grades are unreliable, full stop** —
-which is why `docs/metrics.md` forbids resting any claim on an individual
-case, and why every ruling in this file is a paired test over the whole
-set rather than a comparison of cases.
-
-The absolute levels do differ: GLM-5.1 grades 0.045 lower across the
-board. That is a difference of yardstick, not of ordering, and it is why
-no absolute grade should be quoted without naming the judge that produced
-it. Whether the **cross-model ranking** survives the swap is the question
-this experiment exists to answer, and it needs all four rows; three are
-still being judged.
 
 ## E-judgeswap — a scale inversion, not a judge disagreement
 

@@ -44,9 +44,9 @@ IDENTICAL = {
 CLAIMS = [
     ('E5   gpt-5.6 vs Kimi-2.5', f'{M}/m-kimi25/m-kimi25', f'{M}/m-gpt56/m-gpt56', 'reportable'),
     ('E5   gpt-5.6 vs GLM-5.1', f'{M}/m-glm51/m-glm51', f'{M}/m-gpt56/m-gpt56', 'reportable'),
-    ('E5   gpt-5.6 vs gpt-5.5 (within tier)', f'{M}/m-gpt55/m-gpt55', f'{M}/m-gpt56/m-gpt56', 'NOT reportable'),
+    ('E5   gpt-5.6 vs gpt-5.5 (within tier)', f'{M}/m-gpt55/m-gpt55', f'{M}/m-gpt56/m-gpt56', 'reportable'),
     ('E5   GLM-5.1 vs Kimi-2.5 (within tier)', f'{M}/m-kimi25/m-kimi25', f'{M}/m-glm51/m-glm51', 'NOT reportable'),
-    ('E1   leakage inflation, profile A vs C', f'{M}/gpt56-fix6/gpt56-fix6', f'{M}/gpt56-leakA/gpt56-leakA', 'reportable'),
+    ('E1   leakage inflation, profile A vs C', f'{M}/gpt56-fix6/gpt56-fix6', f'{M}/gpt56-leakA/gpt56-leakA', 'NOT reportable'),
     ('E7   no-images ablation', f'{M}/gpt56-fix6/gpt56-fix6', f'{M}/gpt56-noimg/gpt56-noimg', 'NOT reportable'),
     ('E-tb turn budget 20 vs 30', f'{M}/gpt56-fix6/gpt56-fix6', f'{M}/gpt56-t30/gpt56-t30', 'NOT reportable'),
     ('E8   simulator swap', f'{M}/gpt56-fix6/gpt56-fix6', f'{M}/e8-simswap/e8-simswap', 'NOT reportable'),
