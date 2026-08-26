@@ -83,7 +83,7 @@ diagnostic conversation itself against a case-specific answer key.
 | E5 main table | model × metrics on the frozen corpus | **[running]** four models × 229 cases × 30 turns |
 | E1 leakage A/B/C | what the anti-leak invariant is worth, measured with `leak_audit.py` against a transcript-conditioned simulator | **[running]** profile A arm |
 | E7 ablations | no-images · structured vs plain judge · L-level gating | **[partial]** no-images queued (`send_images`); single-turn covered by E-contamination; other two need implementing |
-| E4 judge–human agreement | the judge is the measuring instrument | **[partial]** `scripts/judge_agreement.py` builds a stratified, unanchored sheet; needs human labels |
+| E4 judge–human agreement | the judge is the measuring instrument | **[not done]** the sheet and tool exist; no human labels were collected, and the paper must say so |
 | E3 counterfactual sensitivity | answers change when evidence changes | **[todo]** 608 authored variants ready |
 | E8 simulator swap | results survive a different simulator model | **[todo]** one config flag |
 
@@ -103,7 +103,14 @@ diagnostic conversation itself against a case-specific answer key.
 - Machine-drafted, machine-signed corpus (audit trail published)
 - Simulator fidelity: the user is an LLM conditioned on the current node.
   E-leak bounds the leakage lexically; it cannot bound paraphrase
-- Judge is an LLM; the agreement study is built but unlabelled
+- **Judge is an LLM and was never validated against a human.** Two
+  checks stand in its place and neither is equivalent: a judge from
+  another family reproduces the ranking, and the rubrics track a
+  judge-independent behavioural count at ρ = −0.80. Two models agreeing
+  is not correctness. Mitigating this, the tier result is *also*
+  established on judge-free counts alone (forced reveals and premature
+  proposals per case), so the paper's central comparison does not rest
+  on the judge — but the rubric-level readings do.
 - `forced_reveal` and `reached_terminal` saturate once cases live their
   full budget (90% of cases hit at least one reveal) — reported as
   harness health, not as agent metrics

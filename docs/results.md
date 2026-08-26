@@ -25,6 +25,43 @@ judged after the truncation fix.
 | explanation | 0.855 | 0.826 | 0.564 | 0.510 |
 | recovery | 0.749 | 0.566 | 0.369 | 0.313 |
 
+## Which of these need the judge
+
+No human has scored any of this, so the standing of every number
+depends on how much of it an LLM judge produced. Two groups, and
+the split is worth making before any of them are read.
+
+**Judge-free.** Produced by the graph matcher and the simulator,
+with no model scoring anything: how a case ended
+(`terminal_resolved`, forced walk, ran out), turns per case,
+forced reveals per case, premature proposals per case, whether a
+proposal matched a solution edge and which required information
+the agent held at the time. These are deterministic given the
+transcripts, and the transcripts are on disk.
+
+**Judge-dependent.** The four rubrics and therefore `grade`. Two
+checks stand behind them and neither is a human: a second judge
+from another family reproduces the ranking (E-judgeswap), and the
+rubrics track a judge-independent behavioural count at
+Spearman −0.80 (`scripts/rubric_sanity.py`). Agreement between
+two models is not correctness.
+
+**The tier split does not need the judge.** Tested on the two
+judge-free per-case counts, paired across the same 229 cases:
+
+| judge-free metric | GLM−gpt5.6 | Kimi−gpt5.6 | gpt5.5−gpt5.6 |
+|---|---|---|---|
+| forced reveals per case | +0.54 (t=3.6) | +0.89 (t=4.3) | not distinguishable |
+| premature proposals per case | +1.41 (t=6.7) | +1.64 (t=6.9) | not distinguishable |
+
+Every cross-tier comparison separates and every within-tier one
+does not — the same partition the grade reports, arrived at by
+counting rather than by scoring. An earlier draft of this
+paragraph claimed the weaker pair also exhausts its turn budget
+half again as often; that is true of Kimi-2.5 (31%) and false of
+GLM-5.1 (21%, identical to the GPT pair), so it is dropped
+rather than softened.
+
 ## Run-to-run drift
 
 Arms identical from the agent's side, compared pairwise.
