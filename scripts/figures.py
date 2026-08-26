@@ -391,11 +391,18 @@ def fig_all_comparisons() -> None:
         ax.plot([mean - half, mean + half], [y, y], color=colour,
                 linewidth=1.5, solid_capstyle='round', alpha=0.85)
         ax.plot([mean], [y], marker='o', markersize=5, color=colour)
-        ax.text(0.315, y, f'n={n}', fontsize=6.8, color=MUTED, va='center')
+    # The n= labels used to sit at a hardcoded x=0.315, which the two
+    # cross-tier bars (mean 0.345, reaching 0.356) ran straight through.
+    # Reserve a gutter past the widest bar instead.
+    xhi = max(m + h for _, m, h, _, _ in rows)
+    xlo = min(m - h for _, m, h, _, _ in rows)
+    for y, (_, _, _, n, _) in zip(ys, rows):
+        ax.text(xhi + 0.015, y, f'n={n}', fontsize=6.8, color=MUTED,
+                va='center')
     ax.axvline(0, color=INK, linewidth=0.8)
     ax.set_yticks(ys)
     ax.set_yticklabels([r[0] for r in rows], fontsize=7.6)
-    ax.set_xlim(-0.06, 0.36)
+    ax.set_xlim(min(xlo, 0) - 0.02, xhi + 0.065)
     ax.set_xlabel('difference in mean grade (bars: 99% interval)')
     ax.set_title('What moved the score, and what did not')
     ax.grid(axis='x', color=RULE, linewidth=0.6, alpha=0.7)
@@ -483,6 +490,87 @@ def fig_corpus() -> None:
     save(fig, 'f8_corpus')
 
 
+# --------------------------------------------------------------- F9
+def fig_counterfactual() -> None:
+    """The counterfactual result, which the table under-sells.
+
+    The eye-catching cell is not either "proposed" row — it is that the
+    bottom band, "never got to a proposal at all", covers two thirds of
+    both columns. Swapping one authored answer does not make the agent
+    choose differently; it makes it stop choosing. Plotting the two
+    columns side by side puts the should-change / should-not-change
+    contrast where it can be read: the derail is *worse* in the column
+    where the diagnosis was not supposed to move.
+    """
+    COLS = ['fix should\nchange', 'fix should\nnot change']
+    # counts out of 30 per column (docs/experiments.md, E-counterfactual)
+    BANDS = [
+        ('proposed something different', [5, 2], TIER_A),
+        ('proposed the same thing', [5, 5], NEUTRAL),
+        ('never reached a proposal', [20, 23], TIER_B),
+    ]
+    fig, ax = plt.subplots(figsize=(4.6, 3.0))
+    x = [0, 1]
+    bottom = [0.0, 0.0]
+    for label, counts, colour in BANDS:
+        pct = [100.0 * c / 30 for c in counts]
+        ax.bar(x, pct, bottom=bottom, width=0.52, color=colour,
+               edgecolor='white', linewidth=1.0, label=label)
+        for xi, (p_, b_, c_) in enumerate(zip(pct, bottom, counts)):
+            ax.text(xi, b_ + p_ / 2, f'{c_}', ha='center', va='center',
+                    fontsize=8.5, color='white', weight='semibold')
+        bottom = [b + p_ for b, p_ in zip(bottom, pct)]
+    ax.set_xticks(x)
+    ax.set_xticklabels(COLS, fontsize=8)
+    ax.set_ylim(0, 100)
+    ax.set_ylabel('share of interventions (%)')
+    ax.set_title('One answer swapped: the agent stops converging')
+    ax.grid(axis='y', color=RULE, linewidth=0.6, alpha=0.7)
+    ax.set_axisbelow(True)
+    ax.legend(loc='upper center', bbox_to_anchor=(0.5, -0.16), ncol=1,
+              frameon=False, fontsize=7.6, handlelength=1.2)
+    save(fig, 'f9_counterfactual')
+
+
+# -------------------------------------------------------------- F10
+def fig_judge_swap() -> None:
+    """Does the ranking belong to the models or to the judge?
+
+    Two judges, same transcripts, same written rubrics. The absolute
+    levels move a lot -- GLM-5.1 marks the weaker model far more
+    generously -- so plotting only the gap would hide the disagreement
+    that is really there. Plotting both levels and connecting them shows
+    the honest version: the judges disagree about how good these models
+    are, and agree about which is better.
+    """
+    # docs/experiments.md, E-judgeswap. Rows one and two are complete.
+    DATA = [
+        ('gpt-5.6', 0.624, 0.589, TIER_A),
+        ('Kimi-2.5', 0.279, 0.400, TIER_B),
+    ]
+    fig, ax = plt.subplots(figsize=(4.6, 3.0))
+    xs = [0, 1]
+    for name, primary, swap, colour in DATA:
+        ax.plot(xs, [primary, swap], color=colour, linewidth=1.6,
+                marker='o', markersize=6, zorder=3)
+        ax.text(-0.06, primary, f'{name}  {primary:.3f}', ha='right',
+                va='center', fontsize=8, color=colour)
+        ax.text(1.06, swap, f'{swap:.3f}', ha='left', va='center',
+                fontsize=8, color=colour)
+    ax.set_xticks(xs)
+    ax.set_xticklabels(['primary judge\n(gpt family)',
+                        'swapped judge\n(GLM-5.1)'], fontsize=8)
+    ax.set_xlim(-0.62, 1.42)
+    ax.set_ylim(0, 0.72)
+    ax.set_ylabel('mean grade')
+    ax.set_title('The gap halves; the ordering does not move')
+    ax.grid(axis='y', color=RULE, linewidth=0.6, alpha=0.7)
+    ax.set_axisbelow(True)
+    for xi in xs:
+        ax.axvline(xi, color=RULE, linewidth=0.6, alpha=0.7, zorder=0)
+    save(fig, 'f10_judge_swap')
+
+
 def main() -> int:
     _style()
     print('writing figures to paper/figures/')
@@ -494,6 +582,8 @@ def main() -> int:
     fig_all_comparisons()
     fig_interaction_value()
     fig_corpus()
+    fig_counterfactual()
+    fig_judge_swap()
     return 0
 
 
