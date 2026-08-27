@@ -608,7 +608,7 @@ def fig_judge_swap() -> None:
     which is why the paper claims the tiers and not the rank inside them.
     """
     ROWS = [
-        ('gpt-5.6', 0.624, 0.589, TIER_A),
+        ('gpt-5.6', 0.624, 0.590, TIER_A),
         ('gpt-5.5', 0.574, 0.570, TIER_A),
         ('GLM-5.1', 0.303, 0.432, TIER_B),
         ('Kimi-2.5', 0.279, 0.400, TIER_B),
