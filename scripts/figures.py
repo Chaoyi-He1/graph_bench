@@ -596,36 +596,64 @@ def fig_counterfactual() -> None:
 
 # -------------------------------------------------------------- F10
 def fig_judge_swap() -> None:
-    """Does the ranking belong to the models or to the judge?
+    """All four rows re-judged by a model from another family.
 
-    Two judges, same transcripts, same written rubrics. The absolute
-    levels move a lot -- GLM-5.1 marks the weaker model far more
-    generously -- so plotting only the gap would hide the disagreement
-    that is really there. Plotting both levels and connecting them shows
-    the honest version: the judges disagree about how good these models
-    are, and agree about which is better.
+    Plotting the gap alone would overstate the agreement, so this plots
+    both judges' absolute levels. They disagree substantially about how
+    good these systems are -- the swapped judge lifts the lower tier by
+    ~0.13 while barely moving the upper -- and the disagreement is what
+    makes the surviving structure worth reporting: the tier separation is
+    judge-independent, and the WITHIN-tier orderings are not. Each
+    within-tier call is significant under exactly one of the two judges,
+    which is why the paper claims the tiers and not the rank inside them.
     """
-    # docs/experiments.md, E-judgeswap. Rows one and two are complete.
-    DATA = [
+    ROWS = [
         ('gpt-5.6', 0.624, 0.589, TIER_A),
+        ('gpt-5.5', 0.574, 0.570, TIER_A),
+        ('GLM-5.1', 0.303, 0.432, TIER_B),
         ('Kimi-2.5', 0.279, 0.400, TIER_B),
     ]
-    fig, ax = plt.subplots(figsize=(4.6, 3.0))
+    fig, ax = plt.subplots(figsize=(5.4, 3.4))
     xs = [0, 1]
-    for name, primary, swap, colour in DATA:
+
+    def _nudge(values: list[float], gap: float = 0.026) -> list[float]:
+        """Label y-positions pushed apart where the values nearly coincide.
+
+        gpt-5.6 and gpt-5.5 land 0.019 apart under the swapped judge, which
+        is less than a line of type: drawn at their true y the two numbers
+        overprint."""
+        order = sorted(range(len(values)), key=lambda i: values[i])
+        out = list(values)
+        for prev, cur in zip(order, order[1:]):
+            if out[cur] - out[prev] < gap:
+                out[cur] = out[prev] + gap
+        return out
+
+    ly_left = _nudge([r[1] for r in ROWS])
+    ly_right = _nudge([r[2] for r in ROWS])
+    for (name, primary, swap, colour), yl, yr in zip(ROWS, ly_left, ly_right):
         ax.plot(xs, [primary, swap], color=colour, linewidth=1.6,
                 marker='o', markersize=6, zorder=3)
-        ax.text(-0.06, primary, f'{name}  {primary:.3f}', ha='right',
+        ax.text(-0.06, yl, f'{name}  {primary:.3f}', ha='right',
                 va='center', fontsize=8, color=colour)
-        ax.text(1.06, swap, f'{swap:.3f}', ha='left', va='center',
+        ax.text(1.06, yr, f'{swap:.3f}', ha='left', va='center',
                 fontsize=8, color=colour)
+
+    # The gap that survives both judges, drawn where it actually is.
+    for x, lo, hi in ((0, 0.574, 0.303), (1, 0.570, 0.432)):
+        ax.annotate('', xy=(x, lo), xytext=(x, hi),
+                    arrowprops={'arrowstyle': '<->', 'color': MUTED,
+                                'linewidth': 0.9})
+        ax.text(x + 0.04, (lo + hi) / 2, f'{lo - hi:.3f}', fontsize=7,
+                color=MUTED, va='center')
+
     ax.set_xticks(xs)
     ax.set_xticklabels(['primary judge\n(gpt family)',
                         'swapped judge\n(GLM-5.1)'], fontsize=8)
-    ax.set_xlim(-0.62, 1.42)
+    ax.set_xlim(-0.66, 1.44)
     ax.set_ylim(0, 0.72)
     ax.set_ylabel('mean grade')
-    ax.set_title('The gap halves; the ordering does not move')
+    ax.set_title('The tier gap survives the judge; the rank inside it does not')
     ax.grid(axis='y', color=RULE, linewidth=0.6, alpha=0.7)
     ax.set_axisbelow(True)
     for xi in xs:
