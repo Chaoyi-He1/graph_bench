@@ -389,9 +389,11 @@ def fig_all_comparisons() -> None:
     First, a null means different things in different rows. A simulator
     swap that moves nothing is a *robustness result* -- the literature
     reports swaps moving success by up to 9 points. A leak ablation that
-    moves nothing is a *problem for our motivation*. Painting them the
-    same grey throws away the first and hides the second, so the rows are
-    grouped by what a null would mean.
+    moves nothing means something else again: run at the full corpus it
+    bounds the grade effect of handing the simulator the answer at
+    +/-0.022, which says the score cannot detect leakage at all. Painting
+    all three the same grey throws that away, so rows are grouped by what
+    a null would mean.
 
     Second, these nulls are measured at n=48, where the 99% interval is
     +/-0.06 -- more than twice the resolution of the n=229 rows. A null
@@ -412,8 +414,8 @@ def fig_all_comparisons() -> None:
             ('screenshots attached', f'{M}/e7-mm-off/e7-mm-off', f'{M}/e7-mm-on/e7-mm-on'),
             ('30 turns instead of 20', f'{M}/gpt56-fix6/gpt56-fix6', f'{M}/gpt56-t30/gpt56-t30'),
         ]),
-        ('Design ablation  --  a null here counts against us', [
-            ('simulator sees the answer', f'{M}/gpt56-fix6/gpt56-fix6', f'{M}/gpt56-leakA/gpt56-leakA'),
+        ('Leak ablation  --  a null here is itself the finding', [
+            ('simulator sees the answer', f'{M}/m-gpt56/m-gpt56', f'{M}/e-leak-full/e-leak-full'),
         ]),
         ('Reference', [
             ('the same run, twice', f'{M}/gpt56-fix6/gpt56-fix6', f'{M}/gpt56-vision/gpt56-vision'),
