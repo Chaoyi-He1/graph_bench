@@ -612,7 +612,7 @@ def fig_judge_swap() -> None:
     ROWS = [
         ('gpt-5.6', 0.624, 0.590, TIER_A),
         ('gpt-5.5', 0.574, 0.570, TIER_A),
-        ('GLM-5.1', 0.303, 0.432, TIER_B),
+        ('GLM-5.1', 0.306, 0.436, TIER_B),
         ('Kimi-2.5', 0.279, 0.400, TIER_B),
     ]
     fig, ax = plt.subplots(figsize=(5.4, 3.4))
@@ -642,7 +642,7 @@ def fig_judge_swap() -> None:
                 fontsize=8, color=colour)
 
     # The gap that survives both judges, drawn where it actually is.
-    for x, lo, hi in ((0, 0.574, 0.303), (1, 0.570, 0.432)):
+    for x, lo, hi in ((0, 0.574, 0.306), (1, 0.570, 0.436)):
         ax.annotate('', xy=(x, lo), xytext=(x, hi),
                     arrowprops={'arrowstyle': '<->', 'color': MUTED,
                                 'linewidth': 0.9})
