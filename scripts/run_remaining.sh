@@ -4,7 +4,7 @@
 # concurrency 12 gives 3.87 turns/min, exactly what 6 gives), so an extra
 # arm only makes the table land later.
 set -u
-LOG=/tmp/gb-v2/runs/queue.log
+LOG="${GB_OPS_DIR:-$HOME/graph_bench_runs/ops}"/queue.log
 say() { echo "$(date '+%m-%d %H:%M:%S') $*" >> "$LOG"; }
 
 for i in $(seq 1 4000); do

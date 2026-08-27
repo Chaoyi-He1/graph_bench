@@ -6,6 +6,7 @@
 # script incrementally, so rewriting one in place resumes it at a stale
 # byte offset.
 set -u
+mkdir -p "${GB_OPS_DIR:-$HOME/graph_bench_runs/ops}"
 ROOT=$(cd "$(dirname "$0")/.." && pwd); cd "$ROOT"
 set -a; . ./.env 2>/dev/null || true; set +a
 run_id=$1; cfg=${2:-'{"max_tokens": 8000}'}; sim=${3:-'{}'}; turns=${4:-30}
@@ -17,7 +18,7 @@ expected=$(ls $tasks | wc -l | tr -d ' ')
 # costs ~77s wall (68s of it the agent call), so N cases in flight give
 # N/77s turns per second until the gateway pushes back. Where that point
 # is, is measured per row rather than assumed.
-CONC=$(cat /tmp/gb-v2/runs/concurrency 2>/dev/null || echo 6)
+CONC=$(cat "${GB_OPS_DIR:-$HOME/graph_bench_runs/ops}"/concurrency 2>/dev/null || echo 6)
 
 uv run --native-tls python -m graph_bench backbone run \
   --agent api --agent-config "$cfg" --sim-config "$sim" --tasks "$tasks" \

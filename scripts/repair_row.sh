@@ -12,7 +12,8 @@
 # recompute metrics, re-judge (the judge skips cases already judged). Runs
 # at low concurrency so it never starves the row still in flight.
 set -u
-LOG=/tmp/gb-v2/runs/repair.log
+mkdir -p "${GB_OPS_DIR:-$HOME/graph_bench_runs/ops}"
+LOG="${GB_OPS_DIR:-$HOME/graph_bench_runs/ops}"/repair.log
 say() { echo "$(date '+%m-%d %H:%M:%S') $*" >> "$LOG"; }
 cd /tmp/gb-v6 || exit 1
 set -a; . ./.env 2>/dev/null || true; set +a

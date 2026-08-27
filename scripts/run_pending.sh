@@ -8,7 +8,8 @@
 # invalidate the main table, so it should not be the one still waiting if
 # something goes wrong overnight.
 set -u
-LOG=/tmp/gb-v2/runs/queue.log
+mkdir -p "${GB_OPS_DIR:-$HOME/graph_bench_runs/ops}"
+LOG="${GB_OPS_DIR:-$HOME/graph_bench_runs/ops}"/queue.log
 say() { echo "$(date '+%m-%d %H:%M:%S') $*" >> "$LOG"; }
 
 idle() {

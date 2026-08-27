@@ -7,10 +7,11 @@
 # same model and turn budget — same config, no overrides — so no separate
 # baseline pass is needed.
 set -u
+mkdir -p "${GB_OPS_DIR:-$HOME/graph_bench_runs/ops}"
 ROOT=$(cd "$(dirname "$0")/.." && pwd); cd "$ROOT"
 set -a; . ./.env 2>/dev/null || true; set +a
 plan=$1; turns=${2:-30}
-CONC=$(cat /tmp/gb-v2/runs/concurrency 2>/dev/null || echo 6)
+CONC=$(cat "${GB_OPS_DIR:-$HOME/graph_bench_runs/ops}"/concurrency 2>/dev/null || echo 6)
 log="runs/matrix/cf.log"
 
 n=0
