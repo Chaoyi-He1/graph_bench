@@ -386,21 +386,32 @@ def fig_all_comparisons() -> None:
     this benchmark changed anything", which is both the wrong reading and
     an easy one to reach. Two things fix it.
 
-    First, a null means different things in different rows. A simulator
-    swap that moves nothing is a *robustness result* -- the literature
-    reports swaps moving success by up to 9 points. A leak ablation that
-    moves nothing means something else again: run at the full corpus it
-    bounds the grade effect of handing the simulator the answer at
-    +/-0.022, which says the score cannot detect leakage at all. Painting
-    all three the same grey throws that away, so rows are grouped by what
-    a null would mean.
+    First, a null means different things in different rows, and the two
+    rows we re-ran at full corpus both moved. The simulator swap read
+    -0.0007 at n=48 and reads -0.025 at n=226: not the clean zero it
+    looked like, though still far under the 9 points the literature
+    reports for a swap. The leak ablation read +0.037 at n=48 and -0.011
+    at n=226, bounding the grade effect of handing the simulator the
+    answer at 0.022 -- which says the score cannot detect leakage at all.
+    Rows are grouped by what a null would mean, and the n=48 rows are
+    marked, because at that sample size neither of these was what it
+    appeared to be.
 
     Second, these nulls are measured at n=48, where the 99% interval is
     +/-0.06 -- more than twice the resolution of the n=229 rows. A null
     there is a bound, not an absence, so each one is annotated with the
     bound it actually supports.
     """
-    from math import sqrt
+    from math import comb, sqrt
+
+    def _sign_p(diffs: list[float]) -> float:
+        pos = sum(1 for x in diffs if x > 0)
+        neg = sum(1 for x in diffs if x < 0)
+        n = pos + neg
+        if n == 0:
+            return 1.0
+        k = min(pos, neg)
+        return min(1.0, 2 * sum(comb(n, i) for i in range(k + 1)) / 2 ** n)
 
     GROUPS = [
         ('Model comparisons  --  what the benchmark is for', [
@@ -409,8 +420,8 @@ def fig_all_comparisons() -> None:
             ('gpt-5.6  vs  gpt-5.5', f'{M}/m-gpt55/m-gpt55', f'{M}/m-gpt56/m-gpt56'),
             ('GLM-5.1  vs  Kimi-2.5', f'{M}/m-kimi25/m-kimi25', f'{M}/m-glm51/m-glm51'),
         ]),
-        ('Robustness  --  a null here is the result we want', [
-            ('a different simulator model', f'{M}/gpt56-fix6/gpt56-fix6', f'{M}/e8-simswap/e8-simswap'),
+        ('Harness interventions  --  a null here is the result we want', [
+            ('a different simulator model', f'{M}/m-gpt56/m-gpt56', f'{M}/e8-simswap-full/e8-simswap-full'),
             ('screenshots attached', f'{M}/e7-mm-off/e7-mm-off', f'{M}/e7-mm-on/e7-mm-on'),
             ('30 turns instead of 20', f'{M}/gpt56-fix6/gpt56-fix6', f'{M}/gpt56-t30/gpt56-t30'),
         ]),
@@ -433,7 +444,15 @@ def fig_all_comparisons() -> None:
             d = [gb[c] - ga[c] for c in common]
             mean = st.mean(d)
             half = 2.6 * st.stdev(d) / sqrt(len(d))
-            rows.append((label, mean, half, len(common), abs(mean) > half))
+            # Colour by the ruling the paper actually uses -- |t| > 2.6 AND
+            # a two-sided sign test at p < 0.01 -- not by whether the
+            # interval clears zero. The simulator-swap row passes the first
+            # and fails the second, and coding it "real" on the interval
+            # alone would put the figure at odds with the text.
+            t_ok = abs(mean) > half
+            s_p = _sign_p(d)
+            rows.append((label, mean, half, len(common),
+                         t_ok and s_p < 0.01, t_ok != (s_p < 0.01)))
         if rows:
             items.append(('head', title))
             items.extend(('row', r) for r in rows)
@@ -441,8 +460,8 @@ def fig_all_comparisons() -> None:
     fig, ax = plt.subplots(figsize=(6.1, 4.5))
     ys = list(range(len(items)))[::-1]
     body = [(y, p) for y, (k, p) in zip(ys, items) if k == 'row']
-    xhi = max(m + h for _, (_, m, h, _, _) in body)
-    xlo = min(m - h for _, (_, m, h, _, _) in body)
+    xhi = max(m + h for _, (_, m, h, _, _, _) in body)
+    xlo = min(m - h for _, (_, m, h, _, _, _) in body)
     gutter = xhi + 0.015
 
     for y, (kind, payload) in zip(ys, items):
@@ -450,13 +469,18 @@ def fig_all_comparisons() -> None:
             ax.text(xlo - 0.021, y, payload, fontsize=7.2, color=INK,
                     style='italic', va='center', ha='left')
             continue
-        label, mean, half, n, real = payload
-        colour = TIER_A if real else NEUTRAL
+        label, mean, half, n, real, split = payload
+        colour = TIER_A if real else (TIER_B if split else NEUTRAL)
         ax.plot([mean - half, mean + half], [y, y], color=colour,
                 linewidth=1.5, solid_capstyle='round', alpha=0.85)
         ax.plot([mean], [y], marker='o', markersize=5, color=colour)
         # A null is a bound, not an absence -- say which bound.
-        note = f'n={n}' if real else f'n={n}   |effect| < {half:.3f}'
+        if split:
+            note = f'n={n}   split: t yes, sign no'
+        elif real:
+            note = f'n={n}'
+        else:
+            note = f'n={n}   |effect| < {half:.3f}'
         ax.text(gutter, y, note, fontsize=6.6, color=MUTED, va='center')
 
     ax.axvline(0, color=INK, linewidth=0.8)
