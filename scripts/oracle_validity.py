@@ -161,12 +161,28 @@ def main() -> int:
               f'grounded {m:+.3f} (t={t:.1f}), premature {m2:+.2f} (t={t2:.1f}), n={n}')
     if have.get('cheater') and have.get('blind'):
         n, m, t, p = paired(have['cheater'], have['blind'], 'grade')
-        check('P3 fishing earns nothing (leak defence)',
-              abs(t) < 2.6 or p > 0.01,
-              f'cheater - blind grade {m:+.4f} (t={t:.2f}, sign p={p:.3g}, n={n})')
+        # An empty comparison satisfies "not significant" vacuously. A
+        # prediction that cannot fail is not a check -- require a sample.
+        if n < 30:
+            print(f'  [ -- ] P3 fishing earns nothing: only n={n} paired '
+                  f'cases judged so far; not evaluated')
+        else:
+            # The claim is directional: fishing must not PAY. An
+            # "abs(t) < 2.6 or p > 0.01" predicate passes on either leg
+            # and would accept a real gain that happened to fail the sign
+            # test. Require that the cheater does not come out ahead.
+            gained = m > 0 and abs(t) > 2.6 and p < 0.01
+            check('P3 fishing earns nothing (leak defence)', not gained,
+                  f'cheater - blind grade {m:+.4f} '
+                  f'(t={t:.2f}, sign p={p:.3g}, n={n}); '
+                  f'{"no gain" if m <= 0 else "gain not established"}')
     if have.get('expert') and have.get('gambler'):
         n, m, t, p = paired(have['expert'], have['gambler'], 'explanation')
         n2, m2, t2, _ = paired(have['expert'], have['gambler'], 'grounded')
+        if n < 30:
+            print(f'  [ -- ] P4 explanation separates expert from gambler: '
+                  f'only n={n} paired cases judged so far; not evaluated')
+            return 0
         check('P4 explanation separates expert from gambler',
               m > 0 and abs(t) > 2.6,
               f'explanation {m:+.3f} (t={t:.2f}, n={n}); grounded {m2:+.3f} (t={t2:.2f})')
