@@ -420,7 +420,7 @@ def fig_all_comparisons() -> None:
             ('gpt-5.6  vs  gpt-5.5', f'{M}/m-gpt55/m-gpt55', f'{M}/m-gpt56/m-gpt56'),
             ('GLM-5.1  vs  Kimi-2.5', f'{M}/m-kimi25/m-kimi25', f'{M}/m-glm51/m-glm51'),
         ]),
-        ('Harness interventions  --  a null here is the result we want', [
+        ('Harness interventions  --  what we changed about the setup', [
             ('a different simulator model', f'{M}/m-gpt56/m-gpt56', f'{M}/e8-simswap-full/e8-simswap-full'),
             ('screenshots attached', f'{M}/e7-mm-off/e7-mm-off', f'{M}/e7-mm-on/e7-mm-on'),
             ('30 turns instead of 20', f'{M}/gpt56-fix6/gpt56-fix6', f'{M}/gpt56-t30/gpt56-t30'),
@@ -665,12 +665,15 @@ def fig_judge_swap() -> None:
         ax.text(1.06, yr, f'{swap:.3f}', ha='left', va='center',
                 fontsize=8, color=colour)
 
-    # The gap that survives both judges, drawn where it actually is.
-    for x, lo, hi in ((0, 0.574, 0.306), (1, 0.570, 0.436)):
+    # The gap that survives both judges, drawn where it actually is. The
+    # label is the exact paired difference, not the difference of the two
+    # rounded means -- those disagree in the third decimal (0.268 vs the
+    # 0.269 the text reports) and a reader comparing them would notice.
+    for x, lo, hi, gap in ((0, 0.574, 0.306, 0.269), (1, 0.570, 0.436, 0.134)):
         ax.annotate('', xy=(x, lo), xytext=(x, hi),
                     arrowprops={'arrowstyle': '<->', 'color': MUTED,
                                 'linewidth': 0.9})
-        ax.text(x + 0.04, (lo + hi) / 2, f'{lo - hi:.3f}', fontsize=7,
+        ax.text(x + 0.04, (lo + hi) / 2, f'{gap:.3f}', fontsize=7,
                 color=MUTED, va='center')
 
     ax.set_xticks(xs)
